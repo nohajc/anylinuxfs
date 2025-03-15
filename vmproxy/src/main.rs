@@ -24,13 +24,13 @@ fn main() -> anyhow::Result<()> {
     let supported_fs =
         SupportedFilesystems::new().context("Failed to get supported filesystems")?;
 
-    for fs in supported_fs.dev_file_systems() {
-        println!("Supported filesystem: {:?}", fs);
-    }
+    // for fs in supported_fs.dev_file_systems() {
+    //     println!("Supported filesystem: {:?}", fs);
+    // }
 
-    for fs in supported_fs.nodev_file_systems() {
-        println!("Supported nodev filesystem: {:?}", fs);
-    }
+    // for fs in supported_fs.nodev_file_systems() {
+    //     println!("Supported nodev filesystem: {:?}", fs);
+    // }
 
     let result = Mount::builder()
         .fstype(FilesystemType::from(&supported_fs))
@@ -43,7 +43,7 @@ fn main() -> anyhow::Result<()> {
         result.get_fstype()
     );
 
-    list_dir("/mnt/hostblk/home/nohajc");
+    list_dir("/mnt/hostblk");
 
     // std::thread::sleep(std::time::Duration::from_secs(30));
     Ok(())
