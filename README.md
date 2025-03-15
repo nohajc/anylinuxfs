@@ -1,2 +1,2 @@
 # anylinuxfs
-Mount any linux-supported filesystem using macFUSE with the help of microVM
+Mount any linux-supported filesystem read/write using macFUSE and libkrun
