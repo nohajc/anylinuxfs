@@ -1,17 +1,43 @@
 use anyhow::Context;
-use std::{env, ffi::CString, io, os::unix::ffi::OsStrExt, path::Path};
+use std::{
+    env,
+    ffi::CString,
+    fs::OpenOptions,
+    io,
+    os::{fd::AsRawFd, unix::ffi::OsStrExt},
+    path::Path,
+};
 
 #[allow(unused)]
 mod bindings;
 
 fn main() {
     if let Err(e) = run() {
-        eprintln!("Error: {}", e);
+        eprintln!("Error: {:#}", e);
         std::process::exit(1);
     }
 }
 
 fn run() -> anyhow::Result<()> {
+    // println!("uid = {}", unsafe { libc::getuid() });
+    // println!("gid = {}", unsafe { libc::getgid() });
+
+    let sudo_uid = env::var("SUDO_UID")
+        .map_err(anyhow::Error::from)
+        .and_then(|s| Ok(s.parse::<libc::uid_t>()?))
+        .ok();
+    if let Some(sudo_uid) = sudo_uid {
+        println!("sudo_uid = {}", sudo_uid);
+    }
+
+    let sudo_gid = env::var("SUDO_GID")
+        .map_err(anyhow::Error::from)
+        .and_then(|s| Ok(s.parse::<libc::gid_t>()?))
+        .ok();
+    if let Some(sudo_gid) = sudo_gid {
+        println!("sudo_gid = {}", sudo_gid);
+    }
+
     let args: Vec<String> = env::args().collect();
     let disk_path = if args.len() > 1 {
         args[1].as_str()
@@ -29,9 +55,27 @@ fn run() -> anyhow::Result<()> {
     println!("disk_path: {}", disk_path);
     println!("root_path: {}", root_path.to_string_lossy());
 
+    let disk_file = OpenOptions::new()
+        .read(true)
+        .write(!read_only)
+        .open(disk_path)?;
+
+    let disk_fd = format!("/dev/fd/{}", disk_file.as_raw_fd());
+    println!("disk_fd: {}", &disk_fd);
+
+    // drop privileges back to the original user if he used sudo
+    if let (Some(sudo_uid), Some(sudo_gid)) = (sudo_uid, sudo_gid) {
+        if unsafe { libc::setgid(sudo_gid) } < 0 {
+            return Err(io::Error::last_os_error()).context("Failed to setgid");
+        }
+        if unsafe { libc::setuid(sudo_uid) } < 0 {
+            return Err(io::Error::last_os_error()).context("Failed to setuid");
+        }
+    }
+
     let ctx = unsafe { bindings::krun_create_ctx() }.context("Failed to create context")?;
 
-    unsafe { bindings::krun_set_log_level(3) }.context("Failed to set log level")?;
+    // unsafe { bindings::krun_set_log_level(3) }.context("Failed to set log level")?;
 
     unsafe { bindings::krun_set_vm_config(ctx, 1, 512) }.context("Failed to set VM config")?;
 
@@ -42,7 +86,7 @@ fn run() -> anyhow::Result<()> {
         bindings::krun_add_disk(
             ctx,
             CString::new("data").unwrap().as_ptr(),
-            CString::new(disk_path).unwrap().as_ptr(),
+            CString::new(disk_fd).unwrap().as_ptr(),
             read_only,
         )
     }
@@ -86,7 +130,7 @@ impl ResultWithCtx for i32 {
     type Value = u32;
     fn context(self, msg: &str) -> anyhow::Result<Self::Value> {
         if self < 0 {
-            Err(io::Error::last_os_error()).context(msg.to_owned())
+            Err(io::Error::from_raw_os_error(-self)).context(msg.to_owned())
         } else {
             Ok(self as u32)
         }
