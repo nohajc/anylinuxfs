@@ -4,4 +4,5 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-rustix = { version = "1.0.2", features = ["mount"] }
+anyhow = "1.0.97"
+sys-mount = { version = "3.0.1", default-features = false }
