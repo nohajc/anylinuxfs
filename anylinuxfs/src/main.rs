@@ -63,6 +63,16 @@ fn run() -> anyhow::Result<()> {
     let disk_fd = format!("/dev/fd/{}", disk_file.as_raw_fd());
     println!("disk_fd: {}", &disk_fd);
 
+    // drop privileges back to the original user if he used sudo
+    // if let (Some(sudo_uid), Some(sudo_gid)) = (sudo_uid, sudo_gid) {
+    //     if unsafe { libc::setgid(sudo_gid) } < 0 {
+    //         return Err(io::Error::last_os_error()).context("Failed to setgid");
+    //     }
+    //     if unsafe { libc::setuid(sudo_uid) } < 0 {
+    //         return Err(io::Error::last_os_error()).context("Failed to setuid");
+    //     }
+    // }
+
     let ctx = unsafe { bindings::krun_create_ctx() }.context("Failed to create context")?;
 
     // unsafe { bindings::krun_set_log_level(3) }.context("Failed to set log level")?;
@@ -102,16 +112,6 @@ fn run() -> anyhow::Result<()> {
 
     // unsafe { bindings::krun_set_port_map(ctx, port_map.as_ptr()) }
     //     .context("Failed to set port map")?;
-
-    // drop privileges back to the original user if he used sudo
-    // if let (Some(sudo_uid), Some(sudo_gid)) = (sudo_uid, sudo_gid) {
-    //     if unsafe { libc::setgid(sudo_gid) } < 0 {
-    //         return Err(io::Error::last_os_error()).context("Failed to setgid");
-    //     }
-    //     if unsafe { libc::setuid(sudo_uid) } < 0 {
-    //         return Err(io::Error::last_os_error()).context("Failed to setuid");
-    //     }
-    // }
 
     unsafe { bindings::krun_set_workdir(ctx, CString::new("/").unwrap().as_ptr()) }
         .context("Failed to set workdir")?;
