@@ -5,4 +5,6 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.97"
+libc = "0.2.171"
+procfs = { version = "0.17.0", features = ["flate2"] }
 sys-mount = { version = "3.0.1", default-features = false }

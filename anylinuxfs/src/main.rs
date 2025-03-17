@@ -63,16 +63,6 @@ fn run() -> anyhow::Result<()> {
     let disk_fd = format!("/dev/fd/{}", disk_file.as_raw_fd());
     println!("disk_fd: {}", &disk_fd);
 
-    // drop privileges back to the original user if he used sudo
-    if let (Some(sudo_uid), Some(sudo_gid)) = (sudo_uid, sudo_gid) {
-        if unsafe { libc::setgid(sudo_gid) } < 0 {
-            return Err(io::Error::last_os_error()).context("Failed to setgid");
-        }
-        if unsafe { libc::setuid(sudo_uid) } < 0 {
-            return Err(io::Error::last_os_error()).context("Failed to setuid");
-        }
-    }
-
     let ctx = unsafe { bindings::krun_create_ctx() }.context("Failed to create context")?;
 
     // unsafe { bindings::krun_set_log_level(3) }.context("Failed to set log level")?;
@@ -92,18 +82,46 @@ fn run() -> anyhow::Result<()> {
     }
     .context("Failed to add disk")?;
 
+    unsafe {
+        bindings::krun_set_gvproxy_path(ctx, CString::new("/tmp/vfkit.sock").unwrap().as_ptr())
+    }
+    .context("Failed to set gvproxy path")?;
+
+    // let ports = vec![
+    //     // CString::new("8000:8000").unwrap(),
+    //     CString::new("111:111").unwrap(),
+    //     CString::new("2049:2049").unwrap(),
+    //     CString::new("32765:32765").unwrap(),
+    //     CString::new("32767:32767").unwrap(),
+    // ];
+    // let port_map = ports
+    //     .iter()
+    //     .map(|s| s.as_ptr())
+    //     .chain([std::ptr::null()])
+    //     .collect::<Vec<_>>();
+
+    // unsafe { bindings::krun_set_port_map(ctx, port_map.as_ptr()) }
+    //     .context("Failed to set port map")?;
+
+    // drop privileges back to the original user if he used sudo
+    // if let (Some(sudo_uid), Some(sudo_gid)) = (sudo_uid, sudo_gid) {
+    //     if unsafe { libc::setgid(sudo_gid) } < 0 {
+    //         return Err(io::Error::last_os_error()).context("Failed to setgid");
+    //     }
+    //     if unsafe { libc::setuid(sudo_uid) } < 0 {
+    //         return Err(io::Error::last_os_error()).context("Failed to setuid");
+    //     }
+    // }
+
     unsafe { bindings::krun_set_workdir(ctx, CString::new("/").unwrap().as_ptr()) }
         .context("Failed to set workdir")?;
 
-    let args = vec![CString::new("/vmproxy").unwrap()];
-    let argv = args
-        .iter()
-        .map(|s| s.as_ptr())
-        .chain([std::ptr::null()])
-        .collect::<Vec<_>>();
+    // let args = vec![CString::new("/vmproxy").unwrap()];
+    let args = vec![CString::new("/bin/bash").unwrap()];
+    let argv = args.iter().map(|s| s.as_ptr()).collect::<Vec<_>>();
     let envp = vec![std::ptr::null()];
 
-    unsafe { bindings::krun_set_exec(ctx, argv[0], argv.as_ptr(), envp.as_ptr()) }
+    unsafe { bindings::krun_set_exec(ctx, argv[0], std::ptr::null(), envp.as_ptr()) }
         .context("Failed to set exec")?;
 
     unsafe { bindings::krun_start_enter(ctx) }.context("Failed to start VM")?;

@@ -14,6 +14,7 @@ unsafe extern "C" {
         read_only: bool,
     ) -> i32;
     pub fn krun_set_mapped_volumes(ctx: u32, mapped_volumes: *const *const c_char) -> i32;
+    pub fn krun_set_gvproxy_path(ctx: u32, c_path: *const c_char) -> i32;
     pub fn krun_set_port_map(ctx: u32, port_map: *const *const c_char) -> i32;
     pub fn krun_set_workdir(ctx: u32, workdir_path: *const c_char) -> i32;
     pub fn krun_set_exec(

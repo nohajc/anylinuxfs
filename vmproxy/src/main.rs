@@ -1,5 +1,6 @@
 use anyhow::Context;
 use std::fs;
+use std::process::Command;
 use sys_mount::{FilesystemType, Mount, MountFlags, SupportedFilesystems};
 
 fn list_dir(dir: &str) {
@@ -17,6 +18,15 @@ fn list_dir(dir: &str) {
 
 fn main() -> anyhow::Result<()> {
     println!("Hello, world, from linux microVM!");
+    println!("uid = {}", unsafe { libc::getuid() });
+    println!("gid = {}", unsafe { libc::getgid() });
+    println!("");
+
+    // let kernel_cfg = procfs::kernel_config()?;
+    // println!("Kernel config");
+    // for (key, value) in kernel_cfg {
+    //     println!("{} = {:?}", key, value);
+    // }
 
     fs::create_dir_all("/mnt/hostblk").context("Failed to create directory '/mnt/hostblk'")?;
     println!("Directory '/mnt/hostblk' created successfully.");
@@ -45,6 +55,12 @@ fn main() -> anyhow::Result<()> {
 
     list_dir("/mnt/hostblk");
 
-    // std::thread::sleep(std::time::Duration::from_secs(30));
+    let mut hnd = Command::new("/usr/local/bin/entrypoint.sh")
+        .env("NFS_VERSION", "3")
+        .spawn()
+        .context("Failed to execute /usr/local/bin/entrypoint.sh")?;
+
+    hnd.wait()
+        .context("Failed to wait for /usr/local/bin/entrypoint.sh to finish")?;
     Ok(())
 }
