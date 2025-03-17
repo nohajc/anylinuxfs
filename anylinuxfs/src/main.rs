@@ -118,10 +118,14 @@ fn run() -> anyhow::Result<()> {
 
     // let args = vec![CString::new("/vmproxy").unwrap()];
     let args = vec![CString::new("/bin/bash").unwrap()];
-    let argv = args.iter().map(|s| s.as_ptr()).collect::<Vec<_>>();
+    let argv = args
+        .iter()
+        .map(|s| s.as_ptr())
+        .chain([std::ptr::null()])
+        .collect::<Vec<_>>();
     let envp = vec![std::ptr::null()];
 
-    unsafe { bindings::krun_set_exec(ctx, argv[0], std::ptr::null(), envp.as_ptr()) }
+    unsafe { bindings::krun_set_exec(ctx, argv[0], argv[1..].as_ptr(), envp.as_ptr()) }
         .context("Failed to set exec")?;
 
     unsafe { bindings::krun_start_enter(ctx) }.context("Failed to start VM")?;
