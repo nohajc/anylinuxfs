@@ -64,14 +64,14 @@ fn run() -> anyhow::Result<()> {
     println!("disk_fd: {}", &disk_fd);
 
     // drop privileges back to the original user if he used sudo
-    // if let (Some(sudo_uid), Some(sudo_gid)) = (sudo_uid, sudo_gid) {
-    //     if unsafe { libc::setgid(sudo_gid) } < 0 {
-    //         return Err(io::Error::last_os_error()).context("Failed to setgid");
-    //     }
-    //     if unsafe { libc::setuid(sudo_uid) } < 0 {
-    //         return Err(io::Error::last_os_error()).context("Failed to setuid");
-    //     }
-    // }
+    if let (Some(sudo_uid), Some(sudo_gid)) = (sudo_uid, sudo_gid) {
+        if unsafe { libc::setgid(sudo_gid) } < 0 {
+            return Err(io::Error::last_os_error()).context("Failed to setgid");
+        }
+        if unsafe { libc::setuid(sudo_uid) } < 0 {
+            return Err(io::Error::last_os_error()).context("Failed to setuid");
+        }
+    }
 
     let ctx = unsafe { bindings::krun_create_ctx() }.context("Failed to create context")?;
 

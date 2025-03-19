@@ -56,7 +56,8 @@ fn main() -> anyhow::Result<()> {
     list_dir("/mnt/hostblk");
 
     let mut hnd = Command::new("/usr/local/bin/entrypoint.sh")
-        .env("NFS_VERSION", "3")
+        // .env("NFS_VERSION", "3")
+        // .env("NFS_DISABLE_VERSION_3", "1")
         .spawn()
         .context("Failed to execute /usr/local/bin/entrypoint.sh")?;
 

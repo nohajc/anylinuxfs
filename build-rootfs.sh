@@ -27,7 +27,7 @@ cat << EOF > "$ROOTFS_DIR/init-network.sh"
 ip addr add 192.168.127.2/24 dev eth0
 ip link set eth0 up
 ip route add default via 192.168.127.1 dev eth0
-curl http://192.168.127.1/services/forwarder/expose -X POST -d '{"local":"127.0.0.1:111","remote":"192.168.127.2:111"}'
+curl http://192.168.127.1/services/forwarder/expose -X POST -d '{"local":":111","remote":"192.168.127.2:111"}'
 curl http://192.168.127.1/services/forwarder/expose -X POST -d '{"local":"127.0.0.1:2049","remote":"192.168.127.2:2049"}'
 curl http://192.168.127.1/services/forwarder/expose -X POST -d '{"local":"127.0.0.1:32765","remote":"192.168.127.2:32765"}'
 curl http://192.168.127.1/services/forwarder/expose -X POST -d '{"local":"127.0.0.1:32767","remote":"192.168.127.2:32767"}'
