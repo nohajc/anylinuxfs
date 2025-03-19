@@ -6,3 +6,4 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.97"
 libc = "0.2.171"
+wait-timeout = "0.2.1"

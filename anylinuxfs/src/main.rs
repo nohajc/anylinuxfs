@@ -1,12 +1,15 @@
 use anyhow::Context;
+use std::process::{Child, Command, Stdio};
+use std::time::Duration;
 use std::{
     env,
     ffi::CString,
-    fs::OpenOptions,
+    fs::{File, OpenOptions, remove_file},
     io,
     os::{fd::AsRawFd, unix::ffi::OsStrExt},
-    path::Path,
+    path::{Path, PathBuf},
 };
+use wait_timeout::ChildExt;
 
 #[allow(unused)]
 mod bindings;
@@ -18,9 +21,30 @@ fn main() {
     }
 }
 
-fn run() -> anyhow::Result<()> {
-    // println!("uid = {}", unsafe { libc::getuid() });
-    // println!("gid = {}", unsafe { libc::getgid() });
+struct Config {
+    disk_path: String,
+    read_only: bool,
+    root_path: PathBuf,
+    sudo_uid: Option<libc::uid_t>,
+    sudo_gid: Option<libc::gid_t>,
+}
+
+fn load_config() -> anyhow::Result<Config> {
+    let args: Vec<String> = env::args().collect();
+    let disk_path = if args.len() > 1 {
+        args[1].as_str()
+    } else {
+        eprintln!("No disk path provided");
+        std::process::exit(1);
+    }
+    .to_owned();
+
+    let read_only = true; // TODO: make this configurable
+    let root_path = env::current_exe()
+        .context("Failed to get current executable path")?
+        .parent()
+        .context("Failed to get executable directory")?
+        .join("vmroot");
 
     let sudo_uid = env::var("SUDO_UID")
         .map_err(anyhow::Error::from)
@@ -38,32 +62,19 @@ fn run() -> anyhow::Result<()> {
         println!("sudo_gid = {}", sudo_gid);
     }
 
-    let args: Vec<String> = env::args().collect();
-    let disk_path = if args.len() > 1 {
-        args[1].as_str()
-    } else {
-        eprintln!("No disk path provided");
-        std::process::exit(1);
-    };
-    let read_only = true; // TODO: make this configurable
-    let root_path = env::current_exe()
-        .context("Failed to get current executable path")?
-        .parent()
-        .context("Failed to get executable directory")?
-        .join("vmroot");
+    Ok(Config {
+        disk_path,
+        read_only,
+        root_path,
+        sudo_uid,
+        sudo_gid,
+    })
+}
 
-    println!("disk_path: {}", disk_path);
-    println!("root_path: {}", root_path.to_string_lossy());
-
-    let disk_file = OpenOptions::new()
-        .read(true)
-        .write(!read_only)
-        .open(disk_path)?;
-
-    let disk_fd = format!("/dev/fd/{}", disk_file.as_raw_fd());
-    println!("disk_fd: {}", &disk_fd);
-
-    // drop privileges back to the original user if he used sudo
+fn drop_privileges(
+    sudo_uid: Option<libc::uid_t>,
+    sudo_gid: Option<libc::gid_t>,
+) -> anyhow::Result<()> {
     if let (Some(sudo_uid), Some(sudo_gid)) = (sudo_uid, sudo_gid) {
         if unsafe { libc::setgid(sudo_gid) } < 0 {
             return Err(io::Error::last_os_error()).context("Failed to setgid");
@@ -72,22 +83,25 @@ fn run() -> anyhow::Result<()> {
             return Err(io::Error::last_os_error()).context("Failed to setuid");
         }
     }
+    Ok(())
+}
 
+fn setup_and_start_vm(config: &Config, disk_fd_path: &str) -> anyhow::Result<()> {
     let ctx = unsafe { bindings::krun_create_ctx() }.context("Failed to create context")?;
 
     // unsafe { bindings::krun_set_log_level(3) }.context("Failed to set log level")?;
 
     unsafe { bindings::krun_set_vm_config(ctx, 1, 512) }.context("Failed to set VM config")?;
 
-    unsafe { bindings::krun_set_root(ctx, CString::from_path(root_path).as_ptr()) }
+    unsafe { bindings::krun_set_root(ctx, CString::from_path(&config.root_path).as_ptr()) }
         .context("Failed to set root")?;
 
     unsafe {
         bindings::krun_add_disk(
             ctx,
             CString::new("data").unwrap().as_ptr(),
-            CString::new(disk_fd).unwrap().as_ptr(),
-            read_only,
+            CString::new(disk_fd_path).unwrap().as_ptr(),
+            config.read_only,
         )
     }
     .context("Failed to add disk")?;
@@ -129,6 +143,128 @@ fn run() -> anyhow::Result<()> {
         .context("Failed to set exec")?;
 
     unsafe { bindings::krun_start_enter(ctx) }.context("Failed to start VM")?;
+
+    Ok(())
+}
+
+fn gvproxy_cleanup() -> anyhow::Result<()> {
+    match remove_file("/tmp/vfkit.sock-krun.sock") {
+        Ok(_) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e).context("Failed to remove vfkit socket"),
+    }
+    match remove_file("/tmp/vfkit.sock") {
+        Ok(_) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e).context("Failed to remove vfkit socket"),
+    }
+    Ok(())
+}
+
+fn start_gvproxy() -> anyhow::Result<Child> {
+    gvproxy_cleanup()?;
+
+    let gvproxy_path = "/opt/homebrew/Cellar/podman/5.4.0/libexec/podman/gvproxy";
+    let gvproxy_args = [
+        "--listen",
+        "unix:///tmp/network.sock",
+        "--listen-vfkit",
+        "unixgram:///tmp/vfkit.sock",
+    ];
+
+    let gvproxy_process = Command::new(gvproxy_path)
+        .args(&gvproxy_args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("Failed to start gvproxy process")?;
+
+    Ok(gvproxy_process)
+}
+
+fn get_fd_path(disk_file: &File) -> anyhow::Result<String> {
+    let disk_fd = disk_file.as_raw_fd();
+    let disk_fd_path = format!("/dev/fd/{}", disk_fd);
+    println!("disk_fd_path: {}", &disk_fd_path);
+
+    // Set O_CLOEXEC on the disk file descriptor
+    let flags = unsafe { libc::fcntl(disk_fd, libc::F_GETFD) };
+    if flags < 0 {
+        return Err(io::Error::last_os_error()).context("Failed to get file descriptor flags");
+    }
+    if unsafe { libc::fcntl(disk_fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0 {
+        return Err(io::Error::last_os_error())
+            .context("Failed to set O_CLOEXEC on file descriptor");
+    }
+
+    Ok(disk_fd_path)
+}
+
+fn run() -> anyhow::Result<()> {
+    // println!("uid = {}", unsafe { libc::getuid() });
+    // println!("gid = {}", unsafe { libc::getgid() });
+
+    let config = load_config()?;
+
+    println!("disk_path: {}", config.disk_path);
+    println!("root_path: {}", config.root_path.to_string_lossy());
+
+    let disk_file = OpenOptions::new()
+        .read(true)
+        .write(!config.read_only)
+        .open(&config.disk_path)?;
+
+    let disk_fd_path = get_fd_path(&disk_file)?;
+
+    // drop privileges back to the original user if he used sudo
+    drop_privileges(config.sudo_uid, config.sudo_gid)?;
+
+    let mut gvproxy = start_gvproxy()?;
+    let gvproxy_pid = gvproxy.id();
+
+    let pid = unsafe { libc::fork() };
+    if pid < 0 {
+        return Err(io::Error::last_os_error()).context("Failed to fork process");
+    } else if pid == 0 {
+        if let Some(status) = gvproxy.try_wait().ok().flatten() {
+            println!(
+                "gvproxy exited with status: {}",
+                status
+                    .code()
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "unknown".to_string())
+            );
+            std::process::exit(1);
+        }
+        // Child process
+        setup_and_start_vm(&config, &disk_fd_path)?;
+    } else {
+        // Parent process
+        let mut status = 0;
+        if unsafe { libc::waitpid(pid, &mut status, 0) } < 0 {
+            return Err(io::Error::last_os_error()).context("Failed to wait for child process");
+        }
+        println!("libkrun VM exited with status: {}", status);
+
+        // Terminate gvproxy process
+        if unsafe { libc::kill(gvproxy_pid as libc::pid_t, libc::SIGTERM) } < 0 {
+            return Err(io::Error::last_os_error()).context("Failed to send SIGTERM to gvproxy");
+        }
+
+        // Wait for gvproxy process to exit
+        let gvproxy_status = gvproxy.wait_timeout(Duration::from_secs(5))?;
+        match gvproxy_status {
+            Some(status) => status.code(),
+            None => {
+                // Send SIGKILL to gvproxy process
+                println!("timeout reached, force killing gvproxy process");
+                gvproxy.kill()?;
+                gvproxy.wait()?.code()
+            }
+        }
+        .map(|s| println!("gvproxy exited with status: {}", s));
+        gvproxy_cleanup()?;
+    }
 
     Ok(())
 }
