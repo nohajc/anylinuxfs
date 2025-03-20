@@ -215,31 +215,14 @@ fn wait_for_port(port: u16) -> anyhow::Result<bool> {
 }
 
 fn mount_nfs(share_path: &str) -> anyhow::Result<()> {
-    let mount_path = Path::new("mnt");
-    if !mount_path.exists() {
-        std::fs::create_dir_all(mount_path)?;
-    }
-
-    let output = Command::new("mount")
-        .arg("-t")
-        .arg("nfs")
-        .arg(format!("localhost:{}", share_path))
-        .arg(mount_path)
-        .output()?;
-
-    if !output.status.success() {
-        return Err(anyhow::anyhow!(
-            "status {}",
-            output
-                .status
-                .code()
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| "unknown".to_string())
-        ));
-    }
-
-    // show in Finder (could be configurable)
-    Command::new("open").arg(mount_path).spawn()?;
+    let apple_script = format!(
+        "tell application \"Finder\" to open location \"nfs://localhost:{}\"",
+        share_path
+    );
+    Command::new("osascript")
+        .arg("-e")
+        .arg(apple_script)
+        .spawn()?;
     Ok(())
 }
 
