@@ -1,4 +1,5 @@
 use anyhow::Context;
+use std::net::{Ipv4Addr, SocketAddrV4, TcpStream};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 use std::{
@@ -91,7 +92,7 @@ fn setup_and_start_vm(config: &Config, disk_fd_path: &str) -> anyhow::Result<()>
 
     // unsafe { bindings::krun_set_log_level(3) }.context("Failed to set log level")?;
 
-    unsafe { bindings::krun_set_vm_config(ctx, 1, 512) }.context("Failed to set VM config")?;
+    unsafe { bindings::krun_set_vm_config(ctx, 2, 1024) }.context("Failed to set VM config")?;
 
     unsafe { bindings::krun_set_root(ctx, CString::from_path(&config.root_path).as_ptr()) }
         .context("Failed to set root")?;
@@ -130,8 +131,8 @@ fn setup_and_start_vm(config: &Config, disk_fd_path: &str) -> anyhow::Result<()>
     unsafe { bindings::krun_set_workdir(ctx, CString::new("/").unwrap().as_ptr()) }
         .context("Failed to set workdir")?;
 
-    // let args = vec![CString::new("/vmproxy").unwrap()];
-    let args = vec![CString::new("/bin/bash").unwrap()];
+    let args = vec![CString::new("/vmproxy").unwrap()];
+    // let args = vec![CString::new("/bin/bash").unwrap()];
     let argv = args
         .iter()
         .map(|s| s.as_ptr())
@@ -200,6 +201,48 @@ fn get_fd_path(disk_file: &File) -> anyhow::Result<String> {
     Ok(disk_fd_path)
 }
 
+fn wait_for_port(port: u16) -> anyhow::Result<bool> {
+    let addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, port);
+    for _ in 0..10 {
+        let result = TcpStream::connect_timeout(&addr.into(), Duration::from_secs(10)).is_ok();
+        if result {
+            return Ok(true);
+        }
+        std::thread::sleep(Duration::from_secs(1));
+    }
+
+    Ok(false)
+}
+
+fn mount_nfs(share_path: &str) -> anyhow::Result<()> {
+    let mount_path = Path::new("mnt");
+    if !mount_path.exists() {
+        std::fs::create_dir_all(mount_path)?;
+    }
+
+    let output = Command::new("mount")
+        .arg("-t")
+        .arg("nfs")
+        .arg(format!("localhost:{}", share_path))
+        .arg(mount_path)
+        .output()?;
+
+    if !output.status.success() {
+        return Err(anyhow::anyhow!(
+            "status {}",
+            output
+                .status
+                .code()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        ));
+    }
+
+    // show in Finder (could be configurable)
+    Command::new("open").arg(mount_path).spawn()?;
+    Ok(())
+}
+
 fn run() -> anyhow::Result<()> {
     // println!("uid = {}", unsafe { libc::getuid() });
     // println!("gid = {}", unsafe { libc::getgid() });
@@ -240,6 +283,17 @@ fn run() -> anyhow::Result<()> {
         setup_and_start_vm(&config, &disk_fd_path)?;
     } else {
         // Parent process
+        let is_open = wait_for_port(111).unwrap_or(false);
+        println!("Port 111 is open: {}", is_open);
+        // mount nfs share
+        // TODO: make this configurable
+        // we can even mount multiple nfs shares at once
+        let share_path = "/mnt/hostblk";
+        match mount_nfs(share_path) {
+            Ok(_) => println!("NFS share mounted successfully"),
+            Err(e) => eprintln!("Failed to mount NFS share: {:#}", e),
+        }
+
         let mut status = 0;
         if unsafe { libc::waitpid(pid, &mut status, 0) } < 0 {
             return Err(io::Error::last_os_error()).context("Failed to wait for child process");

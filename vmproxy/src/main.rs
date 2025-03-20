@@ -16,6 +16,18 @@ fn list_dir(dir: &str) {
     }
 }
 
+fn init_network() -> anyhow::Result<()> {
+    // TODO: execute the script commands directly
+    let mut hnd = Command::new("/bin/sh")
+        .arg("/init-network.sh")
+        .spawn()
+        .context("Failed to execute /init-network.sh")?;
+
+    hnd.wait()
+        .context("Failed to wait for /init-network.sh to finish")?;
+    Ok(())
+}
+
 fn main() -> anyhow::Result<()> {
     println!("Hello, world, from linux microVM!");
     println!("uid = {}", unsafe { libc::getuid() });
@@ -27,6 +39,8 @@ fn main() -> anyhow::Result<()> {
     // for (key, value) in kernel_cfg {
     //     println!("{} = {:?}", key, value);
     // }
+
+    init_network().context("Failed to initialize network")?;
 
     fs::create_dir_all("/mnt/hostblk").context("Failed to create directory '/mnt/hostblk'")?;
     println!("Directory '/mnt/hostblk' created successfully.");
