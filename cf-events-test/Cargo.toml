@@ -6,3 +6,4 @@ edition = "2024"
 [dependencies]
 objc2-core-foundation = "0.3.0"
 objc2-disk-arbitration = "0.3.0"
+url = "2.5.4"

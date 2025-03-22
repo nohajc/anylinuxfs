@@ -24,5 +24,11 @@ unsafe extern "C" {
         envp: *const *const c_char,
     ) -> i32;
     pub fn krun_set_env(ctx: u32, envp: *const *const c_char) -> i32;
+    pub fn krun_add_vsock_port2(
+        ctx_id: u32,
+        port: u32,
+        unix_sock_path: *const c_char,
+        listen: bool,
+    ) -> i32;
     pub fn krun_start_enter(ctx: u32) -> i32;
 }

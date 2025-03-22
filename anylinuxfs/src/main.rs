@@ -1,6 +1,19 @@
 use anyhow::Context;
+use objc2_core_foundation::{
+    CFDictionary, CFDictionaryGetValueIfPresent, CFRunLoopGetCurrent, CFRunLoopRun, CFRunLoopStop,
+    CFString, CFURL, CFURLGetString, kCFRunLoopDefaultMode,
+};
+use objc2_disk_arbitration::{
+    DADisk, DADiskCopyDescription, DARegisterDiskDisappearedCallback, DASessionCreate,
+    DASessionScheduleWithRunLoop, DAUnregisterCallback,
+};
+use std::ffi::c_void;
+use std::io::{Read, Write};
 use std::net::{Ipv4Addr, SocketAddrV4, TcpStream};
+use std::ops::Deref;
+use std::os::unix::net::UnixStream;
 use std::process::{Child, Command, Stdio};
+use std::ptr::{NonNull, null, null_mut};
 use std::time::Duration;
 use std::{
     env,
@@ -10,6 +23,7 @@ use std::{
     os::{fd::AsRawFd, unix::ffi::OsStrExt},
     path::{Path, PathBuf},
 };
+use url::Url;
 use wait_timeout::ChildExt;
 
 #[allow(unused)]
@@ -26,6 +40,7 @@ struct Config {
     disk_path: String,
     read_only: bool,
     root_path: PathBuf,
+    vsock_path: String,
     sudo_uid: Option<libc::uid_t>,
     sudo_gid: Option<libc::gid_t>,
 }
@@ -63,10 +78,13 @@ fn load_config() -> anyhow::Result<Config> {
         println!("sudo_gid = {}", sudo_gid);
     }
 
+    // TODO: randomized socket path
+    let vsock_path = "/tmp/anylinuxfs-vsock".to_owned();
     Ok(Config {
         disk_path,
         read_only,
         root_path,
+        vsock_path,
         sudo_uid,
         sudo_gid,
     })
@@ -128,6 +146,19 @@ fn setup_and_start_vm(config: &Config, disk_fd_path: &str) -> anyhow::Result<()>
     // unsafe { bindings::krun_set_port_map(ctx, port_map.as_ptr()) }
     //     .context("Failed to set port map")?;
 
+    // TODO: randomized socket path
+    vsock_cleanup(&config)?;
+
+    unsafe {
+        bindings::krun_add_vsock_port2(
+            ctx,
+            12700,
+            CString::new(config.vsock_path.as_str()).unwrap().as_ptr(),
+            true,
+        )
+    }
+    .context("Failed to add vsock port")?;
+
     unsafe { bindings::krun_set_workdir(ctx, CString::new("/").unwrap().as_ptr()) }
         .context("Failed to set workdir")?;
 
@@ -162,9 +193,19 @@ fn gvproxy_cleanup() -> anyhow::Result<()> {
     Ok(())
 }
 
+fn vsock_cleanup(config: &Config) -> anyhow::Result<()> {
+    match remove_file(&config.vsock_path) {
+        Ok(_) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e).context("Failed to remove vsock socket"),
+    }
+    Ok(())
+}
+
 fn start_gvproxy() -> anyhow::Result<Child> {
     gvproxy_cleanup()?;
 
+    // TODO: randomized socket paths
     let gvproxy_path = "/opt/homebrew/Cellar/podman/5.4.0/libexec/podman/gvproxy";
     let gvproxy_args = [
         "--listen",
@@ -226,6 +267,120 @@ fn mount_nfs(share_path: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+unsafe fn cfdict_get_value<'a, T>(dict: &'a CFDictionary, key: &str) -> Option<&'a T> {
+    let key = CFString::from_str(key);
+    let key_ptr: *const CFString = key.deref();
+    let mut value_ptr: *const c_void = null();
+    let key_found =
+        unsafe { CFDictionaryGetValueIfPresent(dict, key_ptr as *const c_void, &mut value_ptr) };
+
+    if !key_found {
+        return None;
+    }
+    unsafe { (value_ptr as *const T).as_ref() }
+}
+
+unsafe extern "C-unwind" fn disk_unmount_event(disk: NonNull<DADisk>, context: *mut c_void) {
+    let disk = unsafe { disk.as_ref() };
+    let mount_ctx = context as *const MountContext;
+    let share_name = unsafe { mount_ctx.as_ref().unwrap() }.share_name;
+
+    if let Some(descr) = unsafe { DADiskCopyDescription(disk) } {
+        // println!("Disk unmounted: {:?}", &descr);
+        // inspect_cf_dictionary_values(&descr);
+
+        let volume_path: Option<&CFURL> = unsafe { cfdict_get_value(&descr, "DAVolumePath") };
+        let volume_kind: Option<&CFString> = unsafe { cfdict_get_value(&descr, "DAVolumeKind") };
+
+        if let (Some(volume_path), Some(volume_kind)) = (volume_path, volume_kind) {
+            let volume_path = unsafe { CFURLGetString(volume_path).unwrap() }.to_string();
+            if let Ok(volume_url) = Url::parse(&volume_path) {
+                // println!("Volume path: {}", volume_url.path());
+                // println!("Volume kind: {}", &volume_kind);
+
+                let expected_share_path = format!("/Volumes/{share_name}/");
+                // println!("Expected share path: {}", &expected_share_path);
+
+                if volume_kind.to_string() == "nfs" && volume_url.path() == &expected_share_path {
+                    println!("Share {} was unmounted", &expected_share_path);
+                    unsafe { CFRunLoopStop(&CFRunLoopGetCurrent().unwrap()) };
+                }
+            }
+        }
+    }
+}
+
+struct MountContext<'a> {
+    share_name: &'a str,
+}
+
+fn wait_for_unmount(share_name: &str) -> anyhow::Result<()> {
+    let session = unsafe { DASessionCreate(None).unwrap() };
+    let mut mount_ctx = MountContext { share_name };
+    let mount_ctx_ptr = &mut mount_ctx as *mut MountContext;
+    unsafe {
+        DARegisterDiskDisappearedCallback(
+            &session,
+            None,
+            Some(disk_unmount_event),
+            mount_ctx_ptr as *mut c_void,
+        )
+    };
+
+    unsafe {
+        DASessionScheduleWithRunLoop(
+            &session,
+            &CFRunLoopGetCurrent().unwrap(),
+            kCFRunLoopDefaultMode.unwrap(),
+        )
+    };
+
+    unsafe { CFRunLoopRun() };
+
+    let callback_ptr = disk_unmount_event as *const c_void as *mut c_void;
+    let callback_nonnull: NonNull<c_void> = NonNull::new(callback_ptr).unwrap();
+    unsafe { DAUnregisterCallback(&session, callback_nonnull, null_mut()) };
+
+    Ok(())
+}
+
+fn send_quit_cmd(config: &Config) -> anyhow::Result<()> {
+    let mut stream = UnixStream::connect(&config.vsock_path)?;
+
+    stream.write_all(b"quit\n")?;
+    stream.flush()?;
+
+    // we don't care about the response contents
+    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+    let mut buf = [0; 1024];
+    let _ = stream.read(&mut buf)?;
+
+    Ok(())
+}
+
+fn terminate_child(child: &mut Child, child_name: &str) -> anyhow::Result<()> {
+    // Terminate child process
+    if unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) } < 0 {
+        return Err(io::Error::last_os_error())
+            .context(format!("Failed to send SIGTERM to {child_name}"));
+    }
+
+    // Wait for child process to exit
+    let child_status = child.wait_timeout(Duration::from_secs(5))?;
+    match child_status {
+        Some(status) => status.code(),
+        None => {
+            // Send SIGKILL to child process
+            println!("timeout reached, force killing {child_name} process");
+            child.kill()?;
+            child.wait()?.code()
+        }
+    }
+    .map(|s| println!("{} exited with status: {}", child_name, s));
+
+    Ok(())
+}
+
 fn run() -> anyhow::Result<()> {
     // println!("uid = {}", unsafe { libc::getuid() });
     // println!("gid = {}", unsafe { libc::getgid() });
@@ -246,7 +401,6 @@ fn run() -> anyhow::Result<()> {
     drop_privileges(config.sudo_uid, config.sudo_gid)?;
 
     let mut gvproxy = start_gvproxy()?;
-    let gvproxy_pid = gvproxy.id();
 
     let pid = unsafe { libc::fork() };
     if pid < 0 {
@@ -268,14 +422,23 @@ fn run() -> anyhow::Result<()> {
         // Parent process
         let is_open = wait_for_port(111).unwrap_or(false);
         println!("Port 111 is open: {}", is_open);
-        // mount nfs share
-        // TODO: make this configurable
-        // we can even mount multiple nfs shares at once
-        let share_path = "/mnt/hostblk";
-        match mount_nfs(share_path) {
-            Ok(_) => println!("NFS share mounted successfully"),
-            Err(e) => eprintln!("Failed to mount NFS share: {:#}", e),
+
+        if is_open {
+            // mount nfs share
+            // TODO: make this configurable
+            // we can even mount multiple nfs shares at once
+            let share_name = "hostblk";
+            let share_path = format!("/mnt/{share_name}");
+            match mount_nfs(&share_path) {
+                Ok(_) => println!("NFS share mounted successfully"),
+                Err(e) => eprintln!("Failed to mount NFS share: {:#}", e),
+            }
+
+            wait_for_unmount(share_name)?;
         }
+
+        send_quit_cmd(&config)?;
+        vsock_cleanup(&config)?;
 
         let mut status = 0;
         if unsafe { libc::waitpid(pid, &mut status, 0) } < 0 {
@@ -284,22 +447,7 @@ fn run() -> anyhow::Result<()> {
         println!("libkrun VM exited with status: {}", status);
 
         // Terminate gvproxy process
-        if unsafe { libc::kill(gvproxy_pid as libc::pid_t, libc::SIGTERM) } < 0 {
-            return Err(io::Error::last_os_error()).context("Failed to send SIGTERM to gvproxy");
-        }
-
-        // Wait for gvproxy process to exit
-        let gvproxy_status = gvproxy.wait_timeout(Duration::from_secs(5))?;
-        match gvproxy_status {
-            Some(status) => status.code(),
-            None => {
-                // Send SIGKILL to gvproxy process
-                println!("timeout reached, force killing gvproxy process");
-                gvproxy.kill()?;
-                gvproxy.wait()?.code()
-            }
-        }
-        .map(|s| println!("gvproxy exited with status: {}", s));
+        terminate_child(&mut gvproxy, "gvproxy")?;
         gvproxy_cleanup()?;
     }
 

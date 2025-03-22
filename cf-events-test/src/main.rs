@@ -12,6 +12,7 @@ use std::{
     ops::Deref,
     ptr::{NonNull, null, null_mut},
 };
+use url::Url;
 
 fn inspect_cf_dictionary_values(dict: &CFDictionary) {
     let count = unsafe { CFDictionaryGetCount(dict) } as usize;
@@ -57,15 +58,19 @@ unsafe extern "C-unwind" fn disk_unmount_event(disk: NonNull<DADisk>, _context: 
         let volume_kind: Option<&CFString> = unsafe { cfdict_get_value(&descr, "DAVolumeKind") };
 
         if let Some(volume_path) = volume_path {
-            let volume_path = unsafe { CFURLGetString(volume_path).unwrap() };
-            println!("Volume path: {}", &volume_path);
+            let volume_path = unsafe { CFURLGetString(volume_path).unwrap() }.to_string();
+            if let Ok(volume_url) = Url::parse(&volume_path) {
+                println!("Volume path: {}", volume_url.path());
+            }
         }
 
         if let Some(volume_kind) = volume_kind {
             println!("Volume kind: {}", &volume_kind);
-        }
 
-        unsafe { CFRunLoopStop(&CFRunLoopGetCurrent().unwrap()) };
+            if volume_kind.to_string() == "nfs" {
+                unsafe { CFRunLoopStop(&CFRunLoopGetCurrent().unwrap()) };
+            }
+        }
     }
 }
 

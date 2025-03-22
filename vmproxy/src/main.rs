@@ -1,7 +1,10 @@
 use anyhow::Context;
-use std::fs;
+use libc::VMADDR_CID_ANY;
+use std::io::{self, BufRead, Write};
 use std::process::Command;
+use std::{fs, io::BufReader};
 use sys_mount::{FilesystemType, Mount, MountFlags, SupportedFilesystems};
+use vsock::{VsockAddr, VsockListener};
 
 fn list_dir(dir: &str) {
     match fs::read_dir(dir) {
@@ -28,6 +31,30 @@ fn init_network() -> anyhow::Result<()> {
     Ok(())
 }
 
+fn wait_for_quit_cmd() -> anyhow::Result<()> {
+    let addr = VsockAddr::new(VMADDR_CID_ANY, 12700);
+    let listener = VsockListener::bind(&addr)?;
+
+    'srv_loop: for stream in listener.incoming() {
+        let mut stream = stream?;
+        let reader = BufReader::new(stream.try_clone()?);
+
+        for ln in reader.lines() {
+            let cmd = ln?;
+            println!("Received command: '{}'", cmd);
+            if cmd == "quit" {
+                println!("Exiting...");
+                stream.write(b"ok\n")?;
+                stream.flush()?;
+                break 'srv_loop;
+            }
+            stream.write(b"unknown\n")?;
+            stream.flush()?;
+        }
+    }
+    Ok(())
+}
+
 fn main() -> anyhow::Result<()> {
     println!("Hello, world, from linux microVM!");
     println!("uid = {}", unsafe { libc::getuid() });
@@ -42,8 +69,12 @@ fn main() -> anyhow::Result<()> {
 
     init_network().context("Failed to initialize network")?;
 
-    fs::create_dir_all("/mnt/hostblk").context("Failed to create directory '/mnt/hostblk'")?;
-    println!("Directory '/mnt/hostblk' created successfully.");
+    // TODO: take from command line
+    let mount_point = "/mnt/hostblk";
+
+    fs::create_dir_all(mount_point)
+        .context(format!("Failed to create directory '{mount_point}'"))?;
+    println!("Directory '{mount_point}' created successfully.");
 
     let supported_fs =
         SupportedFilesystems::new().context("Failed to get supported filesystems")?;
@@ -59,15 +90,15 @@ fn main() -> anyhow::Result<()> {
     let result = Mount::builder()
         .fstype(FilesystemType::from(&supported_fs))
         .flags(MountFlags::RDONLY)
-        .mount("/dev/vda", "/mnt/hostblk")
-        .context("Failed to mount '/dev/vda' on '/mnt/hostblk'")?;
+        .mount("/dev/vda", mount_point)
+        .context(format!("Failed to mount '/dev/vda' on '{mount_point}'"))?;
 
     println!(
-        "'/dev/vda' mounted successfully on '/mnt/hostblk', recognized as {}.",
+        "'/dev/vda' mounted successfully on '{mount_point}', recognized as {}.",
         result.get_fstype()
     );
 
-    list_dir("/mnt/hostblk");
+    list_dir(mount_point);
 
     let mut hnd = Command::new("/usr/local/bin/entrypoint.sh")
         // .env("NFS_VERSION", "3")
@@ -75,6 +106,12 @@ fn main() -> anyhow::Result<()> {
         .spawn()
         .context("Failed to execute /usr/local/bin/entrypoint.sh")?;
 
+    wait_for_quit_cmd()?;
+
+    // TODO: we should also wait with timeout and SIGKILL if necessary
+    if unsafe { libc::kill(hnd.id() as i32, libc::SIGTERM) } < 0 {
+        return Err(io::Error::last_os_error()).context(format!("Failed to send SIGTERM"));
+    }
     hnd.wait()
         .context("Failed to wait for /usr/local/bin/entrypoint.sh to finish")?;
     Ok(())
