@@ -52,7 +52,7 @@ unsafe extern "C-unwind" fn disk_unmount_event(disk: NonNull<DADisk>, _context: 
     let disk = unsafe { disk.as_ref() };
     if let Some(descr) = unsafe { DADiskCopyDescription(disk) } {
         // println!("Disk unmounted: {:?}", &descr);
-        // inspect_cf_dictionary_values(&descr);
+        inspect_cf_dictionary_values(&descr);
 
         let volume_path: Option<&CFURL> = unsafe { cfdict_get_value(&descr, "DAVolumePath") };
         let volume_kind: Option<&CFString> = unsafe { cfdict_get_value(&descr, "DAVolumeKind") };

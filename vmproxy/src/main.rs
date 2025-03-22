@@ -40,7 +40,9 @@ fn wait_for_quit_cmd() -> anyhow::Result<()> {
         let reader = BufReader::new(stream.try_clone()?);
 
         for ln in reader.lines() {
-            let cmd = ln?;
+            let Ok(cmd) = ln else {
+                break;
+            };
             println!("Received command: '{}'", cmd);
             if cmd == "quit" {
                 println!("Exiting...");
