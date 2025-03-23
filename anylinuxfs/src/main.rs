@@ -1,4 +1,5 @@
 use anyhow::Context;
+use nanoid::nanoid;
 use objc2_core_foundation::{
     CFDictionary, CFDictionaryGetValueIfPresent, CFRunLoopGetCurrent, CFRunLoopRun, CFRunLoopStop,
     CFString, CFURL, CFURLGetString, kCFRunLoopDefaultMode,
@@ -41,8 +42,21 @@ struct Config {
     read_only: bool,
     root_path: PathBuf,
     vsock_path: String,
+    vfkit_sock_path: String,
     sudo_uid: Option<libc::uid_t>,
     sudo_gid: Option<libc::gid_t>,
+}
+
+fn rand_string(len: usize) -> String {
+    nanoid!(
+        len,
+        &[
+            '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', 'a', 'b', 'c', 'd', 'e', 'f', 'g',
+            'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x',
+            'y', 'z', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O',
+            'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z',
+        ]
+    )
 }
 
 fn load_config() -> anyhow::Result<Config> {
@@ -78,13 +92,15 @@ fn load_config() -> anyhow::Result<Config> {
         println!("sudo_gid = {}", sudo_gid);
     }
 
-    // TODO: randomized socket path
-    let vsock_path = "/tmp/anylinuxfs-vsock".to_owned();
+    let vsock_path = format!("/tmp/anylinuxfs-{}-vsock", rand_string(8));
+    let vfkit_sock_path = format!("/tmp/vfkit-{}.sock", rand_string(8));
+
     Ok(Config {
         disk_path,
         read_only,
         root_path,
         vsock_path,
+        vfkit_sock_path,
         sudo_uid,
         sudo_gid,
     })
@@ -126,7 +142,12 @@ fn setup_and_start_vm(config: &Config, disk_fd_path: &str) -> anyhow::Result<()>
     .context("Failed to add disk")?;
 
     unsafe {
-        bindings::krun_set_gvproxy_path(ctx, CString::new("/tmp/vfkit.sock").unwrap().as_ptr())
+        bindings::krun_set_gvproxy_path(
+            ctx,
+            CString::new(config.vfkit_sock_path.as_str())
+                .unwrap()
+                .as_ptr(),
+        )
     }
     .context("Failed to set gvproxy path")?;
 
@@ -146,7 +167,6 @@ fn setup_and_start_vm(config: &Config, disk_fd_path: &str) -> anyhow::Result<()>
     // unsafe { bindings::krun_set_port_map(ctx, port_map.as_ptr()) }
     //     .context("Failed to set port map")?;
 
-    // TODO: randomized socket path
     vsock_cleanup(&config)?;
 
     unsafe {
@@ -179,13 +199,14 @@ fn setup_and_start_vm(config: &Config, disk_fd_path: &str) -> anyhow::Result<()>
     Ok(())
 }
 
-fn gvproxy_cleanup() -> anyhow::Result<()> {
-    match remove_file("/tmp/vfkit.sock-krun.sock") {
+fn gvproxy_cleanup(config: &Config) -> anyhow::Result<()> {
+    let sock_krun_path = config.vfkit_sock_path.replace(".sock", ".sock-krun.sock");
+    match remove_file(&sock_krun_path) {
         Ok(_) => {}
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
         Err(e) => return Err(e).context("Failed to remove vfkit socket"),
     }
-    match remove_file("/tmp/vfkit.sock") {
+    match remove_file(&config.vfkit_sock_path) {
         Ok(_) => {}
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
         Err(e) => return Err(e).context("Failed to remove vfkit socket"),
@@ -202,17 +223,13 @@ fn vsock_cleanup(config: &Config) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn start_gvproxy() -> anyhow::Result<Child> {
-    gvproxy_cleanup()?;
+fn start_gvproxy(config: &Config) -> anyhow::Result<Child> {
+    gvproxy_cleanup(config)?;
 
-    // TODO: randomized socket paths
+    let net_sock_uri = format!("unix:///tmp/network-{}.sock", rand_string(8));
+    let vfkit_sock_uri = format!("unixgram://{}", &config.vfkit_sock_path);
     let gvproxy_path = "/opt/homebrew/Cellar/podman/5.4.0/libexec/podman/gvproxy";
-    let gvproxy_args = [
-        "--listen",
-        "unix:///tmp/network.sock",
-        "--listen-vfkit",
-        "unixgram:///tmp/vfkit.sock",
-    ];
+    let gvproxy_args = ["--listen", &net_sock_uri, "--listen-vfkit", &vfkit_sock_uri];
 
     let gvproxy_process = Command::new(gvproxy_path)
         .args(&gvproxy_args)
@@ -400,7 +417,7 @@ fn run() -> anyhow::Result<()> {
     // drop privileges back to the original user if he used sudo
     drop_privileges(config.sudo_uid, config.sudo_gid)?;
 
-    let mut gvproxy = start_gvproxy()?;
+    let mut gvproxy = start_gvproxy(&config)?;
 
     let pid = unsafe { libc::fork() };
     if pid < 0 {
@@ -448,7 +465,7 @@ fn run() -> anyhow::Result<()> {
 
         // Terminate gvproxy process
         terminate_child(&mut gvproxy, "gvproxy")?;
-        gvproxy_cleanup()?;
+        gvproxy_cleanup(&config)?;
     }
 
     Ok(())
