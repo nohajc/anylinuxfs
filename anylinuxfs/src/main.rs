@@ -1,8 +1,8 @@
 use anyhow::Context;
 use nanoid::nanoid;
 use objc2_core_foundation::{
-    CFDictionary, CFDictionaryGetValueIfPresent, CFRunLoopGetCurrent, CFRunLoopRun, CFRunLoopStop,
-    CFString, CFURL, CFURLGetString, kCFRunLoopDefaultMode,
+    CFDictionary, CFDictionaryGetValueIfPresent, CFRetained, CFRunLoopGetCurrent, CFRunLoopRun,
+    CFRunLoopStop, CFString, CFURL, CFURLGetString, kCFRunLoopDefaultMode,
 };
 use objc2_disk_arbitration::{
     DADisk, DADiskCopyDescription, DARegisterDiskDisappearedCallback, DASessionCreate,
@@ -297,35 +297,103 @@ unsafe fn cfdict_get_value<'a, T>(dict: &'a CFDictionary, key: &str) -> Option<&
     unsafe { (value_ptr as *const T).as_ref() }
 }
 
+struct DaDiskArgs {
+    context: *mut c_void,
+    descr: Option<CFRetained<CFDictionary>>,
+}
+
+impl DaDiskArgs {
+    fn new(disk: NonNull<DADisk>, context: *mut c_void) -> Self {
+        let descr = unsafe { DADiskCopyDescription(disk.as_ref()) };
+        Self { context, descr }
+    }
+
+    fn mount_context(&self) -> &MountContext {
+        unsafe { (self.context as *const MountContext).as_ref().unwrap() }
+    }
+
+    fn share_name(&self) -> &str {
+        self.mount_context().share_name
+    }
+
+    fn descr(&self) -> Option<&CFDictionary> {
+        self.descr.as_ref().map(|d| d.deref())
+    }
+
+    fn volume_path(&self) -> Option<String> {
+        let volume_path: Option<&CFURL> =
+            unsafe { cfdict_get_value(self.descr()?, "DAVolumePath") };
+        volume_path
+            .map(|url| unsafe { CFURLGetString(url).unwrap() }.to_string())
+            .and_then(|url_str| Url::parse(&url_str).ok())
+            .map(|url| url.path().to_string())
+    }
+
+    fn volume_kind(&self) -> Option<String> {
+        let volume_kind: Option<&CFString> =
+            unsafe { cfdict_get_value(self.descr()?, "DAVolumeKind") };
+        volume_kind.map(|kind| kind.to_string())
+    }
+}
+
 unsafe extern "C-unwind" fn disk_unmount_event(disk: NonNull<DADisk>, context: *mut c_void) {
-    let disk = unsafe { disk.as_ref() };
-    let mount_ctx = context as *const MountContext;
-    let share_name = unsafe { mount_ctx.as_ref().unwrap() }.share_name;
+    let args = DaDiskArgs::new(disk, context);
 
-    if let Some(descr) = unsafe { DADiskCopyDescription(disk) } {
-        // println!("Disk unmounted: {:?}", &descr);
-        // inspect_cf_dictionary_values(&descr);
-
-        let volume_path: Option<&CFURL> = unsafe { cfdict_get_value(&descr, "DAVolumePath") };
-        let volume_kind: Option<&CFString> = unsafe { cfdict_get_value(&descr, "DAVolumeKind") };
-
-        if let (Some(volume_path), Some(volume_kind)) = (volume_path, volume_kind) {
-            let volume_path = unsafe { CFURLGetString(volume_path).unwrap() }.to_string();
-            if let Ok(volume_url) = Url::parse(&volume_path) {
-                // println!("Volume path: {}", volume_url.path());
-                // println!("Volume kind: {}", &volume_kind);
-
-                let expected_share_path = format!("/Volumes/{share_name}/");
-                // println!("Expected share path: {}", &expected_share_path);
-
-                if volume_kind.to_string() == "nfs" && volume_url.path() == &expected_share_path {
-                    println!("Share {} was unmounted", &expected_share_path);
-                    unsafe { CFRunLoopStop(&CFRunLoopGetCurrent().unwrap()) };
-                }
-            }
+    if let (Some(volume_path), Some(volume_kind)) = (args.volume_path(), args.volume_kind()) {
+        let expected_share_path = format!("/Volumes/{}/", args.share_name());
+        if volume_kind == "nfs" && volume_path == expected_share_path {
+            println!("Share {} was unmounted", &expected_share_path);
+            unsafe { CFRunLoopStop(&CFRunLoopGetCurrent().unwrap()) };
         }
     }
 }
+
+// unsafe extern "C-unwind" fn disk_unmount_approval(
+//     disk: NonNull<DADisk>,
+//     context: *mut c_void,
+// ) -> *const DADissenter {
+//     let args = DaDiskArgs::new(disk, context);
+//     if let Some(descr) = args.descr() {
+//         inspect_cf_dictionary_values(descr);
+//     }
+//     if let (Some(volume_path), Some(volume_kind)) = (args.volume_path(), args.volume_kind()) {
+//         let expected_share_path = format!("/Volumes/{}/", args.share_name());
+//         if volume_kind == "nfs" && volume_path == expected_share_path {
+//             println!("Approve unmount of {}? [y/n]", &expected_share_path);
+//             let mut input = String::new();
+//             io::stdin().read_line(&mut input).unwrap();
+//             if input.trim() == "y" {
+//                 return null();
+//             }
+//         }
+//     }
+//     let msg = CFString::from_str("custom error message");
+//     let result = unsafe { DADissenterCreate(None, kDAReturnBusy, Some(&msg)) };
+//     msg.retain();
+//     result.retain();
+//     result.deref()
+// }
+
+// fn inspect_cf_dictionary_values(dict: &CFDictionary) {
+//     let count = unsafe { CFDictionaryGetCount(dict) } as usize;
+//     let mut keys: Vec<*const c_void> = vec![null(); count];
+//     let mut values: Vec<*const c_void> = vec![null(); count];
+
+//     unsafe { CFDictionaryGetKeysAndValues(dict, keys.as_mut_ptr(), values.as_mut_ptr()) };
+
+//     for i in 0..count {
+//         let value = values[i] as *const CFType;
+//         let type_id = unsafe { CFGetTypeID(value.as_ref()) };
+//         let type_name = CFCopyTypeIDDescription(type_id).unwrap();
+//         let key_str = keys[i] as *const CFString;
+
+//         println!(
+//             "Key: {}, Type: {}",
+//             unsafe { key_str.as_ref().unwrap() },
+//             &type_name,
+//         );
+//     }
+// }
 
 struct MountContext<'a> {
     share_name: &'a str,
@@ -343,6 +411,15 @@ fn wait_for_unmount(share_name: &str) -> anyhow::Result<()> {
             mount_ctx_ptr as *mut c_void,
         )
     };
+
+    // unsafe {
+    //     DARegisterDiskEjectApprovalCallback(
+    //         &session,
+    //         None,
+    //         Some(disk_unmount_approval),
+    //         mount_ctx_ptr as *mut c_void,
+    //     )
+    // }
 
     unsafe {
         DASessionScheduleWithRunLoop(

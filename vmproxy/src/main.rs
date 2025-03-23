@@ -2,11 +2,12 @@ use anyhow::Context;
 use libc::VMADDR_CID_ANY;
 use std::io::{self, BufRead, Write};
 use std::process::Command;
+use std::time::Duration;
 use std::{fs, io::BufReader};
-use sys_mount::{FilesystemType, Mount, MountFlags, SupportedFilesystems};
+use sys_mount::{FilesystemType, Mount, MountFlags, SupportedFilesystems, Unmount, UnmountFlags};
 use vsock::{VsockAddr, VsockListener};
 
-fn list_dir(dir: &str) {
+fn _list_dir(dir: &str) {
     match fs::read_dir(dir) {
         Ok(entries) => {
             for entry in entries {
@@ -35,20 +36,17 @@ fn wait_for_quit_cmd() -> anyhow::Result<()> {
     let addr = VsockAddr::new(VMADDR_CID_ANY, 12700);
     let listener = VsockListener::bind(&addr)?;
 
-    'srv_loop: for stream in listener.incoming() {
+    for stream in listener.incoming() {
         let mut stream = stream?;
-        let reader = BufReader::new(stream.try_clone()?);
-
-        for ln in reader.lines() {
-            let Ok(cmd) = ln else {
-                break;
-            };
-            println!("Received command: '{}'", cmd);
-            if cmd == "quit" {
+        let mut reader = BufReader::new(stream.try_clone()?);
+        let mut cmd = String::new();
+        if reader.read_line(&mut cmd).is_ok() {
+            println!("Received command: '{}'", cmd.trim());
+            if cmd == "quit\n" {
                 println!("Exiting...");
                 stream.write(b"ok\n")?;
                 stream.flush()?;
-                break 'srv_loop;
+                break;
             }
             stream.write(b"unknown\n")?;
             stream.flush()?;
@@ -89,7 +87,7 @@ fn main() -> anyhow::Result<()> {
     //     println!("Supported nodev filesystem: {:?}", fs);
     // }
 
-    let result = Mount::builder()
+    let mounted = Mount::builder()
         .fstype(FilesystemType::from(&supported_fs))
         .flags(MountFlags::RDONLY)
         .mount("/dev/vda", mount_point)
@@ -97,10 +95,10 @@ fn main() -> anyhow::Result<()> {
 
     println!(
         "'/dev/vda' mounted successfully on '{mount_point}', recognized as {}.",
-        result.get_fstype()
+        mounted.get_fstype()
     );
 
-    list_dir(mount_point);
+    // list_dir(mount_point);
 
     let mut hnd = Command::new("/usr/local/bin/entrypoint.sh")
         // .env("NFS_VERSION", "3")
@@ -116,5 +114,13 @@ fn main() -> anyhow::Result<()> {
     }
     hnd.wait()
         .context("Failed to wait for /usr/local/bin/entrypoint.sh to finish")?;
+
+    let mut backoff = Duration::from_secs(1);
+    while let Err(e) = mounted.unmount(UnmountFlags::empty()) {
+        eprintln!("Failed to unmount '{mount_point}': {}", e);
+        std::thread::sleep(backoff);
+        backoff = std::cmp::min(backoff * 2, Duration::from_secs(32));
+    }
+    println!("Unmounted '{mount_point}' successfully.");
     Ok(())
 }
