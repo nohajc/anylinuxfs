@@ -1,4 +1,5 @@
 use anyhow::Context;
+use clap::Parser;
 use devinfo::DevInfo;
 use nanoid::nanoid;
 use objc2_core_foundation::{
@@ -47,6 +48,7 @@ struct Config {
     vfkit_sock_path: String,
     sudo_uid: Option<libc::uid_t>,
     sudo_gid: Option<libc::gid_t>,
+    mount_options: Option<String>,
 }
 
 fn rand_string(len: usize) -> String {
@@ -61,15 +63,22 @@ fn rand_string(len: usize) -> String {
     )
 }
 
+#[derive(Parser)]
+#[command(version, about, long_about = None)]
+struct Cli {
+    disk_path: String,
+    #[arg(short, long)]
+    options: Option<String>,
+}
+
 fn load_config() -> anyhow::Result<Config> {
-    let args: Vec<String> = env::args().collect();
-    let disk_path = if args.len() > 1 {
-        args[1].as_str()
+    let cli = Cli::parse();
+    let (disk_path, mount_options) = if !cli.disk_path.is_empty() {
+        (cli.disk_path, cli.options)
     } else {
         eprintln!("No disk path provided");
         std::process::exit(1);
-    }
-    .to_owned();
+    };
 
     let read_only = true; // TODO: make this configurable
     let root_path = env::current_exe()
@@ -105,6 +114,7 @@ fn load_config() -> anyhow::Result<Config> {
         vfkit_sock_path,
         sudo_uid,
         sudo_gid,
+        mount_options,
     })
 }
 
@@ -188,10 +198,21 @@ fn setup_and_start_vm(
     unsafe { bindings::krun_set_workdir(ctx, CString::new("/").unwrap().as_ptr()) }
         .context("Failed to set workdir")?;
 
-    let args = vec![
+    let args: Vec<_> = [
         CString::new("/vmproxy").unwrap(),
         CString::new(dev_info.auto_mount_name()).unwrap(),
-    ];
+        CString::new(dev_info.fs_type().unwrap_or("auto")).unwrap(),
+    ]
+    .into_iter()
+    .chain(
+        config
+            .mount_options
+            .as_deref()
+            .into_iter()
+            .map(|s| CString::new(s).unwrap()),
+    )
+    .collect();
+
     // let args = vec![CString::new("/bin/bash").unwrap()];
     let argv = args
         .iter()

@@ -1,11 +1,11 @@
-use anyhow::Context;
+use anyhow::{Context, anyhow};
 use libc::VMADDR_CID_ANY;
 use std::env;
 use std::io::{self, BufRead, Write};
 use std::process::Command;
 use std::time::Duration;
 use std::{fs, io::BufReader};
-use sys_mount::{FilesystemType, Mount, MountFlags, SupportedFilesystems, Unmount, UnmountFlags};
+use sys_mount::{UnmountFlags, unmount};
 use vsock::{VsockAddr, VsockListener};
 
 fn _list_dir(dir: &str) {
@@ -75,12 +75,15 @@ fn main() -> anyhow::Result<()> {
         env::args().nth(1).unwrap_or("hostblk".to_owned())
     );
 
+    let fs_type = env::args().nth(2);
+    let mount_options = env::args().nth(3);
+
     fs::create_dir_all(&mount_point)
         .context(format!("Failed to create directory '{}'", &mount_point))?;
     println!("Directory '{}' created successfully.", &mount_point);
 
-    let supported_fs =
-        SupportedFilesystems::new().context("Failed to get supported filesystems")?;
+    // let supported_fs =
+    //     SupportedFilesystems::new().context("Failed to get supported filesystems")?;
 
     // for fs in supported_fs.dev_file_systems() {
     //     println!("Supported filesystem: {:?}", fs);
@@ -90,16 +93,52 @@ fn main() -> anyhow::Result<()> {
     //     println!("Supported nodev filesystem: {:?}", fs);
     // }
 
-    let mounted = Mount::builder()
-        .fstype(FilesystemType::from(&supported_fs))
-        .flags(MountFlags::RDONLY)
-        .mount("/dev/vda", &mount_point)
-        .context(format!("Failed to mount '/dev/vda' on '{}'", &mount_point))?;
+    // let mounted = Mount::builder()
+    //     .fstype(FilesystemType::from(&supported_fs))
+    //     .flags(MountFlags::RDONLY)
+    //     // .data(data)
+    //     .mount("/dev/vda", &mount_point)
+    //     .context(format!("Failed to mount '/dev/vda' on '{}'", &mount_point))?;
+
+    let mnt_args = [
+        "-t",
+        fs_type.as_deref().unwrap_or("auto"),
+        "/dev/vda",
+        &mount_point,
+    ]
+    .into_iter()
+    .chain(
+        mount_options
+            .as_deref()
+            .into_iter()
+            .flat_map(|opts| ["-o", opts]),
+    );
+
+    let mnt_args: Vec<&str> = mnt_args.collect();
+    println!("mount args: {:?}", &mnt_args);
+
+    let mut mnt_cmd = Command::new("/bin/mount")
+        .args(mnt_args)
+        .spawn()
+        .context("Failed to run mount command")?;
+
+    let mnt_result = mnt_cmd.wait().context("Failed to wait for mount command")?;
+    if !mnt_result.success() {
+        return Err(anyhow!(
+            "Mounting {} on {} failed with error code {}",
+            "/dev/vda",
+            &mount_point,
+            mnt_result
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or("unknown".to_owned())
+        ));
+    }
 
     println!(
-        "'/dev/vda' mounted successfully on '{}', recognized as {}.",
+        "'/dev/vda' mounted successfully on '{}', filesystem {}.",
         &mount_point,
-        mounted.get_fstype()
+        fs_type.unwrap_or("unknown".to_owned())
     );
 
     // list_dir(mount_point);
@@ -128,8 +167,8 @@ fn main() -> anyhow::Result<()> {
         .context("Failed to wait for /usr/local/bin/entrypoint.sh to finish")?;
 
     let mut backoff = Duration::from_secs(1);
-    while let Err(e) = mounted.unmount(UnmountFlags::empty()) {
-        eprintln!("Failed to unmount '{mount_point}': {}", e);
+    while let Err(e) = unmount(&mount_point, UnmountFlags::empty()) {
+        eprintln!("Failed to unmount '{}': {}", &mount_point, e);
         std::thread::sleep(backoff);
         backoff = std::cmp::min(backoff * 2, Duration::from_secs(32));
     }
