@@ -20,7 +20,6 @@ podman create --name "$IMAGE_NAME" "$IMAGE_NAME"
 podman export "$IMAGE_NAME" | tar xpf - -C "$ROOTFS_DIR"
 podman rm "$IMAGE_NAME"
 
-echo '/mnt/hostblk      *(ro,no_subtree_check,no_root_squash,insecure)' > "$ROOTFS_DIR/etc/exports"
 echo 'nameserver 192.168.1.111' > "$ROOTFS_DIR/etc/resolv.conf"
 
 cat << EOF > "$ROOTFS_DIR/init-network.sh"

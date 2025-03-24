@@ -11,3 +11,8 @@ objc2-core-foundation = "0.3.0"
 objc2-disk-arbitration = "0.3.0"
 url = "2.5.4"
 nanoid = "0.4.0"
+libblkid-rs = "0.4.0"
+
+[patch.crates-io]
+libblkid-rs = { git = 'https://github.com/nohajc/libblkid-rs.git' }
+#libblkid-rs = { path = '../../3rd-party/libblkid-rs' }

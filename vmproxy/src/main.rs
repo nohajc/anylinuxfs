@@ -1,5 +1,6 @@
 use anyhow::Context;
 use libc::VMADDR_CID_ANY;
+use std::env;
 use std::io::{self, BufRead, Write};
 use std::process::Command;
 use std::time::Duration;
@@ -57,8 +58,8 @@ fn wait_for_quit_cmd() -> anyhow::Result<()> {
 
 fn main() -> anyhow::Result<()> {
     println!("Hello, world, from linux microVM!");
-    println!("uid = {}", unsafe { libc::getuid() });
-    println!("gid = {}", unsafe { libc::getgid() });
+    // println!("uid = {}", unsafe { libc::getuid() });
+    // println!("gid = {}", unsafe { libc::getgid() });
     println!("");
 
     // let kernel_cfg = procfs::kernel_config()?;
@@ -69,12 +70,14 @@ fn main() -> anyhow::Result<()> {
 
     init_network().context("Failed to initialize network")?;
 
-    // TODO: take from command line
-    let mount_point = "/mnt/hostblk";
+    let mount_point = format!(
+        "/mnt/{}",
+        env::args().nth(1).unwrap_or("hostblk".to_owned())
+    );
 
-    fs::create_dir_all(mount_point)
-        .context(format!("Failed to create directory '{mount_point}'"))?;
-    println!("Directory '{mount_point}' created successfully.");
+    fs::create_dir_all(&mount_point)
+        .context(format!("Failed to create directory '{}'", &mount_point))?;
+    println!("Directory '{}' created successfully.", &mount_point);
 
     let supported_fs =
         SupportedFilesystems::new().context("Failed to get supported filesystems")?;
@@ -90,15 +93,24 @@ fn main() -> anyhow::Result<()> {
     let mounted = Mount::builder()
         .fstype(FilesystemType::from(&supported_fs))
         .flags(MountFlags::RDONLY)
-        .mount("/dev/vda", mount_point)
-        .context(format!("Failed to mount '/dev/vda' on '{mount_point}'"))?;
+        .mount("/dev/vda", &mount_point)
+        .context(format!("Failed to mount '/dev/vda' on '{}'", &mount_point))?;
 
     println!(
-        "'/dev/vda' mounted successfully on '{mount_point}', recognized as {}.",
+        "'/dev/vda' mounted successfully on '{}', recognized as {}.",
+        &mount_point,
         mounted.get_fstype()
     );
 
     // list_dir(mount_point);
+
+    let exports_content = format!(
+        "{}      *(ro,no_subtree_check,no_root_squash,insecure)\n",
+        &mount_point
+    );
+
+    fs::write("/etc/exports", exports_content).context("Failed to write to /etc/exports")?;
+    println!("Successfully initialized /etc/exports.");
 
     let mut hnd = Command::new("/usr/local/bin/entrypoint.sh")
         // .env("NFS_VERSION", "3")

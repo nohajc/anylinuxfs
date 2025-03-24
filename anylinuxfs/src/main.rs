@@ -1,4 +1,5 @@
 use anyhow::Context;
+use devinfo::DevInfo;
 use nanoid::nanoid;
 use objc2_core_foundation::{
     CFDictionary, CFDictionaryGetValueIfPresent, CFRetained, CFRunLoopGetCurrent, CFRunLoopRun,
@@ -29,6 +30,7 @@ use wait_timeout::ChildExt;
 
 #[allow(unused)]
 mod bindings;
+mod devinfo;
 
 fn main() {
     if let Err(e) = run() {
@@ -121,7 +123,11 @@ fn drop_privileges(
     Ok(())
 }
 
-fn setup_and_start_vm(config: &Config, disk_fd_path: &str) -> anyhow::Result<()> {
+fn setup_and_start_vm(
+    config: &Config,
+    disk_fd_path: &str,
+    dev_info: &DevInfo,
+) -> anyhow::Result<()> {
     let ctx = unsafe { bindings::krun_create_ctx() }.context("Failed to create context")?;
 
     // unsafe { bindings::krun_set_log_level(3) }.context("Failed to set log level")?;
@@ -182,7 +188,10 @@ fn setup_and_start_vm(config: &Config, disk_fd_path: &str) -> anyhow::Result<()>
     unsafe { bindings::krun_set_workdir(ctx, CString::new("/").unwrap().as_ptr()) }
         .context("Failed to set workdir")?;
 
-    let args = vec![CString::new("/vmproxy").unwrap()];
+    let args = vec![
+        CString::new("/vmproxy").unwrap(),
+        CString::new(dev_info.auto_mount_name()).unwrap(),
+    ];
     // let args = vec![CString::new("/bin/bash").unwrap()];
     let argv = args
         .iter()
@@ -481,13 +490,22 @@ fn run() -> anyhow::Result<()> {
 
     let config = load_config()?;
 
-    println!("disk_path: {}", config.disk_path);
+    // println!("disk_path: {}", config.disk_path);
     println!("root_path: {}", config.root_path.to_string_lossy());
+
+    let dev_info = DevInfo::new(&config.disk_path)?;
+
+    println!("disk: {}", dev_info.disk());
+    println!("rdisk: {}", dev_info.rdisk());
+    println!("label: {:?}", dev_info.label());
+    println!("fs_type: {:?}", dev_info.fs_type());
+    println!("uuid: {:?}", dev_info.uuid());
+    println!("mount name: {}", dev_info.auto_mount_name());
 
     let disk_file = OpenOptions::new()
         .read(true)
         .write(!config.read_only)
-        .open(&config.disk_path)?;
+        .open(dev_info.rdisk())?;
 
     let disk_fd_path = get_fd_path(&disk_file)?;
 
@@ -511,7 +529,7 @@ fn run() -> anyhow::Result<()> {
             std::process::exit(1);
         }
         // Child process
-        setup_and_start_vm(&config, &disk_fd_path)?;
+        setup_and_start_vm(&config, &disk_fd_path, &dev_info)?;
     } else {
         // Parent process
         let is_open = wait_for_port(111).unwrap_or(false);
@@ -519,9 +537,7 @@ fn run() -> anyhow::Result<()> {
 
         if is_open {
             // mount nfs share
-            // TODO: make this configurable
-            // we can even mount multiple nfs shares at once
-            let share_name = "hostblk";
+            let share_name = dev_info.auto_mount_name();
             let share_path = format!("/mnt/{share_name}");
             match mount_nfs(&share_path) {
                 Ok(_) => println!("NFS share mounted successfully"),
