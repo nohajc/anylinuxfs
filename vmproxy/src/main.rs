@@ -1,5 +1,6 @@
 use anyhow::{Context, anyhow};
 use libc::VMADDR_CID_ANY;
+use serde::Serialize;
 use std::env;
 use std::io::{self, BufRead, Write};
 use std::process::Command;
@@ -21,15 +22,69 @@ fn _list_dir(dir: &str) {
     }
 }
 
-fn init_network() -> anyhow::Result<()> {
-    // TODO: execute the script commands directly
-    let mut hnd = Command::new("/bin/sh")
-        .arg("/init-network.sh")
-        .spawn()
-        .context("Failed to execute /init-network.sh")?;
+#[derive(Serialize, Debug)]
+struct PortDef<'a> {
+    local: &'a str,
+    remote: &'a str,
+}
 
-    hnd.wait()
-        .context("Failed to wait for /init-network.sh to finish")?;
+const EXPOSE_PORT_SVC: &str = "http://192.168.127.1/services/forwarder/expose";
+
+fn expose_port(client: &reqwest::blocking::Client, port_def: &PortDef) -> anyhow::Result<()> {
+    client
+        .post(EXPOSE_PORT_SVC)
+        .json(port_def)
+        .send()
+        .and_then(|res| res.error_for_status())
+        .context(format!("Failed to expose port: {:?}", port_def))?;
+
+    Ok(())
+}
+
+fn init_network() -> anyhow::Result<()> {
+    fs::write("/etc/resolv.conf", "nameserver 192.168.127.1\n")
+        .context("Failed to write /etc/resolv.conf")?;
+
+    Command::new("/bin/sh")
+        .arg("-c")
+        .arg(
+            "ip addr add 192.168.127.2/24 dev eth0 \
+            && ip link set eth0 up \
+            && ip route add default via 192.168.127.1 dev eth0",
+        )
+        .status()
+        .context("Failed to configure network interface")?;
+
+    let client = reqwest::blocking::Client::new();
+    expose_port(
+        &client,
+        &PortDef {
+            local: ":111",
+            remote: "192.168.127.2:111",
+        },
+    )?;
+    expose_port(
+        &client,
+        &PortDef {
+            local: "127.0.0.1:2049",
+            remote: "192.168.127.2:2049",
+        },
+    )?;
+    expose_port(
+        &client,
+        &PortDef {
+            local: "127.0.0.1:32765",
+            remote: "192.168.127.2:32765",
+        },
+    )?;
+    expose_port(
+        &client,
+        &PortDef {
+            local: "127.0.0.1:32767",
+            remote: "192.168.127.2:32767",
+        },
+    )?;
+
     Ok(())
 }
 
@@ -117,12 +172,11 @@ fn main() -> anyhow::Result<()> {
     let mnt_args: Vec<&str> = mnt_args.collect();
     println!("mount args: {:?}", &mnt_args);
 
-    let mut mnt_cmd = Command::new("/bin/mount")
+    let mnt_result = Command::new("/bin/mount")
         .args(mnt_args)
-        .spawn()
+        .status()
         .context("Failed to run mount command")?;
 
-    let mnt_result = mnt_cmd.wait().context("Failed to wait for mount command")?;
     if !mnt_result.success() {
         return Err(anyhow!(
             "Mounting {} on {} failed with error code {}",
@@ -150,6 +204,21 @@ fn main() -> anyhow::Result<()> {
 
     fs::write("/etc/exports", exports_content).context("Failed to write to /etc/exports")?;
     println!("Successfully initialized /etc/exports.");
+
+    let curl_result = Command::new("curl")
+        .arg("ifconfig.co")
+        .status()
+        .context("Failed to execute curl to check internet connectivity")?;
+
+    if !curl_result.success() {
+        return Err(anyhow!(
+            "Curl command failed with error code {}",
+            curl_result
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or("unknown".to_owned())
+        ));
+    }
 
     let mut hnd = Command::new("/usr/local/bin/entrypoint.sh")
         // .env("NFS_VERSION", "3")

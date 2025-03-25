@@ -1,4 +1,4 @@
-use anyhow::Context;
+use anyhow::{Context, anyhow};
 use clap::Parser;
 use devinfo::DevInfo;
 use nanoid::nanoid;
@@ -199,6 +199,7 @@ fn setup_and_start_vm(
         .context("Failed to set workdir")?;
 
     let args: Vec<_> = [
+        // CString::new("/bin/bash").unwrap(),
         CString::new("/vmproxy").unwrap(),
         CString::new(dev_info.auto_mount_name()).unwrap(),
         CString::new(dev_info.fs_type().unwrap_or("auto")).unwrap(),
@@ -307,10 +308,20 @@ fn mount_nfs(share_path: &str) -> anyhow::Result<()> {
         "tell application \"Finder\" to open location \"nfs://localhost:{}\"",
         share_path
     );
-    Command::new("osascript")
+    let status = Command::new("osascript")
         .arg("-e")
         .arg(apple_script)
-        .spawn()?;
+        .status()?;
+
+    if !status.success() {
+        return Err(anyhow!(
+            "osascript failed with exit code {}",
+            status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or("unknown".to_owned())
+        ));
+    }
     Ok(())
 }
 
@@ -541,11 +552,11 @@ fn run() -> anyhow::Result<()> {
     } else if pid == 0 {
         if let Some(status) = gvproxy.try_wait().ok().flatten() {
             println!(
-                "gvproxy exited with status: {}",
+                "gvproxy failed with exit code: {}",
                 status
                     .code()
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|| "unknown".to_string())
+                    .map(|c| c.to_string())
+                    .unwrap_or("unknown".to_owned())
             );
             std::process::exit(1);
         }
@@ -554,9 +565,9 @@ fn run() -> anyhow::Result<()> {
     } else {
         // Parent process
         let is_open = wait_for_port(111).unwrap_or(false);
-        println!("Port 111 is open: {}", is_open);
 
         if is_open {
+            println!("Port 111 is open");
             // mount nfs share
             let share_name = dev_info.auto_mount_name();
             let share_path = format!("/mnt/{share_name}");
@@ -566,9 +577,11 @@ fn run() -> anyhow::Result<()> {
             }
 
             wait_for_unmount(share_name)?;
+            send_quit_cmd(&config)?;
+        } else {
+            println!("Port 111 is not open");
         }
 
-        send_quit_cmd(&config)?;
         vsock_cleanup(&config)?;
 
         let mut status = 0;
