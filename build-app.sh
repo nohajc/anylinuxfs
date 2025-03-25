@@ -12,6 +12,7 @@ fi
 
 cd "$SCRIPT_DIR"
 
+export PKG_CONFIG_PATH="/opt/homebrew/opt/util-linux/lib/pkgconfig"
 (cd "anylinuxfs" && cargo build $BUILD_ARGS)
 mkdir -p bin && cp "anylinuxfs/target/$BUILD_DIR/anylinuxfs" bin/
 
