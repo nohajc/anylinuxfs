@@ -21,12 +21,11 @@ error make_err(int err, const char* prefix) {
 
 struct krun_error : error {
     explicit krun_error(error e) : error(e) {}
-    // implicit conversion from int to krun_error
-    krun_error(int err, const char* prefix = "") : krun_error{make_err(err, prefix)} {}
+    explicit krun_error(int err, const char* prefix = "") : krun_error{make_err(err, prefix)} {}
 };
 
-bool is_error(const krun_error& err) {
-    return err.code != 0;
+bool is_error(int res) {
+    return res < 0;
 }
 
 error setup_and_start_vm(const char* root_path) {
