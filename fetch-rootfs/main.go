@@ -6,6 +6,8 @@ import (
 	"os"
 	"time"
 
+	"anylinuxfs/fetch-rootfs/vmrunner"
+
 	"github.com/containers/image/v5/copy"
 	"github.com/containers/image/v5/docker"
 	"github.com/containers/image/v5/oci/layout"
@@ -19,12 +21,20 @@ import (
 	"github.com/opencontainers/umoci/pkg/idtools"
 )
 
-func main() {
-	ctx := context.Background()
+var imageName = "alpine"
+var imagePath = fmt.Sprintf("%s/oci", imageName)
+var tag = "latest"
 
-	imageName := "alpine"
-	imagePath := fmt.Sprintf("%s/oci", imageName)
-	tag := "latest"
+var rootfsPath = fmt.Sprintf("%s/rootfs", imageName)
+
+func initRootfs() {
+	if _, err := os.Stat(imageName); err == nil {
+		err = os.RemoveAll(imageName)
+		if err != nil {
+			fmt.Printf("Error removing existing directory %s: %v\n", imageName, err)
+			os.Exit(1)
+		}
+	}
 
 	// Define source and destination
 	srcRef, err := docker.ParseReference(fmt.Sprintf("//%s:%s", imageName, tag))
@@ -56,6 +66,10 @@ func main() {
 		os.Exit(1)
 	}
 	defer policyCtx.Destroy()
+
+	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 
 	// Download image
 	_, err = copy.Image(ctx, policyCtx, destRef, srcRef, &copy.Options{
@@ -102,7 +116,52 @@ func main() {
 		os.Exit(1)
 	}
 
-	rootfsPath := fmt.Sprintf("%s/rootfs", imageName)
 	currentTime := time.Now()
 	_ = os.Chtimes(rootfsPath, currentTime, currentTime)
+
+	resolvConfPath := fmt.Sprintf("%s/etc/resolv.conf", rootfsPath)
+
+	resolvConfContent := "nameserver 1.1.1.1\n"
+	err = os.WriteFile(resolvConfPath, []byte(resolvConfContent), 0644)
+	if err != nil {
+		fmt.Printf("Error writing to resolv.conf: %v\n", err)
+		os.Exit(1)
+	}
+
+	nfsDirs := []string{
+		"/var/lib/nfs/rpc_pipefs",
+		"/var/lib/nfs/v4recovery",
+	}
+
+	for _, dir := range nfsDirs {
+		err := os.MkdirAll(fmt.Sprintf("%s%s", rootfsPath, dir), 0755)
+		if err != nil {
+			fmt.Printf("Error creating directory %s: %v\n", dir, err)
+			os.Exit(1)
+		}
+	}
+
+	fstabPath := fmt.Sprintf("%s/etc/fstab", rootfsPath)
+	fstabContent := `rpc_pipefs  /var/lib/nfs/rpc_pipefs  rpc_pipefs  defaults  0  0
+nfsd        /proc/fs/nfsd            nfsd        defaults  0  0
+`
+
+	err = os.WriteFile(fstabPath, []byte(fstabContent), 0644)
+	if err != nil {
+		fmt.Printf("Error writing to fstab: %v\n", err)
+		os.Exit(1)
+	}
+
+	// TODO: copy entrypoint.sh
+}
+
+func main() {
+	initRootfs()
+
+	// TODO: run `apk add nfs-utils` and then remove /etc/idmapd.conf and /etc/exports
+	err := vmrunner.Run(rootfsPath)
+	if err != nil {
+		fmt.Printf("Failed to run VM: %v\n", err)
+		os.Exit(1)
+	}
 }

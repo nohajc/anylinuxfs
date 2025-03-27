@@ -112,6 +112,7 @@ fn wait_for_quit_cmd() -> anyhow::Result<()> {
 }
 
 fn main() -> anyhow::Result<()> {
+    // TODO: remove
     println!("Hello, world, from linux microVM!");
     // println!("uid = {}", unsafe { libc::getuid() });
     // println!("gid = {}", unsafe { libc::getgid() });

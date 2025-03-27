@@ -15,8 +15,10 @@ cd "$SCRIPT_DIR"
 export PKG_CONFIG_PATH="/opt/homebrew/opt/util-linux/lib/pkgconfig"
 (cd "anylinuxfs" && cargo build $BUILD_ARGS)
 mkdir -p bin && cp "anylinuxfs/target/$BUILD_DIR/anylinuxfs" bin/
+codesign --entitlements "anylinuxfs.entitlements" --force -s - bin/anylinuxfs
+
+(cd "fetch-rootfs" && go build -o ../bin/)
+codesign --entitlements "anylinuxfs.entitlements" --force -s - bin/fetch-rootfs
 
 (cd "vmproxy" && cargo build $BUILD_ARGS)
 mkdir -p bin/vmroot && cp "vmproxy/target/aarch64-unknown-linux-musl/$BUILD_DIR/vmproxy" bin/vmroot/
-
-codesign --entitlements "anylinuxfs.entitlements" --force -s - bin/anylinuxfs
