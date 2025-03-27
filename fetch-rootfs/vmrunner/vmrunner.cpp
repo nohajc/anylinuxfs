@@ -9,7 +9,7 @@ extern "C" {
 #include "vmrunner.h"
 
 error success() {
-    return error{0, nullptr};
+    return error{0, nullptr, nullptr};
 }
 
 error make_err(int err, const char* prefix) {
