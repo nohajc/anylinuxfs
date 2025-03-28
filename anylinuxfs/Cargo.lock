@@ -416,7 +416,6 @@ checksum = "830d08ce1d1d941e6b30645f1a0eb5643013d835ce3779a5fc208261dbe10f55"
 [[package]]
 name = "libblkid-rs"
 version = "0.4.0"
-source = "git+https://github.com/nohajc/libblkid-rs.git#db38cdfdcd75e815dbfa4e16d21ffa2acb284cb5"
 dependencies = [
  "either",
  "libblkid-rs-sys",
@@ -427,7 +426,6 @@ dependencies = [
 [[package]]
 name = "libblkid-rs-sys"
 version = "0.3.1"
-source = "git+https://github.com/nohajc/libblkid-rs.git#db38cdfdcd75e815dbfa4e16d21ffa2acb284cb5"
 dependencies = [
  "bindgen",
  "cc",

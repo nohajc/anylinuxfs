@@ -15,5 +15,5 @@ libblkid-rs = "0.4.0"
 clap = { version = "4.5.32", features = ["derive"] }
 
 [patch.crates-io]
-libblkid-rs = { git = 'https://github.com/nohajc/libblkid-rs.git' }
-#libblkid-rs = { path = '../../3rd-party/libblkid-rs' }
+#libblkid-rs = { git = 'https://github.com/nohajc/libblkid-rs.git' }
+libblkid-rs = { path = '../../3rd-party/libblkid-rs' }

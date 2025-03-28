@@ -28,7 +28,7 @@ bool is_error(int res) {
     return res < 0;
 }
 
-error setup_and_start_vm(const char* root_path) {
+error setup_and_start_vm(const char* root_path, const char* script_path) {
     int ctx = krun_create_ctx();
     if (is_error(ctx)) {
         return krun_error{ctx, "configuration context error"};
@@ -50,7 +50,7 @@ error setup_and_start_vm(const char* root_path) {
     }
 
     const char *const envp[] = { nullptr };
-    const char *const argv[] = { "/bin/busybox", "sh", nullptr };
+    const char *const argv[] = { "/bin/busybox", "sh", script_path, nullptr };
 
     res = krun_set_exec(ctx, argv[0], &argv[1], envp);
     if (is_error(res)) {

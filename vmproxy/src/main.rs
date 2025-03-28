@@ -206,20 +206,20 @@ fn main() -> anyhow::Result<()> {
     fs::write("/etc/exports", exports_content).context("Failed to write to /etc/exports")?;
     println!("Successfully initialized /etc/exports.");
 
-    let curl_result = Command::new("curl")
-        .arg("ifconfig.co")
-        .status()
-        .context("Failed to execute curl to check internet connectivity")?;
+    // let curl_result = Command::new("curl")
+    //     .arg("ifconfig.co")
+    //     .status()
+    //     .context("Failed to execute curl to check internet connectivity")?;
 
-    if !curl_result.success() {
-        return Err(anyhow!(
-            "Curl command failed with error code {}",
-            curl_result
-                .code()
-                .map(|c| c.to_string())
-                .unwrap_or("unknown".to_owned())
-        ));
-    }
+    // if !curl_result.success() {
+    //     return Err(anyhow!(
+    //         "Curl command failed with error code {}",
+    //         curl_result
+    //             .code()
+    //             .map(|c| c.to_string())
+    //             .unwrap_or("unknown".to_owned())
+    //     ));
+    // }
 
     let mut hnd = Command::new("/usr/local/bin/entrypoint.sh")
         // .env("NFS_VERSION", "3")

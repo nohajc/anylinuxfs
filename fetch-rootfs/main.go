@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"time"
 
@@ -26,6 +28,7 @@ var imagePath = fmt.Sprintf("%s/oci", imageName)
 var tag = "latest"
 
 var rootfsPath = fmt.Sprintf("%s/rootfs", imageName)
+var vmSetupScriptPath = "/usr/local/bin/vm-setup.sh"
 
 func initRootfs() {
 	if _, err := os.Stat(imageName); err == nil {
@@ -152,14 +155,52 @@ nfsd        /proc/fs/nfsd            nfsd        defaults  0  0
 		os.Exit(1)
 	}
 
-	// TODO: copy entrypoint.sh
+	vmSetupScriptPath := fmt.Sprintf("%s%s", rootfsPath, vmSetupScriptPath)
+	vmSetupScriptContent := `#!/bin/sh
+
+apk --update --no-cache add nfs-utils
+rm -v /etc/idmapd.conf /etc/exports
+`
+
+	err = os.WriteFile(vmSetupScriptPath, []byte(vmSetupScriptContent), 0755)
+	if err != nil {
+		fmt.Printf("Error writing vm-setup.sh: %v\n", err)
+		os.Exit(1)
+	}
+
+	entrypointScriptURL := "https://raw.githubusercontent.com/nohajc/docker-nfs-server/refs/heads/develop/entrypoint.sh"
+	entrypointScriptPath := fmt.Sprintf("%s/usr/local/bin/entrypoint.sh", rootfsPath)
+
+	entrypointScriptFile, err := os.OpenFile(entrypointScriptPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
+	if err != nil {
+		fmt.Printf("Error creating entrypoint.sh: %v\n", err)
+		os.Exit(1)
+	}
+	defer entrypointScriptFile.Close()
+
+	resp, err := http.Get(entrypointScriptURL)
+	if err != nil {
+		fmt.Printf("Error downloading entrypoint.sh: %v\n", err)
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		fmt.Printf("Failed to download entrypoint.sh, status code: %d\n", resp.StatusCode)
+		os.Exit(1)
+	}
+
+	_, err = io.Copy(entrypointScriptFile, resp.Body)
+	if err != nil {
+		fmt.Printf("Error saving entrypoint.sh: %v\n", err)
+		os.Exit(1)
+	}
 }
 
 func main() {
 	initRootfs()
 
-	// TODO: run `apk add nfs-utils` and then remove /etc/idmapd.conf and /etc/exports
-	err := vmrunner.Run(rootfsPath)
+	err := vmrunner.Run(rootfsPath, vmSetupScriptPath)
 	if err != nil {
 		fmt.Printf("Failed to run VM: %v\n", err)
 		os.Exit(1)
