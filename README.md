@@ -1,2 +1,2 @@
 # anylinuxfs
-Mount any linux-supported filesystem read/write using macFUSE and libkrun
+Mount any linux-supported filesystem read/write using nfs and libkrun
