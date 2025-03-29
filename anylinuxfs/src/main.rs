@@ -45,6 +45,8 @@ struct Config {
     disk_path: String,
     read_only: bool,
     root_path: PathBuf,
+    kernel_path: String,
+    gvproxy_path: String,
     vsock_path: String,
     vfkit_sock_path: String,
     sudo_uid: Option<libc::uid_t>,
@@ -90,11 +92,19 @@ fn load_config() -> anyhow::Result<Config> {
     };
 
     let read_only = is_read_only_set(mount_options.as_deref());
+    // TODO: use root_path under user home
     let root_path = env::current_exe()
         .context("Failed to get current executable path")?
         .parent()
         .context("Failed to get executable directory")?
         .join("vmroot");
+
+    // TODO: use kernel_path under user home
+    let kernel_path =
+        "/Users/nohajan/gitprojs/3rd-party/libkrunfw/linux-6.6.59/arch/arm64/boot/Image".to_owned();
+
+    // TODO: use proper path
+    let gvproxy_path = "/opt/homebrew/opt/podman/libexec/podman/gvproxy".to_owned();
 
     let sudo_uid = env::var("SUDO_UID")
         .map_err(anyhow::Error::from)
@@ -119,6 +129,8 @@ fn load_config() -> anyhow::Result<Config> {
         disk_path,
         read_only,
         root_path,
+        kernel_path,
+        gvproxy_path,
         vsock_path,
         vfkit_sock_path,
         sudo_uid,
@@ -239,13 +251,10 @@ fn setup_and_start_vm(config: &Config, dev_info: &DevInfo) -> anyhow::Result<()>
     unsafe { bindings::krun_set_exec(ctx, argv[0], argv[1..].as_ptr(), envp.as_ptr()) }
         .context("Failed to set exec")?;
 
-    // TODO: set proper path
-    let kernel_path =
-        "/Users/nohajan/gitprojs/3rd-party/libkrunfw/linux-6.6.59/arch/arm64/boot/Image";
     unsafe {
         bindings::krun_set_kernel(
             ctx,
-            CString::new(kernel_path).unwrap().as_ptr(),
+            CString::new(config.kernel_path.as_str()).unwrap().as_ptr(),
             0, // KRUN_KERNEL_FORMAT_RAW
             null(),
             null(),
@@ -287,11 +296,9 @@ fn start_gvproxy(config: &Config) -> anyhow::Result<Child> {
 
     let net_sock_uri = format!("unix:///tmp/network-{}.sock", rand_string(8));
     let vfkit_sock_uri = format!("unixgram://{}", &config.vfkit_sock_path);
-    // TODO: set proper path
-    let gvproxy_path = "/opt/homebrew/opt/podman/libexec/podman/gvproxy";
     let gvproxy_args = ["--listen", &net_sock_uri, "--listen-vfkit", &vfkit_sock_uri];
 
-    let mut gvproxy_cmd = Command::new(gvproxy_path);
+    let mut gvproxy_cmd = Command::new(&config.gvproxy_path);
 
     gvproxy_cmd
         .args(&gvproxy_args)
