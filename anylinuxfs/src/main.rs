@@ -99,7 +99,7 @@ fn load_config() -> anyhow::Result<Config> {
         .context("Failed to get executable directory")?
         .join("vmroot");
 
-    // TODO: use kernel_path under user home
+    // TODO: use kernel_path under configured prefix
     let kernel_path =
         "/Users/nohajan/gitprojs/3rd-party/libkrunfw/linux-6.6.59/arch/arm64/boot/Image".to_owned();
 
