@@ -104,7 +104,10 @@ fn load_config() -> anyhow::Result<Config> {
         .context("Failed to get prefix directory")?;
 
     // TODO: use root_path under user home
-    let root_path = prefix_dir.join("vmroot");
+    let root_path = prefix_dir
+        .join("fetch-rootfs")
+        .join("alpine")
+        .join("rootfs");
 
     // TODO: use kernel_path under configured prefix
     let kernel_path =
@@ -164,7 +167,7 @@ fn drop_privileges(
 fn setup_and_start_vm(config: &Config, dev_info: &DevInfo) -> anyhow::Result<()> {
     let ctx = unsafe { bindings::krun_create_ctx() }.context("Failed to create context")?;
 
-    unsafe { bindings::krun_set_log_level(3) }.context("Failed to set log level")?;
+    // unsafe { bindings::krun_set_log_level(3) }.context("Failed to set log level")?;
 
     unsafe { bindings::krun_set_vm_config(ctx, 2, 1024) }.context("Failed to set VM config")?;
 

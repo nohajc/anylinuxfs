@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"time"
 
 	"anylinuxfs/fetch-rootfs/vmrunner"
@@ -158,7 +160,7 @@ nfsd        /proc/fs/nfsd            nfsd        defaults  0  0
 	vmSetupScriptPath := fmt.Sprintf("%s%s", rootfsPath, vmSetupScriptPath)
 	vmSetupScriptContent := `#!/bin/sh
 
-apk --update --no-cache add nfs-utils
+apk --update --no-cache add bash nfs-utils
 rm -v /etc/idmapd.conf /etc/exports
 `
 
@@ -193,6 +195,34 @@ rm -v /etc/idmapd.conf /etc/exports
 	_, err = io.Copy(entrypointScriptFile, resp.Body)
 	if err != nil {
 		fmt.Printf("Error saving entrypoint.sh: %v\n", err)
+		os.Exit(1)
+	}
+
+	execPath, err := os.Executable()
+	if err != nil {
+		fmt.Printf("Error getting executable path: %v\n", err)
+		os.Exit(1)
+	}
+	execPath, err = filepath.EvalSymlinks(execPath)
+	if err != nil {
+		fmt.Printf("Error resolving symlinks: %v\n", err)
+		os.Exit(1)
+	}
+	execDir := filepath.Dir(execPath)
+
+	prefixDir := filepath.Dir(execDir)
+	// fmt.Printf("Prefix directory: %s\n", prefixDir)
+
+	vmproxySrcPath := filepath.Join(prefixDir, "libexec", "vmproxy")
+	vmproxyDstPath := filepath.Join(rootfsPath, "vmproxy") // TODO: use vmroot under user home
+
+	copyCmd := exec.Command("cp", "-v", vmproxySrcPath, vmproxyDstPath)
+	copyCmd.Stdout = os.Stdout
+	copyCmd.Stderr = os.Stderr
+
+	copyCmd.Run()
+	if err != nil {
+		fmt.Printf("Error copying vmproxy: %v\n", err)
 		os.Exit(1)
 	}
 }
