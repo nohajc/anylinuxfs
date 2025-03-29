@@ -30,5 +30,7 @@ unsafe extern "C" {
         unix_sock_path: *const c_char,
         listen: bool,
     ) -> i32;
+    pub fn krun_setuid(ctx_id: u32, uid: libc::uid_t) -> i32;
+    pub fn krun_setgid(ctx_id: u32, gid: libc::gid_t) -> i32;
     pub fn krun_start_enter(ctx: u32) -> i32;
 }

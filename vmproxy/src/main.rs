@@ -111,6 +111,14 @@ fn wait_for_quit_cmd() -> anyhow::Result<()> {
     Ok(())
 }
 
+fn is_read_only_set(mount_options: Option<&str>) -> bool {
+    if let Some(options) = mount_options {
+        options.split(',').any(|opt| opt == "ro")
+    } else {
+        false
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     // TODO: remove
     println!("Hello, world, from linux microVM!");
@@ -198,9 +206,15 @@ fn main() -> anyhow::Result<()> {
 
     // list_dir(mount_point);
 
+    let mode = if is_read_only_set(mount_options.as_deref()) {
+        "ro"
+    } else {
+        "rw"
+    };
+
     let exports_content = format!(
-        "{}      *(ro,no_subtree_check,no_root_squash,insecure)\n",
-        &mount_point
+        "{}      *({},no_subtree_check,no_root_squash,insecure)\n",
+        &mount_point, mode,
     );
 
     fs::write("/etc/exports", exports_content).context("Failed to write to /etc/exports")?;

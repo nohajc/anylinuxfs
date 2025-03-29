@@ -15,15 +15,16 @@ use std::io::{Read, Write};
 use std::net::{Ipv4Addr, SocketAddrV4, TcpStream};
 use std::ops::Deref;
 use std::os::unix::net::UnixStream;
+use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 use std::ptr::{NonNull, null, null_mut};
 use std::time::Duration;
 use std::{
     env,
     ffi::CString,
-    fs::{File, OpenOptions, remove_file},
+    fs::remove_file,
     io,
-    os::{fd::AsRawFd, unix::ffi::OsStrExt},
+    os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
 };
 use url::Url;
@@ -71,6 +72,14 @@ struct Cli {
     options: Option<String>,
 }
 
+fn is_read_only_set(mount_options: Option<&str>) -> bool {
+    if let Some(options) = mount_options {
+        options.split(',').any(|opt| opt == "ro")
+    } else {
+        false
+    }
+}
+
 fn load_config() -> anyhow::Result<Config> {
     let cli = Cli::parse();
     let (disk_path, mount_options) = if !cli.disk_path.is_empty() {
@@ -80,7 +89,7 @@ fn load_config() -> anyhow::Result<Config> {
         std::process::exit(1);
     };
 
-    let read_only = true; // TODO: make this configurable
+    let read_only = is_read_only_set(mount_options.as_deref());
     let root_path = env::current_exe()
         .context("Failed to get current executable path")?
         .parent()
@@ -133,16 +142,21 @@ fn drop_privileges(
     Ok(())
 }
 
-fn setup_and_start_vm(
-    config: &Config,
-    disk_fd_path: &str,
-    dev_info: &DevInfo,
-) -> anyhow::Result<()> {
+fn setup_and_start_vm(config: &Config, dev_info: &DevInfo) -> anyhow::Result<()> {
     let ctx = unsafe { bindings::krun_create_ctx() }.context("Failed to create context")?;
 
-    // unsafe { bindings::krun_set_log_level(3) }.context("Failed to set log level")?;
+    unsafe { bindings::krun_set_log_level(3) }.context("Failed to set log level")?;
 
     unsafe { bindings::krun_set_vm_config(ctx, 2, 1024) }.context("Failed to set VM config")?;
+
+    // run vmm as the original user if he used sudo
+    if let Some(uid) = config.sudo_uid {
+        unsafe { bindings::krun_setuid(ctx, uid) }.context("Failed to set vmm uid")?;
+    }
+
+    if let Some(gid) = config.sudo_gid {
+        unsafe { bindings::krun_setgid(ctx, gid) }.context("Failed to set vmm gid")?;
+    }
 
     unsafe { bindings::krun_set_root(ctx, CString::from_path(&config.root_path).as_ptr()) }
         .context("Failed to set root")?;
@@ -151,7 +165,7 @@ fn setup_and_start_vm(
         bindings::krun_add_disk(
             ctx,
             CString::new("data").unwrap().as_ptr(),
-            CString::new(disk_fd_path).unwrap().as_ptr(),
+            CString::new(dev_info.rdisk()).unwrap().as_ptr(),
             config.read_only,
         )
     }
@@ -259,35 +273,26 @@ fn start_gvproxy(config: &Config) -> anyhow::Result<Child> {
 
     let net_sock_uri = format!("unix:///tmp/network-{}.sock", rand_string(8));
     let vfkit_sock_uri = format!("unixgram://{}", &config.vfkit_sock_path);
-    let gvproxy_path = "/opt/homebrew/Cellar/podman/5.4.0/libexec/podman/gvproxy";
+    let gvproxy_path = "/opt/homebrew/opt/podman/libexec/podman/gvproxy";
     let gvproxy_args = ["--listen", &net_sock_uri, "--listen-vfkit", &vfkit_sock_uri];
 
-    let gvproxy_process = Command::new(gvproxy_path)
+    let mut gvproxy_cmd = Command::new(gvproxy_path);
+
+    gvproxy_cmd
         .args(&gvproxy_args)
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::null());
+
+    if let (Some(uid), Some(gid)) = (config.sudo_uid, config.sudo_gid) {
+        // run gvproxy with dropped privileges
+        gvproxy_cmd.uid(uid).gid(gid);
+    }
+
+    let gvproxy_process = gvproxy_cmd
         .spawn()
         .context("Failed to start gvproxy process")?;
 
     Ok(gvproxy_process)
-}
-
-fn get_fd_path(disk_file: &File) -> anyhow::Result<String> {
-    let disk_fd = disk_file.as_raw_fd();
-    let disk_fd_path = format!("/dev/fd/{}", disk_fd);
-    println!("disk_fd_path: {}", &disk_fd_path);
-
-    // Set O_CLOEXEC on the disk file descriptor
-    let flags = unsafe { libc::fcntl(disk_fd, libc::F_GETFD) };
-    if flags < 0 {
-        return Err(io::Error::last_os_error()).context("Failed to get file descriptor flags");
-    }
-    if unsafe { libc::fcntl(disk_fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0 {
-        return Err(io::Error::last_os_error())
-            .context("Failed to set O_CLOEXEC on file descriptor");
-    }
-
-    Ok(disk_fd_path)
 }
 
 fn wait_for_port(port: u16) -> anyhow::Result<bool> {
@@ -534,16 +539,6 @@ fn run() -> anyhow::Result<()> {
     println!("uuid: {:?}", dev_info.uuid());
     println!("mount name: {}", dev_info.auto_mount_name());
 
-    let disk_file = OpenOptions::new()
-        .read(true)
-        .write(!config.read_only)
-        .open(dev_info.rdisk())?;
-
-    let disk_fd_path = get_fd_path(&disk_file)?;
-
-    // drop privileges back to the original user if he used sudo
-    drop_privileges(config.sudo_uid, config.sudo_gid)?;
-
     let mut gvproxy = start_gvproxy(&config)?;
 
     let pid = unsafe { libc::fork() };
@@ -560,10 +555,15 @@ fn run() -> anyhow::Result<()> {
             );
             std::process::exit(1);
         }
+
         // Child process
-        setup_and_start_vm(&config, &disk_fd_path, &dev_info)?;
+        setup_and_start_vm(&config, &dev_info)?;
     } else {
         // Parent process
+
+        // drop privileges back to the original user if he used sudo
+        drop_privileges(config.sudo_uid, config.sudo_gid)?;
+
         let is_open = wait_for_port(111).unwrap_or(false);
 
         if is_open {
