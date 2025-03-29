@@ -92,12 +92,19 @@ fn load_config() -> anyhow::Result<Config> {
     };
 
     let read_only = is_read_only_set(mount_options.as_deref());
-    // TODO: use root_path under user home
-    let root_path = env::current_exe()
+
+    let exec_dir = env::current_exe()
         .context("Failed to get current executable path")?
         .parent()
         .context("Failed to get executable directory")?
-        .join("vmroot");
+        .to_owned();
+
+    let prefix_dir = exec_dir
+        .parent()
+        .context("Failed to get prefix directory")?;
+
+    // TODO: use root_path under user home
+    let root_path = prefix_dir.join("vmroot");
 
     // TODO: use kernel_path under configured prefix
     let kernel_path =

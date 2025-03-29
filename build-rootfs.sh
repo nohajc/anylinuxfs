@@ -11,7 +11,7 @@ git clone https://github.com/nohajc/docker-nfs-server.git
 cd docker-nfs-server
 
 IMAGE_NAME=nfs-server-alpine
-ROOTFS_DIR=../../bin/vmroot
+ROOTFS_DIR=../../vmroot
 
 mkdir -p "$ROOTFS_DIR"
 

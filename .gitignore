@@ -17,6 +17,8 @@ target/
 #.idea/
 
 bin/
+libexec/
+vmroot/
 tmp/
 
 fetch-rootfs/alpine/

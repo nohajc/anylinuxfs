@@ -21,4 +21,4 @@ codesign --entitlements "anylinuxfs.entitlements" --force -s - bin/anylinuxfs
 codesign --entitlements "anylinuxfs.entitlements" --force -s - bin/fetch-rootfs
 
 (cd "vmproxy" && cargo build $BUILD_ARGS)
-mkdir -p bin/vmroot && cp "vmproxy/target/aarch64-unknown-linux-musl/$BUILD_DIR/vmproxy" bin/vmroot/
+mkdir -p vmroot && cp "vmproxy/target/aarch64-unknown-linux-musl/$BUILD_DIR/vmproxy" vmroot/
