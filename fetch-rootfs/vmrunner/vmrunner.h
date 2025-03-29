@@ -1,9 +1,5 @@
 #pragma once
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 typedef struct error {
     int code;
     const char* prefix;
@@ -11,7 +7,3 @@ typedef struct error {
 } error;
 
 error setup_and_start_vm(const char* root_path, const char* script_path);
-
-#ifdef __cplusplus
-}
-#endif

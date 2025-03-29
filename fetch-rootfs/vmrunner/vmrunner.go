@@ -3,7 +3,6 @@ package vmrunner
 /*
 #include <stdlib.h>
 #include "vmrunner.h"
-#cgo CXXFLAGS: -std=c++20
 #cgo LDFLAGS: -lkrun
 */
 import "C"
