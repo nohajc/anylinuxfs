@@ -239,6 +239,20 @@ fn setup_and_start_vm(config: &Config, dev_info: &DevInfo) -> anyhow::Result<()>
     unsafe { bindings::krun_set_exec(ctx, argv[0], argv[1..].as_ptr(), envp.as_ptr()) }
         .context("Failed to set exec")?;
 
+    // TODO: set proper path
+    let kernel_path =
+        "/Users/nohajan/gitprojs/3rd-party/libkrunfw/linux-6.6.59/arch/arm64/boot/Image";
+    unsafe {
+        bindings::krun_set_kernel(
+            ctx,
+            CString::new(kernel_path).unwrap().as_ptr(),
+            0, // KRUN_KERNEL_FORMAT_RAW
+            null(),
+            null(),
+        )
+    }
+    .context("Failed to set kernel")?;
+
     unsafe { bindings::krun_start_enter(ctx) }.context("Failed to start VM")?;
 
     Ok(())
@@ -273,6 +287,7 @@ fn start_gvproxy(config: &Config) -> anyhow::Result<Child> {
 
     let net_sock_uri = format!("unix:///tmp/network-{}.sock", rand_string(8));
     let vfkit_sock_uri = format!("unixgram://{}", &config.vfkit_sock_path);
+    // TODO: set proper path
     let gvproxy_path = "/opt/homebrew/opt/podman/libexec/podman/gvproxy";
     let gvproxy_args = ["--listen", &net_sock_uri, "--listen-vfkit", &vfkit_sock_uri];
 
@@ -297,7 +312,7 @@ fn start_gvproxy(config: &Config) -> anyhow::Result<Child> {
 
 fn wait_for_port(port: u16) -> anyhow::Result<bool> {
     let addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, port);
-    for _ in 0..10 {
+    for _ in 0..3 {
         let result = TcpStream::connect_timeout(&addr.into(), Duration::from_secs(10)).is_ok();
         if result {
             return Ok(true);

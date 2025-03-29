@@ -23,6 +23,13 @@ unsafe extern "C" {
         argv: *const *const c_char,
         envp: *const *const c_char,
     ) -> i32;
+    pub fn krun_set_kernel(
+        ctx_id: u32,
+        kernel_path: *const c_char,
+        kernel_format: u32,
+        initramfs: *const c_char,
+        cmdline: *const c_char,
+    ) -> i32;
     pub fn krun_set_env(ctx: u32, envp: *const *const c_char) -> i32;
     pub fn krun_add_vsock_port2(
         ctx_id: u32,
