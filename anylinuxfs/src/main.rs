@@ -46,7 +46,7 @@ struct Config {
     read_only: bool,
     root_path: PathBuf,
     kernel_path: PathBuf,
-    gvproxy_path: String,
+    gvproxy_path: PathBuf,
     vsock_path: String,
     vfkit_sock_path: String,
     sudo_uid: Option<libc::uid_t>,
@@ -111,9 +111,7 @@ fn load_config() -> anyhow::Result<Config> {
         .join("rootfs");
 
     let kernel_path = prefix_dir.join("libexec").join("Image").to_owned();
-
-    // TODO: use proper path
-    let gvproxy_path = "/opt/homebrew/opt/podman/libexec/podman/gvproxy".to_owned();
+    let gvproxy_path = prefix_dir.join("libexec").join("gvproxy").to_owned();
 
     let sudo_uid = env::var("SUDO_UID")
         .map_err(anyhow::Error::from)
