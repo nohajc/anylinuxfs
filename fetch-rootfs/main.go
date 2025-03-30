@@ -337,7 +337,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	err = vmrunner.Run(cfg.RootfsPath, cfg.VmSetupScriptPath)
+	kernelPath := filepath.Join(cfg.PrefixDir, "libexec", "Image")
+	err = vmrunner.Run(kernelPath, cfg.RootfsPath, cfg.VmSetupScriptPath)
 	if err != nil {
 		fmt.Printf("Failed to run VM: %v\n", err)
 		os.Exit(1)

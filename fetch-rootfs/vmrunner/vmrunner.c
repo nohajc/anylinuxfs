@@ -24,7 +24,7 @@ bool is_error(int res) {
     return res < 0;
 }
 
-error setup_and_start_vm(const char* root_path, const char* script_path) {
+error setup_and_start_vm(const char* kernel_path, const char* root_path, const char* script_path) {
     int ctx = krun_create_ctx();
     if (is_error(ctx)) {
         return krun_error(ctx, "configuration context error");
@@ -53,8 +53,6 @@ error setup_and_start_vm(const char* root_path, const char* script_path) {
         return krun_error(res, "set exec error");
     }
 
-    // TODO: use kernel_path under configured prefix
-    const char *kernel_path = "/Users/nohajan/gitprojs/3rd-party/libkrunfw/linux-6.6.59/arch/arm64/boot/Image";
     res = krun_set_kernel(ctx, kernel_path, 0, NULL, NULL);
     if (is_error(res)) {
         return krun_error(res, "set kernel error");
