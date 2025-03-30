@@ -326,7 +326,7 @@ fn start_gvproxy(config: &Config) -> anyhow::Result<Child> {
 
 fn wait_for_port(port: u16) -> anyhow::Result<bool> {
     let addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, port);
-    for _ in 0..3 {
+    for _ in 0..5 {
         let result = TcpStream::connect_timeout(&addr.into(), Duration::from_secs(10)).is_ok();
         if result {
             return Ok(true);
@@ -550,6 +550,20 @@ fn terminate_child(child: &mut Child, child_name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn wait_for_file(file: impl AsRef<Path>) -> anyhow::Result<()> {
+    let start = std::time::Instant::now();
+    while !file.as_ref().exists() {
+        if start.elapsed() > Duration::from_secs(10) {
+            return Err(anyhow!(
+                "Timeout waiting for file creation: {}",
+                file.as_ref().to_string_lossy()
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    Ok(())
+}
+
 fn run() -> anyhow::Result<()> {
     // println!("uid = {}", unsafe { libc::getuid() });
     // println!("gid = {}", unsafe { libc::getgid() });
@@ -574,6 +588,9 @@ fn run() -> anyhow::Result<()> {
     if pid < 0 {
         return Err(io::Error::last_os_error()).context("Failed to fork process");
     } else if pid == 0 {
+        // Child process
+        wait_for_file(&config.vfkit_sock_path)?;
+
         if let Some(status) = gvproxy.try_wait().ok().flatten() {
             println!(
                 "gvproxy failed with exit code: {}",
@@ -585,7 +602,6 @@ fn run() -> anyhow::Result<()> {
             std::process::exit(1);
         }
 
-        // Child process
         setup_and_start_vm(&config, &dev_info)?;
     } else {
         // Parent process
