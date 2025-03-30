@@ -20,6 +20,8 @@ codesign --entitlements "anylinuxfs.entitlements" --force -s - bin/anylinuxfs
 (cd "fetch-rootfs" && go build -o ../bin/)
 codesign --entitlements "anylinuxfs.entitlements" --force -s - bin/fetch-rootfs
 
+ROOTFS_PATH=~/.anylinuxfs/alpine/rootfs
+
 (cd "vmproxy" && cargo build $BUILD_ARGS)
 mkdir -p libexec && cp "vmproxy/target/aarch64-unknown-linux-musl/$BUILD_DIR/vmproxy" libexec/
-mkdir -p vmroot && cp libexec/vmproxy vmroot/
+mkdir -p $ROOTFS_PATH && cp libexec/vmproxy $ROOTFS_PATH/

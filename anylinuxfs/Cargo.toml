@@ -13,6 +13,7 @@ url = "2.5.4"
 nanoid = "0.4.0"
 libblkid-rs = "0.4.0"
 clap = { version = "4.5.32", features = ["derive"] }
+homedir = "0.3.4"
 
 [patch.crates-io]
 #libblkid-rs = { git = 'https://github.com/nohajc/libblkid-rs.git' }

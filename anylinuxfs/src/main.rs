@@ -45,7 +45,7 @@ struct Config {
     disk_path: String,
     read_only: bool,
     root_path: PathBuf,
-    kernel_path: String,
+    kernel_path: PathBuf,
     gvproxy_path: String,
     vsock_path: String,
     vfkit_sock_path: String,
@@ -103,15 +103,14 @@ fn load_config() -> anyhow::Result<Config> {
         .parent()
         .context("Failed to get prefix directory")?;
 
-    // TODO: use root_path under user home
-    let root_path = prefix_dir
-        .join("fetch-rootfs")
+    // ~/.anylinuxfs/alpine/rootfs
+    let root_path = homedir::my_home()?
+        .context("Failed to get home directory")?
+        .join(".anylinuxfs")
         .join("alpine")
         .join("rootfs");
 
-    // TODO: use kernel_path under configured prefix
-    let kernel_path =
-        "/Users/nohajan/gitprojs/3rd-party/libkrunfw/linux-6.6.59/arch/arm64/boot/Image".to_owned();
+    let kernel_path = prefix_dir.join("libexec").join("Image").to_owned();
 
     // TODO: use proper path
     let gvproxy_path = "/opt/homebrew/opt/podman/libexec/podman/gvproxy".to_owned();
@@ -264,7 +263,7 @@ fn setup_and_start_vm(config: &Config, dev_info: &DevInfo) -> anyhow::Result<()>
     unsafe {
         bindings::krun_set_kernel(
             ctx,
-            CString::new(config.kernel_path.as_str()).unwrap().as_ptr(),
+            CString::from_path(&config.kernel_path).as_ptr(),
             0, // KRUN_KERNEL_FORMAT_RAW
             null(),
             null(),
