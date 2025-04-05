@@ -11,13 +11,16 @@ use objc2_disk_arbitration::{
     DASessionScheduleWithRunLoop, DAUnregisterCallback,
 };
 use std::ffi::c_void;
-use std::io::{Read, Write};
+use std::fs::File;
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, SocketAddrV4, TcpStream};
 use std::ops::Deref;
+use std::os::fd::FromRawFd;
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 use std::ptr::{NonNull, null, null_mut};
+use std::thread;
 use std::time::Duration;
 use std::{
     env,
@@ -33,6 +36,7 @@ use wait_timeout::ChildExt;
 #[allow(unused)]
 mod bindings;
 mod devinfo;
+mod procutils;
 
 fn main() {
     if let Err(e) = run() {
@@ -168,6 +172,7 @@ fn drop_privileges(
 fn setup_and_start_vm(config: &Config, dev_info: &DevInfo) -> anyhow::Result<()> {
     let ctx = unsafe { bindings::krun_create_ctx() }.context("Failed to create context")?;
 
+    // TODO: configurable log level?
     unsafe { bindings::krun_set_log_level(3) }.context("Failed to set log level")?;
 
     // TODO: CPU and RAM should be configurable
@@ -644,11 +649,11 @@ fn run() -> anyhow::Result<()> {
 
     let mut gvproxy = start_gvproxy(&config)?;
 
-    let pid = unsafe { libc::fork() };
-    if pid < 0 {
-        return Err(io::Error::last_os_error()).context("Failed to fork process");
-    } else if pid == 0 {
+    let forked = procutils::fork_with_piped_output()?;
+    if forked.pid == 0 {
         // Child process
+        procutils::set_null_stdin()?;
+
         wait_for_file(&config.vfkit_sock_path)?;
 
         if let Some(status) = gvproxy.try_wait().ok().flatten() {
@@ -665,6 +670,19 @@ fn run() -> anyhow::Result<()> {
         setup_and_start_vm(&config, &dev_info)?;
     } else {
         // Parent process
+
+        // Spawn a thread to read from the pipe
+        let hnd = thread::spawn(move || {
+            let mut buf_reader = BufReader::new(unsafe { File::from_raw_fd(forked.child_read_fd) });
+            let mut line = String::new();
+            while let Ok(bytes) = buf_reader.read_line(&mut line) {
+                if bytes == 0 {
+                    break; // EOF
+                }
+                print!("{}", line);
+                line.clear();
+            }
+        });
 
         // drop privileges back to the original user if he used sudo
         drop_privileges(config.sudo_uid, config.sudo_gid)?;
@@ -690,7 +708,7 @@ fn run() -> anyhow::Result<()> {
         vsock_cleanup(&config)?;
 
         let mut status = 0;
-        if unsafe { libc::waitpid(pid, &mut status, 0) } < 0 {
+        if unsafe { libc::waitpid(forked.pid, &mut status, 0) } < 0 {
             return Err(io::Error::last_os_error()).context("Failed to wait for child process");
         }
         println!("libkrun VM exited with status: {}", status);
@@ -698,6 +716,8 @@ fn run() -> anyhow::Result<()> {
         // Terminate gvproxy process
         terminate_child(&mut gvproxy, "gvproxy")?;
         gvproxy_cleanup(&config)?;
+
+        hnd.join().unwrap();
     }
 
     Ok(())
