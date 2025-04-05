@@ -45,6 +45,7 @@ struct Config {
     disk_path: String,
     read_only: bool,
     root_path: PathBuf,
+    fetch_rootfs_path: PathBuf,
     kernel_path: PathBuf,
     gvproxy_path: PathBuf,
     vsock_path: String,
@@ -110,6 +111,8 @@ fn load_config() -> anyhow::Result<Config> {
         .join("alpine")
         .join("rootfs");
 
+    let fetch_rootfs_path = exec_dir.join("fetch-rootfs").to_owned();
+
     let kernel_path = prefix_dir.join("libexec").join("Image").to_owned();
     let gvproxy_path = prefix_dir.join("libexec").join("gvproxy").to_owned();
 
@@ -117,17 +120,17 @@ fn load_config() -> anyhow::Result<Config> {
         .map_err(anyhow::Error::from)
         .and_then(|s| Ok(s.parse::<libc::uid_t>()?))
         .ok();
-    if let Some(sudo_uid) = sudo_uid {
-        println!("sudo_uid = {}", sudo_uid);
-    }
+    // if let Some(sudo_uid) = sudo_uid {
+    //     println!("sudo_uid = {}", sudo_uid);
+    // }
 
     let sudo_gid = env::var("SUDO_GID")
         .map_err(anyhow::Error::from)
         .and_then(|s| Ok(s.parse::<libc::gid_t>()?))
         .ok();
-    if let Some(sudo_gid) = sudo_gid {
-        println!("sudo_gid = {}", sudo_gid);
-    }
+    // if let Some(sudo_gid) = sudo_gid {
+    //     println!("sudo_gid = {}", sudo_gid);
+    // }
 
     let vsock_path = format!("/tmp/anylinuxfs-{}-vsock", rand_string(8));
     let vfkit_sock_path = format!("/tmp/vfkit-{}.sock", rand_string(8));
@@ -136,6 +139,7 @@ fn load_config() -> anyhow::Result<Config> {
         disk_path,
         read_only,
         root_path,
+        fetch_rootfs_path,
         kernel_path,
         gvproxy_path,
         vsock_path,
@@ -164,8 +168,9 @@ fn drop_privileges(
 fn setup_and_start_vm(config: &Config, dev_info: &DevInfo) -> anyhow::Result<()> {
     let ctx = unsafe { bindings::krun_create_ctx() }.context("Failed to create context")?;
 
-    // unsafe { bindings::krun_set_log_level(3) }.context("Failed to set log level")?;
+    unsafe { bindings::krun_set_log_level(3) }.context("Failed to set log level")?;
 
+    // TODO: CPU and RAM should be configurable
     unsafe { bindings::krun_set_vm_config(ctx, 2, 1024) }.context("Failed to set VM config")?;
 
     // run vmm as the original user if he used sudo
@@ -564,11 +569,66 @@ fn wait_for_file(file: impl AsRef<Path>) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn init_rootfs_if_needed(config: &Config) -> anyhow::Result<()> {
+    let bash_path = config.root_path.join("bin/bash");
+    let nfsd_path = config.root_path.join("usr/sbin/rpc.nfsd");
+    let entry_point_path = config.root_path.join("usr/local/bin/entrypoint.sh");
+    let vmproxy_path = config.root_path.join("vmproxy");
+    let required_files_exist = bash_path.exists()
+        && nfsd_path.exists()
+        && entry_point_path.exists()
+        && vmproxy_path.exists();
+
+    let fstab_path = config.root_path.join("etc/fstab");
+
+    // check if fstab contains rpc_pipefs and nfsd keywords
+    let fstab_configured = match fstab_path.exists() {
+        true => {
+            let fstab_content = std::fs::read_to_string(&fstab_path).context(format!(
+                "Failed to read fstab file: {}",
+                fstab_path.display()
+            ))?;
+            fstab_content.contains("rpc_pipefs") && fstab_content.contains("nfsd")
+        }
+        false => false,
+    };
+    if required_files_exist && fstab_configured {
+        println!("VM root filesystem is initialized");
+        return Ok(());
+    }
+
+    println!("Initializing VM root filesystem...");
+
+    let mut fetch_rootfs_cmd = Command::new(&config.fetch_rootfs_path);
+    if let (Some(uid), Some(gid)) = (config.sudo_uid, config.sudo_gid) {
+        // run fetch-rootfs with dropped privileges
+        fetch_rootfs_cmd.uid(uid).gid(gid);
+    }
+
+    let status = fetch_rootfs_cmd
+        .status()
+        .context("Failed to execute fetch-rootfs")?;
+
+    if !status.success() {
+        return Err(anyhow!(
+            "fetch-rootfs failed with exit code {}",
+            status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or("unknown".to_owned())
+        ));
+    }
+
+    Ok(())
+}
+
 fn run() -> anyhow::Result<()> {
     // println!("uid = {}", unsafe { libc::getuid() });
     // println!("gid = {}", unsafe { libc::getgid() });
 
     let config = load_config()?;
+
+    init_rootfs_if_needed(&config)?;
 
     // println!("disk_path: {}", config.disk_path);
     println!("root_path: {}", config.root_path.to_string_lossy());

@@ -16,5 +16,5 @@ clap = { version = "4.5.32", features = ["derive"] }
 homedir = "0.3.4"
 
 [patch.crates-io]
-#libblkid-rs = { git = 'https://github.com/nohajc/libblkid-rs.git' }
+#libblkid-rs = { git = 'https://github.com/stratis-storage/libblkid-rs.git' }
 libblkid-rs = { path = '../../3rd-party/libblkid-rs' }

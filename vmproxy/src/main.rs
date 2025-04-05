@@ -120,11 +120,8 @@ fn is_read_only_set(mount_options: Option<&str>) -> bool {
 }
 
 fn main() -> anyhow::Result<()> {
-    // TODO: remove
-    println!("Hello, world, from linux microVM!");
     // println!("uid = {}", unsafe { libc::getuid() });
     // println!("gid = {}", unsafe { libc::getgid() });
-    println!("");
 
     // let kernel_cfg = procfs::kernel_config()?;
     // println!("Kernel config");

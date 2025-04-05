@@ -439,6 +439,7 @@ dependencies = [
  "either",
  "libblkid-rs-sys",
  "libc",
+ "pkg-config",
  "uuid",
 ]
 

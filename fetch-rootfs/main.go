@@ -329,8 +329,6 @@ func main() {
 		os.Exit(1)
 	}
 	cfg := defaultConfig(currentUser.HomeDir, execDir)
-	// _ = cfg
-	// os.Exit(0)
 
 	err = initRootfs(&cfg)
 	if err != nil {
