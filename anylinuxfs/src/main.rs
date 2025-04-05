@@ -1,6 +1,7 @@
 use anyhow::{Context, anyhow};
 use clap::Parser;
 use devinfo::DevInfo;
+use log::{host_eprintln, host_println};
 use nanoid::nanoid;
 use objc2_core_foundation::{
     CFDictionary, CFDictionaryGetValueIfPresent, CFRetained, CFRunLoopGetCurrent, CFRunLoopRun,
