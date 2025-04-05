@@ -36,11 +36,14 @@ use wait_timeout::ChildExt;
 #[allow(unused)]
 mod bindings;
 mod devinfo;
+mod log;
+
+#[allow(unused)]
 mod procutils;
 
 fn main() {
     if let Err(e) = run() {
-        eprintln!("Error: {:#}", e);
+        host_eprintln!("Error: {:#}", e);
         std::process::exit(1);
     }
 }
@@ -92,7 +95,7 @@ fn load_config() -> anyhow::Result<Config> {
     let (disk_path, mount_options) = if !cli.disk_path.is_empty() {
         (cli.disk_path, cli.options)
     } else {
-        eprintln!("No disk path provided");
+        host_eprintln!("No disk path provided");
         std::process::exit(1);
     };
 
@@ -125,7 +128,7 @@ fn load_config() -> anyhow::Result<Config> {
         .and_then(|s| Ok(s.parse::<libc::uid_t>()?))
         .ok();
     // if let Some(sudo_uid) = sudo_uid {
-    //     println!("sudo_uid = {}", sudo_uid);
+    //     host_println!("sudo_uid = {}", sudo_uid);
     // }
 
     let sudo_gid = env::var("SUDO_GID")
@@ -133,7 +136,7 @@ fn load_config() -> anyhow::Result<Config> {
         .and_then(|s| Ok(s.parse::<libc::gid_t>()?))
         .ok();
     // if let Some(sudo_gid) = sudo_gid {
-    //     println!("sudo_gid = {}", sudo_gid);
+    //     host_println!("sudo_gid = {}", sudo_gid);
     // }
 
     let vsock_path = format!("/tmp/anylinuxfs-{}-vsock", rand_string(8));
@@ -427,7 +430,7 @@ unsafe extern "C-unwind" fn disk_unmount_event(disk: NonNull<DADisk>, context: *
     if let (Some(volume_path), Some(volume_kind)) = (args.volume_path(), args.volume_kind()) {
         let expected_share_path = format!("/Volumes/{}/", args.share_name());
         if volume_kind == "nfs" && volume_path == expected_share_path {
-            println!("Share {} was unmounted", &expected_share_path);
+            host_println!("Share {} was unmounted", &expected_share_path);
             unsafe { CFRunLoopStop(&CFRunLoopGetCurrent().unwrap()) };
         }
     }
@@ -444,7 +447,7 @@ unsafe extern "C-unwind" fn disk_unmount_event(disk: NonNull<DADisk>, context: *
 //     if let (Some(volume_path), Some(volume_kind)) = (args.volume_path(), args.volume_kind()) {
 //         let expected_share_path = format!("/Volumes/{}/", args.share_name());
 //         if volume_kind == "nfs" && volume_path == expected_share_path {
-//             println!("Approve unmount of {}? [y/n]", &expected_share_path);
+//             host_println!("Approve unmount of {}? [y/n]", &expected_share_path);
 //             let mut input = String::new();
 //             io::stdin().read_line(&mut input).unwrap();
 //             if input.trim() == "y" {
@@ -472,7 +475,7 @@ unsafe extern "C-unwind" fn disk_unmount_event(disk: NonNull<DADisk>, context: *
 //         let type_name = CFCopyTypeIDDescription(type_id).unwrap();
 //         let key_str = keys[i] as *const CFString;
 
-//         println!(
+//         host_println!(
 //             "Key: {}, Type: {}",
 //             unsafe { key_str.as_ref().unwrap() },
 //             &type_name,
@@ -550,12 +553,12 @@ fn terminate_child(child: &mut Child, child_name: &str) -> anyhow::Result<()> {
         Some(status) => status.code(),
         None => {
             // Send SIGKILL to child process
-            println!("timeout reached, force killing {child_name} process");
+            host_println!("timeout reached, force killing {child_name} process");
             child.kill()?;
             child.wait()?.code()
         }
     }
-    .map(|s| println!("{} exited with status: {}", child_name, s));
+    .map(|s| host_println!("{} exited with status: {}", child_name, s));
 
     Ok(())
 }
@@ -598,11 +601,11 @@ fn init_rootfs_if_needed(config: &Config) -> anyhow::Result<()> {
         false => false,
     };
     if required_files_exist && fstab_configured {
-        println!("VM root filesystem is initialized");
+        host_println!("VM root filesystem is initialized");
         return Ok(());
     }
 
-    println!("Initializing VM root filesystem...");
+    host_println!("Initializing VM root filesystem...");
 
     let mut fetch_rootfs_cmd = Command::new(&config.fetch_rootfs_path);
     if let (Some(uid), Some(gid)) = (config.sudo_uid, config.sudo_gid) {
@@ -628,36 +631,36 @@ fn init_rootfs_if_needed(config: &Config) -> anyhow::Result<()> {
 }
 
 fn run() -> anyhow::Result<()> {
-    // println!("uid = {}", unsafe { libc::getuid() });
-    // println!("gid = {}", unsafe { libc::getgid() });
+    // host_println!("uid = {}", unsafe { libc::getuid() });
+    // host_println!("gid = {}", unsafe { libc::getgid() });
 
     let config = load_config()?;
 
     init_rootfs_if_needed(&config)?;
 
-    // println!("disk_path: {}", config.disk_path);
-    println!("root_path: {}", config.root_path.to_string_lossy());
+    // host_println!("disk_path: {}", config.disk_path);
+    host_println!("root_path: {}", config.root_path.to_string_lossy());
 
     let dev_info = DevInfo::new(&config.disk_path)?;
 
-    println!("disk: {}", dev_info.disk());
-    println!("rdisk: {}", dev_info.rdisk());
-    println!("label: {:?}", dev_info.label());
-    println!("fs_type: {:?}", dev_info.fs_type());
-    println!("uuid: {:?}", dev_info.uuid());
-    println!("mount name: {}", dev_info.auto_mount_name());
+    host_println!("disk: {}", dev_info.disk());
+    host_println!("rdisk: {}", dev_info.rdisk());
+    host_println!("label: {:?}", dev_info.label());
+    host_println!("fs_type: {:?}", dev_info.fs_type());
+    host_println!("uuid: {:?}", dev_info.uuid());
+    host_println!("mount name: {}", dev_info.auto_mount_name());
 
     let mut gvproxy = start_gvproxy(&config)?;
 
-    let forked = procutils::fork_with_piped_output()?;
+    let forked = procutils::fork_with_pty_output()?;
     if forked.pid == 0 {
         // Child process
-        procutils::set_null_stdin()?;
+        // procutils::set_null_stdin()?;
 
         wait_for_file(&config.vfkit_sock_path)?;
 
         if let Some(status) = gvproxy.try_wait().ok().flatten() {
-            println!(
+            host_println!(
                 "gvproxy failed with exit code: {}",
                 status
                     .code()
@@ -679,7 +682,7 @@ fn run() -> anyhow::Result<()> {
                 if bytes == 0 {
                     break; // EOF
                 }
-                print!("{}", line);
+                print!("Linux: {}", line);
                 line.clear();
             }
         });
@@ -690,19 +693,19 @@ fn run() -> anyhow::Result<()> {
         let is_open = wait_for_port(111).unwrap_or(false);
 
         if is_open {
-            println!("Port 111 is open");
+            host_println!("Port 111 is open");
             // mount nfs share
             let share_name = dev_info.auto_mount_name();
             let share_path = format!("/mnt/{share_name}");
             match mount_nfs(&share_path) {
-                Ok(_) => println!("NFS share mounted successfully"),
-                Err(e) => eprintln!("Failed to mount NFS share: {:#}", e),
+                Ok(_) => host_println!("NFS share mounted successfully"),
+                Err(e) => host_eprintln!("Failed to mount NFS share: {:#}", e),
             }
 
             wait_for_unmount(share_name)?;
             send_quit_cmd(&config)?;
         } else {
-            println!("Port 111 is not open");
+            host_println!("Port 111 is not open");
         }
 
         vsock_cleanup(&config)?;
@@ -711,7 +714,7 @@ fn run() -> anyhow::Result<()> {
         if unsafe { libc::waitpid(forked.pid, &mut status, 0) } < 0 {
             return Err(io::Error::last_os_error()).context("Failed to wait for child process");
         }
-        println!("libkrun VM exited with status: {}", status);
+        host_println!("libkrun VM exited with status: {}", status);
 
         // Terminate gvproxy process
         terminate_child(&mut gvproxy, "gvproxy")?;

@@ -7,6 +7,79 @@ pub struct ForkOutput {
     pub child_read_fd: libc::c_int,
 }
 
+pub fn fork_with_pty_output() -> anyhow::Result<ForkOutput> {
+    let mut master_fd: libc::c_int = 0;
+    let mut slave_fd: libc::c_int = 0;
+
+    // Create a new pseudo-terminal
+    let mut winp: libc::winsize = libc::winsize {
+        ws_row: 24,
+        ws_col: 80,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    let res = unsafe {
+        libc::openpty(
+            &mut master_fd,
+            &mut slave_fd,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut winp,
+        )
+    };
+    if res < 0 {
+        return Err(io::Error::last_os_error()).context("Failed to create pseudo-terminal");
+    }
+
+    let pid = unsafe { libc::fork() };
+    if pid < 0 {
+        return Err(io::Error::last_os_error()).context("Failed to fork process");
+    } else if pid == 0 {
+        // Child process
+
+        // Close the master end of the pty
+        let res = unsafe { libc::close(master_fd) };
+        if res < 0 {
+            return Err(io::Error::last_os_error()).context("Failed to close master end of pty");
+        }
+
+        // Redirect stdout and stderr to the slave end of the pty
+        let res = unsafe { libc::dup2(slave_fd, libc::STDOUT_FILENO) };
+        if res < 0 {
+            return Err(io::Error::last_os_error()).context("Failed to redirect stdout to pty");
+        }
+        let res = unsafe { libc::dup2(slave_fd, libc::STDERR_FILENO) };
+        if res < 0 {
+            return Err(io::Error::last_os_error()).context("Failed to redirect stderr to pty");
+        }
+
+        // Redirect stdin to the slave end of the pty
+        let res = unsafe { libc::dup2(slave_fd, libc::STDIN_FILENO) };
+        if res < 0 {
+            return Err(io::Error::last_os_error()).context("Failed to redirect stdin to pty");
+        }
+
+        // Close the slave end of the pty
+        let res = unsafe { libc::close(slave_fd) };
+        if res < 0 {
+            return Err(io::Error::last_os_error()).context("Failed to close slave end of pty");
+        }
+    } else {
+        // Parent process
+
+        // Close the slave end of the pty
+        let res = unsafe { libc::close(slave_fd) };
+        if res < 0 {
+            return Err(io::Error::last_os_error()).context("Failed to close slave end of pty");
+        }
+    }
+
+    Ok(ForkOutput {
+        pid,
+        child_read_fd: master_fd,
+    })
+}
+
 pub fn fork_with_piped_output() -> anyhow::Result<ForkOutput> {
     let mut child_output_fds: [libc::c_int; 2] = [0; 2];
     let res = unsafe { libc::pipe(child_output_fds.as_mut_ptr()) };
