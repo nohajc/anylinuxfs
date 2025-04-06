@@ -274,25 +274,28 @@ pub unsafe fn write_to_pipe(pipe_fd: libc::c_int, data: &[u8]) -> anyhow::Result
     Ok(())
 }
 
-pub fn redirect_all_to_file_and_tail_it(
-    config: &Config,
-    log_file_path: &str,
-) -> anyhow::Result<std::process::Child> {
-    // Ensure the log file exists
-    let log_file = File::create(log_file_path).context("Failed to create log file")?;
-    // Spawn the `tail` process
+pub fn redirect_all_to_file_and_tail_it(config: &Config) -> anyhow::Result<std::process::Child> {
+    let mut touch_cmd = Command::new("/usr/bin/touch");
+    touch_cmd.arg(&config.log_file_path);
+
     let mut tail_cmd = Command::new("/usr/bin/tail");
-    tail_cmd.arg("-f").arg(log_file_path);
+    tail_cmd.arg("-f").arg(&config.log_file_path);
 
     if let (Some(uid), Some(gid)) = (config.sudo_uid, config.sudo_gid) {
+        // run touch with dropped privileges
+        touch_cmd.uid(uid).gid(gid);
+
         // run tail with dropped privileges
         tail_cmd.uid(uid).gid(gid);
     }
 
+    touch_cmd.status().context("Failed to touch log file")?;
     let tail_process = tail_cmd.spawn()?;
 
     // Redirect stdout and stderr to the log file
+    let log_file = File::create(&config.log_file_path).context("Failed to create log file")?;
     let log_file_fd = log_file.as_raw_fd();
+
     let res = unsafe { libc::dup2(log_file_fd, libc::STDOUT_FILENO) };
     if res < 0 {
         return Err(io::Error::last_os_error()).context("Failed to redirect stdout to log file");

@@ -61,6 +61,7 @@ struct Config {
     disk_path: String,
     read_only: bool,
     root_path: PathBuf,
+    log_file_path: PathBuf,
     fetch_rootfs_path: PathBuf,
     kernel_path: PathBuf,
     gvproxy_path: PathBuf,
@@ -120,13 +121,13 @@ fn load_config() -> anyhow::Result<Config> {
         .parent()
         .context("Failed to get prefix directory")?;
 
-    // ~/.anylinuxfs/alpine/rootfs
-    let root_path = homedir::my_home()
+    let home_dir = homedir::my_home()
         .context("Failed to get home directory")?
-        .context("Home directory not found")?
-        .join(".anylinuxfs")
-        .join("alpine")
-        .join("rootfs");
+        .context("Home directory not found")?;
+
+    // ~/.anylinuxfs/alpine/rootfs
+    let root_path = home_dir.join(".anylinuxfs").join("alpine").join("rootfs");
+    let log_file_path = home_dir.join("Library").join("Logs").join("anylinuxfs.log");
 
     let fetch_rootfs_path = exec_dir.join("fetch-rootfs").to_owned();
 
@@ -156,6 +157,7 @@ fn load_config() -> anyhow::Result<Config> {
         disk_path,
         read_only,
         root_path,
+        log_file_path,
         fetch_rootfs_path,
         kernel_path,
         gvproxy_path,
@@ -650,8 +652,7 @@ fn init_rootfs_if_needed(config: &Config) -> anyhow::Result<()> {
 }
 
 fn run_child(config: Config, comm_write_fd: libc::c_int) -> anyhow::Result<()> {
-    // TODO: create log under ~/Library/Logs/
-    let mut tail_process = utils::redirect_all_to_file_and_tail_it(&config, "anylinuxfs-log.txt")?;
+    let mut tail_process = utils::redirect_all_to_file_and_tail_it(&config)?;
     init_rootfs_if_needed(&config)?;
 
     // host_println!("disk_path: {}", config.disk_path);
