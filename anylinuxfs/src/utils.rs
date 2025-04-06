@@ -274,7 +274,9 @@ pub unsafe fn write_to_pipe(pipe_fd: libc::c_int, data: &[u8]) -> anyhow::Result
     Ok(())
 }
 
-pub fn redirect_all_to_file_and_tail_it(config: &Config) -> anyhow::Result<std::process::Child> {
+pub fn redirect_all_to_file_and_tail_it(
+    config: &Config,
+) -> anyhow::Result<Option<std::process::Child>> {
     let mut touch_cmd = Command::new("/usr/bin/touch");
     touch_cmd.arg(&config.log_file_path);
 
@@ -290,7 +292,10 @@ pub fn redirect_all_to_file_and_tail_it(config: &Config) -> anyhow::Result<std::
     }
 
     touch_cmd.status().context("Failed to touch log file")?;
-    let tail_process = tail_cmd.spawn()?;
+    let tail_process = match config.quiet {
+        true => None,
+        false => Some(tail_cmd.spawn()?),
+    };
 
     // Redirect stdout and stderr to the log file
     let log_file = File::create(&config.log_file_path).context("Failed to create log file")?;

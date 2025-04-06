@@ -70,6 +70,7 @@ struct Config {
     sudo_uid: Option<libc::uid_t>,
     sudo_gid: Option<libc::gid_t>,
     mount_options: Option<String>,
+    quiet: bool,
 }
 
 fn rand_string(len: usize) -> String {
@@ -90,6 +91,8 @@ struct Cli {
     disk_path: String,
     #[arg(short, long)]
     options: Option<String>,
+    #[arg(short, long)]
+    verbose: bool,
 }
 
 fn is_read_only_set(mount_options: Option<&str>) -> bool {
@@ -158,6 +161,8 @@ fn load_config() -> anyhow::Result<Config> {
     let vsock_path = format!("/tmp/anylinuxfs-{}-vsock", rand_string(8));
     let vfkit_sock_path = format!("/tmp/vfkit-{}.sock", rand_string(8));
 
+    let quiet = !cli.verbose;
+
     Ok(Config {
         disk_path,
         read_only,
@@ -171,6 +176,7 @@ fn load_config() -> anyhow::Result<Config> {
         sudo_uid,
         sudo_gid,
         mount_options,
+        quiet,
     })
 }
 
@@ -279,7 +285,7 @@ fn setup_and_start_vm(
             .into_iter()
             .map(|s| CString::new(s).unwrap()),
     )
-    .collect();
+    .collect(); // TODO: propagate verbose flag
 
     // let args = vec![CString::new("/bin/bash").unwrap()];
     let argv = args
@@ -715,7 +721,6 @@ fn run_child(config: Config, comm_write_fd: libc::c_int) -> anyhow::Result<()> {
         // TODO: Can we actually wait for the guest NFS server to be ready?
         // It seems the port is open as soon as port forwarding is configured.
         let is_open = wait_for_port(111).unwrap_or(false);
-        let mut console_attached = true;
 
         if is_open {
             host_println!("Port 111 is open");
@@ -731,8 +736,10 @@ fn run_child(config: Config, comm_write_fd: libc::c_int) -> anyhow::Result<()> {
                     .context("Failed to write to pipe")?;
 
                 // stop printing to the console
-                terminate_child(&mut tail_process, "tail")?;
-                console_attached = false;
+                if let Some(mut tail_proc) = tail_process {
+                    terminate_child(&mut tail_proc, "tail")?;
+                    tail_process = None;
+                }
             }
 
             // mount nfs share
@@ -766,8 +773,8 @@ fn run_child(config: Config, comm_write_fd: libc::c_int) -> anyhow::Result<()> {
 
         hnd.join().unwrap();
 
-        if console_attached {
-            terminate_child(&mut tail_process, "tail")?;
+        if let Some(mut tail_proc) = tail_process {
+            terminate_child(&mut tail_proc, "tail")?;
         }
     }
 
@@ -793,7 +800,6 @@ fn run_parent(forked: utils::ForkOutput) -> anyhow::Result<()> {
         if line.trim() == "detach" {
             // child is signalling it will continue to run
             // in the background; we can exit without waiting
-            host_println!("Detaching from console");
             break;
         }
 
