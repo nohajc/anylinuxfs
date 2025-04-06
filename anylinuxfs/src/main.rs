@@ -11,6 +11,7 @@ use objc2_disk_arbitration::{
     DADisk, DADiskCopyDescription, DARegisterDiskDisappearedCallback, DASessionCreate,
     DASessionScheduleWithRunLoop, DAUnregisterCallback,
 };
+use procutils::{StatusError, write_to_pipe};
 use std::ffi::c_void;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -44,8 +45,15 @@ mod procutils;
 
 fn main() {
     if let Err(e) = run() {
-        host_eprintln!("Error: {:#}", e);
-        std::process::exit(1);
+        match e.downcast_ref::<StatusError>() {
+            Some(status_error) => {
+                std::process::exit(status_error.status);
+            }
+            None => {
+                host_eprintln!("Error: {:#}", e);
+                std::process::exit(1);
+            }
+        }
     }
 }
 
@@ -631,12 +639,7 @@ fn init_rootfs_if_needed(config: &Config) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn run() -> anyhow::Result<()> {
-    // host_println!("uid = {}", unsafe { libc::getuid() });
-    // host_println!("gid = {}", unsafe { libc::getgid() });
-
-    let config = load_config()?;
-
+fn run_child(config: Config, comm_write_fd: libc::c_int) -> anyhow::Result<()> {
     init_rootfs_if_needed(&config)?;
 
     // host_println!("disk_path: {}", config.disk_path);
@@ -677,7 +680,7 @@ fn run() -> anyhow::Result<()> {
 
         // Spawn a thread to read from the pipe
         let hnd = thread::spawn(move || {
-            let mut buf_reader = BufReader::new(unsafe { File::from_raw_fd(forked.child_read_fd) });
+            let mut buf_reader = BufReader::new(unsafe { File::from_raw_fd(forked.pipe_fd) });
             let mut line = String::new();
             while let Ok(bytes) = buf_reader.read_line(&mut line) {
                 if bytes == 0 {
@@ -691,10 +694,24 @@ fn run() -> anyhow::Result<()> {
         // drop privileges back to the original user if he used sudo
         drop_privileges(config.sudo_uid, config.sudo_gid)?;
 
+        // TODO: Can we actually wait for the guest NFS server to be ready?
+        // It seems the port is open as soon as port forwarding is configured.
         let is_open = wait_for_port(111).unwrap_or(false);
 
         if is_open {
             host_println!("Port 111 is open");
+
+            if unsafe { libc::setsid() } < 0 {
+                host_eprintln!("Failed to setsid, cannot run in the background");
+                // tell the parent to wait for the child to exit
+                unsafe { write_to_pipe(comm_write_fd, b"join\n") }
+                    .context("Failed to write to pipe")?;
+            } else {
+                // tell the parent to detach from console (i.e. exit)
+                unsafe { write_to_pipe(comm_write_fd, b"detach\n") }
+                    .context("Failed to write to pipe")?;
+            }
+
             // mount nfs share
             let share_name = dev_info.auto_mount_name();
             let share_path = format!("/mnt/{share_name}");
@@ -707,6 +724,9 @@ fn run() -> anyhow::Result<()> {
             send_quit_cmd(&config)?;
         } else {
             host_println!("Port 111 is not open");
+            // tell the parent to wait for the child to exit
+            unsafe { write_to_pipe(comm_write_fd, b"join\n") }
+                .context("Failed to write to pipe")?;
         }
 
         vsock_cleanup(&config)?;
@@ -725,6 +745,48 @@ fn run() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn run_parent(forked: procutils::ForkOutput) -> anyhow::Result<()> {
+    let comm_read_fd = forked.pipe_fd;
+    let mut buf_reader = BufReader::new(unsafe { File::from_raw_fd(comm_read_fd) });
+    let mut line = String::new();
+    while let Ok(bytes) = buf_reader.read_line(&mut line) {
+        if bytes == 0 || line.trim() == "join" {
+            let mut status = 0;
+            if unsafe { libc::waitpid(forked.pid, &mut status, 0) } < 0 {
+                return Err(io::Error::last_os_error()).context("Failed to wait for child process");
+            }
+            match status {
+                0 => return Ok(()),
+                _ => return Err(StatusError::new("exited with status", status).into()),
+            }
+        }
+
+        if line.trim() == "detach" {
+            // child is signalling it will continue to run
+            // in the background; we can exit without waiting
+            host_println!("Detaching from console");
+            break;
+        }
+
+        line.clear();
+    }
+    Ok(())
+}
+
+fn run() -> anyhow::Result<()> {
+    // host_println!("uid = {}", unsafe { libc::getuid() });
+    // host_println!("gid = {}", unsafe { libc::getgid() });
+
+    let config = load_config()?;
+
+    let forked = procutils::fork_with_comm_pipe()?;
+    if forked.pid == 0 {
+        run_child(config, forked.pipe_fd)
+    } else {
+        run_parent(forked)
+    }
 }
 
 trait FromPath {

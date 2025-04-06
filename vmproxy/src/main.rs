@@ -129,8 +129,6 @@ fn main() -> anyhow::Result<()> {
     //     println!("{} = {:?}", key, value);
     // }
 
-    init_network().context("Failed to initialize network")?;
-
     let mount_point = format!(
         "/mnt/{}",
         env::args().nth(1).unwrap_or("hostblk".to_owned())
@@ -200,6 +198,8 @@ fn main() -> anyhow::Result<()> {
         &mount_point,
         fs_type.unwrap_or("unknown".to_owned())
     );
+
+    init_network().context("Failed to initialize network")?;
 
     // list_dir(mount_point);
 

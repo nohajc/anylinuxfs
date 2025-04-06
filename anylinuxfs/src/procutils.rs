@@ -1,10 +1,38 @@
-use std::io;
+use std::{
+    error::Error,
+    fs::File,
+    io::{self, Write},
+    os::fd::FromRawFd,
+};
 
 use anyhow::Context;
 
+#[derive(Debug)]
+pub struct StatusError {
+    pub msg: String,
+    pub status: libc::c_int,
+}
+
+impl StatusError {
+    pub fn new(msg: &str, status: libc::c_int) -> Self {
+        Self {
+            msg: msg.to_owned(),
+            status,
+        }
+    }
+}
+
+impl Error for StatusError {}
+
+impl std::fmt::Display for StatusError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.msg, self.status)
+    }
+}
+
 pub struct ForkOutput {
     pub pid: libc::pid_t,
-    pub child_read_fd: libc::c_int,
+    pub pipe_fd: libc::c_int,
 }
 
 pub fn fork_with_pty_output() -> anyhow::Result<ForkOutput> {
@@ -76,7 +104,7 @@ pub fn fork_with_pty_output() -> anyhow::Result<ForkOutput> {
 
     Ok(ForkOutput {
         pid,
-        child_read_fd: master_fd,
+        pipe_fd: master_fd,
     })
 }
 
@@ -126,7 +154,54 @@ pub fn fork_with_piped_output() -> anyhow::Result<ForkOutput> {
         }
     }
 
-    Ok(ForkOutput { pid, child_read_fd })
+    Ok(ForkOutput {
+        pid,
+        pipe_fd: child_read_fd,
+    })
+}
+
+// pipe_fd contains the read end of the pipe in the parent
+// and the write end of the pipe in the child process
+pub fn fork_with_comm_pipe() -> anyhow::Result<ForkOutput> {
+    let mut comm_pipe_fds: [libc::c_int; 2] = [0; 2];
+    let res = unsafe { libc::pipe(comm_pipe_fds.as_mut_ptr()) };
+    if res < 0 {
+        return Err(io::Error::last_os_error()).context("Failed to create communication pipe");
+    }
+
+    let parent_read_fd = comm_pipe_fds[0];
+    let child_write_fd = comm_pipe_fds[1];
+
+    let pid = unsafe { libc::fork() };
+    if pid < 0 {
+        return Err(io::Error::last_os_error()).context("Failed to fork process");
+    } else if pid == 0 {
+        // Child process
+
+        // Close the read end of the pipe
+        let res = unsafe { libc::close(parent_read_fd) };
+        if res < 0 {
+            return Err(io::Error::last_os_error()).context("Failed to close read end of pipe");
+        }
+
+        Ok(ForkOutput {
+            pid,
+            pipe_fd: child_write_fd,
+        })
+    } else {
+        // Parent process
+
+        // Close the write end of the pipe
+        let res = unsafe { libc::close(child_write_fd) };
+        if res < 0 {
+            return Err(io::Error::last_os_error()).context("Failed to close write end of pipe");
+        }
+
+        Ok(ForkOutput {
+            pid,
+            pipe_fd: parent_read_fd,
+        })
+    }
 }
 
 pub fn set_null_stdin() -> anyhow::Result<()> {
@@ -143,5 +218,12 @@ pub fn set_null_stdin() -> anyhow::Result<()> {
         return Err(io::Error::last_os_error()).context("Failed to close /dev/null fd");
     }
 
+    Ok(())
+}
+
+pub unsafe fn write_to_pipe(pipe_fd: libc::c_int, data: &[u8]) -> anyhow::Result<()> {
+    unsafe { File::from_raw_fd(pipe_fd) }
+        .write_all(data)
+        .context("Failed to write to pipe")?;
     Ok(())
 }
