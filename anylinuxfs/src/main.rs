@@ -32,7 +32,7 @@ use std::{
     path::{Path, PathBuf},
 };
 use url::Url;
-use utils::{StatusError, write_to_pipe};
+use utils::{OutputAction, StatusError, write_to_pipe};
 use wait_timeout::ChildExt;
 
 #[allow(unused)]
@@ -181,7 +181,11 @@ fn drop_privileges(
     Ok(())
 }
 
-fn setup_and_start_vm(config: &Config, dev_info: &DevInfo) -> anyhow::Result<()> {
+fn setup_and_start_vm(
+    config: &Config,
+    dev_info: &DevInfo,
+    before_start: impl FnOnce() -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
     let ctx = unsafe { bindings::krun_create_ctx() }.context("Failed to create context")?;
 
     // TODO: configurable log level?
@@ -291,6 +295,7 @@ fn setup_and_start_vm(config: &Config, dev_info: &DevInfo) -> anyhow::Result<()>
     }
     .context("Failed to set kernel")?;
 
+    before_start().context("Before start callback failed")?;
     unsafe { bindings::krun_start_enter(ctx) }.context("Failed to start VM")?;
 
     Ok(())
@@ -661,7 +666,7 @@ fn run_child(config: Config, comm_write_fd: libc::c_int) -> anyhow::Result<()> {
 
     let mut gvproxy = start_gvproxy(&config)?;
 
-    let forked = utils::fork_with_pty_output()?;
+    let mut forked = utils::fork_with_pty_output(OutputAction::RedirectLater)?;
     if forked.pid == 0 {
         // Child process
         // utils::set_null_stdin()?;
@@ -679,7 +684,7 @@ fn run_child(config: Config, comm_write_fd: libc::c_int) -> anyhow::Result<()> {
             std::process::exit(1);
         }
 
-        setup_and_start_vm(&config, &dev_info)?;
+        setup_and_start_vm(&config, &dev_info, || forked.redirect())?;
     } else {
         // Parent process
 
@@ -715,6 +720,13 @@ fn run_child(config: Config, comm_write_fd: libc::c_int) -> anyhow::Result<()> {
                 // tell the parent to detach from console (i.e. exit)
                 unsafe { write_to_pipe(comm_write_fd, b"detach\n") }
                     .context("Failed to write to pipe")?;
+
+                // stop tee process from printing to the console
+                // (it should continue to log to the specified file)
+                // TODO: figure out a different way to do this
+                // it's broken as long as tee inherits stdout and stderr (we can't use piped)
+                // utils::redirect_to_null(tee_process.stdout.as_ref().unwrap().as_raw_fd())?;
+                // utils::redirect_to_null(tee_process.stderr.as_ref().unwrap().as_raw_fd())?;
             }
 
             // mount nfs share
@@ -749,7 +761,7 @@ fn run_child(config: Config, comm_write_fd: libc::c_int) -> anyhow::Result<()> {
         hnd.join().unwrap();
 
         drop(tee_process.stdin.take().unwrap());
-        wait_for_child(&mut tee_process, "tee")?;
+        terminate_child(&mut tee_process, "tee")?;
     }
 
     Ok(())

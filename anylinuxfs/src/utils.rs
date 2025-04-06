@@ -153,9 +153,24 @@ impl Drop for TeeLogger {
 pub struct ForkOutput {
     pub pid: libc::pid_t,
     pub pipe_fd: libc::c_int,
+    redirect_action: Option<Box<dyn FnOnce() -> anyhow::Result<()>>>,
 }
 
-pub fn fork_with_pty_output() -> anyhow::Result<ForkOutput> {
+impl ForkOutput {
+    pub fn redirect(&mut self) -> anyhow::Result<()> {
+        if let Some(redirect_fn) = self.redirect_action.take() {
+            redirect_fn()?;
+        }
+        Ok(())
+    }
+}
+
+pub enum OutputAction {
+    RedirectNow,
+    RedirectLater,
+}
+
+pub fn fork_with_pty_output(out_action: OutputAction) -> anyhow::Result<ForkOutput> {
     let mut master_fd: libc::c_int = 0;
     let mut slave_fd: libc::c_int = 0;
 
@@ -191,27 +206,47 @@ pub fn fork_with_pty_output() -> anyhow::Result<ForkOutput> {
             return Err(io::Error::last_os_error()).context("Failed to close master end of pty");
         }
 
-        // Redirect stdout and stderr to the slave end of the pty
-        let res = unsafe { libc::dup2(slave_fd, libc::STDOUT_FILENO) };
-        if res < 0 {
-            return Err(io::Error::last_os_error()).context("Failed to redirect stdout to pty");
-        }
-        let res = unsafe { libc::dup2(slave_fd, libc::STDERR_FILENO) };
-        if res < 0 {
-            return Err(io::Error::last_os_error()).context("Failed to redirect stderr to pty");
-        }
+        let redirect_fn = move || -> anyhow::Result<()> {
+            // Redirect stdout and stderr to the slave end of the pty
+            let res = unsafe { libc::dup2(slave_fd, libc::STDOUT_FILENO) };
+            if res < 0 {
+                return Err(io::Error::last_os_error()).context("Failed to redirect stdout to pty");
+            }
+            let res = unsafe { libc::dup2(slave_fd, libc::STDERR_FILENO) };
+            if res < 0 {
+                return Err(io::Error::last_os_error()).context("Failed to redirect stderr to pty");
+            }
 
-        // Redirect stdin to the slave end of the pty
-        let res = unsafe { libc::dup2(slave_fd, libc::STDIN_FILENO) };
-        if res < 0 {
-            return Err(io::Error::last_os_error()).context("Failed to redirect stdin to pty");
-        }
+            // Redirect stdin to the slave end of the pty
+            let res = unsafe { libc::dup2(slave_fd, libc::STDIN_FILENO) };
+            if res < 0 {
+                return Err(io::Error::last_os_error()).context("Failed to redirect stdin to pty");
+            }
 
-        // Close the slave end of the pty
-        let res = unsafe { libc::close(slave_fd) };
-        if res < 0 {
-            return Err(io::Error::last_os_error()).context("Failed to close slave end of pty");
-        }
+            // Close the slave end of the pty
+            let res = unsafe { libc::close(slave_fd) };
+            if res < 0 {
+                return Err(io::Error::last_os_error()).context("Failed to close slave end of pty");
+            }
+
+            Ok(())
+        };
+
+        let redirect_action = match out_action {
+            OutputAction::RedirectNow => {
+                redirect_fn()?;
+                None
+            }
+            OutputAction::RedirectLater => {
+                Some(Box::new(redirect_fn) as Box<dyn FnOnce() -> anyhow::Result<()>>)
+            }
+        };
+
+        Ok(ForkOutput {
+            pid,
+            pipe_fd: slave_fd,
+            redirect_action,
+        })
     } else {
         // Parent process
 
@@ -220,12 +255,13 @@ pub fn fork_with_pty_output() -> anyhow::Result<ForkOutput> {
         if res < 0 {
             return Err(io::Error::last_os_error()).context("Failed to close slave end of pty");
         }
-    }
 
-    Ok(ForkOutput {
-        pid,
-        pipe_fd: master_fd,
-    })
+        Ok(ForkOutput {
+            pid,
+            pipe_fd: master_fd,
+            redirect_action: None,
+        })
+    }
 }
 
 pub fn fork_with_piped_output() -> anyhow::Result<ForkOutput> {
@@ -277,6 +313,7 @@ pub fn fork_with_piped_output() -> anyhow::Result<ForkOutput> {
     Ok(ForkOutput {
         pid,
         pipe_fd: child_read_fd,
+        redirect_action: None,
     })
 }
 
@@ -307,6 +344,7 @@ pub fn fork_with_comm_pipe() -> anyhow::Result<ForkOutput> {
         Ok(ForkOutput {
             pid,
             pipe_fd: child_write_fd,
+            redirect_action: None,
         })
     } else {
         // Parent process
@@ -320,16 +358,17 @@ pub fn fork_with_comm_pipe() -> anyhow::Result<ForkOutput> {
         Ok(ForkOutput {
             pid,
             pipe_fd: parent_read_fd,
+            redirect_action: None,
         })
     }
 }
 
-pub fn set_null_stdin() -> anyhow::Result<()> {
+pub fn redirect_to_null(fd: libc::c_int) -> anyhow::Result<()> {
     let dev_null_fd = unsafe { libc::open(b"/dev/null\0".as_ptr() as *const i8, libc::O_RDONLY) };
     if dev_null_fd < 0 {
         return Err(io::Error::last_os_error()).context("Failed to open /dev/null");
     }
-    let res = unsafe { libc::dup2(dev_null_fd, libc::STDIN_FILENO) };
+    let res = unsafe { libc::dup2(dev_null_fd, fd) };
     if res < 0 {
         return Err(io::Error::last_os_error()).context("Failed to redirect stdin to /dev/null");
     }
