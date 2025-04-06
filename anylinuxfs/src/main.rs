@@ -720,13 +720,6 @@ fn run_child(config: Config, comm_write_fd: libc::c_int) -> anyhow::Result<()> {
                 // tell the parent to detach from console (i.e. exit)
                 unsafe { write_to_pipe(comm_write_fd, b"detach\n") }
                     .context("Failed to write to pipe")?;
-
-                // stop tee process from printing to the console
-                // (it should continue to log to the specified file)
-                // TODO: figure out a different way to do this
-                // it's broken as long as tee inherits stdout and stderr (we can't use piped)
-                // utils::redirect_to_null(tee_process.stdout.as_ref().unwrap().as_raw_fd())?;
-                // utils::redirect_to_null(tee_process.stderr.as_ref().unwrap().as_raw_fd())?;
             }
 
             // mount nfs share
@@ -787,6 +780,12 @@ fn run_parent(forked: utils::ForkOutput) -> anyhow::Result<()> {
             // child is signalling it will continue to run
             // in the background; we can exit without waiting
             host_println!("Detaching from console");
+
+            // stop this process from printing to the console
+            // (tee should continue to log to the specified file)
+            // TODO: this is also not working - figure it out differently
+            // utils::redirect_to_null(libc::STDOUT_FILENO)?;
+            // utils::redirect_to_null(libc::STDERR_FILENO)?;
             break;
         }
 
