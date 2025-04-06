@@ -1,15 +1,38 @@
 macro_rules! host_println {
     ($($arg:tt)*) => {
-        println!("macOS: {}", format!($($arg)*))
+        crate::log::fn_impl::host_println(format!($($arg)*))
     };
 }
-
-pub(crate) use host_println;
 
 macro_rules! host_eprintln {
     ($($arg:tt)*) => {
-        eprintln!("macOS: {}", format!($($arg)*))
+        crate::log::fn_impl::host_eprintln(format!($($arg)*))
     };
 }
 
+macro_rules! guest_print {
+    ($($arg:tt)*) => {
+        crate::log::fn_impl::guest_print(format!($($arg)*))
+    };
+}
+
+pub(crate) use guest_print;
 pub(crate) use host_eprintln;
+pub(crate) use host_println;
+
+pub mod fn_impl {
+    const HOST_PREFIX: &str = "macOS";
+    const GUEST_PREFIX: &str = "Linux";
+
+    pub fn host_println(msg: String) {
+        println!("{}: {}", HOST_PREFIX, msg)
+    }
+
+    pub fn host_eprintln(msg: String) {
+        eprintln!("{}: {}", HOST_PREFIX, msg)
+    }
+
+    pub fn guest_print(msg: String) {
+        print!("{}: {}", GUEST_PREFIX, msg)
+    }
+}

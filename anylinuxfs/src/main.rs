@@ -1,7 +1,7 @@
 use anyhow::{Context, anyhow};
 use clap::Parser;
 use devinfo::DevInfo;
-use log::{host_eprintln, host_println};
+use log::{guest_print, host_eprintln, host_println};
 use nanoid::nanoid;
 use objc2_core_foundation::{
     CFDictionary, CFDictionaryGetValueIfPresent, CFRetained, CFRunLoopGetCurrent, CFRunLoopRun,
@@ -121,8 +121,9 @@ fn load_config() -> anyhow::Result<Config> {
         .context("Failed to get prefix directory")?;
 
     // ~/.anylinuxfs/alpine/rootfs
-    let root_path = homedir::my_home()?
+    let root_path = homedir::my_home()
         .context("Failed to get home directory")?
+        .context("Home directory not found")?
         .join(".anylinuxfs")
         .join("alpine")
         .join("rootfs");
@@ -696,7 +697,7 @@ fn run_child(config: Config, comm_write_fd: libc::c_int) -> anyhow::Result<()> {
                 if bytes == 0 {
                     break; // EOF
                 }
-                print!("Linux: {}", line);
+                guest_print!("{}", line);
                 line.clear();
             }
         });
