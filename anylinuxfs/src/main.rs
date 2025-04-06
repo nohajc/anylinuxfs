@@ -650,7 +650,8 @@ fn init_rootfs_if_needed(config: &Config) -> anyhow::Result<()> {
 }
 
 fn run_child(config: Config, comm_write_fd: libc::c_int) -> anyhow::Result<()> {
-    let mut tee_process = utils::redirect_all_to_tee(&config, "anylinuxfs-log.txt")?;
+    // TODO: create log under ~/Library/Logs/
+    let mut tail_process = utils::redirect_all_to_file_and_tail_it(&config, "anylinuxfs-log.txt")?;
     init_rootfs_if_needed(&config)?;
 
     // host_println!("disk_path: {}", config.disk_path);
@@ -708,6 +709,7 @@ fn run_child(config: Config, comm_write_fd: libc::c_int) -> anyhow::Result<()> {
         // TODO: Can we actually wait for the guest NFS server to be ready?
         // It seems the port is open as soon as port forwarding is configured.
         let is_open = wait_for_port(111).unwrap_or(false);
+        let mut console_attached = true;
 
         if is_open {
             host_println!("Port 111 is open");
@@ -721,6 +723,10 @@ fn run_child(config: Config, comm_write_fd: libc::c_int) -> anyhow::Result<()> {
                 // tell the parent to detach from console (i.e. exit)
                 unsafe { write_to_pipe(comm_write_fd, b"detach\n") }
                     .context("Failed to write to pipe")?;
+
+                // stop printing to the console
+                terminate_child(&mut tail_process, "tail")?;
+                console_attached = false;
             }
 
             // mount nfs share
@@ -754,8 +760,9 @@ fn run_child(config: Config, comm_write_fd: libc::c_int) -> anyhow::Result<()> {
 
         hnd.join().unwrap();
 
-        drop(tee_process.stdin.take().unwrap());
-        terminate_child(&mut tee_process, "tee")?;
+        if console_attached {
+            terminate_child(&mut tail_process, "tail")?;
+        }
     }
 
     Ok(())
@@ -781,12 +788,6 @@ fn run_parent(forked: utils::ForkOutput) -> anyhow::Result<()> {
             // child is signalling it will continue to run
             // in the background; we can exit without waiting
             host_println!("Detaching from console");
-
-            // stop this process from printing to the console
-            // (tee should continue to log to the specified file)
-            // TODO: this is also not working - figure it out differently
-            // utils::redirect_to_null(libc::STDOUT_FILENO)?;
-            // utils::redirect_to_null(libc::STDERR_FILENO)?;
             break;
         }
 

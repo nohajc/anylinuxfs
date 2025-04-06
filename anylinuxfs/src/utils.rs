@@ -1,7 +1,7 @@
 use std::{
     error::Error,
     fs::File,
-    io::{self, BufRead, BufReader, Write},
+    io::{self, Write},
     os::{
         fd::{AsRawFd, FromRawFd},
         unix::process::CommandExt,
@@ -51,6 +51,7 @@ impl ForkOutput {
     }
 }
 
+#[allow(unused)]
 pub enum OutputAction {
     RedirectNow,
     RedirectLater,
@@ -273,8 +274,39 @@ pub unsafe fn write_to_pipe(pipe_fd: libc::c_int, data: &[u8]) -> anyhow::Result
     Ok(())
 }
 
-// TODO: find out how to stop printing to console after console detach
-pub fn redirect_all_to_tee(config: &Config, log_file: &str) -> io::Result<std::process::Child> {
+pub fn redirect_all_to_file_and_tail_it(
+    config: &Config,
+    log_file_path: &str,
+) -> anyhow::Result<std::process::Child> {
+    // Ensure the log file exists
+    let log_file = File::create(log_file_path).context("Failed to create log file")?;
+    // Spawn the `tail` process
+    let mut tail_cmd = Command::new("/usr/bin/tail");
+    tail_cmd.arg("-f").arg(log_file_path);
+
+    if let (Some(uid), Some(gid)) = (config.sudo_uid, config.sudo_gid) {
+        // run tail with dropped privileges
+        tail_cmd.uid(uid).gid(gid);
+    }
+
+    let tail_process = tail_cmd.spawn()?;
+
+    // Redirect stdout and stderr to the log file
+    let log_file_fd = log_file.as_raw_fd();
+    let res = unsafe { libc::dup2(log_file_fd, libc::STDOUT_FILENO) };
+    if res < 0 {
+        return Err(io::Error::last_os_error()).context("Failed to redirect stdout to log file");
+    }
+    let res = unsafe { libc::dup2(log_file_fd, libc::STDERR_FILENO) };
+    if res < 0 {
+        return Err(io::Error::last_os_error()).context("Failed to redirect stderr to log file");
+    }
+
+    // Return the `tail` process handle so the caller can manage it
+    Ok(tail_process)
+}
+
+pub fn redirect_all_to_tee(config: &Config, log_file: &str) -> anyhow::Result<std::process::Child> {
     // Spawn the `tee` process
     let mut tee_cmd = Command::new("/usr/bin/tee");
 
@@ -293,13 +325,16 @@ pub fn redirect_all_to_tee(config: &Config, log_file: &str) -> io::Result<std::p
 
     // Redirect `stdout` to the `tee` process
     let tee_stdin_fd = tee_stdin.as_raw_fd();
-    unsafe {
-        libc::dup2(tee_stdin_fd, libc::STDOUT_FILENO);
+    // Redirect `stdout` to the `tee` process
+    let res = unsafe { libc::dup2(tee_stdin_fd, libc::STDOUT_FILENO) };
+    if res < 0 {
+        return Err(io::Error::last_os_error()).context("Failed to redirect stdout to tee process");
     }
 
     // Redirect `stderr` to the `tee` process
-    unsafe {
-        libc::dup2(tee_stdin_fd, libc::STDERR_FILENO);
+    let res = unsafe { libc::dup2(tee_stdin_fd, libc::STDERR_FILENO) };
+    if res < 0 {
+        return Err(io::Error::last_os_error()).context("Failed to redirect stderr to tee process");
     }
 
     // Return the `tee` process handle so the caller can manage it
