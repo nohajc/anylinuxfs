@@ -11,7 +11,6 @@ use objc2_disk_arbitration::{
     DADisk, DADiskCopyDescription, DARegisterDiskDisappearedCallback, DASessionCreate,
     DASessionScheduleWithRunLoop, DAUnregisterCallback,
 };
-use procutils::{StatusError, write_to_pipe};
 use std::ffi::c_void;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -33,6 +32,7 @@ use std::{
     path::{Path, PathBuf},
 };
 use url::Url;
+use utils::{StatusError, write_to_pipe};
 use wait_timeout::ChildExt;
 
 #[allow(unused)]
@@ -41,7 +41,7 @@ mod devinfo;
 mod log;
 
 #[allow(unused)]
-mod procutils;
+mod utils;
 
 fn main() {
     if let Err(e) = run() {
@@ -549,13 +549,7 @@ fn send_quit_cmd(config: &Config) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn terminate_child(child: &mut Child, child_name: &str) -> anyhow::Result<()> {
-    // Terminate child process
-    if unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) } < 0 {
-        return Err(io::Error::last_os_error())
-            .context(format!("Failed to send SIGTERM to {child_name}"));
-    }
-
+fn wait_for_child(child: &mut Child, child_name: &str) -> anyhow::Result<()> {
     // Wait for child process to exit
     let child_status = child.wait_timeout(Duration::from_secs(5))?;
     match child_status {
@@ -570,6 +564,16 @@ fn terminate_child(child: &mut Child, child_name: &str) -> anyhow::Result<()> {
     .map(|s| host_println!("{} exited with status: {}", child_name, s));
 
     Ok(())
+}
+
+fn terminate_child(child: &mut Child, child_name: &str) -> anyhow::Result<()> {
+    // Terminate child process
+    if unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) } < 0 {
+        return Err(io::Error::last_os_error())
+            .context(format!("Failed to send SIGTERM to {child_name}"));
+    }
+
+    wait_for_child(child, child_name)
 }
 
 fn wait_for_file(file: impl AsRef<Path>) -> anyhow::Result<()> {
@@ -640,6 +644,7 @@ fn init_rootfs_if_needed(config: &Config) -> anyhow::Result<()> {
 }
 
 fn run_child(config: Config, comm_write_fd: libc::c_int) -> anyhow::Result<()> {
+    let mut tee_process = utils::redirect_all_to_tee(&config, "anylinuxfs-log.txt")?;
     init_rootfs_if_needed(&config)?;
 
     // host_println!("disk_path: {}", config.disk_path);
@@ -656,10 +661,10 @@ fn run_child(config: Config, comm_write_fd: libc::c_int) -> anyhow::Result<()> {
 
     let mut gvproxy = start_gvproxy(&config)?;
 
-    let forked = procutils::fork_with_pty_output()?;
+    let forked = utils::fork_with_pty_output()?;
     if forked.pid == 0 {
         // Child process
-        // procutils::set_null_stdin()?;
+        // utils::set_null_stdin()?;
 
         wait_for_file(&config.vfkit_sock_path)?;
 
@@ -742,12 +747,15 @@ fn run_child(config: Config, comm_write_fd: libc::c_int) -> anyhow::Result<()> {
         gvproxy_cleanup(&config)?;
 
         hnd.join().unwrap();
+
+        drop(tee_process.stdin.take().unwrap());
+        wait_for_child(&mut tee_process, "tee")?;
     }
 
     Ok(())
 }
 
-fn run_parent(forked: procutils::ForkOutput) -> anyhow::Result<()> {
+fn run_parent(forked: utils::ForkOutput) -> anyhow::Result<()> {
     let comm_read_fd = forked.pipe_fd;
     let mut buf_reader = BufReader::new(unsafe { File::from_raw_fd(comm_read_fd) });
     let mut line = String::new();
@@ -781,7 +789,7 @@ fn run() -> anyhow::Result<()> {
 
     let config = load_config()?;
 
-    let forked = procutils::fork_with_comm_pipe()?;
+    let forked = utils::fork_with_comm_pipe()?;
     if forked.pid == 0 {
         run_child(config, forked.pipe_fd)
     } else {
