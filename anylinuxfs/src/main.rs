@@ -101,6 +101,27 @@ fn is_read_only_set(mount_options: Option<&str>) -> bool {
 }
 
 fn load_config() -> anyhow::Result<Config> {
+    let sudo_uid = env::var("SUDO_UID")
+        .map_err(anyhow::Error::from)
+        .and_then(|s| Ok(s.parse::<libc::uid_t>()?))
+        .ok();
+    // if let Some(sudo_uid) = sudo_uid {
+    //     host_println!("sudo_uid = {}", sudo_uid);
+    // }
+
+    let sudo_gid = env::var("SUDO_GID")
+        .map_err(anyhow::Error::from)
+        .and_then(|s| Ok(s.parse::<libc::gid_t>()?))
+        .ok();
+    // if let Some(sudo_gid) = sudo_gid {
+    //     host_println!("sudo_gid = {}", sudo_gid);
+    // }
+
+    if unsafe { libc::getuid() } == 0 && (sudo_uid.is_none() || sudo_gid.is_none()) {
+        host_eprintln!("This program must not be run directly by root but you can use sudo");
+        std::process::exit(1);
+    }
+
     let cli = Cli::parse();
     let (disk_path, mount_options) = if !cli.disk_path.is_empty() {
         (cli.disk_path, cli.options)
@@ -133,22 +154,6 @@ fn load_config() -> anyhow::Result<Config> {
 
     let kernel_path = prefix_dir.join("libexec").join("Image").to_owned();
     let gvproxy_path = prefix_dir.join("libexec").join("gvproxy").to_owned();
-
-    let sudo_uid = env::var("SUDO_UID")
-        .map_err(anyhow::Error::from)
-        .and_then(|s| Ok(s.parse::<libc::uid_t>()?))
-        .ok();
-    // if let Some(sudo_uid) = sudo_uid {
-    //     host_println!("sudo_uid = {}", sudo_uid);
-    // }
-
-    let sudo_gid = env::var("SUDO_GID")
-        .map_err(anyhow::Error::from)
-        .and_then(|s| Ok(s.parse::<libc::gid_t>()?))
-        .ok();
-    // if let Some(sudo_gid) = sudo_gid {
-    //     host_println!("sudo_gid = {}", sudo_gid);
-    // }
 
     let vsock_path = format!("/tmp/anylinuxfs-{}-vsock", rand_string(8));
     let vfkit_sock_path = format!("/tmp/vfkit-{}.sock", rand_string(8));
