@@ -1,10 +1,9 @@
 use anyhow::{Context, anyhow};
-use common_utils::terminate_child;
 use libc::VMADDR_CID_ANY;
 use serde::Serialize;
 use std::env;
 use std::io::{BufRead, Write};
-use std::process::{Command, ExitCode};
+use std::process::{Child, Command, ExitCode};
 use std::time::Duration;
 use std::{fs, io::BufReader};
 use sys_mount::{UnmountFlags, unmount};
@@ -118,6 +117,10 @@ fn is_read_only_set(mount_options: Option<&str>) -> bool {
     } else {
         false
     }
+}
+
+pub fn terminate_child(child: &mut Child, child_name: &str) -> anyhow::Result<()> {
+    common_utils::terminate_child(child, child_name, |s| println!("{}", s))
 }
 
 fn main() -> ExitCode {

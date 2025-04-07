@@ -1,6 +1,6 @@
 use anyhow::{Context, anyhow};
 use clap::Parser;
-use common_utils::{guest_print, host_eprintln, host_println, terminate_child};
+use common_utils::{guest_print, host_eprintln, host_println};
 use devinfo::DevInfo;
 use nanoid::nanoid;
 use objc2_core_foundation::{
@@ -586,6 +586,10 @@ fn send_quit_cmd(config: &Config) -> anyhow::Result<()> {
     Ok(())
 }
 
+pub fn terminate_child(child: &mut Child, child_name: &str) -> anyhow::Result<()> {
+    common_utils::terminate_child(child, child_name, |s| host_println!("{}", s))
+}
+
 fn wait_for_file(file: impl AsRef<Path>) -> anyhow::Result<()> {
     let start = std::time::Instant::now();
     while !file.as_ref().exists() {
@@ -728,7 +732,9 @@ fn run_child(config: Config, comm_write_fd: libc::c_int) -> anyhow::Result<()> {
 
                 // stop printing to the console
                 if let Some(mut tail_proc) = tail_process {
-                    terminate_child(&mut tail_proc, "tail")?;
+                    if let Err(e) = terminate_child(&mut tail_proc, "tail") {
+                        host_eprintln!("{:#}", e);
+                    }
                     tail_process = None;
                 }
             }
