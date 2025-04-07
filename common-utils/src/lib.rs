@@ -7,7 +7,7 @@ pub mod log;
 pub fn wait_for_child(
     child: &mut Child,
     child_name: &str,
-    log_fn: impl Fn(String),
+    log_prefix: Option<log::Prefix>,
 ) -> anyhow::Result<()> {
     // Wait for child process to exit
     let child_status = child
@@ -17,14 +17,16 @@ pub fn wait_for_child(
         Some(status) => status.code(),
         None => {
             // Send SIGKILL to child process
-            log_fn(format!(
-                "timeout reached, force killing {child_name} process"
-            ));
+            prefix_println!(
+                log_prefix,
+                "timeout reached, force killing {} process",
+                child_name
+            );
             child.kill()?;
             child.wait()?.code()
         }
     }
-    .map(|s| log_fn(format!("{} exited with status: {}", child_name, s)));
+    .map(|s| prefix_println!(log_prefix, "{} exited with status: {}", child_name, s));
 
     Ok(())
 }
@@ -32,7 +34,7 @@ pub fn wait_for_child(
 pub fn terminate_child(
     child: &mut Child,
     child_name: &str,
-    log_fn: impl Fn(String),
+    log_prefix: Option<log::Prefix>,
 ) -> anyhow::Result<()> {
     // Terminate child process
     if unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) } < 0 {
@@ -40,5 +42,5 @@ pub fn terminate_child(
             .context(format!("Failed to send SIGTERM to {child_name}"));
     }
 
-    wait_for_child(child, child_name, log_fn)
+    wait_for_child(child, child_name, log_prefix)
 }

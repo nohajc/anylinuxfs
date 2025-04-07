@@ -119,8 +119,8 @@ fn is_read_only_set(mount_options: Option<&str>) -> bool {
     }
 }
 
-pub fn terminate_child(child: &mut Child, child_name: &str) -> anyhow::Result<()> {
-    common_utils::terminate_child(child, child_name, |s| println!("{}", s))
+fn terminate_child(child: &mut Child, child_name: &str) -> anyhow::Result<()> {
+    common_utils::terminate_child(child, child_name, None)
 }
 
 fn main() -> ExitCode {

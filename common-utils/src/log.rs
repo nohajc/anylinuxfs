@@ -1,37 +1,55 @@
+pub const HOST_PREFIX: &str = "macOS";
+pub const GUEST_PREFIX: &str = "Linux";
+
+pub enum Prefix {
+    Host,
+    Guest,
+}
+
+#[macro_export]
+macro_rules! println_impl {
+    ($print_macro:ident, $prefix:ident, $fmt:expr, $($args:tt)*) => {
+        $print_macro!(concat!("{}: ", $fmt), $crate::log::$prefix, $($args)*);
+    };
+    ($print_macro:ident, $prefix:ident, $fmt:expr) => {
+        $crate::println_impl!($print_macro, $prefix, $fmt, );
+    };
+}
+
 #[macro_export]
 macro_rules! host_println {
     ($($arg:tt)*) => {
-        $crate::log::fn_impl::host_println(format!($($arg)*))
+        $crate::println_impl!(println, HOST_PREFIX, $($arg)*);
     };
 }
 
 #[macro_export]
 macro_rules! host_eprintln {
     ($($arg:tt)*) => {
-        $crate::log::fn_impl::host_eprintln(format!($($arg)*))
+        $crate::println_impl!(eprintln, HOST_PREFIX, $($arg)*);
     };
 }
 
 #[macro_export]
 macro_rules! guest_print {
     ($($arg:tt)*) => {
-        $crate::log::fn_impl::guest_print(format!($($arg)*))
+        $crate::println_impl!(print, GUEST_PREFIX, $($arg)*);
     };
 }
 
-pub mod fn_impl {
-    const HOST_PREFIX: &str = "macOS";
-    const GUEST_PREFIX: &str = "Linux";
-
-    pub fn host_println(msg: String) {
-        println!("{}: {}", HOST_PREFIX, msg)
-    }
-
-    pub fn host_eprintln(msg: String) {
-        eprintln!("{}: {}", HOST_PREFIX, msg)
-    }
-
-    pub fn guest_print(msg: String) {
-        print!("{}: {}", GUEST_PREFIX, msg)
-    }
+#[macro_export]
+macro_rules! prefix_println {
+    ($prefix:ident, $($arg:tt)*) => {
+        match $prefix {
+            Some($crate::log::Prefix::Host) => {
+                $crate::println_impl!(println, HOST_PREFIX, $($arg)*);
+            }
+            Some($crate::log::Prefix::Guest) => {
+                $crate::println_impl!(println, GUEST_PREFIX, $($arg)*);
+            }
+            None => {
+                println!($($arg)*);
+            }
+        }
+    };
 }

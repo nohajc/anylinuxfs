@@ -1,6 +1,6 @@
 use anyhow::{Context, anyhow};
 use clap::Parser;
-use common_utils::{guest_print, host_eprintln, host_println};
+use common_utils::{guest_print, host_eprintln, host_println, log};
 use devinfo::DevInfo;
 use nanoid::nanoid;
 use objc2_core_foundation::{
@@ -586,8 +586,8 @@ fn send_quit_cmd(config: &Config) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn terminate_child(child: &mut Child, child_name: &str) -> anyhow::Result<()> {
-    common_utils::terminate_child(child, child_name, |s| host_println!("{}", s))
+fn terminate_child(child: &mut Child, child_name: &str) -> anyhow::Result<()> {
+    common_utils::terminate_child(child, child_name, Some(log::Prefix::Host))
 }
 
 fn wait_for_file(file: impl AsRef<Path>) -> anyhow::Result<()> {
