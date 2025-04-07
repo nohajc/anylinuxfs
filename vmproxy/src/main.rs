@@ -1,7 +1,7 @@
 use anyhow::{Context, anyhow};
+use clap::Parser;
 use libc::VMADDR_CID_ANY;
 use serde::Serialize;
-use std::env;
 use std::io::{BufRead, Write};
 use std::process::{Child, Command, ExitCode};
 use std::time::Duration;
@@ -9,17 +9,16 @@ use std::{fs, io::BufReader};
 use sys_mount::{UnmountFlags, unmount};
 use vsock::{VsockAddr, VsockListener};
 
-fn _list_dir(dir: &str) {
-    match fs::read_dir(dir) {
-        Ok(entries) => {
-            for entry in entries {
-                if let Ok(entry) = entry {
-                    println!("{}", entry.path().display());
-                }
-            }
-        }
-        Err(e) => eprintln!("Failed to read {} directory: {}", dir, e),
-    }
+#[derive(Parser)]
+#[command(version, about, long_about = None)]
+struct Cli {
+    mount_name: Option<String>,
+    #[arg(short = 't', long = "types")]
+    fs_type: Option<String>,
+    #[arg(short = 'o', long = "options")]
+    mount_options: Option<String>,
+    #[arg(short, long)]
+    verbose: bool,
 }
 
 #[derive(Serialize, Debug)]
@@ -141,13 +140,12 @@ fn run() -> anyhow::Result<()> {
     //     println!("{} = {:?}", key, value);
     // }
 
-    let mount_point = format!(
-        "/mnt/{}",
-        env::args().nth(1).unwrap_or("hostblk".to_owned())
-    );
+    let cli = Cli::parse();
 
-    let fs_type = env::args().nth(2);
-    let mount_options = env::args().nth(3);
+    let mount_point = format!("/mnt/{}", cli.mount_name.unwrap_or("hostblk".to_owned()));
+    let fs_type = cli.fs_type;
+    let mount_options = cli.mount_options;
+    let verbose = cli.verbose;
 
     fs::create_dir_all(&mount_point)
         .context(format!("Failed to create directory '{}'", &mount_point))?;
@@ -183,7 +181,8 @@ fn run() -> anyhow::Result<()> {
             .as_deref()
             .into_iter()
             .flat_map(|opts| ["-o", opts]),
-    );
+    )
+    .chain(verbose.then_some("-v").into_iter());
 
     let mnt_args: Vec<&str> = mnt_args.collect();
     println!("mount args: {:?}", &mnt_args);

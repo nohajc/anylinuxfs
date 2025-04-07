@@ -275,6 +275,7 @@ fn setup_and_start_vm(
         // CString::new("false").unwrap(),
         CString::new("/vmproxy").unwrap(),
         CString::new(dev_info.auto_mount_name()).unwrap(),
+        CString::new("-t").unwrap(),
         CString::new(dev_info.fs_type().unwrap_or("auto")).unwrap(),
     ]
     .into_iter()
@@ -283,9 +284,17 @@ fn setup_and_start_vm(
             .mount_options
             .as_deref()
             .into_iter()
-            .map(|s| CString::new(s).unwrap()),
+            .flat_map(|opts| [CString::new("-o").unwrap(), CString::new(opts).unwrap()]),
     )
-    .collect(); // TODO: propagate verbose flag
+    .chain(
+        config
+            .verbose
+            .then_some(CString::new("-v").unwrap())
+            .into_iter(),
+    )
+    .collect();
+
+    // host_println!("vmproxy args: {:?}", &args);
 
     // let args = vec![CString::new("/bin/bash").unwrap()];
     let argv = args
