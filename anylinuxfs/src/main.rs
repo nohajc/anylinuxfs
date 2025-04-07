@@ -273,6 +273,8 @@ fn setup_and_start_vm(
 
     let args: Vec<_> = [
         // CString::new("/bin/bash").unwrap(),
+        // CString::new("-c").unwrap(),
+        // CString::new("false").unwrap(),
         CString::new("/vmproxy").unwrap(),
         CString::new(dev_info.auto_mount_name()).unwrap(),
         CString::new(dev_info.fs_type().unwrap_or("auto")).unwrap(),
