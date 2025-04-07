@@ -6,7 +6,6 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.97"
 libc = "0.2.171"
-wait-timeout = "0.2.1"
 objc2-core-foundation = "0.3.0"
 objc2-disk-arbitration = "0.3.0"
 url = "2.5.4"
@@ -14,6 +13,7 @@ nanoid = "0.4.0"
 libblkid-rs = "0.4.0"
 clap = { version = "4.5.32", features = ["derive"] }
 homedir = "0.3.4"
+common_utils = { path = "../common-utils" }
 
 [patch.crates-io]
 #libblkid-rs = { git = 'https://github.com/stratis-storage/libblkid-rs.git' }

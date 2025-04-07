@@ -1,24 +1,23 @@
+#[macro_export]
 macro_rules! host_println {
     ($($arg:tt)*) => {
-        crate::log::fn_impl::host_println(format!($($arg)*))
+        $crate::log::fn_impl::host_println(format!($($arg)*))
     };
 }
 
+#[macro_export]
 macro_rules! host_eprintln {
     ($($arg:tt)*) => {
-        crate::log::fn_impl::host_eprintln(format!($($arg)*))
+        $crate::log::fn_impl::host_eprintln(format!($($arg)*))
     };
 }
 
+#[macro_export]
 macro_rules! guest_print {
     ($($arg:tt)*) => {
-        crate::log::fn_impl::guest_print(format!($($arg)*))
+        $crate::log::fn_impl::guest_print(format!($($arg)*))
     };
 }
-
-pub(crate) use guest_print;
-pub(crate) use host_eprintln;
-pub(crate) use host_println;
 
 pub mod fn_impl {
     const HOST_PREFIX: &str = "macOS";

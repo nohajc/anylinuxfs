@@ -1,8 +1,9 @@
 use anyhow::{Context, anyhow};
+use common_utils::terminate_child;
 use libc::VMADDR_CID_ANY;
 use serde::Serialize;
 use std::env;
-use std::io::{self, BufRead, Write};
+use std::io::{BufRead, Write};
 use std::process::{Command, ExitCode};
 use std::time::Duration;
 use std::{fs, io::BufReader};
@@ -240,20 +241,24 @@ fn run() -> anyhow::Result<()> {
     //     ));
     // }
 
-    let mut hnd = Command::new("/usr/local/bin/entrypoint.sh")
+    match Command::new("/usr/local/bin/entrypoint.sh")
         // .env("NFS_VERSION", "3")
         // .env("NFS_DISABLE_VERSION_3", "1")
         .spawn()
-        .context("Failed to execute /usr/local/bin/entrypoint.sh")?;
+    {
+        Ok(mut hnd) => {
+            if let Err(e) = wait_for_quit_cmd() {
+                eprintln!("Error while waiting for quit command: {:#}", e);
+            }
 
-    wait_for_quit_cmd()?;
-
-    // TODO: we should also wait with timeout and SIGKILL if necessary
-    if unsafe { libc::kill(hnd.id() as i32, libc::SIGTERM) } < 0 {
-        return Err(io::Error::last_os_error()).context(format!("Failed to send SIGTERM"));
+            if let Err(e) = terminate_child(&mut hnd, "entrypoint.sh") {
+                eprintln!("{:#}", e);
+            }
+        }
+        Err(e) => {
+            eprintln!("Failed to start entrypoint.sh: {:#}", e);
+        }
     }
-    hnd.wait()
-        .context("Failed to wait for /usr/local/bin/entrypoint.sh to finish")?;
 
     let mut backoff = Duration::from_secs(1);
     while let Err(e) = unmount(&mount_point, UnmountFlags::empty()) {

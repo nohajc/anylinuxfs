@@ -1,7 +1,7 @@
 use anyhow::{Context, anyhow};
 use clap::Parser;
+use common_utils::{guest_print, host_eprintln, host_println, terminate_child};
 use devinfo::DevInfo;
-use log::{guest_print, host_eprintln, host_println};
 use nanoid::nanoid;
 use objc2_core_foundation::{
     CFDictionary, CFDictionaryGetValueIfPresent, CFRetained, CFRunLoopGetCurrent, CFRunLoopRun,
@@ -33,12 +33,10 @@ use std::{
 };
 use url::Url;
 use utils::{OutputAction, StatusError, write_to_pipe};
-use wait_timeout::ChildExt;
 
 #[allow(unused)]
 mod bindings;
 mod devinfo;
-mod log;
 
 #[allow(unused)]
 mod utils;
@@ -70,7 +68,7 @@ struct Config {
     sudo_uid: Option<libc::uid_t>,
     sudo_gid: Option<libc::gid_t>,
     mount_options: Option<String>,
-    quiet: bool,
+    verbose: bool,
 }
 
 fn rand_string(len: usize) -> String {
@@ -161,7 +159,7 @@ fn load_config() -> anyhow::Result<Config> {
     let vsock_path = format!("/tmp/anylinuxfs-{}-vsock", rand_string(8));
     let vfkit_sock_path = format!("/tmp/vfkit-{}.sock", rand_string(8));
 
-    let quiet = !cli.verbose;
+    let verbose = cli.verbose;
 
     Ok(Config {
         disk_path,
@@ -176,7 +174,7 @@ fn load_config() -> anyhow::Result<Config> {
         sudo_uid,
         sudo_gid,
         mount_options,
-        quiet,
+        verbose,
     })
 }
 
@@ -588,33 +586,6 @@ fn send_quit_cmd(config: &Config) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn wait_for_child(child: &mut Child, child_name: &str) -> anyhow::Result<()> {
-    // Wait for child process to exit
-    let child_status = child.wait_timeout(Duration::from_secs(5))?;
-    match child_status {
-        Some(status) => status.code(),
-        None => {
-            // Send SIGKILL to child process
-            host_println!("timeout reached, force killing {child_name} process");
-            child.kill()?;
-            child.wait()?.code()
-        }
-    }
-    .map(|s| host_println!("{} exited with status: {}", child_name, s));
-
-    Ok(())
-}
-
-fn terminate_child(child: &mut Child, child_name: &str) -> anyhow::Result<()> {
-    // Terminate child process
-    if unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) } < 0 {
-        return Err(io::Error::last_os_error())
-            .context(format!("Failed to send SIGTERM to {child_name}"));
-    }
-
-    wait_for_child(child, child_name)
-}
-
 fn wait_for_file(file: impl AsRef<Path>) -> anyhow::Result<()> {
     let start = std::time::Instant::now();
     while !file.as_ref().exists() {
@@ -803,7 +774,9 @@ fn run_child(config: Config, comm_write_fd: libc::c_int) -> anyhow::Result<()> {
         hnd.join().unwrap();
 
         if let Some(mut tail_proc) = tail_process {
-            terminate_child(&mut tail_proc, "tail")?;
+            if let Err(e) = terminate_child(&mut tail_proc, "tail") {
+                host_eprintln!("{:#}", e);
+            }
         }
 
         if status != 0 {

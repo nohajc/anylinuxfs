@@ -292,9 +292,9 @@ pub fn redirect_all_to_file_and_tail_it(
     }
 
     touch_cmd.status().context("Failed to touch log file")?;
-    let tail_process = match config.quiet {
-        true => None,
-        false => Some(tail_cmd.spawn()?),
+    let tail_process = match config.verbose {
+        false => None,
+        true => Some(tail_cmd.spawn()?),
     };
 
     // Redirect stdout and stderr to the log file

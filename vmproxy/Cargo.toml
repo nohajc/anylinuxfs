@@ -11,3 +11,4 @@ reqwest = { version = "0.12.15", default-features = false, features = ["blocking
 serde = { version = "1.0.219", features = ["derive"] }
 sys-mount = { version = "3.0.1", default-features = false }
 vsock = "0.5.1"
+common_utils = { path = "../common-utils" }
