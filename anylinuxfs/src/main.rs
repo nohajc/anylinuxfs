@@ -367,14 +367,32 @@ fn start_gvproxy(config: &Config) -> anyhow::Result<Child> {
     Ok(gvproxy_process)
 }
 
-fn wait_for_port(port: u16) -> anyhow::Result<bool> {
+fn wait_for_port_while_child_running(port: u16, pid: libc::pid_t) -> anyhow::Result<bool> {
     let addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, port);
-    for _ in 0..5 {
-        let result = TcpStream::connect_timeout(&addr.into(), Duration::from_secs(10)).is_ok();
-        if result {
-            return Ok(true);
+    for _ in 0..50 {
+        // Check if the child process is still running
+        let mut status = 0;
+        let res = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
+        if res == -1 {
+            return Err(io::Error::last_os_error()).context("Failed to wait for child process");
+        } else if res > 0 {
+            // Child process has exited
+            host_eprintln!("VM process exited prematurely");
+            return Ok(false);
         }
-        std::thread::sleep(Duration::from_secs(1));
+
+        match TcpStream::connect_timeout(&addr.into(), Duration::from_secs(10)) {
+            Ok(_) => {
+                return Ok(true);
+            }
+            Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => {
+                // Port is not open yet, continue waiting
+            }
+            Err(e) => {
+                host_eprintln!("Error connecting to port {}: {}", port, e);
+            }
+        }
+        std::thread::sleep(Duration::from_millis(100));
     }
 
     Ok(false)
@@ -600,7 +618,7 @@ fn terminate_child(child: &mut Child, child_name: &str) -> anyhow::Result<()> {
 fn wait_for_file(file: impl AsRef<Path>) -> anyhow::Result<()> {
     let start = std::time::Instant::now();
     while !file.as_ref().exists() {
-        if start.elapsed() > Duration::from_secs(10) {
+        if start.elapsed() > Duration::from_secs(5) {
             return Err(anyhow!(
                 "Timeout waiting for file creation: {}",
                 file.as_ref().to_string_lossy()
@@ -722,7 +740,7 @@ fn run_child(config: Config, comm_write_fd: libc::c_int) -> anyhow::Result<()> {
 
         // TODO: Can we actually wait for the guest NFS server to be ready?
         // It seems the port is open as soon as port forwarding is configured.
-        let is_open = wait_for_port(111).unwrap_or(false);
+        let is_open = wait_for_port_while_child_running(111, forked.pid).unwrap_or(false);
 
         if is_open {
             host_println!("Port 111 is open");
@@ -761,17 +779,26 @@ fn run_child(config: Config, comm_write_fd: libc::c_int) -> anyhow::Result<()> {
                 .context("Failed to write to pipe")?;
         }
 
-        vsock_cleanup(&config)?;
+        // we must attempt all cleanup steps whether they fail or not
+        if let Err(e) = vsock_cleanup(&config) {
+            host_eprintln!("{:#}", e);
+        }
 
         let mut status = 0;
-        if unsafe { libc::waitpid(forked.pid, &mut status, 0) } < 0 {
-            return Err(io::Error::last_os_error()).context("Failed to wait for child process");
+        let wait_result = unsafe { libc::waitpid(forked.pid, &mut status, 0) };
+        let last_error = io::Error::last_os_error();
+        if wait_result < 0 && last_error.raw_os_error().unwrap() != libc::ECHILD {
+            host_eprintln!("Failed to wait for child process: {}", last_error);
         }
         host_println!("libkrun VM exited with status: {}", status);
 
         // Terminate gvproxy process
-        terminate_child(&mut gvproxy, "gvproxy")?;
-        gvproxy_cleanup(&config)?;
+        if let Err(e) = terminate_child(&mut gvproxy, "gvproxy") {
+            host_eprintln!("{:#}", e);
+        }
+        if let Err(e) = gvproxy_cleanup(&config) {
+            host_eprintln!("{:#}", e);
+        }
 
         hnd.join().unwrap();
 
