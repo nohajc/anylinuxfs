@@ -3,7 +3,7 @@ use libc::VMADDR_CID_ANY;
 use serde::Serialize;
 use std::env;
 use std::io::{self, BufRead, Write};
-use std::process::Command;
+use std::process::{Command, ExitCode};
 use std::time::Duration;
 use std::{fs, io::BufReader};
 use sys_mount::{UnmountFlags, unmount};
@@ -119,7 +119,15 @@ fn is_read_only_set(mount_options: Option<&str>) -> bool {
     }
 }
 
-fn main() -> anyhow::Result<()> {
+fn main() -> ExitCode {
+    if let Err(e) = run() {
+        eprintln!("Error: {:#}", e);
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
+}
+
+fn run() -> anyhow::Result<()> {
     // println!("uid = {}", unsafe { libc::getuid() });
     // println!("gid = {}", unsafe { libc::getgid() });
 

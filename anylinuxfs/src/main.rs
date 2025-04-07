@@ -633,7 +633,7 @@ fn init_rootfs_if_needed(config: &Config) -> anyhow::Result<()> {
         false => false,
     };
     if required_files_exist && fstab_configured {
-        host_println!("VM root filesystem is initialized");
+        // host_println!("VM root filesystem is initialized");
         return Ok(());
     }
 
@@ -663,8 +663,8 @@ fn init_rootfs_if_needed(config: &Config) -> anyhow::Result<()> {
 }
 
 fn run_child(config: Config, comm_write_fd: libc::c_int) -> anyhow::Result<()> {
-    let mut tail_process = utils::redirect_all_to_file_and_tail_it(&config)?;
     init_rootfs_if_needed(&config)?;
+    let mut tail_process = utils::redirect_all_to_file_and_tail_it(&config)?;
 
     // host_println!("disk_path: {}", config.disk_path);
     host_println!("root_path: {}", config.root_path.to_string_lossy());
@@ -775,6 +775,10 @@ fn run_child(config: Config, comm_write_fd: libc::c_int) -> anyhow::Result<()> {
 
         if let Some(mut tail_proc) = tail_process {
             terminate_child(&mut tail_proc, "tail")?;
+        }
+
+        if status != 0 {
+            return Err(StatusError::new("VM exited with status", status).into());
         }
     }
 
