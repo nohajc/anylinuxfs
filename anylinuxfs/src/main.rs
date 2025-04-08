@@ -1,5 +1,5 @@
 use anyhow::{Context, anyhow};
-use clap::Parser;
+use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use common_utils::{guest_print, host_eprintln, host_println, log};
 use devinfo::DevInfo;
 use nanoid::nanoid;
@@ -31,6 +31,7 @@ use std::{
     os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
 };
+
 use url::Url;
 use utils::{OutputAction, StatusError, write_to_pipe};
 
@@ -43,19 +44,19 @@ mod utils;
 
 fn main() {
     if let Err(e) = run() {
-        match e.downcast_ref::<StatusError>() {
-            Some(status_error) => {
-                std::process::exit(status_error.status);
-            }
-            None => {
-                host_eprintln!("Error: {:#}", e);
-                std::process::exit(1);
-            }
+        if let Some(status_error) = e.downcast_ref::<StatusError>() {
+            std::process::exit(status_error.status);
         }
+        if let Some(clap_error) = e.downcast_ref::<clap::Error>() {
+            // clap_error.kind() == clap::ErrorKind::InvalidSubcommand
+            clap_error.exit();
+        }
+        host_eprintln!("Error: {:#}", e);
+        std::process::exit(1);
     }
 }
 
-struct Config {
+struct MountConfig {
     disk_path: String,
     read_only: bool,
     root_path: PathBuf,
@@ -85,12 +86,64 @@ fn rand_string(len: usize) -> String {
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
+#[command(propagate_version = true)]
 struct Cli {
+    #[command(subcommand)]
+    commands: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Mount a filesystem (the default if no command given)
+    Mount(MountCmd),
+}
+
+#[derive(Args)]
+struct MountCmd {
     disk_path: String,
     #[arg(short, long)]
     options: Option<String>,
     #[arg(short, long)]
     verbose: bool,
+}
+
+#[derive(Parser)]
+#[command(version, about = "Mount a filesystem (the default if no command given)", long_about = None)]
+struct CliMount {
+    #[command(flatten)]
+    cmd: MountCmd,
+}
+
+trait TryParseCommand<T: FromArgMatches> {
+    fn try_parse(self) -> Result<T, clap::Error>;
+}
+
+impl<T: FromArgMatches> TryParseCommand<T> for clap::Command {
+    fn try_parse(self) -> Result<T, clap::Error> {
+        self.try_get_matches().and_then(|m| T::from_arg_matches(&m))
+    }
+}
+
+impl Cli {
+    // try parse Cli; if it fails with InvalidSubcommand, try parse CliMount instead
+    // (this effectively makes `mount` the default command so the keyword can be omitted)
+    fn try_parse_with_default_cmd() -> Result<Cli, clap::Error> {
+        let mount_cmd_usage = "\x1b[1manylinuxfs [mount]\x1b[0m [OPTIONS] <DISK_PATH>";
+        let cmd = Cli::command().mut_subcommand("mount", |mount_cmd: clap::Command| {
+            mount_cmd.override_usage(mount_cmd_usage)
+        });
+
+        cmd.try_parse().or_else(|err| match err.kind() {
+            clap::error::ErrorKind::InvalidSubcommand => {
+                let mount_cmd = CliMount::command().override_usage(mount_cmd_usage);
+                let cli_mount: CliMount = mount_cmd.try_parse()?;
+                Ok(Cli {
+                    commands: Commands::Mount(cli_mount.cmd),
+                })
+            }
+            _ => Err(err),
+        })
+    }
 }
 
 fn is_read_only_set(mount_options: Option<&str>) -> bool {
@@ -101,7 +154,7 @@ fn is_read_only_set(mount_options: Option<&str>) -> bool {
     }
 }
 
-fn load_config() -> anyhow::Result<Config> {
+fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
     let sudo_uid = env::var("SUDO_UID")
         .map_err(anyhow::Error::from)
         .and_then(|s| Ok(s.parse::<libc::uid_t>()?))
@@ -129,9 +182,8 @@ fn load_config() -> anyhow::Result<Config> {
         std::process::exit(1);
     }
 
-    let cli = Cli::parse();
-    let (disk_path, mount_options) = if !cli.disk_path.is_empty() {
-        (cli.disk_path, cli.options)
+    let (disk_path, mount_options) = if !cmd.disk_path.is_empty() {
+        (cmd.disk_path, cmd.options)
     } else {
         host_eprintln!("No disk path provided");
         std::process::exit(1);
@@ -161,9 +213,9 @@ fn load_config() -> anyhow::Result<Config> {
     let vsock_path = format!("/tmp/anylinuxfs-{}-vsock", rand_string(8));
     let vfkit_sock_path = format!("/tmp/vfkit-{}.sock", rand_string(8));
 
-    let verbose = cli.verbose;
+    let verbose = cmd.verbose;
 
-    Ok(Config {
+    Ok(MountConfig {
         disk_path,
         read_only,
         root_path,
@@ -196,7 +248,7 @@ fn drop_privileges(
 }
 
 fn setup_and_start_vm(
-    config: &Config,
+    config: &MountConfig,
     dev_info: &DevInfo,
     before_start: impl FnOnce() -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
@@ -326,7 +378,7 @@ fn setup_and_start_vm(
     Ok(())
 }
 
-fn gvproxy_cleanup(config: &Config) -> anyhow::Result<()> {
+fn gvproxy_cleanup(config: &MountConfig) -> anyhow::Result<()> {
     let sock_krun_path = config.vfkit_sock_path.replace(".sock", ".sock-krun.sock");
     match remove_file(&sock_krun_path) {
         Ok(_) => {}
@@ -341,7 +393,7 @@ fn gvproxy_cleanup(config: &Config) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn vsock_cleanup(config: &Config) -> anyhow::Result<()> {
+fn vsock_cleanup(config: &MountConfig) -> anyhow::Result<()> {
     match remove_file(&config.vsock_path) {
         Ok(_) => {}
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
@@ -350,7 +402,7 @@ fn vsock_cleanup(config: &Config) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn start_gvproxy(config: &Config) -> anyhow::Result<Child> {
+fn start_gvproxy(config: &MountConfig) -> anyhow::Result<Child> {
     gvproxy_cleanup(config)?;
 
     let net_sock_uri = format!("unix:///tmp/network-{}.sock", rand_string(8));
@@ -583,7 +635,7 @@ fn wait_for_unmount(share_name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn send_quit_cmd(config: &Config) -> anyhow::Result<()> {
+fn send_quit_cmd(config: &MountConfig) -> anyhow::Result<()> {
     let mut stream = UnixStream::connect(&config.vsock_path)?;
 
     stream.write_all(b"quit\n")?;
@@ -615,7 +667,7 @@ fn wait_for_file(file: impl AsRef<Path>) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn init_rootfs_if_needed(config: &Config) -> anyhow::Result<()> {
+fn init_rootfs_if_needed(config: &MountConfig) -> anyhow::Result<()> {
     let bash_path = config.root_path.join("bin/bash");
     let nfsd_path = config.root_path.join("usr/sbin/rpc.nfsd");
     let entry_point_path = config.root_path.join("usr/local/bin/entrypoint.sh");
@@ -668,7 +720,7 @@ fn init_rootfs_if_needed(config: &Config) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn run_child(config: Config, comm_write_fd: libc::c_int) -> anyhow::Result<()> {
+fn run_mount_child(config: MountConfig, comm_write_fd: libc::c_int) -> anyhow::Result<()> {
     init_rootfs_if_needed(&config)?;
     let mut tail_process = utils::redirect_all_to_file_and_tail_it(&config)?;
 
@@ -804,7 +856,7 @@ fn run_child(config: Config, comm_write_fd: libc::c_int) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn run_parent(forked: utils::ForkOutput) -> anyhow::Result<()> {
+fn run_mount_parent(forked: utils::ForkOutput) -> anyhow::Result<()> {
     let comm_read_fd = forked.pipe_fd;
     let mut buf_reader = BufReader::new(unsafe { File::from_raw_fd(comm_read_fd) });
     let mut line = String::new();
@@ -831,18 +883,25 @@ fn run_parent(forked: utils::ForkOutput) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn run() -> anyhow::Result<()> {
-    // host_println!("uid = {}", unsafe { libc::getuid() });
-    // host_println!("gid = {}", unsafe { libc::getgid() });
+fn run_mount(cmd: MountCmd) -> anyhow::Result<()> {
     let _lock_file = utils::acquire_flock("/tmp/anylinuxfs.lock")?;
-
-    let config = load_config()?;
+    let config = load_mount_config(cmd)?;
 
     let forked = utils::fork_with_comm_pipe()?;
     if forked.pid == 0 {
-        run_child(config, forked.pipe_fd)
+        run_mount_child(config, forked.pipe_fd)
     } else {
-        run_parent(forked)
+        run_mount_parent(forked)
+    }
+}
+
+fn run() -> anyhow::Result<()> {
+    // host_println!("uid = {}", unsafe { libc::getuid() });
+    // host_println!("gid = {}", unsafe { libc::getgid() });
+
+    let cli = Cli::try_parse_with_default_cmd()?;
+    match cli.commands {
+        Commands::Mount(cmd) => run_mount(cmd),
     }
 }
 

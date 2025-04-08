@@ -1,5 +1,6 @@
 [package]
 name = "anylinuxfs"
+description = "Mount any linux-supported filesystem read/write using nfs and a microVM"
 version = "0.1.0"
 edition = "2024"
 
@@ -11,7 +12,7 @@ objc2-disk-arbitration = "0.3.0"
 url = "2.5.4"
 nanoid = "0.4.0"
 libblkid-rs = "0.4.0"
-clap = { version = "4.5.35", features = ["derive"] }
+clap = { version = "4.5.35", features = ["cargo", "derive"] }
 homedir = "0.3.4"
 common_utils = { path = "../common-utils" }
 

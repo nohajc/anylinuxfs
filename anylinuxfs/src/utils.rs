@@ -11,7 +11,7 @@ use std::{
 
 use anyhow::Context;
 
-use crate::Config;
+use crate::MountConfig;
 
 #[derive(Debug)]
 pub struct StatusError {
@@ -275,7 +275,7 @@ pub unsafe fn write_to_pipe(pipe_fd: libc::c_int, data: &[u8]) -> anyhow::Result
 }
 
 pub fn redirect_all_to_file_and_tail_it(
-    config: &Config,
+    config: &MountConfig,
 ) -> anyhow::Result<Option<std::process::Child>> {
     let mut touch_cmd = Command::new("/usr/bin/touch");
     touch_cmd.arg(&config.log_file_path);
@@ -314,7 +314,10 @@ pub fn redirect_all_to_file_and_tail_it(
     Ok(tail_process)
 }
 
-pub fn redirect_all_to_tee(config: &Config, log_file: &str) -> anyhow::Result<std::process::Child> {
+pub fn redirect_all_to_tee(
+    config: &MountConfig,
+    log_file: &str,
+) -> anyhow::Result<std::process::Child> {
     // Spawn the `tee` process
     let mut tee_cmd = Command::new("/usr/bin/tee");
 
