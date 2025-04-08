@@ -118,8 +118,14 @@ fn load_config() -> anyhow::Result<Config> {
     //     host_println!("sudo_gid = {}", sudo_gid);
     // }
 
-    if unsafe { libc::getuid() } == 0 && (sudo_uid.is_none() || sudo_gid.is_none()) {
-        host_eprintln!("This program must not be run directly by root but you can use sudo");
+    let home_dir = homedir::my_home()
+        .context("Failed to get home directory")?
+        .context("Home directory not found")?;
+
+    if unsafe { libc::getuid() } == 0
+        && (sudo_uid.is_none() || sudo_gid.is_none() || !home_dir.starts_with("/Users"))
+    {
+        eprintln!("This program must not be run directly by root but you can use sudo");
         std::process::exit(1);
     }
 
@@ -142,10 +148,6 @@ fn load_config() -> anyhow::Result<Config> {
     let prefix_dir = exec_dir
         .parent()
         .context("Failed to get prefix directory")?;
-
-    let home_dir = homedir::my_home()
-        .context("Failed to get home directory")?
-        .context("Home directory not found")?;
 
     // ~/.anylinuxfs/alpine/rootfs
     let root_path = home_dir.join(".anylinuxfs").join("alpine").join("rootfs");
