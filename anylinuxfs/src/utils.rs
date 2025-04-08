@@ -348,3 +348,17 @@ pub fn redirect_all_to_tee(config: &Config, log_file: &str) -> anyhow::Result<st
     // Return the `tee` process handle so the caller can manage it
     Ok(tee_process)
 }
+
+pub fn acquire_flock(lock_file: &str) -> io::Result<File> {
+    let file = File::create(lock_file)?;
+    // Try to lock the file exclusively
+    let res = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if res != 0 {
+        Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "another instance is already running",
+        ))
+    } else {
+        Ok(file)
+    }
+}

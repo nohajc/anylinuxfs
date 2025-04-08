@@ -834,6 +834,7 @@ fn run_parent(forked: utils::ForkOutput) -> anyhow::Result<()> {
 fn run() -> anyhow::Result<()> {
     // host_println!("uid = {}", unsafe { libc::getuid() });
     // host_println!("gid = {}", unsafe { libc::getgid() });
+    let _lock_file = utils::acquire_flock("/tmp/anylinuxfs.lock")?;
 
     let config = load_config()?;
 
