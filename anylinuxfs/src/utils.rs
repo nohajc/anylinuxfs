@@ -11,7 +11,7 @@ use std::{
 
 use anyhow::Context;
 
-use crate::MountConfig;
+use crate::{Config, MountConfig};
 
 #[derive(Debug)]
 pub struct StatusError {
@@ -278,12 +278,12 @@ pub fn redirect_all_to_file_and_tail_it(
     config: &MountConfig,
 ) -> anyhow::Result<Option<std::process::Child>> {
     let mut touch_cmd = Command::new("/usr/bin/touch");
-    touch_cmd.arg(&config.log_file_path);
+    touch_cmd.arg(&config.common.log_file_path);
 
     let mut tail_cmd = Command::new("/usr/bin/tail");
-    tail_cmd.arg("-f").arg(&config.log_file_path);
+    tail_cmd.arg("-f").arg(&config.common.log_file_path);
 
-    if let (Some(uid), Some(gid)) = (config.sudo_uid, config.sudo_gid) {
+    if let (Some(uid), Some(gid)) = (config.common.sudo_uid, config.common.sudo_gid) {
         // run touch with dropped privileges
         touch_cmd.uid(uid).gid(gid);
 
@@ -298,7 +298,8 @@ pub fn redirect_all_to_file_and_tail_it(
     };
 
     // Redirect stdout and stderr to the log file
-    let log_file = File::create(&config.log_file_path).context("Failed to create log file")?;
+    let log_file =
+        File::create(&config.common.log_file_path).context("Failed to create log file")?;
     let log_file_fd = log_file.as_raw_fd();
 
     let res = unsafe { libc::dup2(log_file_fd, libc::STDOUT_FILENO) };
@@ -314,10 +315,7 @@ pub fn redirect_all_to_file_and_tail_it(
     Ok(tail_process)
 }
 
-pub fn redirect_all_to_tee(
-    config: &MountConfig,
-    log_file: &str,
-) -> anyhow::Result<std::process::Child> {
+pub fn redirect_all_to_tee(config: &Config, log_file: &str) -> anyhow::Result<std::process::Child> {
     // Spawn the `tee` process
     let mut tee_cmd = Command::new("/usr/bin/tee");
 

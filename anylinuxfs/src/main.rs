@@ -42,6 +42,8 @@ mod devinfo;
 #[allow(unused)]
 mod utils;
 
+const LOCK_FILE: &str = "/tmp/anylinuxfs.lock";
+
 fn main() {
     if let Err(e) = run() {
         if let Some(status_error) = e.downcast_ref::<StatusError>() {
@@ -56,9 +58,7 @@ fn main() {
     }
 }
 
-struct MountConfig {
-    disk_path: String,
-    read_only: bool,
+struct Config {
     root_path: PathBuf,
     log_file_path: PathBuf,
     fetch_rootfs_path: PathBuf,
@@ -68,8 +68,14 @@ struct MountConfig {
     vfkit_sock_path: String,
     sudo_uid: Option<libc::uid_t>,
     sudo_gid: Option<libc::gid_t>,
+}
+
+struct MountConfig {
+    disk_path: String,
+    read_only: bool,
     mount_options: Option<String>,
     verbose: bool,
+    common: Config,
 }
 
 fn rand_string(len: usize) -> String {
@@ -96,6 +102,8 @@ struct Cli {
 enum Commands {
     /// Mount a filesystem (the default if no command given)
     Mount(MountCmd),
+    /// Init Linux rootfs (can be used to reinitialize virtual environment)
+    Init,
 }
 
 #[derive(Args)]
@@ -154,7 +162,7 @@ fn is_read_only_set(mount_options: Option<&str>) -> bool {
     }
 }
 
-fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
+fn load_config() -> anyhow::Result<Config> {
     let sudo_uid = env::var("SUDO_UID")
         .map_err(anyhow::Error::from)
         .and_then(|s| Ok(s.parse::<libc::uid_t>()?))
@@ -182,15 +190,6 @@ fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
         std::process::exit(1);
     }
 
-    let (disk_path, mount_options) = if !cmd.disk_path.is_empty() {
-        (cmd.disk_path, cmd.options)
-    } else {
-        host_eprintln!("No disk path provided");
-        std::process::exit(1);
-    };
-
-    let read_only = is_read_only_set(mount_options.as_deref());
-
     let exec_dir = env::current_exe()
         .context("Failed to get current executable path")?
         .parent()
@@ -213,11 +212,7 @@ fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
     let vsock_path = format!("/tmp/anylinuxfs-{}-vsock", rand_string(8));
     let vfkit_sock_path = format!("/tmp/vfkit-{}.sock", rand_string(8));
 
-    let verbose = cmd.verbose;
-
-    Ok(MountConfig {
-        disk_path,
-        read_only,
+    Ok(Config {
         root_path,
         log_file_path,
         fetch_rootfs_path,
@@ -227,8 +222,29 @@ fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
         vfkit_sock_path,
         sudo_uid,
         sudo_gid,
+    })
+}
+
+fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
+    let (disk_path, mount_options) = if !cmd.disk_path.is_empty() {
+        (cmd.disk_path, cmd.options)
+    } else {
+        host_eprintln!("No disk path provided");
+        std::process::exit(1);
+    };
+
+    let read_only = is_read_only_set(mount_options.as_deref());
+
+    let verbose = cmd.verbose;
+
+    let common = load_config()?;
+
+    Ok(MountConfig {
+        disk_path,
+        read_only,
         mount_options,
         verbose,
+        common,
     })
 }
 
@@ -261,15 +277,15 @@ fn setup_and_start_vm(
     unsafe { bindings::krun_set_vm_config(ctx, 2, 1024) }.context("Failed to set VM config")?;
 
     // run vmm as the original user if he used sudo
-    if let Some(uid) = config.sudo_uid {
+    if let Some(uid) = config.common.sudo_uid {
         unsafe { bindings::krun_setuid(ctx, uid) }.context("Failed to set vmm uid")?;
     }
 
-    if let Some(gid) = config.sudo_gid {
+    if let Some(gid) = config.common.sudo_gid {
         unsafe { bindings::krun_setgid(ctx, gid) }.context("Failed to set vmm gid")?;
     }
 
-    unsafe { bindings::krun_set_root(ctx, CString::from_path(&config.root_path).as_ptr()) }
+    unsafe { bindings::krun_set_root(ctx, CString::from_path(&config.common.root_path).as_ptr()) }
         .context("Failed to set root")?;
 
     unsafe {
@@ -285,7 +301,7 @@ fn setup_and_start_vm(
     unsafe {
         bindings::krun_set_gvproxy_path(
             ctx,
-            CString::new(config.vfkit_sock_path.as_str())
+            CString::new(config.common.vfkit_sock_path.as_str())
                 .unwrap()
                 .as_ptr(),
         )
@@ -308,13 +324,15 @@ fn setup_and_start_vm(
     // unsafe { bindings::krun_set_port_map(ctx, port_map.as_ptr()) }
     //     .context("Failed to set port map")?;
 
-    vsock_cleanup(&config)?;
+    vsock_cleanup(&config.common)?;
 
     unsafe {
         bindings::krun_add_vsock_port2(
             ctx,
             12700,
-            CString::new(config.vsock_path.as_str()).unwrap().as_ptr(),
+            CString::new(config.common.vsock_path.as_str())
+                .unwrap()
+                .as_ptr(),
             true,
         )
     }
@@ -364,7 +382,7 @@ fn setup_and_start_vm(
     unsafe {
         bindings::krun_set_kernel(
             ctx,
-            CString::from_path(&config.kernel_path).as_ptr(),
+            CString::from_path(&config.common.kernel_path).as_ptr(),
             0, // KRUN_KERNEL_FORMAT_RAW
             null(),
             null(),
@@ -378,7 +396,7 @@ fn setup_and_start_vm(
     Ok(())
 }
 
-fn gvproxy_cleanup(config: &MountConfig) -> anyhow::Result<()> {
+fn gvproxy_cleanup(config: &Config) -> anyhow::Result<()> {
     let sock_krun_path = config.vfkit_sock_path.replace(".sock", ".sock-krun.sock");
     match remove_file(&sock_krun_path) {
         Ok(_) => {}
@@ -393,7 +411,7 @@ fn gvproxy_cleanup(config: &MountConfig) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn vsock_cleanup(config: &MountConfig) -> anyhow::Result<()> {
+fn vsock_cleanup(config: &Config) -> anyhow::Result<()> {
     match remove_file(&config.vsock_path) {
         Ok(_) => {}
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
@@ -402,7 +420,7 @@ fn vsock_cleanup(config: &MountConfig) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn start_gvproxy(config: &MountConfig) -> anyhow::Result<Child> {
+fn start_gvproxy(config: &Config) -> anyhow::Result<Child> {
     gvproxy_cleanup(config)?;
 
     let net_sock_uri = format!("unix:///tmp/network-{}.sock", rand_string(8));
@@ -635,7 +653,7 @@ fn wait_for_unmount(share_name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn send_quit_cmd(config: &MountConfig) -> anyhow::Result<()> {
+fn send_quit_cmd(config: &Config) -> anyhow::Result<()> {
     let mut stream = UnixStream::connect(&config.vsock_path)?;
 
     stream.write_all(b"quit\n")?;
@@ -667,32 +685,34 @@ fn wait_for_file(file: impl AsRef<Path>) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn init_rootfs_if_needed(config: &MountConfig) -> anyhow::Result<()> {
-    let bash_path = config.root_path.join("bin/bash");
-    let nfsd_path = config.root_path.join("usr/sbin/rpc.nfsd");
-    let entry_point_path = config.root_path.join("usr/local/bin/entrypoint.sh");
-    let vmproxy_path = config.root_path.join("vmproxy");
-    let required_files_exist = bash_path.exists()
-        && nfsd_path.exists()
-        && entry_point_path.exists()
-        && vmproxy_path.exists();
+fn init_rootfs(config: &Config, force: bool) -> anyhow::Result<()> {
+    if !force {
+        let bash_path = config.root_path.join("bin/bash");
+        let nfsd_path = config.root_path.join("usr/sbin/rpc.nfsd");
+        let entry_point_path = config.root_path.join("usr/local/bin/entrypoint.sh");
+        let vmproxy_path = config.root_path.join("vmproxy");
+        let required_files_exist = bash_path.exists()
+            && nfsd_path.exists()
+            && entry_point_path.exists()
+            && vmproxy_path.exists();
 
-    let fstab_path = config.root_path.join("etc/fstab");
+        let fstab_path = config.root_path.join("etc/fstab");
 
-    // check if fstab contains rpc_pipefs and nfsd keywords
-    let fstab_configured = match fstab_path.exists() {
-        true => {
-            let fstab_content = std::fs::read_to_string(&fstab_path).context(format!(
-                "Failed to read fstab file: {}",
-                fstab_path.display()
-            ))?;
-            fstab_content.contains("rpc_pipefs") && fstab_content.contains("nfsd")
+        // check if fstab contains rpc_pipefs and nfsd keywords
+        let fstab_configured = match fstab_path.exists() {
+            true => {
+                let fstab_content = std::fs::read_to_string(&fstab_path).context(format!(
+                    "Failed to read fstab file: {}",
+                    fstab_path.display()
+                ))?;
+                fstab_content.contains("rpc_pipefs") && fstab_content.contains("nfsd")
+            }
+            false => false,
+        };
+        if required_files_exist && fstab_configured {
+            // host_println!("VM root filesystem is initialized");
+            return Ok(());
         }
-        false => false,
-    };
-    if required_files_exist && fstab_configured {
-        // host_println!("VM root filesystem is initialized");
-        return Ok(());
     }
 
     host_println!("Initializing VM root filesystem...");
@@ -721,11 +741,11 @@ fn init_rootfs_if_needed(config: &MountConfig) -> anyhow::Result<()> {
 }
 
 fn run_mount_child(config: MountConfig, comm_write_fd: libc::c_int) -> anyhow::Result<()> {
-    init_rootfs_if_needed(&config)?;
+    init_rootfs(&config.common, false)?;
     let mut tail_process = utils::redirect_all_to_file_and_tail_it(&config)?;
 
     // host_println!("disk_path: {}", config.disk_path);
-    host_println!("root_path: {}", config.root_path.to_string_lossy());
+    host_println!("root_path: {}", config.common.root_path.to_string_lossy());
 
     let dev_info = DevInfo::new(&config.disk_path)?;
 
@@ -736,14 +756,14 @@ fn run_mount_child(config: MountConfig, comm_write_fd: libc::c_int) -> anyhow::R
     host_println!("uuid: {:?}", dev_info.uuid());
     host_println!("mount name: {}", dev_info.auto_mount_name());
 
-    let mut gvproxy = start_gvproxy(&config)?;
+    let mut gvproxy = start_gvproxy(&config.common)?;
 
     let mut forked = utils::fork_with_pty_output(OutputAction::RedirectLater)?;
     if forked.pid == 0 {
         // Child process
         // utils::set_null_stdin()?;
 
-        wait_for_file(&config.vfkit_sock_path)?;
+        wait_for_file(&config.common.vfkit_sock_path)?;
 
         if let Some(status) = gvproxy.try_wait().ok().flatten() {
             host_println!(
@@ -774,7 +794,7 @@ fn run_mount_child(config: MountConfig, comm_write_fd: libc::c_int) -> anyhow::R
         });
 
         // drop privileges back to the original user if he used sudo
-        drop_privileges(config.sudo_uid, config.sudo_gid)?;
+        drop_privileges(config.common.sudo_uid, config.common.sudo_gid)?;
 
         // TODO: Can we actually wait for the guest NFS server to be ready?
         // It seems the port is open as soon as port forwarding is configured.
@@ -811,7 +831,7 @@ fn run_mount_child(config: MountConfig, comm_write_fd: libc::c_int) -> anyhow::R
             }
 
             wait_for_unmount(share_name)?;
-            send_quit_cmd(&config)?;
+            send_quit_cmd(&config.common)?;
         } else {
             host_println!("Port 111 is not open");
             // tell the parent to wait for the child to exit
@@ -820,7 +840,7 @@ fn run_mount_child(config: MountConfig, comm_write_fd: libc::c_int) -> anyhow::R
         }
 
         // we must attempt all cleanup steps whether they fail or not
-        if let Err(e) = vsock_cleanup(&config) {
+        if let Err(e) = vsock_cleanup(&config.common) {
             host_eprintln!("{:#}", e);
         }
 
@@ -836,7 +856,7 @@ fn run_mount_child(config: MountConfig, comm_write_fd: libc::c_int) -> anyhow::R
         if let Err(e) = terminate_child(&mut gvproxy, "gvproxy") {
             host_eprintln!("{:#}", e);
         }
-        if let Err(e) = gvproxy_cleanup(&config) {
+        if let Err(e) = gvproxy_cleanup(&config.common) {
             host_eprintln!("{:#}", e);
         }
 
@@ -884,7 +904,7 @@ fn run_mount_parent(forked: utils::ForkOutput) -> anyhow::Result<()> {
 }
 
 fn run_mount(cmd: MountCmd) -> anyhow::Result<()> {
-    let _lock_file = utils::acquire_flock("/tmp/anylinuxfs.lock")?;
+    let _lock_file = utils::acquire_flock(LOCK_FILE)?;
     let config = load_mount_config(cmd)?;
 
     let forked = utils::fork_with_comm_pipe()?;
@@ -895,6 +915,14 @@ fn run_mount(cmd: MountCmd) -> anyhow::Result<()> {
     }
 }
 
+fn run_init() -> anyhow::Result<()> {
+    let _lock_file = utils::acquire_flock(LOCK_FILE)?;
+    let config = load_config()?;
+    init_rootfs(&config, true)?;
+
+    Ok(())
+}
+
 fn run() -> anyhow::Result<()> {
     // host_println!("uid = {}", unsafe { libc::getuid() });
     // host_println!("gid = {}", unsafe { libc::getgid() });
@@ -902,6 +930,7 @@ fn run() -> anyhow::Result<()> {
     let cli = Cli::try_parse_with_default_cmd()?;
     match cli.commands {
         Commands::Mount(cmd) => run_mount(cmd),
+        Commands::Init => run_init(),
     }
 }
 
