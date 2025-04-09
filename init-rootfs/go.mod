@@ -1,4 +1,4 @@
-module anylinuxfs/fetch-rootfs
+module anylinuxfs/init-rootfs
 
 go 1.23.0
 

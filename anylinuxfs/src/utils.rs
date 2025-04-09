@@ -1,11 +1,12 @@
 use std::{
     error::Error,
-    fs::File,
+    fs::{File, Permissions},
     io::{self, Write},
     os::{
         fd::{AsRawFd, FromRawFd},
-        unix::process::CommandExt,
+        unix::{fs::PermissionsExt, process::CommandExt},
     },
+    path::Path,
     process::{Command, Stdio},
 };
 
@@ -350,15 +351,22 @@ pub fn redirect_all_to_tee(config: &Config, log_file: &str) -> anyhow::Result<st
     Ok(tee_process)
 }
 
-pub fn acquire_flock(lock_file: &str) -> io::Result<File> {
-    let file = File::create(lock_file)?;
+pub fn acquire_flock(lock_file: impl AsRef<Path>) -> anyhow::Result<File> {
+    let file_already_existed = lock_file.as_ref().exists();
+    let file = File::create(lock_file).context("Failed to create file lock")?;
+    if !file_already_existed {
+        file.set_permissions(Permissions::from_mode(0o666))
+            .context("Failed to set file lock permissions")?;
+    }
+
     // Try to lock the file exclusively
     let res = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
     if res != 0 {
         Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
             "another instance is already running",
-        ))
+        )
+        .into())
     } else {
         Ok(file)
     }

@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"anylinuxfs/fetch-rootfs/vmrunner"
+	"anylinuxfs/init-rootfs/vmrunner"
 
 	"github.com/containers/image/v5/copy"
 	"github.com/containers/image/v5/docker"

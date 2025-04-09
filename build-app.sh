@@ -17,11 +17,11 @@ export PKG_CONFIG_PATH="/opt/homebrew/opt/util-linux/lib/pkgconfig"
 mkdir -p bin && cp "anylinuxfs/target/$BUILD_DIR/anylinuxfs" bin/
 codesign --entitlements "anylinuxfs.entitlements" --force -s - bin/anylinuxfs
 
-(cd "fetch-rootfs" && go build -o ../bin/)
-codesign --entitlements "anylinuxfs.entitlements" --force -s - bin/fetch-rootfs
-
 ROOTFS_PATH=~/.anylinuxfs/alpine/rootfs
 
 (cd "vmproxy" && cargo build $BUILD_ARGS)
 mkdir -p libexec && cp "vmproxy/target/aarch64-unknown-linux-musl/$BUILD_DIR/vmproxy" libexec/
 mkdir -p $ROOTFS_PATH && cp libexec/vmproxy $ROOTFS_PATH/
+
+(cd "init-rootfs" && go build -o ../libexec/)
+codesign --entitlements "anylinuxfs.entitlements" --force -s - libexec/init-rootfs

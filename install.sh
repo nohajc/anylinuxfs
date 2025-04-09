@@ -18,7 +18,7 @@ function fix_libkrun_path() {
 fix_libkrun_path "$PREFIX/bin/anylinuxfs"
 codesign --entitlements "anylinuxfs.entitlements" --force -s - "$PREFIX/bin/anylinuxfs"
 
-fix_libkrun_path "$PREFIX/bin/fetch-rootfs"
-codesign --entitlements "anylinuxfs.entitlements" --force -s - "$PREFIX/bin/fetch-rootfs"
+fix_libkrun_path "$PREFIX/bin/init-rootfs"
+codesign --entitlements "anylinuxfs.entitlements" --force -s - "$PREFIX/bin/init-rootfs"
 
 cp -RL libexec/* "$PREFIX/libexec/"

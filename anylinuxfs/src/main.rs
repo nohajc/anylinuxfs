@@ -61,7 +61,7 @@ fn main() {
 struct Config {
     root_path: PathBuf,
     log_file_path: PathBuf,
-    fetch_rootfs_path: PathBuf,
+    init_rootfs_path: PathBuf,
     kernel_path: PathBuf,
     gvproxy_path: PathBuf,
     vsock_path: String,
@@ -204,10 +204,10 @@ fn load_config() -> anyhow::Result<Config> {
     let root_path = home_dir.join(".anylinuxfs").join("alpine").join("rootfs");
     let log_file_path = home_dir.join("Library").join("Logs").join("anylinuxfs.log");
 
-    let fetch_rootfs_path = exec_dir.join("fetch-rootfs").to_owned();
-
-    let kernel_path = prefix_dir.join("libexec").join("Image").to_owned();
-    let gvproxy_path = prefix_dir.join("libexec").join("gvproxy").to_owned();
+    let libexec_dir = prefix_dir.join("libexec");
+    let init_rootfs_path = libexec_dir.join("init-rootfs").to_owned();
+    let kernel_path = libexec_dir.join("Image").to_owned();
+    let gvproxy_path = libexec_dir.join("gvproxy").to_owned();
 
     let vsock_path = format!("/tmp/anylinuxfs-{}-vsock", rand_string(8));
     let vfkit_sock_path = format!("/tmp/vfkit-{}.sock", rand_string(8));
@@ -215,7 +215,7 @@ fn load_config() -> anyhow::Result<Config> {
     Ok(Config {
         root_path,
         log_file_path,
-        fetch_rootfs_path,
+        init_rootfs_path,
         kernel_path,
         gvproxy_path,
         vsock_path,
@@ -717,19 +717,19 @@ fn init_rootfs(config: &Config, force: bool) -> anyhow::Result<()> {
 
     host_println!("Initializing VM root filesystem...");
 
-    let mut fetch_rootfs_cmd = Command::new(&config.fetch_rootfs_path);
+    let mut init_rootfs_cmd = Command::new(&config.init_rootfs_path);
     if let (Some(uid), Some(gid)) = (config.sudo_uid, config.sudo_gid) {
-        // run fetch-rootfs with dropped privileges
-        fetch_rootfs_cmd.uid(uid).gid(gid);
+        // run init-rootfs with dropped privileges
+        init_rootfs_cmd.uid(uid).gid(gid);
     }
 
-    let status = fetch_rootfs_cmd
+    let status = init_rootfs_cmd
         .status()
-        .context("Failed to execute fetch-rootfs")?;
+        .context("Failed to execute init-rootfs")?;
 
     if !status.success() {
         return Err(anyhow!(
-            "fetch-rootfs failed with exit code {}",
+            "init-rootfs failed with exit code {}",
             status
                 .code()
                 .map(|c| c.to_string())
