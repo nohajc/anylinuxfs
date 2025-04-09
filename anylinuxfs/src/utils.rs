@@ -7,12 +7,16 @@ use std::{
         unix::{fs::PermissionsExt, process::CommandExt},
     },
     path::Path,
-    process::{Command, Stdio},
+    process::Command,
+    thread,
 };
 
 use anyhow::Context;
+use common_utils::host_eprintln;
+use serde::{Deserialize, Serialize};
 
-use crate::{Config, MountConfig};
+use crate::{MountConfig, devinfo::DevInfo};
+use std::fs;
 
 #[derive(Debug)]
 pub struct StatusError {
@@ -152,6 +156,7 @@ pub fn fork_with_pty_output(out_action: OutputAction) -> anyhow::Result<ForkOutp
     }
 }
 
+#[allow(unused)]
 pub fn fork_with_piped_output() -> anyhow::Result<ForkOutput> {
     let mut child_output_fds: [libc::c_int; 2] = [0; 2];
     let res = unsafe { libc::pipe(child_output_fds.as_mut_ptr()) };
@@ -251,6 +256,7 @@ pub fn fork_with_comm_pipe() -> anyhow::Result<ForkOutput> {
     }
 }
 
+#[allow(unused)]
 pub fn redirect_to_null(fd: libc::c_int) -> anyhow::Result<()> {
     let dev_null_fd = unsafe { libc::open(b"/dev/null\0".as_ptr() as *const i8, libc::O_RDONLY) };
     if dev_null_fd < 0 {
@@ -316,41 +322,6 @@ pub fn redirect_all_to_file_and_tail_it(
     Ok(tail_process)
 }
 
-pub fn redirect_all_to_tee(config: &Config, log_file: &str) -> anyhow::Result<std::process::Child> {
-    // Spawn the `tee` process
-    let mut tee_cmd = Command::new("/usr/bin/tee");
-
-    // Redirect stdin so we can write to it
-    tee_cmd.arg(log_file).stdin(Stdio::piped());
-
-    if let (Some(uid), Some(gid)) = (config.sudo_uid, config.sudo_gid) {
-        // run tee with dropped privileges
-        tee_cmd.uid(uid).gid(gid);
-    }
-
-    let tee_process = tee_cmd.spawn()?;
-
-    // Get the stdin of the `tee` process
-    let tee_stdin = tee_process.stdin.as_ref().unwrap();
-
-    // Redirect `stdout` to the `tee` process
-    let tee_stdin_fd = tee_stdin.as_raw_fd();
-    // Redirect `stdout` to the `tee` process
-    let res = unsafe { libc::dup2(tee_stdin_fd, libc::STDOUT_FILENO) };
-    if res < 0 {
-        return Err(io::Error::last_os_error()).context("Failed to redirect stdout to tee process");
-    }
-
-    // Redirect `stderr` to the `tee` process
-    let res = unsafe { libc::dup2(tee_stdin_fd, libc::STDERR_FILENO) };
-    if res < 0 {
-        return Err(io::Error::last_os_error()).context("Failed to redirect stderr to tee process");
-    }
-
-    // Return the `tee` process handle so the caller can manage it
-    Ok(tee_process)
-}
-
 pub fn acquire_flock(lock_file: impl AsRef<Path>) -> anyhow::Result<File> {
     let file_already_existed = lock_file.as_ref().exists();
     let file = File::create(lock_file).context("Failed to create file lock")?;
@@ -370,4 +341,51 @@ pub fn acquire_flock(lock_file: impl AsRef<Path>) -> anyhow::Result<File> {
     } else {
         Ok(file)
     }
+}
+
+pub fn serve_info(mount_config: &MountConfig, dev_info: &DevInfo) {
+    let mount_config = mount_config.clone();
+    let dev_info = dev_info.clone();
+
+    _ = thread::spawn(move || {
+        let socket_path = Path::new("/tmp/anylinuxfs.sock");
+        // Remove the socket file if it exists
+        if socket_path.exists() {
+            if let Err(e) = fs::remove_file(socket_path) {
+                host_eprintln!("Error removing socket file: {}", e);
+            }
+        }
+        if let Err(e) = serve_config_impl(
+            RuntimeInfo {
+                mount_config,
+                dev_info,
+            },
+            socket_path,
+        ) {
+            host_eprintln!("Error in serve_config: {}", e);
+        }
+    });
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+struct RuntimeInfo {
+    mount_config: MountConfig,
+    dev_info: DevInfo,
+}
+
+fn serve_config_impl(runtime_info: RuntimeInfo, socket_path: &Path) -> anyhow::Result<()> {
+    let server = tiny_http::Server::http_unix(socket_path)
+        .map_err(anyhow::Error::from_boxed)
+        .context("Failed to listen on unix socket")?;
+
+    println!("Server is listening on Unix socket: {:?}", socket_path);
+
+    // Handle incoming requests
+    for request in server.incoming_requests() {
+        let runtime_info =
+            serde_json::to_string(&runtime_info).context("Failed to serialize runtime info")?;
+        let response = tiny_http::Response::from_string(runtime_info);
+        _ = request.respond(response);
+    }
+    Ok(())
 }

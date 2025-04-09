@@ -11,6 +11,7 @@ use objc2_disk_arbitration::{
     DADisk, DADiskCopyDescription, DARegisterDiskDisappearedCallback, DASessionCreate,
     DASessionScheduleWithRunLoop, DAUnregisterCallback,
 };
+use serde::{Deserialize, Serialize};
 use std::ffi::c_void;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -38,8 +39,6 @@ use utils::{OutputAction, StatusError, write_to_pipe};
 #[allow(unused)]
 mod bindings;
 mod devinfo;
-
-#[allow(unused)]
 mod utils;
 
 const LOCK_FILE: &str = "/tmp/anylinuxfs.lock";
@@ -58,6 +57,7 @@ fn main() {
     }
 }
 
+#[derive(Clone, Deserialize, Serialize)]
 struct Config {
     root_path: PathBuf,
     log_file_path: PathBuf,
@@ -70,6 +70,7 @@ struct Config {
     sudo_gid: Option<libc::gid_t>,
 }
 
+#[derive(Clone, Deserialize, Serialize)]
 struct MountConfig {
     disk_path: String,
     read_only: bool,
@@ -779,6 +780,7 @@ fn run_mount_child(config: MountConfig, comm_write_fd: libc::c_int) -> anyhow::R
         setup_and_start_vm(&config, &dev_info, || forked.redirect())?;
     } else {
         // Parent process
+        utils::serve_info(&config, &dev_info);
 
         // Spawn a thread to read from the pipe
         let hnd = thread::spawn(move || {
