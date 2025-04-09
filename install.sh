@@ -15,10 +15,12 @@ function fix_libkrun_path() {
         "$PREFIX/lib/libkrun.dylib" "$1" 2>/dev/null
 }
 
-fix_libkrun_path "$PREFIX/bin/anylinuxfs"
+# not needed when using libkrun from homebrew
+# fix_libkrun_path "$PREFIX/bin/anylinuxfs"
 codesign --entitlements "anylinuxfs.entitlements" --force -s - "$PREFIX/bin/anylinuxfs"
 
-fix_libkrun_path "$PREFIX/bin/init-rootfs"
-codesign --entitlements "anylinuxfs.entitlements" --force -s - "$PREFIX/bin/init-rootfs"
-
 cp -RL libexec/* "$PREFIX/libexec/"
+
+# not needed when using libkrun from homebrew
+# fix_libkrun_path "$PREFIX/libexec/init-rootfs"
+codesign --entitlements "anylinuxfs.entitlements" --force -s - "$PREFIX/libexec/init-rootfs"
