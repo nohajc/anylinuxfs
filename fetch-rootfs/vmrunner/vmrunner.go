@@ -3,7 +3,7 @@ package vmrunner
 /*
 #include <stdlib.h>
 #include "vmrunner.h"
-#cgo LDFLAGS: -lkrun
+#cgo LDFLAGS: -L /opt/homebrew/opt/libkrun/lib -lkrun
 */
 import "C"
 import (
