@@ -478,7 +478,8 @@ fn wait_for_port_while_child_running(port: u16, pid: libc::pid_t) -> anyhow::Res
     Ok(false)
 }
 
-fn mount_nfs(share_path: &str) -> anyhow::Result<()> {
+fn mount_nfs(share_name: &str) -> anyhow::Result<()> {
+    let share_path = format!("/mnt/{share_name}");
     let apple_script = format!(
         "tell application \"Finder\" to open location \"nfs://localhost:{}\"",
         share_path
@@ -491,6 +492,24 @@ fn mount_nfs(share_path: &str) -> anyhow::Result<()> {
     if !status.success() {
         return Err(anyhow!(
             "osascript failed with exit code {}",
+            status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or("unknown".to_owned())
+        ));
+    }
+    Ok(())
+}
+
+// TODO: do we need this if umount can be used directly?
+#[allow(unused)]
+fn unmount_nfs(share_name: &str) -> anyhow::Result<()> {
+    let volume_path = format!("/Volumes/{share_name}");
+    let status = Command::new("umount").arg(&volume_path).status()?;
+
+    if !status.success() {
+        return Err(anyhow!(
+            "umount failed with exit code {}",
             status
                 .code()
                 .map(|c| c.to_string())
@@ -826,8 +845,7 @@ fn run_mount_child(config: MountConfig, comm_write_fd: libc::c_int) -> anyhow::R
 
             // mount nfs share
             let share_name = dev_info.auto_mount_name();
-            let share_path = format!("/mnt/{share_name}");
-            match mount_nfs(&share_path) {
+            match mount_nfs(&share_name) {
                 Ok(_) => host_println!("NFS share mounted successfully"),
                 Err(e) => host_eprintln!("Failed to mount NFS share: {:#}", e),
             }
