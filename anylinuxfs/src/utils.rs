@@ -338,3 +338,55 @@ pub fn acquire_flock(lock_file: impl AsRef<Path>) -> anyhow::Result<File> {
         Ok(file)
     }
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ActionID(usize);
+
+pub struct Deferred<'a> {
+    actions: Vec<(ActionID, Box<dyn FnOnce() + 'a>)>,
+    last_id: ActionID,
+}
+
+impl<'a> Deferred<'a> {
+    pub fn new() -> Self {
+        Self {
+            actions: Vec::new(),
+            last_id: ActionID(0),
+        }
+    }
+
+    pub fn add<'b, F>(&mut self, action: F) -> ActionID
+    where
+        F: FnOnce() + 'b,
+        'b: 'a,
+    {
+        let id = self.last_id;
+        self.actions.push((id, Box::new(action)));
+        self.last_id.0 += 1;
+        id
+    }
+
+    #[allow(unused)]
+    pub fn call_now(&mut self, id: ActionID) {
+        if let Some((_, action)) = self
+            .actions
+            .iter()
+            .position(|(i, _)| *i == id)
+            .map(|idx| self.actions.remove(idx))
+        {
+            action();
+        }
+    }
+
+    pub fn remove_all(&mut self) {
+        self.actions.clear();
+    }
+}
+
+impl<'a> Drop for Deferred<'a> {
+    fn drop(&mut self) {
+        for (_id, action) in self.actions.drain(..).rev() {
+            action();
+        }
+    }
+}

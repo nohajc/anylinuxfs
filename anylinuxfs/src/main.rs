@@ -35,7 +35,7 @@ use std::{
 };
 
 use url::Url;
-use utils::{OutputAction, StatusError, write_to_pipe};
+use utils::{Deferred, OutputAction, StatusError, write_to_pipe};
 
 mod api;
 #[allow(unused)]
@@ -45,17 +45,30 @@ mod utils;
 
 const LOCK_FILE: &str = "/tmp/anylinuxfs.lock";
 
-fn main() {
-    if let Err(e) = run() {
+fn run() -> i32 {
+    let mut app = AppRunner::default();
+    let mut deferred = Deferred::new();
+
+    let result = app.run();
+    deferred.add(|| terminate_tail(app.tail_process.as_mut()));
+
+    if let Err(e) = result {
         if let Some(status_error) = e.downcast_ref::<StatusError>() {
-            std::process::exit(status_error.status);
+            return status_error.status;
         }
         if let Some(clap_error) = e.downcast_ref::<clap::Error>() {
-            // clap_error.kind() == clap::ErrorKind::InvalidSubcommand
             clap_error.exit();
         }
         host_eprintln!("Error: {:#}", e);
-        std::process::exit(1);
+        return 1;
+    }
+    return 0;
+}
+
+fn main() {
+    let status = run();
+    if status != 0 {
+        std::process::exit(status);
     }
 }
 
@@ -692,7 +705,7 @@ fn send_quit_cmd(config: &Config) -> anyhow::Result<()> {
     // we don't care about the response contents
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
     let mut buf = [0; 1024];
-    let _ = stream.read(&mut buf)?;
+    _ = stream.read(&mut buf)?;
 
     Ok(())
 }
@@ -770,253 +783,277 @@ fn init_rootfs(config: &Config, force: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn run_mount_child(config: MountConfig, comm_write_fd: libc::c_int) -> anyhow::Result<()> {
-    init_rootfs(&config.common, false)?;
-    let mut tail_process = utils::redirect_all_to_file_and_tail_it(&config)?;
+fn terminate_tail(tail_process: Option<&mut Child>) {
+    if let Some(tail_proc) = tail_process {
+        std::thread::sleep(Duration::from_millis(10));
+        if let Err(e) = terminate_child(tail_proc, "tail") {
+            host_eprintln!("{:#}", e);
+        }
+    }
+}
 
-    // host_println!("disk_path: {}", config.disk_path);
-    host_println!("root_path: {}", config.common.root_path.to_string_lossy());
+struct AppRunner {
+    tail_process: Option<Child>,
+}
 
-    // TODO: debug why this doesn't return non-zero status
-    let dev_info = DevInfo::new(&config.disk_path)?;
+impl Default for AppRunner {
+    fn default() -> Self {
+        Self { tail_process: None }
+    }
+}
 
-    host_println!("disk: {}", dev_info.disk());
-    host_println!("rdisk: {}", dev_info.rdisk());
-    host_println!("label: {:?}", dev_info.label());
-    host_println!("fs_type: {:?}", dev_info.fs_type());
-    host_println!("uuid: {:?}", dev_info.uuid());
-    host_println!("mount name: {}", dev_info.auto_mount_name());
+impl AppRunner {
+    fn run_mount(&mut self, cmd: MountCmd) -> anyhow::Result<()> {
+        let _lock_file = utils::acquire_flock(LOCK_FILE)?;
+        let config = load_mount_config(cmd)?;
 
-    let mut gvproxy = start_gvproxy(&config.common)?;
-    wait_for_file(&config.common.vfkit_sock_path)?;
-
-    if let Some(status) = gvproxy.try_wait().ok().flatten() {
-        return Err(anyhow!(
-            "gvproxy failed with exit code: {}",
-            status
-                .code()
-                .map(|c| c.to_string())
-                .unwrap_or("unknown".to_owned())
-        ));
+        let forked = utils::fork_with_comm_pipe()?;
+        if forked.pid == 0 {
+            let res = self.run_mount_child(config, forked.pipe_fd);
+            if res.is_err() {
+                unsafe { write_to_pipe(forked.pipe_fd, b"join\n") }
+                    .context("Failed to write to pipe")?;
+            }
+            res
+        } else {
+            self.run_mount_parent(forked)
+        }
     }
 
-    let mut forked = utils::fork_with_pty_output(OutputAction::RedirectLater)?;
-    if forked.pid == 0 {
-        // Child process
-        // utils::set_null_stdin()?;
-        setup_and_start_vm(&config, &dev_info, || forked.redirect())
-            .context("Failed to start microVM")?;
-    } else {
-        // Parent process
-        api::serve_info(&config, &dev_info);
+    fn run_mount_child(
+        &mut self,
+        config: MountConfig,
+        comm_write_fd: libc::c_int,
+    ) -> anyhow::Result<()> {
+        let mut deferred = Deferred::new();
 
-        // Spawn a thread to read from the pipe
-        let hnd = thread::spawn(move || {
-            let mut buf_reader = BufReader::new(unsafe { File::from_raw_fd(forked.pipe_fd) });
-            let mut line = String::new();
-            while let Ok(bytes) = buf_reader.read_line(&mut line) {
-                if bytes == 0 {
-                    break; // EOF
-                }
-                guest_print!("{}", line);
-                line.clear();
+        init_rootfs(&config.common, false)?;
+
+        self.tail_process = utils::redirect_all_to_file_and_tail_it(&config)?;
+
+        // host_println!("disk_path: {}", config.disk_path);
+        host_println!("root_path: {}", config.common.root_path.to_string_lossy());
+
+        // TODO: debug why this doesn't return non-zero status
+        let dev_info = DevInfo::new(&config.disk_path)?;
+
+        host_println!("disk: {}", dev_info.disk());
+        host_println!("rdisk: {}", dev_info.rdisk());
+        host_println!("label: {:?}", dev_info.label());
+        host_println!("fs_type: {:?}", dev_info.fs_type());
+        host_println!("uuid: {:?}", dev_info.uuid());
+        host_println!("mount name: {}", dev_info.auto_mount_name());
+
+        let mut gvproxy = start_gvproxy(&config.common)?;
+        wait_for_file(&config.common.vfkit_sock_path)?;
+
+        _ = deferred.add(|| {
+            if let Err(e) = gvproxy_cleanup(&config.common) {
+                host_eprintln!("{:#}", e);
             }
         });
 
-        // drop privileges back to the original user if he used sudo
-        drop_privileges(config.common.sudo_uid, config.common.sudo_gid)?;
+        if let Some(status) = gvproxy.try_wait().ok().flatten() {
+            return Err(anyhow!(
+                "gvproxy failed with exit code: {}",
+                status
+                    .code()
+                    .map(|c| c.to_string())
+                    .unwrap_or("unknown".to_owned())
+            ));
+        }
 
-        // TODO: Can we actually wait for the guest NFS server to be ready?
-        // It seems the port is open as soon as port forwarding is configured.
-        // This is needed if gvproxy port forwarding fails for example.
-        let is_open = wait_for_port_while_child_running(111, forked.pid).unwrap_or(false);
+        _ = deferred.add(move || {
+            if let Err(e) = terminate_child(&mut gvproxy, "gvproxy") {
+                host_eprintln!("{:#}", e);
+            }
+        });
 
-        if is_open {
-            host_println!("Port 111 is open");
+        _ = deferred.add(|| {
+            if let Err(e) = vsock_cleanup(&config.common) {
+                host_eprintln!("{:#}", e);
+            }
+        });
 
-            if unsafe { libc::setsid() } < 0 {
-                host_eprintln!("Failed to setsid, cannot run in the background");
+        let mut forked = utils::fork_with_pty_output(OutputAction::RedirectLater)?;
+        if forked.pid == 0 {
+            // Child process
+            deferred.remove_all(); // deferred actions must be only called in the parent process
+
+            setup_and_start_vm(&config, &dev_info, || forked.redirect())
+                .context("Failed to start microVM")?;
+        } else {
+            // Parent process
+            api::serve_info(&config, &dev_info);
+
+            // Spawn a thread to read from the pipe
+            _ = thread::spawn(move || {
+                let mut buf_reader = BufReader::new(unsafe { File::from_raw_fd(forked.pipe_fd) });
+                let mut line = String::new();
+                while let Ok(bytes) = buf_reader.read_line(&mut line) {
+                    if bytes == 0 {
+                        break; // EOF
+                    }
+                    guest_print!("{}", line);
+                    line.clear();
+                }
+            });
+
+            // drop privileges back to the original user if he used sudo
+            drop_privileges(config.common.sudo_uid, config.common.sudo_gid)?;
+
+            // TODO: Can we actually wait for the guest NFS server to be ready?
+            // It seems the port is open as soon as port forwarding is configured.
+            // This is needed if gvproxy port forwarding fails for example.
+            let is_open = wait_for_port_while_child_running(111, forked.pid).unwrap_or(false);
+
+            if is_open {
+                host_println!("Port 111 is open");
+
+                if unsafe { libc::setsid() } < 0 {
+                    host_eprintln!("Failed to setsid, cannot run in the background");
+                    // tell the parent to wait for the child to exit
+                    unsafe { write_to_pipe(comm_write_fd, b"join\n") }
+                        .context("Failed to write to pipe")?;
+                } else {
+                    // tell the parent to detach from console (i.e. exit)
+                    unsafe { write_to_pipe(comm_write_fd, b"detach\n") }
+                        .context("Failed to write to pipe")?;
+
+                    // stop printing to the console
+                    // deferred.call_now(terminate_tail);
+                    terminate_tail(self.tail_process.as_mut());
+                    self.tail_process = None;
+                }
+
+                // mount nfs share
+                let share_name = dev_info.auto_mount_name();
+                match mount_nfs(&share_name) {
+                    Ok(_) => host_println!("NFS share mounted successfully"),
+                    Err(e) => host_eprintln!("Failed to mount NFS share: {:#}", e),
+                }
+
+                wait_for_unmount(share_name)?;
+                send_quit_cmd(&config.common)?;
+            } else {
+                host_println!("Port 111 is not open");
                 // tell the parent to wait for the child to exit
                 unsafe { write_to_pipe(comm_write_fd, b"join\n") }
                     .context("Failed to write to pipe")?;
-            } else {
-                // tell the parent to detach from console (i.e. exit)
-                unsafe { write_to_pipe(comm_write_fd, b"detach\n") }
-                    .context("Failed to write to pipe")?;
-
-                // stop printing to the console
-                if let Some(mut tail_proc) = tail_process {
-                    if let Err(e) = terminate_child(&mut tail_proc, "tail") {
-                        host_eprintln!("{:#}", e);
-                    }
-                    tail_process = None;
-                }
             }
 
-            // mount nfs share
-            let share_name = dev_info.auto_mount_name();
-            match mount_nfs(&share_name) {
-                Ok(_) => host_println!("NFS share mounted successfully"),
-                Err(e) => host_eprintln!("Failed to mount NFS share: {:#}", e),
-            }
-
-            wait_for_unmount(share_name)?;
-            send_quit_cmd(&config.common)?;
-        } else {
-            host_println!("Port 111 is not open");
-            // tell the parent to wait for the child to exit
-            unsafe { write_to_pipe(comm_write_fd, b"join\n") }
-                .context("Failed to write to pipe")?;
-        }
-
-        // we must attempt all cleanup steps whether they fail or not
-        // TODO: all of this must be moved to destructors
-        if let Err(e) = vsock_cleanup(&config.common) {
-            host_eprintln!("{:#}", e);
-        }
-
-        let mut status = 0;
-        let wait_result = unsafe { libc::waitpid(forked.pid, &mut status, 0) };
-        let last_error = io::Error::last_os_error();
-        if wait_result < 0 && last_error.raw_os_error().unwrap() != libc::ECHILD {
-            host_eprintln!("Failed to wait for child process: {}", last_error);
-        }
-        host_println!("libkrun VM exited with status: {}", status);
-
-        // Terminate gvproxy process
-        if let Err(e) = terminate_child(&mut gvproxy, "gvproxy") {
-            host_eprintln!("{:#}", e);
-        }
-        if let Err(e) = gvproxy_cleanup(&config.common) {
-            host_eprintln!("{:#}", e);
-        }
-
-        hnd.join().unwrap();
-
-        if let Some(mut tail_proc) = tail_process {
-            if let Err(e) = terminate_child(&mut tail_proc, "tail") {
-                host_eprintln!("{:#}", e);
-            }
-        }
-
-        if status != 0 {
-            return Err(StatusError::new("VM exited with status", status).into());
-        }
-    }
-
-    Ok(())
-}
-
-fn run_mount_parent(forked: utils::ForkOutput) -> anyhow::Result<()> {
-    let comm_read_fd = forked.pipe_fd;
-    let mut buf_reader = BufReader::new(unsafe { File::from_raw_fd(comm_read_fd) });
-    let mut line = String::new();
-    while let Ok(bytes) = buf_reader.read_line(&mut line) {
-        let cmd = line.trim();
-        // host_println!("DEBUG pipe cmd: '{}'", cmd);
-
-        if bytes == 0 || cmd == "join" {
             let mut status = 0;
-            if unsafe { libc::waitpid(forked.pid, &mut status, 0) } < 0 {
-                return Err(io::Error::last_os_error()).context("Failed to wait for child process");
+            let wait_result = unsafe { libc::waitpid(forked.pid, &mut status, 0) };
+            let last_error = io::Error::last_os_error();
+            if wait_result < 0 && last_error.raw_os_error().unwrap() != libc::ECHILD {
+                host_eprintln!("Failed to wait for child process: {}", last_error);
             }
-            match status {
-                0 => return Ok(()),
-                _ => return Err(StatusError::new("exited with status", status).into()),
+            host_println!("libkrun VM exited with status: {}", status);
+
+            if status != 0 {
+                return Err(StatusError::new("VM exited with status", status).into());
             }
         }
 
-        if cmd == "detach" {
-            // child is signalling it will continue to run
-            // in the background; we can exit without waiting
-            break;
-        }
-
-        line.clear();
+        Ok(())
     }
-    Ok(())
-}
 
-fn run_mount(cmd: MountCmd) -> anyhow::Result<()> {
-    let _lock_file = utils::acquire_flock(LOCK_FILE)?;
-    let config = load_mount_config(cmd)?;
+    fn run_mount_parent(&mut self, forked: utils::ForkOutput) -> anyhow::Result<()> {
+        let comm_read_fd = forked.pipe_fd;
+        let mut buf_reader = BufReader::new(unsafe { File::from_raw_fd(comm_read_fd) });
+        let mut line = String::new();
+        while let Ok(bytes) = buf_reader.read_line(&mut line) {
+            let cmd = line.trim();
+            // host_println!("DEBUG pipe cmd: '{}'", cmd);
 
-    let forked = utils::fork_with_comm_pipe()?;
-    if forked.pid == 0 {
-        let res = run_mount_child(config, forked.pipe_fd);
-        if res.is_err() {
-            unsafe { write_to_pipe(forked.pipe_fd, b"join\n") }
-                .context("Failed to write to pipe")?;
-        }
-        res
-    } else {
-        run_mount_parent(forked)
-    }
-}
-
-fn run_init() -> anyhow::Result<()> {
-    let _lock_file = utils::acquire_flock(LOCK_FILE)?;
-    let config = load_config()?;
-    init_rootfs(&config, true)?;
-
-    Ok(())
-}
-
-fn run_status() -> anyhow::Result<()> {
-    let resp = api::Client::make_request(api::Request::GetConfig);
-
-    match resp {
-        Ok(api::Response::Config(config)) => {
-            let info: Vec<_> = config
-                .dev_info
-                .fs_type()
-                .into_iter()
-                .chain(
-                    config
-                        .mount_config
-                        .mount_options
-                        .iter()
-                        .flat_map(|opts| opts.split(',')),
-                )
-                .collect();
-
-            let user_name = User::from_uid(Uid::from_raw(config.mount_config.common.invoker_uid))
-                .ok()
-                .flatten()
-                .map(|u| u.name)
-                .unwrap_or("<unknown>".into());
-
-            println!(
-                "{} on /Volumes/{} ({}, mounted by {})",
-                &config.mount_config.disk_path,
-                config.dev_info.auto_mount_name(),
-                info.join(", "),
-                &user_name,
-            );
-        }
-        Err(err) => {
-            if let Some(err) = err.downcast_ref::<io::Error>() {
-                match err.kind() {
-                    io::ErrorKind::ConnectionRefused => return Ok(()),
-                    _ => (),
+            if bytes == 0 || cmd == "join" {
+                let mut status = 0;
+                if unsafe { libc::waitpid(forked.pid, &mut status, 0) } < 0 {
+                    return Err(io::Error::last_os_error())
+                        .context("Failed to wait for child process");
+                }
+                match status {
+                    0 => return Ok(()),
+                    _ => return Err(StatusError::new("exited with status", status).into()),
                 }
             }
-            return Err(err);
+
+            if cmd == "detach" {
+                // child is signalling it will continue to run
+                // in the background; we can exit without waiting
+                break;
+            }
+
+            line.clear();
         }
+        Ok(())
     }
 
-    Ok(())
-}
+    fn run_init(&mut self) -> anyhow::Result<()> {
+        let _lock_file = utils::acquire_flock(LOCK_FILE)?;
+        let config = load_config()?;
+        init_rootfs(&config, true)?;
 
-fn run() -> anyhow::Result<()> {
-    // host_println!("uid = {}", unsafe { libc::getuid() });
-    // host_println!("gid = {}", unsafe { libc::getgid() });
+        Ok(())
+    }
 
-    let cli = Cli::try_parse_with_default_cmd()?;
-    match cli.commands {
-        Commands::Mount(cmd) => run_mount(cmd),
-        Commands::Init => run_init(),
-        Commands::Status => run_status(),
+    fn run_status(&mut self) -> anyhow::Result<()> {
+        let resp = api::Client::make_request(api::Request::GetConfig);
+
+        match resp {
+            Ok(api::Response::Config(config)) => {
+                let info: Vec<_> = config
+                    .dev_info
+                    .fs_type()
+                    .into_iter()
+                    .chain(
+                        config
+                            .mount_config
+                            .mount_options
+                            .iter()
+                            .flat_map(|opts| opts.split(',')),
+                    )
+                    .collect();
+
+                let user_name =
+                    User::from_uid(Uid::from_raw(config.mount_config.common.invoker_uid))
+                        .ok()
+                        .flatten()
+                        .map(|u| u.name)
+                        .unwrap_or("<unknown>".into());
+
+                println!(
+                    "{} on /Volumes/{} ({}, mounted by {})",
+                    &config.mount_config.disk_path,
+                    config.dev_info.auto_mount_name(),
+                    info.join(", "),
+                    &user_name,
+                );
+            }
+            Err(err) => {
+                if let Some(err) = err.downcast_ref::<io::Error>() {
+                    match err.kind() {
+                        io::ErrorKind::ConnectionRefused => return Ok(()),
+                        _ => (),
+                    }
+                }
+                return Err(err);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn run(&mut self) -> anyhow::Result<()> {
+        // host_println!("uid = {}", unsafe { libc::getuid() });
+        // host_println!("gid = {}", unsafe { libc::getgid() });
+
+        let cli = Cli::try_parse_with_default_cmd()?;
+        match cli.commands {
+            Commands::Mount(cmd) => self.run_mount(cmd),
+            Commands::Init => self.run_init(),
+            Commands::Status => self.run_status(),
+        }
     }
 }
 
