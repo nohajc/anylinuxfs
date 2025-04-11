@@ -40,8 +40,8 @@ pub fn serve_info(mount_config: &MountConfig, dev_info: &DevInfo) {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RuntimeInfo {
-    mount_config: MountConfig,
-    dev_info: DevInfo,
+    pub mount_config: MountConfig,
+    pub dev_info: DevInfo,
 }
 
 #[derive(Clone, Deserialize, Serialize)]

@@ -78,6 +78,7 @@ dependencies = [
  "libblkid-rs",
  "libc",
  "nanoid",
+ "nix",
  "objc2-core-foundation",
  "objc2-disk-arbitration",
  "serde",

@@ -3,6 +3,7 @@ use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use common_utils::{guest_print, host_eprintln, host_println, log};
 use devinfo::DevInfo;
 use nanoid::nanoid;
+use nix::unistd::{Uid, User};
 use objc2_core_foundation::{
     CFDictionary, CFDictionaryGetValueIfPresent, CFRetained, CFRunLoopGetCurrent, CFRunLoopRun,
     CFRunLoopStop, CFString, CFURL, CFURLGetString, kCFRunLoopDefaultMode,
@@ -67,6 +68,7 @@ struct Config {
     gvproxy_path: PathBuf,
     vsock_path: String,
     vfkit_sock_path: String,
+    invoker_uid: libc::uid_t,
     sudo_uid: Option<libc::uid_t>,
     sudo_gid: Option<libc::gid_t>,
 }
@@ -187,12 +189,16 @@ fn load_config() -> anyhow::Result<Config> {
         .context("Failed to get home directory")?
         .context("Home directory not found")?;
 
-    if unsafe { libc::getuid() } == 0
-        && (sudo_uid.is_none() || sudo_gid.is_none() || !home_dir.starts_with("/Users"))
-    {
+    let uid = unsafe { libc::getuid() };
+    if uid == 0 && (sudo_uid.is_none() || sudo_gid.is_none() || !home_dir.starts_with("/Users")) {
         eprintln!("This program must not be run directly by root but you can use sudo");
         std::process::exit(1);
     }
+
+    let invoker_uid = match sudo_uid {
+        Some(sudo_uid) => sudo_uid,
+        None => uid,
+    };
 
     let exec_dir = env::current_exe()
         .context("Failed to get current executable path")?
@@ -224,6 +230,7 @@ fn load_config() -> anyhow::Result<Config> {
         gvproxy_path,
         vsock_path,
         vfkit_sock_path,
+        invoker_uid,
         sudo_uid,
         sudo_gid,
     })
@@ -770,6 +777,7 @@ fn run_mount_child(config: MountConfig, comm_write_fd: libc::c_int) -> anyhow::R
     // host_println!("disk_path: {}", config.disk_path);
     host_println!("root_path: {}", config.common.root_path.to_string_lossy());
 
+    // TODO: debug why this doesn't return non-zero status
     let dev_info = DevInfo::new(&config.disk_path)?;
 
     host_println!("disk: {}", dev_info.disk());
@@ -780,26 +788,24 @@ fn run_mount_child(config: MountConfig, comm_write_fd: libc::c_int) -> anyhow::R
     host_println!("mount name: {}", dev_info.auto_mount_name());
 
     let mut gvproxy = start_gvproxy(&config.common)?;
+    wait_for_file(&config.common.vfkit_sock_path)?;
+
+    if let Some(status) = gvproxy.try_wait().ok().flatten() {
+        return Err(anyhow!(
+            "gvproxy failed with exit code: {}",
+            status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or("unknown".to_owned())
+        ));
+    }
 
     let mut forked = utils::fork_with_pty_output(OutputAction::RedirectLater)?;
     if forked.pid == 0 {
         // Child process
         // utils::set_null_stdin()?;
-
-        wait_for_file(&config.common.vfkit_sock_path)?;
-
-        if let Some(status) = gvproxy.try_wait().ok().flatten() {
-            host_println!(
-                "gvproxy failed with exit code: {}",
-                status
-                    .code()
-                    .map(|c| c.to_string())
-                    .unwrap_or("unknown".to_owned())
-            );
-            std::process::exit(1);
-        }
-
-        setup_and_start_vm(&config, &dev_info, || forked.redirect())?;
+        setup_and_start_vm(&config, &dev_info, || forked.redirect())
+            .context("Failed to start microVM")?;
     } else {
         // Parent process
         api::serve_info(&config, &dev_info);
@@ -822,6 +828,7 @@ fn run_mount_child(config: MountConfig, comm_write_fd: libc::c_int) -> anyhow::R
 
         // TODO: Can we actually wait for the guest NFS server to be ready?
         // It seems the port is open as soon as port forwarding is configured.
+        // This is needed if gvproxy port forwarding fails for example.
         let is_open = wait_for_port_while_child_running(111, forked.pid).unwrap_or(false);
 
         if is_open {
@@ -863,6 +870,7 @@ fn run_mount_child(config: MountConfig, comm_write_fd: libc::c_int) -> anyhow::R
         }
 
         // we must attempt all cleanup steps whether they fail or not
+        // TODO: all of this must be moved to destructors
         if let Err(e) = vsock_cleanup(&config.common) {
             host_eprintln!("{:#}", e);
         }
@@ -904,7 +912,10 @@ fn run_mount_parent(forked: utils::ForkOutput) -> anyhow::Result<()> {
     let mut buf_reader = BufReader::new(unsafe { File::from_raw_fd(comm_read_fd) });
     let mut line = String::new();
     while let Ok(bytes) = buf_reader.read_line(&mut line) {
-        if bytes == 0 || line.trim() == "join" {
+        let cmd = line.trim();
+        // host_println!("DEBUG pipe cmd: '{}'", cmd);
+
+        if bytes == 0 || cmd == "join" {
             let mut status = 0;
             if unsafe { libc::waitpid(forked.pid, &mut status, 0) } < 0 {
                 return Err(io::Error::last_os_error()).context("Failed to wait for child process");
@@ -915,7 +926,7 @@ fn run_mount_parent(forked: utils::ForkOutput) -> anyhow::Result<()> {
             }
         }
 
-        if line.trim() == "detach" {
+        if cmd == "detach" {
             // child is signalling it will continue to run
             // in the background; we can exit without waiting
             break;
@@ -932,7 +943,12 @@ fn run_mount(cmd: MountCmd) -> anyhow::Result<()> {
 
     let forked = utils::fork_with_comm_pipe()?;
     if forked.pid == 0 {
-        run_mount_child(config, forked.pipe_fd)
+        let res = run_mount_child(config, forked.pipe_fd);
+        if res.is_err() {
+            unsafe { write_to_pipe(forked.pipe_fd, b"join\n") }
+                .context("Failed to write to pipe")?;
+        }
+        res
     } else {
         run_mount_parent(forked)
     }
@@ -951,7 +967,32 @@ fn run_status() -> anyhow::Result<()> {
 
     match resp {
         Ok(api::Response::Config(config)) => {
-            host_println!("{:?}", config);
+            let info: Vec<_> = config
+                .dev_info
+                .fs_type()
+                .into_iter()
+                .chain(
+                    config
+                        .mount_config
+                        .mount_options
+                        .iter()
+                        .flat_map(|opts| opts.split(',')),
+                )
+                .collect();
+
+            let user_name = User::from_uid(Uid::from_raw(config.mount_config.common.invoker_uid))
+                .ok()
+                .flatten()
+                .map(|u| u.name)
+                .unwrap_or("<unknown>".into());
+
+            println!(
+                "{} on /Volumes/{} ({}, mounted by {})",
+                &config.mount_config.disk_path,
+                config.dev_info.auto_mount_name(),
+                info.join(", "),
+                &user_name,
+            );
         }
         Err(err) => {
             if let Some(err) = err.downcast_ref::<io::Error>() {
