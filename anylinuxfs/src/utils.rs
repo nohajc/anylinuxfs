@@ -8,15 +8,11 @@ use std::{
     },
     path::Path,
     process::Command,
-    thread,
 };
 
 use anyhow::Context;
-use common_utils::host_eprintln;
-use serde::{Deserialize, Serialize};
 
-use crate::{MountConfig, devinfo::DevInfo};
-use std::fs;
+use crate::MountConfig;
 
 #[derive(Debug)]
 pub struct StatusError {
@@ -341,51 +337,4 @@ pub fn acquire_flock(lock_file: impl AsRef<Path>) -> anyhow::Result<File> {
     } else {
         Ok(file)
     }
-}
-
-pub fn serve_info(mount_config: &MountConfig, dev_info: &DevInfo) {
-    let mount_config = mount_config.clone();
-    let dev_info = dev_info.clone();
-
-    _ = thread::spawn(move || {
-        let socket_path = Path::new("/tmp/anylinuxfs.sock");
-        // Remove the socket file if it exists
-        if socket_path.exists() {
-            if let Err(e) = fs::remove_file(socket_path) {
-                host_eprintln!("Error removing socket file: {}", e);
-            }
-        }
-        if let Err(e) = serve_config_impl(
-            RuntimeInfo {
-                mount_config,
-                dev_info,
-            },
-            socket_path,
-        ) {
-            host_eprintln!("Error in serve_config: {}", e);
-        }
-    });
-}
-
-#[derive(Clone, Deserialize, Serialize)]
-struct RuntimeInfo {
-    mount_config: MountConfig,
-    dev_info: DevInfo,
-}
-
-fn serve_config_impl(runtime_info: RuntimeInfo, socket_path: &Path) -> anyhow::Result<()> {
-    let server = tiny_http::Server::http_unix(socket_path)
-        .map_err(anyhow::Error::from_boxed)
-        .context("Failed to listen on unix socket")?;
-
-    println!("Server is listening on Unix socket: {:?}", socket_path);
-
-    // Handle incoming requests
-    for request in server.incoming_requests() {
-        let runtime_info =
-            serde_json::to_string(&runtime_info).context("Failed to serialize runtime info")?;
-        let response = tiny_http::Response::from_string(runtime_info);
-        _ = request.respond(response);
-    }
-    Ok(())
 }

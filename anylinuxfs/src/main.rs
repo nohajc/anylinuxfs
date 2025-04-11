@@ -36,6 +36,7 @@ use std::{
 use url::Url;
 use utils::{OutputAction, StatusError, write_to_pipe};
 
+mod api;
 #[allow(unused)]
 mod bindings;
 mod devinfo;
@@ -57,7 +58,7 @@ fn main() {
     }
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct Config {
     root_path: PathBuf,
     log_file_path: PathBuf,
@@ -70,7 +71,7 @@ struct Config {
     sudo_gid: Option<libc::gid_t>,
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct MountConfig {
     disk_path: String,
     read_only: bool,
@@ -105,6 +106,8 @@ enum Commands {
     Mount(MountCmd),
     /// Init Linux rootfs (can be used to reinitialize virtual environment)
     Init,
+    /// Status information (if anylinuxfs is running, mount parameters are shown)
+    Status,
 }
 
 #[derive(Args)]
@@ -799,7 +802,7 @@ fn run_mount_child(config: MountConfig, comm_write_fd: libc::c_int) -> anyhow::R
         setup_and_start_vm(&config, &dev_info, || forked.redirect())?;
     } else {
         // Parent process
-        utils::serve_info(&config, &dev_info);
+        api::serve_info(&config, &dev_info);
 
         // Spawn a thread to read from the pipe
         let hnd = thread::spawn(move || {
@@ -943,6 +946,27 @@ fn run_init() -> anyhow::Result<()> {
     Ok(())
 }
 
+fn run_status() -> anyhow::Result<()> {
+    let resp = api::Client::make_request(api::Request::GetConfig);
+
+    match resp {
+        Ok(api::Response::Config(config)) => {
+            host_println!("{:?}", config);
+        }
+        Err(err) => {
+            if let Some(err) = err.downcast_ref::<io::Error>() {
+                match err.kind() {
+                    io::ErrorKind::ConnectionRefused => return Ok(()),
+                    _ => (),
+                }
+            }
+            return Err(err);
+        }
+    }
+
+    Ok(())
+}
+
 fn run() -> anyhow::Result<()> {
     // host_println!("uid = {}", unsafe { libc::getuid() });
     // host_println!("gid = {}", unsafe { libc::getgid() });
@@ -951,6 +975,7 @@ fn run() -> anyhow::Result<()> {
     match cli.commands {
         Commands::Mount(cmd) => run_mount(cmd),
         Commands::Init => run_init(),
+        Commands::Status => run_status(),
     }
 }
 
