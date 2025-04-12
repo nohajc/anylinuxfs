@@ -277,6 +277,7 @@ pub unsafe fn write_to_pipe(pipe_fd: libc::c_int, data: &[u8]) -> anyhow::Result
     Ok(())
 }
 
+#[allow(unused)]
 pub fn redirect_all_to_file_and_tail_it(
     config: &MountConfig,
 ) -> anyhow::Result<Option<std::process::Child>> {

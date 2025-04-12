@@ -1,6 +1,6 @@
 use anyhow::{Context, anyhow};
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
-use common_utils::{guest_print, host_eprintln, host_println, log};
+use common_utils::{guest_println, host_eprintln, host_println, log};
 use devinfo::DevInfo;
 use nanoid::nanoid;
 use nix::unistd::{Uid, User};
@@ -19,6 +19,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, SocketAddrV4, TcpStream};
 use std::ops::Deref;
 use std::os::fd::FromRawFd;
+use std::os::unix::fs::chown;
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
@@ -47,10 +48,7 @@ const LOCK_FILE: &str = "/tmp/anylinuxfs.lock";
 
 fn run() -> i32 {
     let mut app = AppRunner::default();
-    let mut deferred = Deferred::new();
-
     let result = app.run();
-    deferred.add(|| terminate_tail(app.tail_process.as_mut()));
 
     if let Err(e) = result {
         if let Some(status_error) = e.downcast_ref::<StatusError>() {
@@ -82,6 +80,7 @@ struct Config {
     vsock_path: String,
     vfkit_sock_path: String,
     invoker_uid: libc::uid_t,
+    invoker_gid: libc::gid_t,
     sudo_uid: Option<libc::uid_t>,
     sudo_gid: Option<libc::gid_t>,
 }
@@ -207,10 +206,16 @@ fn load_config() -> anyhow::Result<Config> {
         eprintln!("This program must not be run directly by root but you can use sudo");
         std::process::exit(1);
     }
+    let gid = unsafe { libc::getgid() };
 
     let invoker_uid = match sudo_uid {
         Some(sudo_uid) => sudo_uid,
         None => uid,
+    };
+
+    let invoker_gid = match sudo_gid {
+        Some(sudo_gid) => sudo_gid,
+        None => gid,
     };
 
     let exec_dir = env::current_exe()
@@ -244,6 +249,7 @@ fn load_config() -> anyhow::Result<Config> {
         vsock_path,
         vfkit_sock_path,
         invoker_uid,
+        invoker_gid,
         sudo_uid,
         sudo_gid,
     })
@@ -783,22 +789,11 @@ fn init_rootfs(config: &Config, force: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn terminate_tail(tail_process: Option<&mut Child>) {
-    if let Some(tail_proc) = tail_process {
-        std::thread::sleep(Duration::from_millis(10));
-        if let Err(e) = terminate_child(tail_proc, "tail") {
-            host_eprintln!("{:#}", e);
-        }
-    }
-}
-
-struct AppRunner {
-    tail_process: Option<Child>,
-}
+struct AppRunner {}
 
 impl Default for AppRunner {
     fn default() -> Self {
-        Self { tail_process: None }
+        Self {}
     }
 }
 
@@ -806,6 +801,20 @@ impl AppRunner {
     fn run_mount(&mut self, cmd: MountCmd) -> anyhow::Result<()> {
         let _lock_file = utils::acquire_flock(LOCK_FILE)?;
         let config = load_mount_config(cmd)?;
+        let log_file_path = &config.common.log_file_path;
+
+        log::init_log_file(log_file_path).context("Failed to create log file")?;
+        // Change owner to invoker_uid and invoker_gid
+
+        chown(
+            log_file_path,
+            Some(config.common.invoker_uid),
+            Some(config.common.invoker_gid),
+        )
+        .context(format!(
+            "Failed to change owner of {}",
+            log_file_path.display(),
+        ))?;
 
         let forked = utils::fork_with_comm_pipe()?;
         if forked.pid == 0 {
@@ -829,7 +838,9 @@ impl AppRunner {
 
         init_rootfs(&config.common, false)?;
 
-        self.tail_process = utils::redirect_all_to_file_and_tail_it(&config)?;
+        if !config.verbose {
+            log::disable_console_log();
+        }
 
         // host_println!("disk_path: {}", config.disk_path);
         host_println!("root_path: {}", config.common.root_path.to_string_lossy());
@@ -894,7 +905,7 @@ impl AppRunner {
                     if bytes == 0 {
                         break; // EOF
                     }
-                    guest_print!("{}", line);
+                    guest_println!("{}", line.trim_end());
                     line.clear();
                 }
             });
@@ -921,9 +932,7 @@ impl AppRunner {
                         .context("Failed to write to pipe")?;
 
                     // stop printing to the console
-                    // deferred.call_now(terminate_tail);
-                    terminate_tail(self.tail_process.as_mut());
-                    self.tail_process = None;
+                    log::disable_console_log();
                 }
 
                 // mount nfs share
