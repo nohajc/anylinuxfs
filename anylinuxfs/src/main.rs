@@ -46,13 +46,25 @@ mod utils;
 
 const LOCK_FILE: &str = "/tmp/anylinuxfs.lock";
 
+fn to_exit_code(status: i32) -> i32 {
+    if libc::WIFEXITED(status) {
+        libc::WEXITSTATUS(status)
+    } else if libc::WIFSIGNALED(status) {
+        libc::WTERMSIG(status) + 128
+    } else {
+        1
+    }
+}
+
 fn run() -> i32 {
     let mut app = AppRunner::default();
-    let result = app.run();
 
-    if let Err(e) = result {
+    if let Err(e) = app.run() {
         if let Some(status_error) = e.downcast_ref::<StatusError>() {
-            return status_error.status;
+            return match app.is_child {
+                true => status_error.status,
+                false => to_exit_code(status_error.status),
+            };
         }
         if let Some(clap_error) = e.downcast_ref::<clap::Error>() {
             clap_error.exit();
@@ -64,9 +76,9 @@ fn run() -> i32 {
 }
 
 fn main() {
-    let status = run();
-    if status != 0 {
-        std::process::exit(status);
+    let code = run();
+    if code != 0 {
+        std::process::exit(code);
     }
 }
 
@@ -789,11 +801,13 @@ fn init_rootfs(config: &Config, force: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-struct AppRunner {}
+struct AppRunner {
+    is_child: bool,
+}
 
 impl Default for AppRunner {
     fn default() -> Self {
-        Self {}
+        Self { is_child: false }
     }
 }
 
@@ -818,6 +832,7 @@ impl AppRunner {
 
         let forked = utils::fork_with_comm_pipe()?;
         if forked.pid == 0 {
+            self.is_child = true;
             let res = self.run_mount_child(config, forked.pipe_fd);
             if res.is_err() {
                 unsafe { write_to_pipe(forked.pipe_fd, b"join\n") }
@@ -845,7 +860,6 @@ impl AppRunner {
         // host_println!("disk_path: {}", config.disk_path);
         host_println!("root_path: {}", config.common.root_path.to_string_lossy());
 
-        // TODO: debug why this doesn't return non-zero status
         let dev_info = DevInfo::new(&config.disk_path)?;
 
         host_println!("disk: {}", dev_info.disk());
