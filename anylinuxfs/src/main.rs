@@ -35,6 +35,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use notify::{RecursiveMode, Watcher};
+use std::sync::mpsc;
 use url::Url;
 use utils::{Deferred, OutputAction, StatusError, write_to_pipe};
 
@@ -197,8 +199,10 @@ enum Commands {
     Mount(MountCmd),
     /// Init Linux rootfs (can be used to reinitialize virtual environment)
     Init,
-    /// Status information (if anylinuxfs is running, mount parameters are shown)
+    /// Show status information (mount parameters, vm resources, etc.)
     Status,
+    /// Show log of current or previous run
+    Log(LogCmd),
 }
 
 #[derive(Args)]
@@ -208,6 +212,13 @@ struct MountCmd {
     options: Option<String>,
     #[arg(short, long)]
     verbose: bool,
+}
+
+#[derive(Args)]
+struct LogCmd {
+    /// Wait for additional logs to be appended
+    #[arg(short, long)]
+    follow: bool,
 }
 
 #[derive(Parser)]
@@ -1104,6 +1115,59 @@ impl AppRunner {
         Ok(())
     }
 
+    fn run_log(&mut self, cmd: LogCmd) -> anyhow::Result<()> {
+        let config = load_config()?;
+        let log_file_path = &config.log_file_path;
+
+        if !log_file_path.exists() {
+            return Ok(());
+        }
+
+        let log_file = File::open(log_file_path).context("Failed to open log file")?;
+        let mut buf_reader = BufReader::new(log_file);
+        let mut line = String::new();
+
+        // Print existing lines in the log file
+        loop {
+            let size = buf_reader.read_line(&mut line)?;
+            if size == 0 {
+                break; // EOF
+            }
+            println!("{}", line.trim_end());
+            line.clear();
+        }
+
+        if cmd.follow {
+            // Set up a file watcher to detect changes
+            let (tx, rx) = mpsc::channel();
+            let mut watcher = notify::recommended_watcher(tx)?;
+            watcher
+                .watch(log_file_path, RecursiveMode::NonRecursive)
+                .context("Failed to watch log file")?;
+
+            loop {
+                match rx.recv() {
+                    Ok(_) => {
+                        // Read new lines appended to the file
+                        while let Ok(size) = buf_reader.read_line(&mut line) {
+                            if size == 0 {
+                                break; // No more new lines
+                            }
+                            println!("{}", line.trim_end());
+                            line.clear();
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Watcher error: {}", e);
+                        break;
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     fn run_status(&mut self) -> anyhow::Result<()> {
         let resp = api::Client::make_request(api::Request::GetConfig);
 
@@ -1162,6 +1226,7 @@ impl AppRunner {
             Commands::Mount(cmd) => self.run_mount(cmd),
             Commands::Init => self.run_init(),
             Commands::Status => self.run_status(),
+            Commands::Log(cmd) => self.run_log(cmd),
         }
     }
 }
