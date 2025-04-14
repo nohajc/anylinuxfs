@@ -14,7 +14,7 @@ use objc2_disk_arbitration::{
 };
 use serde::{Deserialize, Serialize};
 use std::ffi::c_void;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, SocketAddrV4, TcpStream};
 use std::ops::Deref;
@@ -85,6 +85,7 @@ fn main() {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct Config {
     root_path: PathBuf,
+    config_file_path: PathBuf,
     log_file_path: PathBuf,
     init_rootfs_path: PathBuf,
     kernel_path: PathBuf,
@@ -95,6 +96,70 @@ struct Config {
     invoker_gid: libc::gid_t,
     sudo_uid: Option<libc::uid_t>,
     sudo_gid: Option<libc::gid_t>,
+    krun: KrunConfig,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct KrunConfig {
+    #[serde(default = "KrunConfig::default_log_level", rename = "log_level")]
+    log_level_numeric: u32,
+    #[serde(default = "KrunConfig::default_num_vcpus")]
+    num_vcpus: u8,
+    #[serde(default = "KrunConfig::default_ram_size")]
+    ram_size_mib: u32,
+}
+
+impl KrunConfig {
+    fn default_log_level() -> u32 {
+        0
+    }
+
+    fn default_num_vcpus() -> u8 {
+        1
+    }
+
+    fn default_ram_size() -> u32 {
+        512
+    }
+}
+
+impl Default for KrunConfig {
+    fn default() -> Self {
+        KrunConfig {
+            log_level_numeric: 0,
+            num_vcpus: 1,
+            ram_size_mib: 512,
+        }
+    }
+}
+
+#[allow(unused)]
+enum KrunLogLevel {
+    Off = 0,
+    Error = 1,
+    Warn = 2,
+    Info = 3,
+    Debug = 4,
+    Trace = 5,
+}
+
+#[allow(unused)]
+impl KrunConfig {
+    fn log_level(&self) -> KrunLogLevel {
+        match self.log_level_numeric {
+            0 => KrunLogLevel::Off,
+            1 => KrunLogLevel::Error,
+            2 => KrunLogLevel::Warn,
+            3 => KrunLogLevel::Info,
+            4 => KrunLogLevel::Debug,
+            5 => KrunLogLevel::Trace,
+            _ => KrunLogLevel::Off,
+        }
+    }
+
+    fn set_log_level(&mut self, level: KrunLogLevel) {
+        self.log_level_numeric = level as u32;
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -242,6 +307,7 @@ fn load_config() -> anyhow::Result<Config> {
 
     // ~/.anylinuxfs/alpine/rootfs
     let root_path = home_dir.join(".anylinuxfs").join("alpine").join("rootfs");
+    let config_file_path = home_dir.join(".anylinuxfs").join("config.toml");
     let log_file_path = home_dir.join("Library").join("Logs").join("anylinuxfs.log");
 
     let libexec_dir = prefix_dir.join("libexec");
@@ -252,8 +318,11 @@ fn load_config() -> anyhow::Result<Config> {
     let vsock_path = format!("/tmp/anylinuxfs-{}-vsock", rand_string(8));
     let vfkit_sock_path = format!("/tmp/vfkit-{}.sock", rand_string(8));
 
+    let krun = load_krun_config(&config_file_path)?;
+
     Ok(Config {
         root_path,
+        config_file_path,
         log_file_path,
         init_rootfs_path,
         kernel_path,
@@ -264,7 +333,19 @@ fn load_config() -> anyhow::Result<Config> {
         invoker_gid,
         sudo_uid,
         sudo_gid,
+        krun,
     })
+}
+
+fn load_krun_config(path: &Path) -> anyhow::Result<KrunConfig> {
+    match fs::read_to_string(path) {
+        Ok(config_str) => {
+            let config: KrunConfig = toml::from_str(&config_str)
+                .context(format!("Failed to parse config file {}", path.display()))?;
+            Ok(config)
+        }
+        Err(_) => Ok(KrunConfig::default()),
+    }
 }
 
 fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
@@ -276,7 +357,6 @@ fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
     };
 
     let read_only = is_read_only_set(mount_options.as_deref());
-
     let verbose = cmd.verbose;
 
     let common = load_config()?;
@@ -312,11 +392,13 @@ fn setup_and_start_vm(
 ) -> anyhow::Result<()> {
     let ctx = unsafe { bindings::krun_create_ctx() }.context("Failed to create context")?;
 
-    // TODO: configurable log level?
-    unsafe { bindings::krun_set_log_level(3) }.context("Failed to set log level")?;
+    let level = config.common.krun.log_level_numeric;
+    unsafe { bindings::krun_set_log_level(level) }.context("Failed to set log level")?;
 
-    // TODO: CPU and RAM should be configurable
-    unsafe { bindings::krun_set_vm_config(ctx, 2, 1024) }.context("Failed to set VM config")?;
+    let num_vcpus = config.common.krun.num_vcpus;
+    let ram_mib = config.common.krun.ram_size_mib;
+    unsafe { bindings::krun_set_vm_config(ctx, num_vcpus, ram_mib) }
+        .context("Failed to set VM config")?;
 
     // run vmm as the original user if he used sudo
     if let Some(uid) = config.common.sudo_uid {
@@ -859,6 +941,8 @@ impl AppRunner {
 
         // host_println!("disk_path: {}", config.disk_path);
         host_println!("root_path: {}", config.common.root_path.to_string_lossy());
+        host_println!("num_vcpus: {}", config.common.krun.num_vcpus);
+        host_println!("ram_size_mib: {}", config.common.krun.ram_size_mib);
 
         let dev_info = DevInfo::new(&config.disk_path)?;
 
@@ -1046,11 +1130,13 @@ impl AppRunner {
                         .unwrap_or("<unknown>".into());
 
                 println!(
-                    "{} on /Volumes/{} ({}, mounted by {})",
+                    "{} on /Volumes/{} ({}, mounted by {}) VM[cpus: {}, ram: {} MiB]",
                     &config.mount_config.disk_path,
                     config.dev_info.auto_mount_name(),
                     info.join(", "),
                     &user_name,
+                    config.mount_config.common.krun.num_vcpus,
+                    config.mount_config.common.krun.ram_size_mib,
                 );
             }
             Err(err) => {
