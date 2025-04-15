@@ -1,5 +1,5 @@
 use anyhow::{Context, anyhow};
-use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
+use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use common_utils::{guest_println, host_eprintln, host_println, log};
 use devinfo::DevInfo;
 use nanoid::nanoid;
@@ -14,6 +14,7 @@ use objc2_disk_arbitration::{
 };
 use serde::{Deserialize, Serialize};
 use std::ffi::c_void;
+use std::fmt::{Display, Formatter};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, SocketAddrV4, TcpStream};
@@ -135,7 +136,19 @@ impl Default for KrunConfig {
     }
 }
 
-#[allow(unused)]
+impl Display for KrunConfig {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "log_level = {}\nnum_vcpus = {}\nram_size_mib = {}",
+            self.log_level(),
+            self.num_vcpus,
+            self.ram_size_mib
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
 enum KrunLogLevel {
     Off = 0,
     Error = 1,
@@ -145,10 +158,23 @@ enum KrunLogLevel {
     Trace = 5,
 }
 
-#[allow(unused)]
-impl KrunConfig {
-    fn log_level(&self) -> KrunLogLevel {
-        match self.log_level_numeric {
+impl Display for KrunLogLevel {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let val = match self {
+            KrunLogLevel::Off => "off",
+            KrunLogLevel::Error => "error",
+            KrunLogLevel::Warn => "warn",
+            KrunLogLevel::Info => "info",
+            KrunLogLevel::Debug => "debug",
+            KrunLogLevel::Trace => "trace",
+        };
+        write!(f, "{}", val)
+    }
+}
+
+impl From<u32> for KrunLogLevel {
+    fn from(value: u32) -> Self {
+        match value {
             0 => KrunLogLevel::Off,
             1 => KrunLogLevel::Error,
             2 => KrunLogLevel::Warn,
@@ -157,6 +183,13 @@ impl KrunConfig {
             5 => KrunLogLevel::Trace,
             _ => KrunLogLevel::Off,
         }
+    }
+}
+
+#[allow(unused)]
+impl KrunConfig {
+    fn log_level(&self) -> KrunLogLevel {
+        self.log_level_numeric.into()
     }
 
     fn set_log_level(&mut self, level: KrunLogLevel) {
@@ -203,6 +236,8 @@ enum Commands {
     Status,
     /// Show log of current or previous run
     Log(LogCmd),
+    /// Show or change microVM parameters
+    Config(ConfigCmd),
 }
 
 #[derive(Args)]
@@ -219,6 +254,19 @@ struct LogCmd {
     /// Wait for additional logs to be appended
     #[arg(short, long)]
     follow: bool,
+}
+
+#[derive(Args, Default, PartialEq, Eq)]
+struct ConfigCmd {
+    /// Set krun log level
+    #[arg(short, long)]
+    log_level: Option<KrunLogLevel>,
+    /// Set number of vCPUs
+    #[arg(short, long)]
+    num_vcpus: Option<u8>,
+    /// Set RAM size in MiB
+    #[arg(short, long)]
+    ram_size_mib: Option<u32>,
 }
 
 #[derive(Parser)]
@@ -357,6 +405,16 @@ fn load_krun_config(path: &Path) -> anyhow::Result<KrunConfig> {
         }
         Err(_) => Ok(KrunConfig::default()),
     }
+}
+
+fn save_krun_config(krun_config: &KrunConfig, config_file_path: &Path) -> anyhow::Result<()> {
+    let config_str =
+        toml::to_string(krun_config).context("Failed to serialize KrunConfig to TOML")?;
+    fs::write(config_file_path, config_str).context(format!(
+        "Failed to write config file {}",
+        config_file_path.display()
+    ))?;
+    Ok(())
 }
 
 fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
@@ -831,7 +889,7 @@ fn wait_for_file(file: impl AsRef<Path>) -> anyhow::Result<()> {
         if start.elapsed() > Duration::from_secs(5) {
             return Err(anyhow!(
                 "Timeout waiting for file creation: {}",
-                file.as_ref().to_string_lossy()
+                file.as_ref().display()
             ));
         }
         std::thread::sleep(Duration::from_millis(100));
@@ -951,7 +1009,7 @@ impl AppRunner {
         }
 
         // host_println!("disk_path: {}", config.disk_path);
-        host_println!("root_path: {}", config.common.root_path.to_string_lossy());
+        host_println!("root_path: {}", config.common.root_path.display());
         host_println!("num_vcpus: {}", config.common.krun.num_vcpus);
         host_println!("ram_size_mib: {}", config.common.krun.ram_size_mib);
 
@@ -1115,6 +1173,33 @@ impl AppRunner {
         Ok(())
     }
 
+    fn run_config(&mut self, cmd: ConfigCmd) -> anyhow::Result<()> {
+        let config = load_config()?;
+        let config_file_path = &config.config_file_path;
+
+        let mut krun_config = config.krun;
+
+        if cmd == ConfigCmd::default() {
+            println!("{}", &krun_config);
+            return Ok(());
+        }
+
+        if let Some(log_level) = cmd.log_level {
+            krun_config.set_log_level(log_level);
+        }
+        if let Some(num_vcpus) = cmd.num_vcpus {
+            krun_config.num_vcpus = num_vcpus;
+        }
+        if let Some(ram_size_mib) = cmd.ram_size_mib {
+            krun_config.ram_size_mib = ram_size_mib;
+        }
+
+        save_krun_config(&krun_config, config_file_path)?;
+        println!("{}", &krun_config);
+
+        Ok(())
+    }
+
     fn run_log(&mut self, cmd: LogCmd) -> anyhow::Result<()> {
         let config = load_config()?;
         let log_file_path = &config.log_file_path;
@@ -1227,6 +1312,7 @@ impl AppRunner {
             Commands::Init => self.run_init(),
             Commands::Status => self.run_status(),
             Commands::Log(cmd) => self.run_log(cmd),
+            Commands::Config(cmd) => self.run_config(cmd),
         }
     }
 }
