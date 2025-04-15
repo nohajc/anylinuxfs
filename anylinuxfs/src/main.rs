@@ -14,7 +14,7 @@ use objc2_disk_arbitration::{
 };
 use serde::{Deserialize, Serialize};
 use std::ffi::c_void;
-use std::fmt::{Display, Formatter};
+use std::fmt::Display;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, SocketAddrV4, TcpStream};
@@ -45,6 +45,7 @@ mod api;
 #[allow(unused)]
 mod bindings;
 mod devinfo;
+mod diskutil;
 mod utils;
 
 const LOCK_FILE: &str = "/tmp/anylinuxfs.lock";
@@ -137,7 +138,7 @@ impl Default for KrunConfig {
 }
 
 impl Display for KrunConfig {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
             "log_level = {}\nnum_vcpus = {}\nram_size_mib = {}",
@@ -159,7 +160,7 @@ enum KrunLogLevel {
 }
 
 impl Display for KrunLogLevel {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let val = match self {
             KrunLogLevel::Off => "off",
             KrunLogLevel::Error => "error",
@@ -238,6 +239,8 @@ enum Commands {
     Log(LogCmd),
     /// Show or change microVM parameters
     Config(ConfigCmd),
+    /// List all available disks with Linux filesystems
+    List,
 }
 
 #[derive(Args)]
@@ -1200,6 +1203,11 @@ impl AppRunner {
         Ok(())
     }
 
+    fn run_list(&mut self) -> anyhow::Result<()> {
+        println!("{}", diskutil::list_linux_partitions()?);
+        Ok(())
+    }
+
     fn run_log(&mut self, cmd: LogCmd) -> anyhow::Result<()> {
         let config = load_config()?;
         let log_file_path = &config.log_file_path;
@@ -1313,6 +1321,7 @@ impl AppRunner {
             Commands::Status => self.run_status(),
             Commands::Log(cmd) => self.run_log(cmd),
             Commands::Config(cmd) => self.run_config(cmd),
+            Commands::List => self.run_list(),
         }
     }
 }
