@@ -22,5 +22,5 @@ toml = "0.8.20"
 notify = "8.0.0"
 
 [patch.crates-io]
-#libblkid-rs = { git = 'https://github.com/stratis-storage/libblkid-rs.git' }
-libblkid-rs = { path = '../../3rd-party/libblkid-rs' }
+libblkid-rs = { git = 'https://github.com/stratis-storage/libblkid-rs.git' }
+# libblkid-rs = { path = '../../3rd-party/libblkid-rs' }
