@@ -642,25 +642,39 @@ fn start_gvproxy(config: &Config) -> anyhow::Result<Child> {
     Ok(gvproxy_process)
 }
 
-fn wait_for_nfs_server(port: u16, nfs_notify_rx: mpsc::Receiver<bool>) -> anyhow::Result<bool> {
+enum NfsStatus {
+    Ready,
+    Failed(Option<i32>),
+}
+
+impl NfsStatus {
+    fn ok(&self) -> bool {
+        matches!(self, NfsStatus::Ready)
+    }
+}
+
+fn wait_for_nfs_server(
+    port: u16,
+    nfs_notify_rx: mpsc::Receiver<NfsStatus>,
+) -> anyhow::Result<NfsStatus> {
     // this will block until NFS server is ready or the VM exits
     let nfs_ready = nfs_notify_rx.recv()?;
 
-    if nfs_ready {
+    if nfs_ready.ok() {
         // also check if the port is open
         let addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, port);
         match TcpStream::connect_timeout(&addr.into(), Duration::from_secs(10)) {
             Ok(_) => {
-                return Ok(true);
+                return Ok(nfs_ready);
             }
             Err(e) => {
                 host_eprintln!("Error connecting to port {}: {}", port, e);
-                return Ok(false);
+                return Ok(NfsStatus::Failed(None));
             }
         }
     }
 
-    Ok(false)
+    Ok(nfs_ready)
 }
 
 fn mount_nfs(share_name: &str) -> anyhow::Result<()> {
@@ -1080,29 +1094,50 @@ impl AppRunner {
             // Spawn a thread to read from the pipe
             _ = thread::spawn(move || {
                 let mut nfs_ready = false;
+                let mut exit_code = None;
                 let mut buf_reader = BufReader::new(unsafe { File::from_raw_fd(forked.pipe_fd) });
                 let mut line = String::new();
                 while let Ok(bytes) = buf_reader.read_line(&mut line) {
+                    let mut skip_line = false;
                     if bytes == 0 {
                         break; // EOF
                     }
                     if line.contains("READY AND WAITING FOR NFS CLIENT CONNECTIONS") {
                         // Notify the main thread that NFS server is ready
-                        nfs_ready_tx.send(true).unwrap();
+                        nfs_ready_tx.send(NfsStatus::Ready).unwrap();
                         nfs_ready = true;
+                    } else if line.starts_with("<anylinuxfs-exit-code") {
+                        skip_line = true;
+                        exit_code = line
+                            .split(':')
+                            .nth(1)
+                            .map(|pattern| {
+                                pattern
+                                    .trim()
+                                    .strip_suffix(">")
+                                    .unwrap_or(pattern)
+                                    .parse::<i32>()
+                                    .ok()
+                            })
+                            .flatten();
                     }
-                    guest_println!("{}", line.trim_end());
+
+                    if !skip_line {
+                        guest_println!("{}", line.trim_end());
+                    }
                     line.clear();
                 }
                 if !nfs_ready {
-                    nfs_ready_tx.send(false).unwrap();
+                    nfs_ready_tx.send(NfsStatus::Failed(exit_code)).unwrap();
                 }
             });
 
             // drop privileges back to the original user if he used sudo
             drop_privileges(config.common.sudo_uid, config.common.sudo_gid)?;
 
-            if wait_for_nfs_server(111, nfs_ready_rx).unwrap_or(false) {
+            let nfs_status =
+                wait_for_nfs_server(111, nfs_ready_rx).unwrap_or(NfsStatus::Failed(None));
+            if nfs_status.ok() {
                 host_println!("Port 111 open, NFS server ready");
 
                 // mount nfs share
@@ -1136,7 +1171,13 @@ impl AppRunner {
             }
 
             deferred.remove(vm_wait_action);
-            if let Some(status) = wait_for_vm_status(child_pid)? {
+            if let Some(mut status) = wait_for_vm_status(child_pid)? {
+                if status == 0 {
+                    if let NfsStatus::Failed(Some(exit_code)) = nfs_status {
+                        status = exit_code;
+                    }
+                }
+
                 if status != 0 {
                     return Err(StatusError::new("VM exited with status", status).into());
                 }
