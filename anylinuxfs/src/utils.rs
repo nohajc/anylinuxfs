@@ -369,14 +369,20 @@ impl<'a> Deferred<'a> {
 
     #[allow(unused)]
     pub fn call_now(&mut self, id: ActionID) {
-        if let Some((_, action)) = self
-            .actions
+        if let Some((_, action)) = self.pop_action(id) {
+            action();
+        }
+    }
+
+    fn pop_action(&mut self, id: ActionID) -> Option<(ActionID, Box<dyn FnOnce() + 'a>)> {
+        self.actions
             .iter()
             .position(|(i, _)| *i == id)
             .map(|idx| self.actions.remove(idx))
-        {
-            action();
-        }
+    }
+
+    pub fn remove(&mut self, id: ActionID) -> bool {
+        self.pop_action(id).is_some()
     }
 
     pub fn remove_all(&mut self) {

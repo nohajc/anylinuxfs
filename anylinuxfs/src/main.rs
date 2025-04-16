@@ -642,32 +642,22 @@ fn start_gvproxy(config: &Config) -> anyhow::Result<Child> {
     Ok(gvproxy_process)
 }
 
-fn wait_for_port_while_child_running(port: u16, pid: libc::pid_t) -> anyhow::Result<bool> {
-    let addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, port);
-    for _ in 0..50 {
-        // Check if the child process is still running
-        let mut status = 0;
-        let res = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
-        if res == -1 {
-            return Err(io::Error::last_os_error()).context("Failed to wait for child process");
-        } else if res > 0 {
-            // Child process has exited
-            host_eprintln!("VM process exited prematurely");
-            return Ok(false);
-        }
+fn wait_for_nfs_server(port: u16, nfs_notify_rx: mpsc::Receiver<bool>) -> anyhow::Result<bool> {
+    // this will block until NFS server is ready or the VM exits
+    let nfs_ready = nfs_notify_rx.recv()?;
 
+    if nfs_ready {
+        // also check if the port is open
+        let addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, port);
         match TcpStream::connect_timeout(&addr.into(), Duration::from_secs(10)) {
             Ok(_) => {
                 return Ok(true);
             }
-            Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => {
-                // Port is not open yet, continue waiting
-            }
             Err(e) => {
                 host_eprintln!("Error connecting to port {}: {}", port, e);
+                return Ok(false);
             }
         }
-        std::thread::sleep(Duration::from_millis(100));
     }
 
     Ok(false)
@@ -829,7 +819,7 @@ struct MountContext<'a> {
     share_name: &'a str,
 }
 
-fn wait_for_unmount(share_name: &str) -> anyhow::Result<()> {
+fn wait_for_unmount(share_name: &str) {
     let session = unsafe { DASessionCreate(None).unwrap() };
     let mut mount_ctx = MountContext { share_name };
     let mount_ctx_ptr = &mut mount_ctx as *mut MountContext;
@@ -864,8 +854,6 @@ fn wait_for_unmount(share_name: &str) -> anyhow::Result<()> {
     let callback_ptr = disk_unmount_event as *const c_void as *mut c_void;
     let callback_nonnull: NonNull<c_void> = NonNull::new(callback_ptr).unwrap();
     unsafe { DAUnregisterCallback(&session, callback_nonnull, null_mut()) };
-
-    Ok(())
 }
 
 fn send_quit_cmd(config: &Config) -> anyhow::Result<()> {
@@ -953,6 +941,21 @@ fn init_rootfs(config: &Config, force: bool) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn wait_for_vm_status(pid: libc::pid_t) -> anyhow::Result<Option<i32>> {
+    let mut status = 0;
+    let wait_result = unsafe { libc::waitpid(pid, &mut status, 0) };
+    let last_error = io::Error::last_os_error();
+    if wait_result < 0 {
+        if last_error.raw_os_error().unwrap() == libc::ECHILD {
+            return Ok(None);
+        }
+        host_eprintln!("Failed to wait for child process: {}", last_error);
+        return Err(last_error.into());
+    }
+    host_println!("libkrun VM exited with status: {}", status);
+    Ok(Some(status))
 }
 
 struct AppRunner {
@@ -1065,31 +1068,49 @@ impl AppRunner {
                 .context("Failed to start microVM")?;
         } else {
             // Parent process
+            let child_pid = forked.pid;
+            let vm_wait_action = deferred.add(move || {
+                _ = wait_for_vm_status(child_pid);
+            });
+
             api::serve_info(&config, &dev_info);
+
+            let (nfs_ready_tx, nfs_ready_rx) = mpsc::channel();
 
             // Spawn a thread to read from the pipe
             _ = thread::spawn(move || {
+                let mut nfs_ready = false;
                 let mut buf_reader = BufReader::new(unsafe { File::from_raw_fd(forked.pipe_fd) });
                 let mut line = String::new();
                 while let Ok(bytes) = buf_reader.read_line(&mut line) {
                     if bytes == 0 {
                         break; // EOF
                     }
+                    if line.contains("READY AND WAITING FOR NFS CLIENT CONNECTIONS") {
+                        // Notify the main thread that NFS server is ready
+                        nfs_ready_tx.send(true).unwrap();
+                        nfs_ready = true;
+                    }
                     guest_println!("{}", line.trim_end());
                     line.clear();
+                }
+                if !nfs_ready {
+                    nfs_ready_tx.send(false).unwrap();
                 }
             });
 
             // drop privileges back to the original user if he used sudo
             drop_privileges(config.common.sudo_uid, config.common.sudo_gid)?;
 
-            // TODO: Can we actually wait for the guest NFS server to be ready?
-            // It seems the port is open as soon as port forwarding is configured.
-            // This is needed if gvproxy port forwarding fails for example.
-            let is_open = wait_for_port_while_child_running(111, forked.pid).unwrap_or(false);
+            if wait_for_nfs_server(111, nfs_ready_rx).unwrap_or(false) {
+                host_println!("Port 111 open, NFS server ready");
 
-            if is_open {
-                host_println!("Port 111 is open");
+                // mount nfs share
+                let share_name = dev_info.auto_mount_name();
+                match mount_nfs(&share_name) {
+                    Ok(_) => host_println!("NFS share mounted successfully"),
+                    Err(e) => host_eprintln!("Failed to mount NFS share: {:#}", e),
+                }
 
                 if unsafe { libc::setsid() } < 0 {
                     host_eprintln!("Failed to setsid, cannot run in the background");
@@ -1105,32 +1126,20 @@ impl AppRunner {
                     log::disable_console_log();
                 }
 
-                // mount nfs share
-                let share_name = dev_info.auto_mount_name();
-                match mount_nfs(&share_name) {
-                    Ok(_) => host_println!("NFS share mounted successfully"),
-                    Err(e) => host_eprintln!("Failed to mount NFS share: {:#}", e),
-                }
-
-                wait_for_unmount(share_name)?;
+                wait_for_unmount(share_name);
                 send_quit_cmd(&config.common)?;
             } else {
-                host_println!("Port 111 is not open");
+                host_println!("NFS server not ready");
                 // tell the parent to wait for the child to exit
                 unsafe { write_to_pipe(comm_write_fd, b"join\n") }
                     .context("Failed to write to pipe")?;
             }
 
-            let mut status = 0;
-            let wait_result = unsafe { libc::waitpid(forked.pid, &mut status, 0) };
-            let last_error = io::Error::last_os_error();
-            if wait_result < 0 && last_error.raw_os_error().unwrap() != libc::ECHILD {
-                host_eprintln!("Failed to wait for child process: {}", last_error);
-            }
-            host_println!("libkrun VM exited with status: {}", status);
-
-            if status != 0 {
-                return Err(StatusError::new("VM exited with status", status).into());
+            deferred.remove(vm_wait_action);
+            if let Some(status) = wait_for_vm_status(child_pid)? {
+                if status != 0 {
+                    return Err(StatusError::new("VM exited with status", status).into());
+                }
             }
         }
 
