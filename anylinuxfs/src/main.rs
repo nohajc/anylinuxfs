@@ -62,8 +62,15 @@ fn to_exit_code(status: i32) -> i32 {
 
 fn run() -> i32 {
     let mut app = AppRunner::default();
+    let mut deferred = Deferred::new();
 
     if let Err(e) = app.run() {
+        deferred.add(|| {
+            if app.print_log {
+                log::print_log_file();
+            }
+        });
+
         if let Some(status_error) = e.downcast_ref::<StatusError>() {
             return match app.is_child {
                 true => status_error.status,
@@ -974,11 +981,15 @@ fn wait_for_vm_status(pid: libc::pid_t) -> anyhow::Result<Option<i32>> {
 
 struct AppRunner {
     is_child: bool,
+    print_log: bool,
 }
 
 impl Default for AppRunner {
     fn default() -> Self {
-        Self { is_child: false }
+        Self {
+            is_child: false,
+            print_log: false,
+        }
     }
 }
 
@@ -1004,8 +1015,12 @@ impl AppRunner {
         let forked = utils::fork_with_comm_pipe()?;
         if forked.pid == 0 {
             self.is_child = true;
+            let verbose = config.verbose;
             let res = self.run_mount_child(config, forked.pipe_fd);
             if res.is_err() {
+                if !verbose {
+                    self.print_log = true;
+                }
                 unsafe { write_to_pipe(forked.pipe_fd, b"join\n") }
                     .context("Failed to write to pipe")?;
             }

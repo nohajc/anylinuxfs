@@ -1,6 +1,6 @@
 use std::{
     fs::File,
-    io,
+    io::{self, BufRead, Seek},
     path::Path,
     sync::{Mutex, OnceLock, atomic::AtomicBool},
 };
@@ -12,13 +12,33 @@ pub static LOG_FILE: OnceLock<Mutex<File>> = OnceLock::new();
 pub static CONSOLE_LOG_ENABLED: AtomicBool = AtomicBool::new(true);
 
 pub fn init_log_file(path: impl AsRef<Path>) -> io::Result<()> {
-    let log_file = File::create(&path)?;
+    let log_file = File::options()
+        .write(true)
+        .read(true)
+        .create(true)
+        .truncate(true)
+        .open(&path)?;
     LOG_FILE.get_or_init(|| Mutex::new(log_file));
     Ok(())
 }
 
 pub fn disable_console_log() {
     CONSOLE_LOG_ENABLED.store(false, std::sync::atomic::Ordering::Relaxed);
+}
+
+// TODO: prevent duplicate init-rootfs logs
+pub fn print_log_file() {
+    if let Some(log_file) = LOG_FILE.get() {
+        let mut log_file = log_file.lock().unwrap();
+        log_file.seek(io::SeekFrom::Start(0)).unwrap();
+        let log_reader = io::BufReader::new(&*log_file);
+
+        for line in log_reader.lines() {
+            if let Ok(line) = line {
+                println!("{}", line);
+            }
+        }
+    }
 }
 
 pub enum Prefix {
