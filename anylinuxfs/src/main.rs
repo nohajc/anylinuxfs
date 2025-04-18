@@ -1,6 +1,8 @@
 use anyhow::{Context, anyhow};
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
-use common_utils::{guest_println, host_eprintln, host_println, log};
+use common_utils::{
+    guest_println, host_eprintln, host_println, log, prefix_eprintln, prefix_println,
+};
 use devinfo::DevInfo;
 use nanoid::nanoid;
 use nix::unistd::{Uid, User};
@@ -62,28 +64,27 @@ fn to_exit_code(status: i32) -> i32 {
 
 fn run() -> i32 {
     let mut app = AppRunner::default();
-    let mut deferred = Deferred::new();
 
-    if let Err(e) = app.run() {
-        deferred.add(|| {
-            if app.print_log {
-                log::print_log_file();
-            }
-        });
-
+    let exit_code = if let Err(e) = app.run() {
         if let Some(status_error) = e.downcast_ref::<StatusError>() {
-            return match app.is_child {
+            match app.is_child {
                 true => status_error.status,
                 false => to_exit_code(status_error.status),
-            };
-        }
-        if let Some(clap_error) = e.downcast_ref::<clap::Error>() {
+            }
+        } else if let Some(clap_error) = e.downcast_ref::<clap::Error>() {
             clap_error.exit();
+        } else {
+            host_eprintln!("Error: {:#}", e);
+            1
         }
-        host_eprintln!("Error: {:#}", e);
-        return 1;
+    } else {
+        0
+    };
+
+    if app.print_log {
+        log::print_log_file();
     }
-    return 0;
+    return exit_code;
 }
 
 fn main() {
@@ -947,9 +948,33 @@ fn init_rootfs(config: &Config, force: bool) -> anyhow::Result<()> {
         init_rootfs_cmd.uid(uid).gid(gid);
     }
 
-    let status = init_rootfs_cmd
-        .status()
+    let mut hnd = init_rootfs_cmd
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .context("Failed to execute init-rootfs")?;
+
+    let out = BufReader::new(hnd.stdout.take().unwrap());
+    let err = BufReader::new(hnd.stderr.take().unwrap());
+
+    let thread = thread::spawn(move || {
+        for line in err.lines() {
+            if let Ok(line) = line {
+                prefix_println!(None, "{}", line);
+            }
+        }
+    });
+
+    for line in out.lines() {
+        if let Ok(line) = line {
+            prefix_eprintln!(None, "{}", line);
+        }
+    }
+
+    thread.join().unwrap();
+
+    let status = hnd.wait().context("Failed to wait for init-rootfs")?;
 
     if !status.success() {
         return Err(anyhow!(
