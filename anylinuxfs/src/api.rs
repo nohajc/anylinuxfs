@@ -14,10 +14,14 @@ use crate::{MountConfig, devinfo::DevInfo};
 
 const API_SOCKET: &str = "/tmp/anylinuxfs.sock";
 
-pub fn serve_info(mount_config: &MountConfig, dev_info: &DevInfo) {
-    let mount_config = mount_config.clone();
-    let dev_info = dev_info.clone();
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct RuntimeInfo {
+    pub mount_config: MountConfig,
+    pub dev_info: DevInfo,
+    pub session_pgid: i32,
+}
 
+pub fn serve_info(rt_info: RuntimeInfo) {
     _ = thread::spawn(move || {
         let socket_path = Path::new(API_SOCKET);
         // Remove the socket file if it exists
@@ -26,22 +30,10 @@ pub fn serve_info(mount_config: &MountConfig, dev_info: &DevInfo) {
                 host_eprintln!("Error removing socket file: {}", e);
             }
         }
-        if let Err(e) = Handler::serve(
-            RuntimeInfo {
-                mount_config,
-                dev_info,
-            },
-            socket_path,
-        ) {
+        if let Err(e) = Handler::serve(rt_info, socket_path) {
             host_eprintln!("Error in serve_config: {}", e);
         }
     });
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct RuntimeInfo {
-    pub mount_config: MountConfig,
-    pub dev_info: DevInfo,
 }
 
 #[derive(Clone, Deserialize, Serialize)]

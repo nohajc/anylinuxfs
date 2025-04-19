@@ -1074,6 +1074,17 @@ impl AppRunner {
         host_println!("num_vcpus: {}", config.common.krun.num_vcpus);
         host_println!("ram_size_mib: {}", config.common.krun.ram_size_mib);
 
+        if !Path::new(&config.disk_path).exists() {
+            return Err(anyhow!("disk {} not found", &config.disk_path));
+        }
+
+        if config.disk_path.starts_with("/dev/disk") && config.common.sudo_uid.is_none() {
+            return Err(anyhow!(
+                "insufficient permissions to open {}, please use sudo",
+                &config.disk_path
+            ));
+        }
+
         let dev_info = DevInfo::new(&config.disk_path)?;
 
         host_println!("disk: {}", dev_info.disk());
@@ -1082,6 +1093,13 @@ impl AppRunner {
         host_println!("fs_type: {:?}", dev_info.fs_type());
         host_println!("uuid: {:?}", dev_info.uuid());
         host_println!("mount name: {}", dev_info.auto_mount_name());
+
+        let mut can_detach = true;
+        let session_pgid = unsafe { libc::setsid() };
+        if session_pgid < 0 {
+            host_eprintln!("Failed to setsid, cannot run in the background");
+            can_detach = false;
+        }
 
         let mut gvproxy = start_gvproxy(&config.common)?;
         wait_for_file(&config.common.vfkit_sock_path)?;
@@ -1128,7 +1146,11 @@ impl AppRunner {
                 _ = wait_for_vm_status(child_pid);
             });
 
-            api::serve_info(&config, &dev_info);
+            api::serve_info(api::RuntimeInfo {
+                mount_config: config.clone(),
+                dev_info: dev_info.clone(),
+                session_pgid,
+            });
 
             let (nfs_ready_tx, nfs_ready_rx) = mpsc::channel();
 
@@ -1188,18 +1210,17 @@ impl AppRunner {
                     Err(e) => host_eprintln!("Failed to mount NFS share: {:#}", e),
                 }
 
-                if unsafe { libc::setsid() } < 0 {
-                    host_eprintln!("Failed to setsid, cannot run in the background");
-                    // tell the parent to wait for the child to exit
-                    unsafe { write_to_pipe(comm_write_fd, b"join\n") }
-                        .context("Failed to write to pipe")?;
-                } else {
+                if can_detach {
                     // tell the parent to detach from console (i.e. exit)
                     unsafe { write_to_pipe(comm_write_fd, b"detach\n") }
                         .context("Failed to write to pipe")?;
 
                     // stop printing to the console
                     log::disable_console_log();
+                } else {
+                    // tell the parent to wait for the child to exit
+                    unsafe { write_to_pipe(comm_write_fd, b"join\n") }
+                        .context("Failed to write to pipe")?;
                 }
 
                 wait_for_unmount(share_name);
@@ -1356,13 +1377,13 @@ impl AppRunner {
         let resp = api::Client::make_request(api::Request::GetConfig);
 
         match resp {
-            Ok(api::Response::Config(config)) => {
-                let mount_point = Path::new("/Volumes").join(config.dev_info.auto_mount_name());
+            Ok(api::Response::Config(rt_info)) => {
+                let mount_point = Path::new("/Volumes").join(rt_info.dev_info.auto_mount_name());
                 // let mount_point = Path::new("/Volumes").join("data");
 
                 let expected_mount_dev = PathBuf::from(format!(
                     "localhost:/mnt/{}",
-                    config.dev_info.auto_mount_name()
+                    rt_info.dev_info.auto_mount_name()
                 ));
                 let mount_point_valid = match fsutil::mounted_from(&mount_point) {
                     Ok(mount_dev) if mount_dev == expected_mount_dev => true,
@@ -1371,17 +1392,17 @@ impl AppRunner {
                 if !mount_point_valid {
                     eprintln!(
                         "Drive {} no longer mounted but anylinuxfs is still running; try `anylinuxfs stop`.",
-                        &config.mount_config.disk_path
+                        &rt_info.mount_config.disk_path
                     );
                     return Err(StatusError::new("Mount point is not valid", 1).into());
                 }
 
-                let info: Vec<_> = config
+                let info: Vec<_> = rt_info
                     .dev_info
                     .fs_type()
                     .into_iter()
                     .chain(
-                        config
+                        rt_info
                             .mount_config
                             .mount_options
                             .iter()
@@ -1390,7 +1411,7 @@ impl AppRunner {
                     .collect();
 
                 let user_name =
-                    User::from_uid(Uid::from_raw(config.mount_config.common.invoker_uid))
+                    User::from_uid(Uid::from_raw(rt_info.mount_config.common.invoker_uid))
                         .ok()
                         .flatten()
                         .map(|u| u.name)
@@ -1398,18 +1419,19 @@ impl AppRunner {
 
                 println!(
                     "{} on {} ({}, mounted by {}) VM[cpus: {}, ram: {} MiB]",
-                    &config.mount_config.disk_path,
+                    &rt_info.mount_config.disk_path,
                     mount_point.display(),
                     info.join(", "),
                     &user_name,
-                    config.mount_config.common.krun.num_vcpus,
-                    config.mount_config.common.krun.ram_size_mib,
+                    rt_info.mount_config.common.krun.num_vcpus,
+                    rt_info.mount_config.common.krun.ram_size_mib,
                 );
             }
             Err(err) => {
                 if let Some(err) = err.downcast_ref::<io::Error>() {
                     match err.kind() {
                         io::ErrorKind::ConnectionRefused => return Ok(()),
+                        io::ErrorKind::NotFound => return Ok(()),
                         _ => (),
                     }
                 }
