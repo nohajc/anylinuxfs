@@ -24,6 +24,7 @@ pub fn init_log_file(path: impl AsRef<Path>) -> io::Result<()> {
         .truncate(true)
         .open(&path)?;
     LOG_FILE.get_or_init(|| Mutex::new(log_file));
+    PRINTED_LINES.store(0, Ordering::Relaxed);
     Ok(())
 }
 
