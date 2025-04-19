@@ -4,10 +4,14 @@ use common_utils::{
     guest_println, host_eprintln, host_println, log, prefix_eprintln, prefix_println,
 };
 use devinfo::DevInfo;
+use libc::{SIGINT, SIGTERM};
 use nanoid::nanoid;
-use nix::unistd::{Uid, User};
+use nix::{
+    sys::signal::Signal,
+    unistd::{Uid, User},
+};
 use objc2_core_foundation::{
-    CFDictionary, CFDictionaryGetValueIfPresent, CFRetained, CFRunLoopGetCurrent, CFRunLoopRun,
+    CFDictionary, CFDictionaryGetValueIfPresent, CFRetained, CFRunLoopGetMain, CFRunLoopRun,
     CFRunLoopStop, CFString, CFURL, CFURLGetString, kCFRunLoopDefaultMode,
 };
 use objc2_disk_arbitration::{
@@ -15,6 +19,7 @@ use objc2_disk_arbitration::{
     DASessionScheduleWithRunLoop, DAUnregisterCallback,
 };
 use serde::{Deserialize, Serialize};
+use signal_hook::iterator::Signals;
 use std::ffi::c_void;
 use std::fmt::Display;
 use std::fs::{self, File};
@@ -250,6 +255,8 @@ enum Commands {
     Config(ConfigCmd),
     /// List all available disks with Linux filesystems
     List,
+    /// Stop anylinuxfs (can be used if unresponsive)
+    Stop(StopCmd),
 }
 
 #[derive(Args)]
@@ -279,6 +286,13 @@ struct ConfigCmd {
     /// Set RAM size in MiB
     #[arg(short, long)]
     ram_size_mib: Option<u32>,
+}
+
+#[derive(Args)]
+struct StopCmd {
+    /// Force stop the VM
+    #[arg(short, long)]
+    force: bool,
 }
 
 #[derive(Parser)]
@@ -709,11 +723,8 @@ fn mount_nfs(share_name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-// TODO: do we need this if umount can be used directly?
-#[allow(unused)]
-fn unmount_nfs(share_name: &str) -> anyhow::Result<()> {
-    let volume_path = format!("/Volumes/{share_name}");
-    let status = Command::new("umount").arg(&volume_path).status()?;
+fn unmount_nfs(volume_path: &Path) -> anyhow::Result<()> {
+    let status = Command::new("umount").arg(volume_path).status()?;
 
     if !status.success() {
         return Err(anyhow!(
@@ -786,7 +797,7 @@ unsafe extern "C-unwind" fn disk_unmount_event(disk: NonNull<DADisk>, context: *
         let expected_share_path = format!("/Volumes/{}/", args.share_name());
         if volume_kind == "nfs" && volume_path == expected_share_path {
             host_println!("Share {} was unmounted", &expected_share_path);
-            unsafe { CFRunLoopStop(&CFRunLoopGetCurrent().unwrap()) };
+            unsafe { CFRunLoopStop(&CFRunLoopGetMain().unwrap()) };
         }
     }
 }
@@ -842,7 +853,30 @@ struct MountContext<'a> {
     share_name: &'a str,
 }
 
-fn wait_for_unmount(share_name: &str) {
+fn stop_run_loop_on_signal() -> anyhow::Result<()> {
+    let mut signals = Signals::new(&[SIGINT, SIGTERM])?;
+    _ = thread::spawn(move || {
+        for signal in signals.forever() {
+            match signal {
+                SIGINT | SIGTERM => {
+                    host_println!(
+                        "Received signal {}",
+                        Signal::try_from(signal)
+                            .map(|s| s.to_string())
+                            .unwrap_or("<unknown>".to_owned())
+                    );
+                    unsafe { CFRunLoopStop(&CFRunLoopGetMain().unwrap()) }
+                    break;
+                }
+                _ => {}
+            }
+        }
+    });
+
+    Ok(())
+}
+
+fn wait_for_unmount(share_name: &str) -> anyhow::Result<()> {
     let session = unsafe { DASessionCreate(None).unwrap() };
     let mut mount_ctx = MountContext { share_name };
     let mount_ctx_ptr = &mut mount_ctx as *mut MountContext;
@@ -867,16 +901,19 @@ fn wait_for_unmount(share_name: &str) {
     unsafe {
         DASessionScheduleWithRunLoop(
             &session,
-            &CFRunLoopGetCurrent().unwrap(),
+            &CFRunLoopGetMain().unwrap(),
             kCFRunLoopDefaultMode.unwrap(),
         )
     };
 
+    stop_run_loop_on_signal()?;
     unsafe { CFRunLoopRun() };
 
     let callback_ptr = disk_unmount_event as *const c_void as *mut c_void;
     let callback_nonnull: NonNull<c_void> = NonNull::new(callback_ptr).unwrap();
     unsafe { DAUnregisterCallback(&session, callback_nonnull, null_mut()) };
+
+    Ok(())
 }
 
 fn send_quit_cmd(config: &Config) -> anyhow::Result<()> {
@@ -1003,6 +1040,20 @@ fn wait_for_vm_status(pid: libc::pid_t) -> anyhow::Result<Option<i32>> {
     }
     host_println!("libkrun VM exited with status: {}", status);
     Ok(Some(status))
+}
+
+fn validated_mount_point(rt_info: &api::RuntimeInfo) -> Option<PathBuf> {
+    let mount_point = Path::new("/Volumes").join(rt_info.dev_info.auto_mount_name());
+    // let mount_point = Path::new("/Volumes").join("data");
+
+    let expected_mount_dev = PathBuf::from(format!(
+        "localhost:/mnt/{}",
+        rt_info.dev_info.auto_mount_name()
+    ));
+    match fsutil::mounted_from(&mount_point) {
+        Ok(mount_dev) if mount_dev == expected_mount_dev => Some(mount_point),
+        _ => None,
+    }
 }
 
 struct AppRunner {
@@ -1223,7 +1274,7 @@ impl AppRunner {
                         .context("Failed to write to pipe")?;
                 }
 
-                wait_for_unmount(share_name);
+                wait_for_unmount(share_name)?;
                 send_quit_cmd(&config.common)?;
             } else {
                 host_println!("NFS server not ready");
@@ -1378,24 +1429,13 @@ impl AppRunner {
 
         match resp {
             Ok(api::Response::Config(rt_info)) => {
-                let mount_point = Path::new("/Volumes").join(rt_info.dev_info.auto_mount_name());
-                // let mount_point = Path::new("/Volumes").join("data");
-
-                let expected_mount_dev = PathBuf::from(format!(
-                    "localhost:/mnt/{}",
-                    rt_info.dev_info.auto_mount_name()
-                ));
-                let mount_point_valid = match fsutil::mounted_from(&mount_point) {
-                    Ok(mount_dev) if mount_dev == expected_mount_dev => true,
-                    _ => false,
-                };
-                if !mount_point_valid {
+                let Some(mount_point) = validated_mount_point(&rt_info) else {
                     eprintln!(
                         "Drive {} no longer mounted but anylinuxfs is still running; try `anylinuxfs stop`.",
                         &rt_info.mount_config.disk_path
                     );
                     return Err(StatusError::new("Mount point is not valid", 1).into());
-                }
+                };
 
                 let info: Vec<_> = rt_info
                     .dev_info
@@ -1442,6 +1482,60 @@ impl AppRunner {
         Ok(())
     }
 
+    fn run_stop(&mut self, cmd: StopCmd) -> anyhow::Result<()> {
+        let resp = api::Client::make_request(api::Request::GetConfig);
+
+        match resp {
+            Ok(api::Response::Config(rt_info)) => {
+                if !cmd.force {
+                    // try to trigger normal shutdown first
+                    if let Some(mount_point) = validated_mount_point(&rt_info) {
+                        println!("Unmounting {}...", mount_point.display());
+                        unmount_nfs(&mount_point)?;
+                        return Ok(());
+                    };
+                    println!("Already unmounted, shutting down...");
+                    // not killing the whole process group, just the session leader;
+                    // this should trigger graceful shutdown of the VMM and its parent
+                    if unsafe { libc::kill(rt_info.session_pgid, libc::SIGTERM) } < 0 {
+                        return Err(io::Error::last_os_error())
+                            .context(format!("Failed to send SIGTERM to anylinuxfs"));
+                    }
+                } else {
+                    if let Some(mount_point) = validated_mount_point(&rt_info) {
+                        print!(
+                            "This action will force kill anylinuxfs. You should first unmount {} if possible.\nDo you want to proceed anyway? [y/N] ",
+                            mount_point.display()
+                        );
+                        io::stdout().flush()?;
+                        let mut input = String::new();
+                        io::stdin().read_line(&mut input)?;
+                        if !matches!(input.trim().to_lowercase().as_str(), "y" | "yes") {
+                            return Ok(());
+                        }
+                    }
+                    println!("Killing anylinuxfs...");
+                    if unsafe { libc::killpg(rt_info.session_pgid, libc::SIGKILL) } < 0 {
+                        return Err(io::Error::last_os_error())
+                            .context(format!("Failed to send SIGKILL to anylinuxfs"));
+                    }
+                }
+            }
+            Err(err) => {
+                if let Some(err) = err.downcast_ref::<io::Error>() {
+                    match err.kind() {
+                        io::ErrorKind::ConnectionRefused => return Ok(()),
+                        io::ErrorKind::NotFound => return Ok(()),
+                        _ => (),
+                    }
+                }
+                return Err(err);
+            }
+        }
+
+        Ok(())
+    }
+
     fn run(&mut self) -> anyhow::Result<()> {
         // host_println!("uid = {}", unsafe { libc::getuid() });
         // host_println!("gid = {}", unsafe { libc::getgid() });
@@ -1454,6 +1548,7 @@ impl AppRunner {
             Commands::Log(cmd) => self.run_log(cmd),
             Commands::Config(cmd) => self.run_config(cmd),
             Commands::List => self.run_list(),
+            Commands::Stop(cmd) => self.run_stop(cmd),
         }
     }
 }

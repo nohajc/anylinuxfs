@@ -125,7 +125,6 @@ fn terminate_child(child: &mut Child, child_name: &str) -> anyhow::Result<()> {
 fn main() -> ExitCode {
     if let Err(e) = run() {
         eprintln!("Error: {:#}", e);
-        // TODO: propagate exit code from mount?
         eprintln!("<anylinuxfs-exit-code:1>");
         return ExitCode::FAILURE;
     }
