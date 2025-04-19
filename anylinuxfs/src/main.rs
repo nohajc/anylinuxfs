@@ -48,6 +48,7 @@ mod api;
 mod bindings;
 mod devinfo;
 mod diskutil;
+mod fsutil;
 mod utils;
 
 const LOCK_FILE: &str = "/tmp/anylinuxfs.lock";
@@ -1356,6 +1357,25 @@ impl AppRunner {
 
         match resp {
             Ok(api::Response::Config(config)) => {
+                let mount_point = Path::new("/Volumes").join(config.dev_info.auto_mount_name());
+                // let mount_point = Path::new("/Volumes").join("data");
+
+                let expected_mount_dev = PathBuf::from(format!(
+                    "localhost:/mnt/{}",
+                    config.dev_info.auto_mount_name()
+                ));
+                let mount_point_valid = match fsutil::mounted_from(&mount_point) {
+                    Ok(mount_dev) if mount_dev == expected_mount_dev => true,
+                    _ => false,
+                };
+                if !mount_point_valid {
+                    eprintln!(
+                        "Drive {} no longer mounted but anylinuxfs is still running; try `anylinuxfs stop`.",
+                        &config.mount_config.disk_path
+                    );
+                    return Err(StatusError::new("Mount point is not valid", 1).into());
+                }
+
                 let info: Vec<_> = config
                     .dev_info
                     .fs_type()
@@ -1377,9 +1397,9 @@ impl AppRunner {
                         .unwrap_or("<unknown>".into());
 
                 println!(
-                    "{} on /Volumes/{} ({}, mounted by {}) VM[cpus: {}, ram: {} MiB]",
+                    "{} on {} ({}, mounted by {}) VM[cpus: {}, ram: {} MiB]",
                     &config.mount_config.disk_path,
-                    config.dev_info.auto_mount_name(),
+                    mount_point.display(),
                     info.join(", "),
                     &user_name,
                     config.mount_config.common.krun.num_vcpus,
