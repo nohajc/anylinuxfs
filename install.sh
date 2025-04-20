@@ -6,7 +6,7 @@ PREFIX=${1:-"/opt/anylinuxfs"}
 mkdir -p "$PREFIX/bin"
 mkdir -p "$PREFIX/libexec"
 
-sudo chown $(whoami):admin "$PREFIX"
+# sudo chown $(whoami):admin "$PREFIX"
 cp bin/* "$PREFIX/bin/"
 
 function fix_libkrun_path() {
