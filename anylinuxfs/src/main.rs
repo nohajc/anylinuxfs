@@ -380,8 +380,8 @@ fn load_config() -> anyhow::Result<Config> {
         None => gid,
     };
 
-    let exec_dir = env::current_exe()
-        .context("Failed to get current executable path")?
+    let exec_dir = fs::canonicalize(env::current_exe().context("Failed to get executable path")?)
+        .context("Failed to get resolved exec path")?
         .parent()
         .context("Failed to get executable directory")?
         .to_owned();
