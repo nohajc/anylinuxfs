@@ -69,7 +69,7 @@ checksum = "dcfed56ad506cb2c684a14971b8861fdc3baaaae314b9e5f9bb532cbe3ba7a4f"
 
 [[package]]
 name = "anylinuxfs"
-version = "0.1.2"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "clap",
@@ -219,7 +219,7 @@ checksum = "5b63caa9aa9397e2d9480a9b13673856c78d8ac123288526c37d7839f2a86990"
 
 [[package]]
 name = "common_utils"
-version = "0.1.2"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "libc",
