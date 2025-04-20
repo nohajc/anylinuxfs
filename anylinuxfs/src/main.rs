@@ -919,6 +919,7 @@ fn wait_for_unmount(share_name: &str) -> anyhow::Result<()> {
 fn send_quit_cmd(config: &Config) -> anyhow::Result<()> {
     let mut stream = UnixStream::connect(&config.vsock_path)?;
 
+    stream.set_write_timeout(Some(Duration::from_secs(10)))?;
     stream.write_all(b"quit\n")?;
     stream.flush()?;
 
@@ -1040,6 +1041,38 @@ fn wait_for_vm_status(pid: libc::pid_t) -> anyhow::Result<Option<i32>> {
     }
     host_println!("libkrun VM exited with status: {}", status);
     Ok(Some(status))
+}
+
+// when the process isn't a child
+fn wait_for_proc_exit(pid: libc::pid_t) -> anyhow::Result<()> {
+    loop {
+        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+        let buf_len = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+        let ret = unsafe {
+            libc::proc_pidinfo(
+                pid,
+                libc::PROC_PIDTBSDINFO,
+                0,
+                &mut info as *mut _ as *mut libc::c_void,
+                buf_len,
+            )
+        };
+        if ret != buf_len {
+            let last_error = io::Error::last_os_error();
+            if last_error.raw_os_error().unwrap() == libc::ESRCH {
+                // process exited
+                break;
+            }
+            return Err(last_error).context("failed to get process info");
+        }
+        // println!("pbi_status: {}", info.pbi_status);
+        if info.pbi_status == libc::SZOMB {
+            // process became a zombie
+            break;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    Ok(())
 }
 
 fn validated_mount_point(rt_info: &api::RuntimeInfo) -> Option<PathBuf> {
@@ -1201,6 +1234,7 @@ impl AppRunner {
                 mount_config: config.clone(),
                 dev_info: dev_info.clone(),
                 session_pgid,
+                vmm_pid: child_pid,
             });
 
             let (nfs_ready_tx, nfs_ready_rx) = mpsc::channel();
@@ -1514,7 +1548,17 @@ impl AppRunner {
                             return Ok(());
                         }
                     }
-                    println!("Killing anylinuxfs...");
+                    println!("Trying to shutdown anylinuxfs VM directly...");
+                    let mut vm_exited_gracefully = false;
+                    if send_quit_cmd(&rt_info.mount_config.common).is_ok() {
+                        // wait for vmm process to exit or become zombie
+                        vm_exited_gracefully = wait_for_proc_exit(rt_info.vmm_pid).is_ok();
+                    }
+                    if vm_exited_gracefully {
+                        println!("VM exited gracefully, killing the remaining processes...");
+                    } else {
+                        println!("Killing anylinuxfs processes...");
+                    }
                     if unsafe { libc::killpg(rt_info.session_pgid, libc::SIGKILL) } < 0 {
                         return Err(io::Error::last_os_error())
                             .context(format!("Failed to send SIGKILL to anylinuxfs"));

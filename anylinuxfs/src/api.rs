@@ -18,7 +18,8 @@ const API_SOCKET: &str = "/tmp/anylinuxfs.sock";
 pub struct RuntimeInfo {
     pub mount_config: MountConfig,
     pub dev_info: DevInfo,
-    pub session_pgid: i32,
+    pub session_pgid: libc::pid_t,
+    pub vmm_pid: libc::pid_t,
 }
 
 pub fn serve_info(rt_info: RuntimeInfo) {
