@@ -2,4 +2,4 @@
 target = "aarch64-unknown-linux-musl"
 
 [target.aarch64-unknown-linux-musl]
-linker = "aarch64-unknown-linux-musl-gcc"
+linker = "aarch64-linux-musl-gcc"
