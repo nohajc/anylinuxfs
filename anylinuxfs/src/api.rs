@@ -20,6 +20,7 @@ pub struct RuntimeInfo {
     pub dev_info: DevInfo,
     pub session_pgid: libc::pid_t,
     pub vmm_pid: libc::pid_t,
+    pub gvproxy_pid: libc::pid_t,
 }
 
 pub fn serve_info(rt_info: RuntimeInfo) {

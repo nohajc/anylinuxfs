@@ -1045,7 +1045,11 @@ fn wait_for_vm_status(pid: libc::pid_t) -> anyhow::Result<Option<i32>> {
 
 // when the process isn't a child
 fn wait_for_proc_exit(pid: libc::pid_t) -> anyhow::Result<()> {
+    let start = std::time::Instant::now();
     loop {
+        if start.elapsed() > Duration::from_secs(5) {
+            return Err(anyhow!("Timeout waiting for process exit"));
+        }
         let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
         let buf_len = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
         let ret = unsafe {
@@ -1186,6 +1190,7 @@ impl AppRunner {
         }
 
         let mut gvproxy = start_gvproxy(&config.common)?;
+        let gvproxy_pid = gvproxy.id() as libc::pid_t;
         wait_for_file(&config.common.vfkit_sock_path)?;
 
         _ = deferred.add(|| {
@@ -1235,6 +1240,7 @@ impl AppRunner {
                 dev_info: dev_info.clone(),
                 session_pgid,
                 vmm_pid: child_pid,
+                gvproxy_pid,
             });
 
             let (nfs_ready_tx, nfs_ready_rx) = mpsc::channel();
@@ -1559,10 +1565,18 @@ impl AppRunner {
                     } else {
                         println!("Killing anylinuxfs processes...");
                     }
+                    if unsafe { libc::kill(rt_info.gvproxy_pid, libc::SIGTERM) } == 0 {
+                        // gvproxy could still terminate gracefully
+                        if wait_for_proc_exit(rt_info.gvproxy_pid).is_ok() {
+                            println!("gvproxy exited gracefully");
+                        }
+                    }
                     if unsafe { libc::killpg(rt_info.session_pgid, libc::SIGKILL) } < 0 {
                         return Err(io::Error::last_os_error())
                             .context(format!("Failed to send SIGKILL to anylinuxfs"));
                     }
+                    _ = vsock_cleanup(&rt_info.mount_config.common);
+                    _ = gvproxy_cleanup(&rt_info.mount_config.common);
                 }
             }
             Err(err) => {
