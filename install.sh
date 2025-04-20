@@ -1,8 +1,8 @@
 #!/bin/bash
 
-PREFIX="/opt/anylinuxfs"
+PREFIX=${1:-"/opt/anylinuxfs"}
 
-sudo mkdir -p "$PREFIX"
+# sudo mkdir -p "$PREFIX"
 mkdir -p "$PREFIX/bin"
 mkdir -p "$PREFIX/libexec"
 
