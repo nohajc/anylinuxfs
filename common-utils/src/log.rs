@@ -57,54 +57,59 @@ pub enum Prefix {
 #[macro_export]
 macro_rules! println_impl {
     ($print_macro:ident, $prefix:ident, $fmt:expr, $($args:tt)*) => {{
-        if $crate::log::CONSOLE_LOG_ENABLED.load(std::sync::atomic::Ordering::Relaxed) {
+        let res1: anyhow::Result<()> = if $crate::log::CONSOLE_LOG_ENABLED.load(std::sync::atomic::Ordering::Relaxed) {
             $crate::log::PRINTED_LINES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            $print_macro!(concat!("{}", $fmt), $crate::log::$prefix, $($args)*);
-        }
-        if let Some(log_file) = $crate::log::LOG_FILE.get() {
+            $crate::$print_macro!(concat!("{}", $fmt), $crate::log::$prefix, $($args)*)
+        } else {
+            Ok(())
+        }.map_err(|e| e.into());
+        let res2: anyhow::Result<()> = if let Some(log_file) = $crate::log::LOG_FILE.get() {
             use std::io::Write;
             let mut log_file = log_file.lock().unwrap();
-            writeln!(&mut log_file, concat!("{}", $fmt), $crate::log::$prefix, $($args)*).unwrap();
-        }
+            writeln!(&mut log_file, concat!("{}", $fmt), $crate::log::$prefix, $($args)*)
+        } else {
+            Ok(())
+        }.map_err(|e| e.into());
+        res1.and(res2)
     }};
     ($print_macro:ident, $prefix:ident, $fmt:expr) => {
-        $crate::println_impl!($print_macro, $prefix, $fmt, );
+        $crate::println_impl!($print_macro, $prefix, $fmt, )
     };
 }
 
 #[macro_export]
 macro_rules! host_println {
     ($($arg:tt)*) => {
-        $crate::println_impl!(println, HOST_PREFIX, $($arg)*);
+        _ = $crate::println_impl!(safe_println, HOST_PREFIX, $($arg)*)
     };
 }
 
 #[macro_export]
 macro_rules! host_eprintln {
     ($($arg:tt)*) => {
-        $crate::println_impl!(eprintln, HOST_PREFIX, $($arg)*);
+        _ = $crate::println_impl!(safe_eprintln, HOST_PREFIX, $($arg)*)
     };
 }
 
 #[macro_export]
 macro_rules! guest_println {
     ($($arg:tt)*) => {
-        $crate::println_impl!(println, GUEST_PREFIX, $($arg)*);
+        _ = $crate::println_impl!(safe_println, GUEST_PREFIX, $($arg)*)
     };
 }
 
 #[macro_export]
 macro_rules! prefix_println {
     ($prefix:ident, $($arg:tt)*) => {
-        match $prefix {
+        _ = match $prefix {
             Some($crate::log::Prefix::Host) => {
-                $crate::println_impl!(println, HOST_PREFIX, $($arg)*);
+                $crate::println_impl!(safe_println, HOST_PREFIX, $($arg)*)
             }
             Some($crate::log::Prefix::Guest) => {
-                $crate::println_impl!(println, GUEST_PREFIX, $($arg)*);
+                $crate::println_impl!(safe_println, GUEST_PREFIX, $($arg)*)
             }
             None => {
-                $crate::println_impl!(println, EMPTY_PREFIX, $($arg)*);
+                $crate::println_impl!(safe_println, EMPTY_PREFIX, $($arg)*)
             }
         }
     };
@@ -113,16 +118,49 @@ macro_rules! prefix_println {
 #[macro_export]
 macro_rules! prefix_eprintln {
     ($prefix:ident, $($arg:tt)*) => {
-        match $prefix {
+        _ = match $prefix {
             Some($crate::log::Prefix::Host) => {
-                $crate::println_impl!(eprintln, HOST_PREFIX, $($arg)*);
+                $crate::println_impl!(safe_eprintln, HOST_PREFIX, $($arg)*)
             }
             Some($crate::log::Prefix::Guest) => {
-                $crate::println_impl!(eprintln, GUEST_PREFIX, $($arg)*);
+                $crate::println_impl!(safe_eprintln, GUEST_PREFIX, $($arg)*)
             }
             None => {
-                $crate::println_impl!(eprintln, EMPTY_PREFIX, $($arg)*);
+                $crate::println_impl!(safe_eprintln, EMPTY_PREFIX, $($arg)*)
             }
         }
     };
+}
+
+#[derive(Debug)]
+pub struct PrintError(pub io::Error);
+
+impl std::fmt::Display for PrintError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for PrintError {}
+
+impl PrintError {
+    pub fn broken_pipe(&self) -> bool {
+        self.0.kind() == io::ErrorKind::BrokenPipe
+    }
+}
+
+#[macro_export]
+macro_rules! safe_println {
+    ($($arg:tt)*) => {{
+        use std::io::Write;
+        writeln!(std::io::stdout(), $($arg)*).map_err($crate::log::PrintError)
+    }};
+}
+
+#[macro_export]
+macro_rules! safe_eprintln {
+    ($($arg:tt)*) => {{
+        use std::io::Write;
+        writeln!(std::io::stderr(), $($arg)*).map_err($crate::log::PrintError)
+    }};
 }

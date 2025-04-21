@@ -1,7 +1,7 @@
 use anyhow::{Context, anyhow};
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use common_utils::{
-    guest_println, host_eprintln, host_println, log, prefix_eprintln, prefix_println,
+    guest_println, host_eprintln, host_println, log, prefix_eprintln, prefix_println, safe_println,
 };
 use devinfo::DevInfo;
 use nanoid::nanoid;
@@ -65,6 +65,11 @@ fn run() -> i32 {
         } else if let Some(clap_error) = e.downcast_ref::<clap::Error>() {
             clap_error.exit();
         } else {
+            if let Some(print_error) = e.downcast_ref::<log::PrintError>() {
+                if print_error.broken_pipe() {
+                    return 1;
+                }
+            }
             host_eprintln!("Error: {:#}", e);
             1
         }
@@ -1264,7 +1269,7 @@ impl AppRunner {
             if size == 0 {
                 break; // EOF
             }
-            println!("{}", line.trim_end());
+            safe_println!("{}", line.trim_end())?;
             line.clear();
         }
 
