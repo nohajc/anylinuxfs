@@ -3,6 +3,7 @@ use std::{
     io::{Read, Write},
     os::unix::net::{UnixListener, UnixStream},
     path::Path,
+    sync::{Arc, Mutex},
     thread,
 };
 
@@ -21,9 +22,10 @@ pub struct RuntimeInfo {
     pub session_pgid: libc::pid_t,
     pub vmm_pid: libc::pid_t,
     pub gvproxy_pid: libc::pid_t,
+    pub mount_point: Option<String>,
 }
 
-pub fn serve_info(rt_info: RuntimeInfo) {
+pub fn serve_info(rt_info: Arc<Mutex<RuntimeInfo>>) {
     _ = thread::spawn(move || {
         let socket_path = Path::new(API_SOCKET);
         // Remove the socket file if it exists
@@ -51,7 +53,7 @@ pub enum Response {
 struct Handler {}
 
 impl Handler {
-    fn serve(runtime_info: RuntimeInfo, socket_path: &Path) -> anyhow::Result<()> {
+    fn serve(runtime_info: Arc<Mutex<RuntimeInfo>>, socket_path: &Path) -> anyhow::Result<()> {
         let listener = UnixListener::bind(socket_path).context("Failed to bind to Unix socket")?;
 
         for stream in listener.incoming() {
@@ -64,10 +66,13 @@ impl Handler {
         Ok(())
     }
 
-    fn serve_to_client(mut stream: UnixStream, runtime_info: RuntimeInfo) -> anyhow::Result<()> {
+    fn serve_to_client(
+        mut stream: UnixStream,
+        runtime_info: Arc<Mutex<RuntimeInfo>>,
+    ) -> anyhow::Result<()> {
         let req = Handler::read_request(&mut stream)?;
         let resp = match req {
-            Request::GetConfig => Response::Config(runtime_info),
+            Request::GetConfig => Response::Config(runtime_info.lock().unwrap().clone()),
         };
         Handler::write_response(&mut stream, resp)?;
 

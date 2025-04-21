@@ -4,34 +4,20 @@ use common_utils::{
     guest_println, host_eprintln, host_println, log, prefix_eprintln, prefix_println,
 };
 use devinfo::DevInfo;
-use libc::{SIGINT, SIGTERM};
 use nanoid::nanoid;
-use nix::{
-    sys::signal::Signal,
-    unistd::{Uid, User},
-};
-use objc2_core_foundation::{
-    CFDictionary, CFDictionaryGetValueIfPresent, CFRetained, CFRunLoopGetMain, CFRunLoopRun,
-    CFRunLoopStop, CFString, CFURL, CFURLGetString, kCFRunLoopDefaultMode,
-};
-use objc2_disk_arbitration::{
-    DADisk, DADiskCopyDescription, DARegisterDiskDisappearedCallback, DASessionCreate,
-    DASessionScheduleWithRunLoop, DAUnregisterCallback,
-};
+use nix::unistd::{Uid, User};
+
 use serde::{Deserialize, Serialize};
-use signal_hook::iterator::Signals;
-use std::ffi::c_void;
 use std::fmt::Display;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, SocketAddrV4, TcpStream};
-use std::ops::Deref;
 use std::os::fd::FromRawFd;
 use std::os::unix::fs::chown;
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
-use std::ptr::{NonNull, null, null_mut};
+use std::ptr::null;
 use std::thread;
 use std::time::Duration;
 use std::{
@@ -44,8 +30,7 @@ use std::{
 };
 
 use notify::{RecursiveMode, Watcher};
-use std::sync::mpsc;
-use url::Url;
+use std::sync::{Arc, Mutex, mpsc};
 use utils::{Deferred, OutputAction, StatusError, write_to_pipe};
 
 mod api;
@@ -738,184 +723,6 @@ fn unmount_nfs(volume_path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-unsafe fn cfdict_get_value<'a, T>(dict: &'a CFDictionary, key: &str) -> Option<&'a T> {
-    let key = CFString::from_str(key);
-    let key_ptr: *const CFString = key.deref();
-    let mut value_ptr: *const c_void = null();
-    let key_found =
-        unsafe { CFDictionaryGetValueIfPresent(dict, key_ptr as *const c_void, &mut value_ptr) };
-
-    if !key_found {
-        return None;
-    }
-    unsafe { (value_ptr as *const T).as_ref() }
-}
-
-struct DaDiskArgs {
-    context: *mut c_void,
-    descr: Option<CFRetained<CFDictionary>>,
-}
-
-impl DaDiskArgs {
-    fn new(disk: NonNull<DADisk>, context: *mut c_void) -> Self {
-        let descr = unsafe { DADiskCopyDescription(disk.as_ref()) };
-        Self { context, descr }
-    }
-
-    fn mount_context(&self) -> &MountContext {
-        unsafe { (self.context as *const MountContext).as_ref().unwrap() }
-    }
-
-    fn share_name(&self) -> &str {
-        self.mount_context().share_name
-    }
-
-    fn descr(&self) -> Option<&CFDictionary> {
-        self.descr.as_ref().map(|d| d.deref())
-    }
-
-    fn volume_path(&self) -> Option<String> {
-        let volume_path: Option<&CFURL> =
-            unsafe { cfdict_get_value(self.descr()?, "DAVolumePath") };
-        volume_path
-            .map(|url| unsafe { CFURLGetString(url).unwrap() }.to_string())
-            .and_then(|url_str| Url::parse(&url_str).ok())
-            .map(|url| url.path().to_string())
-    }
-
-    fn volume_kind(&self) -> Option<String> {
-        let volume_kind: Option<&CFString> =
-            unsafe { cfdict_get_value(self.descr()?, "DAVolumeKind") };
-        volume_kind.map(|kind| kind.to_string())
-    }
-}
-
-unsafe extern "C-unwind" fn disk_unmount_event(disk: NonNull<DADisk>, context: *mut c_void) {
-    let args = DaDiskArgs::new(disk, context);
-
-    if let (Some(volume_path), Some(volume_kind)) = (args.volume_path(), args.volume_kind()) {
-        let expected_share_path = format!("/Volumes/{}/", args.share_name());
-        if volume_kind == "nfs" && volume_path == expected_share_path {
-            host_println!("Share {} was unmounted", &expected_share_path);
-            unsafe { CFRunLoopStop(&CFRunLoopGetMain().unwrap()) };
-        }
-    }
-}
-
-// unsafe extern "C-unwind" fn disk_unmount_approval(
-//     disk: NonNull<DADisk>,
-//     context: *mut c_void,
-// ) -> *const DADissenter {
-//     let args = DaDiskArgs::new(disk, context);
-//     if let Some(descr) = args.descr() {
-//         inspect_cf_dictionary_values(descr);
-//     }
-//     if let (Some(volume_path), Some(volume_kind)) = (args.volume_path(), args.volume_kind()) {
-//         let expected_share_path = format!("/Volumes/{}/", args.share_name());
-//         if volume_kind == "nfs" && volume_path == expected_share_path {
-//             host_println!("Approve unmount of {}? [y/n]", &expected_share_path);
-//             let mut input = String::new();
-//             io::stdin().read_line(&mut input).unwrap();
-//             if input.trim() == "y" {
-//                 return null();
-//             }
-//         }
-//     }
-//     let msg = CFString::from_str("custom error message");
-//     let result = unsafe { DADissenterCreate(None, kDAReturnBusy, Some(&msg)) };
-//     msg.retain();
-//     result.retain();
-//     result.deref()
-// }
-
-// fn inspect_cf_dictionary_values(dict: &CFDictionary) {
-//     let count = unsafe { CFDictionaryGetCount(dict) } as usize;
-//     let mut keys: Vec<*const c_void> = vec![null(); count];
-//     let mut values: Vec<*const c_void> = vec![null(); count];
-
-//     unsafe { CFDictionaryGetKeysAndValues(dict, keys.as_mut_ptr(), values.as_mut_ptr()) };
-
-//     for i in 0..count {
-//         let value = values[i] as *const CFType;
-//         let type_id = unsafe { CFGetTypeID(value.as_ref()) };
-//         let type_name = CFCopyTypeIDDescription(type_id).unwrap();
-//         let key_str = keys[i] as *const CFString;
-
-//         host_println!(
-//             "Key: {}, Type: {}",
-//             unsafe { key_str.as_ref().unwrap() },
-//             &type_name,
-//         );
-//     }
-// }
-
-struct MountContext<'a> {
-    share_name: &'a str,
-}
-
-fn stop_run_loop_on_signal() -> anyhow::Result<()> {
-    let mut signals = Signals::new(&[SIGINT, SIGTERM])?;
-    _ = thread::spawn(move || {
-        for signal in signals.forever() {
-            match signal {
-                SIGINT | SIGTERM => {
-                    host_println!(
-                        "Received signal {}",
-                        Signal::try_from(signal)
-                            .map(|s| s.to_string())
-                            .unwrap_or("<unknown>".to_owned())
-                    );
-                    unsafe { CFRunLoopStop(&CFRunLoopGetMain().unwrap()) }
-                    break;
-                }
-                _ => {}
-            }
-        }
-    });
-
-    Ok(())
-}
-
-fn wait_for_unmount(share_name: &str) -> anyhow::Result<()> {
-    let session = unsafe { DASessionCreate(None).unwrap() };
-    let mut mount_ctx = MountContext { share_name };
-    let mount_ctx_ptr = &mut mount_ctx as *mut MountContext;
-    unsafe {
-        DARegisterDiskDisappearedCallback(
-            &session,
-            None,
-            Some(disk_unmount_event),
-            mount_ctx_ptr as *mut c_void,
-        )
-    };
-
-    // unsafe {
-    //     DARegisterDiskEjectApprovalCallback(
-    //         &session,
-    //         None,
-    //         Some(disk_unmount_approval),
-    //         mount_ctx_ptr as *mut c_void,
-    //     )
-    // }
-
-    unsafe {
-        DASessionScheduleWithRunLoop(
-            &session,
-            &CFRunLoopGetMain().unwrap(),
-            kCFRunLoopDefaultMode.unwrap(),
-        )
-    };
-
-    stop_run_loop_on_signal()?;
-    unsafe { CFRunLoopRun() };
-
-    let callback_ptr = disk_unmount_event as *const c_void as *mut c_void;
-    let callback_nonnull: NonNull<c_void> = NonNull::new(callback_ptr).unwrap();
-    unsafe { DAUnregisterCallback(&session, callback_nonnull, null_mut()) };
-
-    Ok(())
-}
-
 fn send_quit_cmd(config: &Config) -> anyhow::Result<()> {
     let mut stream = UnixStream::connect(&config.vsock_path)?;
 
@@ -1079,8 +886,16 @@ fn wait_for_proc_exit(pid: libc::pid_t) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn validated_mount_point(rt_info: &api::RuntimeInfo) -> Option<PathBuf> {
-    let mount_point = Path::new("/Volumes").join(rt_info.dev_info.auto_mount_name());
+enum MountStatus<'a> {
+    NotYet,
+    Mounted(&'a Path),
+    NoLonger,
+}
+
+fn validated_mount_point(rt_info: &api::RuntimeInfo) -> MountStatus {
+    let Some(mount_point) = rt_info.mount_point.as_ref().map(Path::new) else {
+        return MountStatus::NotYet;
+    };
     // let mount_point = Path::new("/Volumes").join("data");
 
     let expected_mount_dev = PathBuf::from(format!(
@@ -1088,8 +903,8 @@ fn validated_mount_point(rt_info: &api::RuntimeInfo) -> Option<PathBuf> {
         rt_info.dev_info.auto_mount_name()
     ));
     match fsutil::mounted_from(&mount_point) {
-        Ok(mount_dev) if mount_dev == expected_mount_dev => Some(mount_point),
-        _ => None,
+        Ok(mount_dev) if mount_dev == expected_mount_dev => MountStatus::Mounted(mount_point),
+        _ => MountStatus::NoLonger,
     }
 }
 
@@ -1235,13 +1050,15 @@ impl AppRunner {
                 _ = wait_for_vm_status(child_pid);
             });
 
-            api::serve_info(api::RuntimeInfo {
+            let rt_info = Arc::new(Mutex::new(api::RuntimeInfo {
                 mount_config: config.clone(),
                 dev_info: dev_info.clone(),
                 session_pgid,
                 vmm_pid: child_pid,
                 gvproxy_pid,
-            });
+                mount_point: None,
+            }));
+            api::serve_info(rt_info.clone());
 
             let (nfs_ready_tx, nfs_ready_rx) = mpsc::channel();
 
@@ -1294,11 +1111,24 @@ impl AppRunner {
             if nfs_status.ok() {
                 host_println!("Port 111 open, NFS server ready");
 
+                let event_session = diskutil::EventSession::new()?;
                 // mount nfs share
                 let share_name = dev_info.auto_mount_name();
                 match mount_nfs(&share_name) {
-                    Ok(_) => host_println!("NFS share mounted successfully"),
-                    Err(e) => host_eprintln!("Failed to mount NFS share: {:#}", e),
+                    Ok(_) => host_println!("Requested NFS share mount"),
+                    Err(e) => host_eprintln!("Failed to request NFS mount: {:#}", e),
+                }
+                let nfs_path = PathBuf::from(format!("localhost:/mnt/{}", share_name));
+                let mount_point_opt = event_session.wait_for_mount(&nfs_path);
+
+                if let Some(mount_point) = &mount_point_opt {
+                    host_println!(
+                        "{} was mounted as {}",
+                        dev_info.disk(),
+                        mount_point.display()
+                    );
+
+                    rt_info.lock().unwrap().mount_point = Some(mount_point.display().into());
                 }
 
                 if can_detach {
@@ -1314,7 +1144,10 @@ impl AppRunner {
                         .context("Failed to write to pipe")?;
                 }
 
-                wait_for_unmount(share_name)?;
+                if let Some(mount_point) = &mount_point_opt {
+                    event_session.wait_for_unmount(mount_point.real());
+                    host_println!("Share {} was unmounted", mount_point.display());
+                }
                 send_quit_cmd(&config.common)?;
             } else {
                 host_println!("NFS server not ready");
@@ -1469,12 +1302,22 @@ impl AppRunner {
 
         match resp {
             Ok(api::Response::Config(rt_info)) => {
-                let Some(mount_point) = validated_mount_point(&rt_info) else {
-                    eprintln!(
-                        "Drive {} no longer mounted but anylinuxfs is still running; try `anylinuxfs stop`.",
-                        &rt_info.mount_config.disk_path
-                    );
-                    return Err(StatusError::new("Mount point is not valid", 1).into());
+                let mount_point = match validated_mount_point(&rt_info) {
+                    MountStatus::Mounted(mount_point) => mount_point,
+                    MountStatus::NoLonger => {
+                        eprintln!(
+                            "Drive {} no longer mounted but anylinuxfs is still running; try `anylinuxfs stop`.",
+                            &rt_info.mount_config.disk_path
+                        );
+                        return Err(StatusError::new("Mount point is not valid", 1).into());
+                    }
+                    MountStatus::NotYet => {
+                        eprintln!(
+                            "Drive {} not mounted yet, please wait",
+                            &rt_info.mount_config.disk_path
+                        );
+                        return Ok(());
+                    }
                 };
 
                 let info: Vec<_> = rt_info
@@ -1529,7 +1372,7 @@ impl AppRunner {
             Ok(api::Response::Config(rt_info)) => {
                 if !cmd.force {
                     // try to trigger normal shutdown first
-                    if let Some(mount_point) = validated_mount_point(&rt_info) {
+                    if let MountStatus::Mounted(mount_point) = validated_mount_point(&rt_info) {
                         println!("Unmounting {}...", mount_point.display());
                         unmount_nfs(&mount_point)?;
                         return Ok(());
@@ -1542,7 +1385,7 @@ impl AppRunner {
                             .context(format!("Failed to send SIGTERM to anylinuxfs"));
                     }
                 } else {
-                    if let Some(mount_point) = validated_mount_point(&rt_info) {
+                    if let MountStatus::Mounted(mount_point) = validated_mount_point(&rt_info) {
                         print!(
                             "This action will force kill anylinuxfs. You should first unmount {} if possible.\nDo you want to proceed anyway? [y/N] ",
                             mount_point.display()
@@ -1572,8 +1415,11 @@ impl AppRunner {
                         }
                     }
                     if unsafe { libc::killpg(rt_info.session_pgid, libc::SIGKILL) } < 0 {
-                        return Err(io::Error::last_os_error())
-                            .context(format!("Failed to send SIGKILL to anylinuxfs"));
+                        let last_error = io::Error::last_os_error();
+                        if last_error.raw_os_error().unwrap() != libc::ESRCH {
+                            return Err(io::Error::last_os_error())
+                                .context(format!("Failed to send SIGKILL to anylinuxfs"));
+                        }
                     }
                     _ = vsock_cleanup(&rt_info.mount_config.common);
                     _ = gvproxy_cleanup(&rt_info.mount_config.common);
