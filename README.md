@@ -20,4 +20,24 @@ This is exactly what `anylinuxfs` does and it streamlines it so that it's as eas
 
 You pick a drive, mount it with `anylinuxfs` and it appears as a NFS share on localhost. This spins up a microVM in the background which uses the real linux drivers, so you can access anything from `ext*` to `btrfs`. Any mount options on the command-line will be forwarded to the linux mount command, so you can mount read-only, read-write, pick btrfs subvolumes, etc. Then you simply eject the drive in Finder or use `umount` in terminal and the virtual machine will be turned off.
 
-Thanks to the brilliant [libkrun](https://github.com/containers/libkrun), booting the Linux VM and starting NFS server only takes a couple of seconds, so the experience is pretty seamless. Current limitation is that only one anylinuxfs VM can run at a time.
+This all sounds like a lot of work but it's actually very fast. Not like a traditional virtual machine which takes a while to boot.
+This one is just a stripped down version of Linux, ther's not even a UEFI firmware. Practically, it takes only a couple of seconds before the drive is mounted and ready to use.
+
+## Notes
+
+When you first run `anylinuxfs` to mount a drive, it will download the alpine Linux image from Docker hub and unpack it to your user profile (`~/.anylinuxfs/alpine`).
+Then it will spin up a VM so it can install dependencies and do the initial environment setup. After that, the Linux root filesystem will be reused for every mount operation.
+You can also run `anylinuxfs init` to download a fresh copy of `alpine:latest` and reinitialize the environment at any time.
+
+## Limitations
+- Only one drive can be mounted at a time (this might be improved in the future)
+- Only Apple Silicon Macs are supported (libkrun limitation)
+
+## Acknowledgements
+This project was made possible by
+- [libkrun](https://github.com/containers/libkrun) the microVM hypervisor for Linux anc Mac
+- [libkrunfw](https://github.com/containers/libkrunfw) - Linux kernel bundled for libkrun as a dynamic library
+- [gvproxy](https://github.com/containers/gvisor-tap-vsock) - user space networking for virtual machines (also used by podman)
+- [docker-nfs-server](https://github.com/ehough/docker-nfs-server) - launcher for NFS server in a container
+
+Thank you all for your great work!
