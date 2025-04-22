@@ -246,7 +246,9 @@ enum Commands {
 
 #[derive(Args)]
 struct MountCmd {
+    /// Currently supports individual disk partitions
     disk_path: String,
+    /// Options passed to the Linux mount command
     #[arg(short, long)]
     options: Option<String>,
     #[arg(short, long)]
