@@ -1417,7 +1417,7 @@ impl AppRunner {
                     if unsafe { libc::killpg(rt_info.session_pgid, libc::SIGKILL) } < 0 {
                         let last_error = io::Error::last_os_error();
                         if last_error.raw_os_error().unwrap() != libc::ESRCH {
-                            return Err(io::Error::last_os_error())
+                            return Err(last_error)
                                 .context(format!("Failed to send SIGKILL to anylinuxfs"));
                         }
                     }
