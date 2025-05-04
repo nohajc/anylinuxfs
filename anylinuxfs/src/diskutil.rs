@@ -3,12 +3,10 @@ use common_utils::host_println;
 use libc::{SIGINT, SIGTERM};
 use nix::sys::signal::Signal;
 use objc2_core_foundation::{
-    CFDictionary, CFDictionaryGetValueIfPresent, CFRetained, CFRunLoopGetMain, CFRunLoopRun,
-    CFRunLoopStop, CFString, CFURL, CFURLGetString, kCFRunLoopDefaultMode,
+    CFDictionary, CFRetained, CFRunLoop, CFString, CFURL, kCFRunLoopDefaultMode,
 };
 use objc2_disk_arbitration::{
-    DADisk, DADiskCopyDescription, DARegisterDiskAppearedCallback,
-    DARegisterDiskDisappearedCallback, DASession, DASessionCreate, DASessionScheduleWithRunLoop,
+    DADisk, DARegisterDiskAppearedCallback, DARegisterDiskDisappearedCallback, DASession,
     DAUnregisterCallback,
 };
 use signal_hook::iterator::Signals;
@@ -145,8 +143,7 @@ unsafe fn cfdict_get_value<'a, T>(dict: &'a CFDictionary, key: &str) -> Option<&
     let key = CFString::from_str(key);
     let key_ptr: *const CFString = key.deref();
     let mut value_ptr: *const c_void = null();
-    let key_found =
-        unsafe { CFDictionaryGetValueIfPresent(dict, key_ptr as *const c_void, &mut value_ptr) };
+    let key_found = unsafe { dict.value_if_present(key_ptr as *const c_void, &mut value_ptr) };
 
     if !key_found {
         return None;
@@ -162,7 +159,7 @@ struct DaDiskArgs<ContextType> {
 
 impl<ContextType> DaDiskArgs<ContextType> {
     fn new(disk: NonNull<DADisk>, context: *mut c_void) -> Self {
-        let descr = unsafe { DADiskCopyDescription(disk.as_ref()) };
+        let descr = unsafe { DADisk::description(disk.as_ref()) };
         Self {
             context,
             descr,
@@ -186,7 +183,7 @@ impl<ContextType> DaDiskArgs<ContextType> {
         let volume_path: Option<&CFURL> =
             unsafe { cfdict_get_value(self.descr()?, "DAVolumePath") };
         volume_path
-            .map(|url| unsafe { CFURLGetString(url).unwrap() }.to_string())
+            .map(|url| CFURL::string(url).to_string())
             .and_then(|url_str| Url::parse(&url_str).ok())
             .map(|url| url.path().to_string())
     }
@@ -207,7 +204,7 @@ unsafe extern "C-unwind" fn disk_mount_event(disk: NonNull<DADisk>, context: *mu
             if let Ok(dev_path) = fsutil::mounted_from(&volume_path) {
                 if dev_path == expected_nfs_path {
                     args.context_mut().real_mount_point = Some(volume_path.clone());
-                    unsafe { CFRunLoopStop(&CFRunLoopGetMain().unwrap()) };
+                    CFRunLoop::stop(&CFRunLoop::main().unwrap());
                 }
             }
         }
@@ -220,7 +217,7 @@ unsafe extern "C-unwind" fn disk_unmount_event(disk: NonNull<DADisk>, context: *
     if let (Some(volume_path), Some(volume_kind)) = (args.volume_path(), args.volume_kind()) {
         let expected_mount_point = args.context().mount_point;
         if volume_kind == "nfs" && volume_path == expected_mount_point {
-            unsafe { CFRunLoopStop(&CFRunLoopGetMain().unwrap()) };
+            CFRunLoop::stop(&CFRunLoop::main().unwrap());
         }
     }
 }
@@ -303,7 +300,7 @@ fn stop_run_loop_on_signal() -> anyhow::Result<()> {
                             .map(|s| s.to_string())
                             .unwrap_or("<unknown>".to_owned())
                     );
-                    unsafe { CFRunLoopStop(&CFRunLoopGetMain().unwrap()) }
+                    CFRunLoop::stop(&CFRunLoop::main().unwrap());
                     break;
                 }
                 _ => {}
@@ -334,7 +331,7 @@ pub struct EventSession {
 
 impl EventSession {
     pub fn new() -> anyhow::Result<Self> {
-        let session = unsafe { DASessionCreate(None).unwrap() };
+        let session = unsafe { DASession::new(None).unwrap() };
         stop_run_loop_on_signal()?;
         Ok(Self { session })
     }
@@ -353,14 +350,14 @@ impl EventSession {
         };
 
         unsafe {
-            DASessionScheduleWithRunLoop(
+            DASession::schedule_with_run_loop(
                 &self.session,
-                &CFRunLoopGetMain().unwrap(),
+                &CFRunLoop::main().unwrap(),
                 kCFRunLoopDefaultMode.unwrap(),
             )
         };
 
-        unsafe { CFRunLoopRun() };
+        CFRunLoop::run();
 
         let callback_ptr = disk_mount_event as *const c_void as *mut c_void;
         let callback_nonnull: NonNull<c_void> = NonNull::new(callback_ptr).unwrap();
@@ -391,14 +388,14 @@ impl EventSession {
         // }
 
         unsafe {
-            DASessionScheduleWithRunLoop(
+            DASession::schedule_with_run_loop(
                 &self.session,
-                &CFRunLoopGetMain().unwrap(),
+                &CFRunLoop::main().unwrap(),
                 kCFRunLoopDefaultMode.unwrap(),
             )
         };
 
-        unsafe { CFRunLoopRun() };
+        CFRunLoop::run();
 
         let callback_ptr = disk_unmount_event as *const c_void as *mut c_void;
         let callback_nonnull: NonNull<c_void> = NonNull::new(callback_ptr).unwrap();
