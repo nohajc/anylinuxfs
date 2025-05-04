@@ -27,9 +27,10 @@ This one is just a stripped down version of Linux, ther's not even a UEFI firmwa
 
 ## Notes
 
-When you first run `anylinuxfs` to mount a drive, it will download the alpine Linux image from Docker hub and unpack it to your user profile (`~/.anylinuxfs/alpine`).
+- When you first run `anylinuxfs` to mount a drive, it will download the alpine Linux image from Docker hub and unpack it to your user profile (`~/.anylinuxfs/alpine`).
 Then it will spin up a VM so it can install dependencies and do the initial environment setup. After that, the Linux root filesystem will be reused for every mount operation.
 You can also run `anylinuxfs init` to download a fresh copy of `alpine:latest` and reinitialize the environment at any time.
+- It is needed to run mount commands with `sudo` otherwise we're not allowed direct access to `/dev/disk*` files. However, the virtual machine itself will in fact run under the regular user who invoked `sudo` in the first place (i.e. all unnecessary permissions are dropped after the disk is opened)
 
 ## Limitations
 - Only one drive can be mounted at a time (this might be improved in the future)
