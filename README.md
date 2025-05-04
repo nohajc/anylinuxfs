@@ -1,6 +1,8 @@
 # anylinuxfs
 macOS: mount any linux-supported filesystem read/write using NFS and a microVM
 
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/Q5Q41EHAGK)
+
 ## Installation
 ```
 brew tap nohajc/anylinuxfs
