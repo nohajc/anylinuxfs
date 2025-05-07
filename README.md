@@ -23,7 +23,7 @@ This is exactly what `anylinuxfs` does and it streamlines it so that it's as eas
 You pick a drive, mount it with `anylinuxfs` and it appears as a NFS share on localhost. This spins up a microVM in the background which uses the real linux drivers, so you can access anything from `ext*` to `btrfs`. Any mount options on the command-line will be forwarded to the linux mount command, so you can mount read-only, read-write, pick btrfs subvolumes, etc. Then you simply eject the drive in Finder or use `umount` in terminal and the virtual machine will be turned off.
 
 This all sounds like a lot of work but it's actually very fast. Not like a traditional virtual machine which takes a while to boot.
-This one is just a stripped down version of Linux, ther's not even a UEFI firmware. Practically, it takes only a couple of seconds before the drive is mounted and ready to use.
+This one is just a stripped down version of Linux, there's not even a UEFI firmware. Practically, it takes only a couple of seconds before the drive is mounted and ready to use.
 
 ## Notes
 
