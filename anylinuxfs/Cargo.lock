@@ -82,6 +82,7 @@ dependencies = [
  "notify",
  "objc2-core-foundation",
  "objc2-disk-arbitration",
+ "regex",
  "serde",
  "serde_json",
  "signal-hook",

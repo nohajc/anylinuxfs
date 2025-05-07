@@ -21,6 +21,7 @@ nix = { version = "0.29.0", features = ["signal"] }
 toml = "0.8.20"
 notify = "8.0.0"
 signal-hook = { version = "0.3.17", features = ["iterator"] }
+regex = "1.11.1"
 
 [patch.crates-io]
 libblkid-rs = { git = 'https://github.com/stratis-storage/libblkid-rs.git', rev = "5c08342" }

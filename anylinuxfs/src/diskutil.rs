@@ -9,6 +9,7 @@ use objc2_disk_arbitration::{
     DADisk, DARegisterDiskAppearedCallback, DARegisterDiskDisappearedCallback, DASession,
     DAUnregisterCallback,
 };
+use regex::Regex;
 use signal_hook::iterator::Signals;
 use std::{
     ffi::c_void,
@@ -81,6 +82,7 @@ fn trunc_with_ellipsis(s: &str, max_len: usize) -> String {
 }
 
 pub fn list_linux_partitions() -> anyhow::Result<List> {
+    let part_type_pattern = Regex::new(r"(Linux Filesystem|Linux)").unwrap();
     let mut disk_entries = Vec::new();
 
     let output = Command::new("diskutil")
@@ -105,8 +107,7 @@ pub fn list_linux_partitions() -> anyhow::Result<List> {
                 entry.header_mut().push_str(line);
             });
         } else {
-            let linux_fs = "Linux Filesystem";
-            if line.contains(linux_fs) {
+            if let Some(part_type) = part_type_pattern.find(line).map(|m| m.as_str()) {
                 let dev_info = line
                     .split_whitespace()
                     .last()
@@ -114,16 +115,15 @@ pub fn list_linux_partitions() -> anyhow::Result<List> {
                     .flatten();
                 let line = match dev_info {
                     Some(dev_info) => {
-                        // let mut replace_patterns = Vec::new();
                         let mut line = line.to_owned();
-                        let fs_type = dev_info.fs_type().unwrap_or(linux_fs);
+                        let fs_type = dev_info.fs_type().unwrap_or(part_type);
                         let label = trunc_with_ellipsis(
                             dev_info.label().unwrap_or("                       "),
                             23,
                         );
                         line = line.replace(
-                            &format!("{}                        ", linux_fs),
-                            &format!("{:>16} {:<23}", fs_type, label),
+                            &format!("{:>26} {:<23}", part_type, ""),
+                            &format!("{:>26} {:<23}", fs_type, label),
                         );
 
                         line
