@@ -319,24 +319,62 @@ pub fn redirect_all_to_file_and_tail_it(
     Ok(tail_process)
 }
 
-pub fn acquire_flock(lock_file: impl AsRef<Path>) -> anyhow::Result<File> {
-    let file_already_existed = lock_file.as_ref().exists();
-    let file = File::create(lock_file).context("Failed to create file lock")?;
-    if !file_already_existed {
-        file.set_permissions(Permissions::from_mode(0o666))
-            .context("Failed to set file lock permissions")?;
-    }
+pub enum FlockKind {
+    Shared,
+    Exclusive,
+}
 
-    // Try to lock the file exclusively
-    let res = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+pub struct LockFile(File);
+
+impl LockFile {
+    pub fn new(file_path: impl AsRef<Path>) -> anyhow::Result<Self> {
+        let file_already_existed = file_path.as_ref().exists();
+        let file = File::create(file_path).context("Failed to create lock file")?;
+        if !file_already_existed {
+            file.set_permissions(Permissions::from_mode(0o666))
+                .context("Failed to set file lock permissions")?;
+        }
+
+        Ok(Self(file))
+    }
+}
+
+impl AsRawFd for LockFile {
+    fn as_raw_fd(&self) -> libc::c_int {
+        self.0.as_raw_fd()
+    }
+}
+
+fn acquire_lock(file: &impl AsRawFd, lock_kind: FlockKind, err_msg: &str) -> anyhow::Result<()> {
+    let lock_flag = match lock_kind {
+        FlockKind::Shared => libc::LOCK_SH,
+        FlockKind::Exclusive => libc::LOCK_EX,
+    };
+
+    // Try to lock the file
+    let res = unsafe { libc::flock(file.as_raw_fd(), lock_flag | libc::LOCK_NB) };
     if res != 0 {
-        Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            "another instance is already running",
-        )
-        .into())
+        Err(io::Error::new(io::ErrorKind::AlreadyExists, err_msg).into())
     } else {
-        Ok(file)
+        Ok(())
+    }
+}
+
+pub trait AcquireLock: Sized {
+    fn acquire_lock(self, lock_kind: FlockKind) -> anyhow::Result<Self>;
+}
+
+impl AcquireLock for LockFile {
+    fn acquire_lock(self, lock_kind: FlockKind) -> anyhow::Result<LockFile> {
+        acquire_lock(&self, lock_kind, "another instance is already running")?;
+        Ok(self)
+    }
+}
+
+impl AcquireLock for File {
+    fn acquire_lock(self, lock_kind: FlockKind) -> anyhow::Result<File> {
+        acquire_lock(&self, lock_kind, "file already locked")?;
+        Ok(self)
     }
 }
 

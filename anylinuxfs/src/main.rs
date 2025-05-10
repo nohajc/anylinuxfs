@@ -31,7 +31,7 @@ use std::{
 
 use notify::{RecursiveMode, Watcher};
 use std::sync::{Arc, Mutex, mpsc};
-use utils::{Deferred, OutputAction, StatusError, write_to_pipe};
+use utils::{AcquireLock, Deferred, FlockKind, LockFile, OutputAction, StatusError, write_to_pipe};
 
 mod api;
 #[allow(unused)]
@@ -931,7 +931,7 @@ impl Default for AppRunner {
 
 impl AppRunner {
     fn run_mount(&mut self, cmd: MountCmd) -> anyhow::Result<()> {
-        let _lock_file = utils::acquire_flock(LOCK_FILE)?;
+        let _lock_file = LockFile::new(LOCK_FILE)?.acquire_lock(FlockKind::Exclusive)?;
         let config = load_mount_config(cmd)?;
         let log_file_path = &config.common.log_file_path;
 
@@ -996,6 +996,12 @@ impl AppRunner {
         }
 
         let dev_info = DevInfo::new(&config.disk_path)?;
+
+        let _disk = File::open(dev_info.rdisk())?.acquire_lock(if config.read_only {
+            FlockKind::Shared
+        } else {
+            FlockKind::Exclusive
+        })?;
 
         host_println!("disk: {}", dev_info.disk());
         host_println!("rdisk: {}", dev_info.rdisk());
@@ -1212,7 +1218,7 @@ impl AppRunner {
     }
 
     fn run_init(&mut self) -> anyhow::Result<()> {
-        let _lock_file = utils::acquire_flock(LOCK_FILE)?;
+        let _lock_file = LockFile::new(LOCK_FILE)?.acquire_lock(FlockKind::Exclusive)?;
         let config = load_config()?;
         init_rootfs(&config, true)?;
 
