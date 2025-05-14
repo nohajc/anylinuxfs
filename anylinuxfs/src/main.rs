@@ -247,6 +247,8 @@ enum Commands {
     List,
     /// Stop anylinuxfs (can be used if unresponsive)
     Stop(StopCmd),
+    /// microVM shell for debugging
+    Shell(MountCmd),
 }
 
 #[derive(Args)]
@@ -472,11 +474,7 @@ fn drop_privileges(
     Ok(())
 }
 
-fn setup_and_start_vm(
-    config: &MountConfig,
-    dev_info: &DevInfo,
-    before_start: impl FnOnce() -> anyhow::Result<()>,
-) -> anyhow::Result<()> {
+fn setup_vm(config: &MountConfig, dev_info: &DevInfo, use_gvproxy: bool) -> anyhow::Result<u32> {
     let ctx = unsafe { bindings::krun_create_ctx() }.context("Failed to create context")?;
 
     let level = config.common.krun.log_level_numeric;
@@ -509,15 +507,17 @@ fn setup_and_start_vm(
     }
     .context("Failed to add disk")?;
 
-    unsafe {
-        bindings::krun_set_gvproxy_path(
-            ctx,
-            CString::new(config.common.vfkit_sock_path.as_str())
-                .unwrap()
-                .as_ptr(),
-        )
+    if use_gvproxy {
+        unsafe {
+            bindings::krun_set_gvproxy_path(
+                ctx,
+                CString::new(config.common.vfkit_sock_path.as_str())
+                    .unwrap()
+                    .as_ptr(),
+            )
+        }
+        .context("Failed to set gvproxy path")?;
     }
-    .context("Failed to set gvproxy path")?;
 
     // let ports = vec![
     //     // CString::new("8000:8000").unwrap(),
@@ -552,6 +552,26 @@ fn setup_and_start_vm(
     unsafe { bindings::krun_set_workdir(ctx, CString::new("/").unwrap().as_ptr()) }
         .context("Failed to set workdir")?;
 
+    unsafe {
+        bindings::krun_set_kernel(
+            ctx,
+            CString::from_path(&config.common.kernel_path).as_ptr(),
+            0, // KRUN_KERNEL_FORMAT_RAW
+            null(),
+            null(),
+        )
+    }
+    .context("Failed to set kernel")?;
+
+    Ok(ctx)
+}
+
+fn start_vmproxy(
+    ctx: u32,
+    config: &MountConfig,
+    dev_info: &DevInfo,
+    before_start: impl FnOnce() -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
     let args: Vec<_> = [
         // CString::new("/bin/bash").unwrap(),
         // CString::new("-c").unwrap(),
@@ -590,18 +610,25 @@ fn setup_and_start_vm(
     unsafe { bindings::krun_set_exec(ctx, argv[0], argv[1..].as_ptr(), envp.as_ptr()) }
         .context("Failed to set exec")?;
 
-    unsafe {
-        bindings::krun_set_kernel(
-            ctx,
-            CString::from_path(&config.common.kernel_path).as_ptr(),
-            0, // KRUN_KERNEL_FORMAT_RAW
-            null(),
-            null(),
-        )
-    }
-    .context("Failed to set kernel")?;
-
     before_start().context("Before start callback failed")?;
+    unsafe { bindings::krun_start_enter(ctx) }.context("Failed to start VM")?;
+
+    Ok(())
+}
+
+fn start_vmshell(ctx: u32) -> anyhow::Result<()> {
+    let args = vec![CString::new("/bin/bash").unwrap()];
+
+    let argv = args
+        .iter()
+        .map(|s| s.as_ptr())
+        .chain([std::ptr::null()])
+        .collect::<Vec<_>>();
+    let envp = vec![std::ptr::null()];
+
+    unsafe { bindings::krun_set_exec(ctx, argv[0], argv[1..].as_ptr(), envp.as_ptr()) }
+        .context("Failed to set exec")?;
+
     unsafe { bindings::krun_start_enter(ctx) }.context("Failed to start VM")?;
 
     Ok(())
@@ -930,6 +957,53 @@ impl Default for AppRunner {
 }
 
 impl AppRunner {
+    fn run_shell(&mut self, cmd: MountCmd) -> anyhow::Result<()> {
+        let _lock_file = LockFile::new(LOCK_FILE)?.acquire_lock(FlockKind::Exclusive)?;
+        let config = load_mount_config(cmd)?;
+
+        init_rootfs(&config.common, false)?;
+
+        if !config.verbose {
+            log::disable_console_log();
+        }
+
+        // host_println!("disk_path: {}", config.disk_path);
+        host_println!("root_path: {}", config.common.root_path.display());
+        host_println!("num_vcpus: {}", config.common.krun.num_vcpus);
+        host_println!("ram_size_mib: {}", config.common.krun.ram_size_mib);
+
+        if !Path::new(&config.disk_path).exists() {
+            return Err(anyhow!("disk {} not found", &config.disk_path));
+        }
+
+        if config.disk_path.starts_with("/dev/disk") && config.common.sudo_uid.is_none() {
+            return Err(anyhow!(
+                "insufficient permissions to open {}, please use sudo",
+                &config.disk_path
+            ));
+        }
+
+        let dev_info = DevInfo::new(&config.disk_path)?;
+
+        let _disk = File::open(dev_info.rdisk())?.acquire_lock(if config.read_only {
+            FlockKind::Shared
+        } else {
+            FlockKind::Exclusive
+        })?;
+
+        host_println!("disk: {}", dev_info.disk());
+        host_println!("rdisk: {}", dev_info.rdisk());
+        host_println!("label: {:?}", dev_info.label());
+        host_println!("fs_type: {:?}", dev_info.fs_type());
+        host_println!("uuid: {:?}", dev_info.uuid());
+        host_println!("mount name: {}", dev_info.auto_mount_name());
+
+        let ctx = setup_vm(&config, &dev_info, false).context("Failed to setup microVM")?;
+        start_vmshell(ctx).context("Failed to start microVM shell")?;
+
+        Ok(())
+    }
+
     fn run_mount(&mut self, cmd: MountCmd) -> anyhow::Result<()> {
         let _lock_file = LockFile::new(LOCK_FILE)?.acquire_lock(FlockKind::Exclusive)?;
         let config = load_mount_config(cmd)?;
@@ -1054,7 +1128,8 @@ impl AppRunner {
             // Child process
             deferred.remove_all(); // deferred actions must be only called in the parent process
 
-            setup_and_start_vm(&config, &dev_info, || forked.redirect())
+            let ctx = setup_vm(&config, &dev_info, true).context("Failed to setup microVM")?;
+            start_vmproxy(ctx, &config, &dev_info, || forked.redirect())
                 .context("Failed to start microVM")?;
         } else {
             // Parent process
@@ -1466,6 +1541,7 @@ impl AppRunner {
             Commands::Config(cmd) => self.run_config(cmd),
             Commands::List => self.run_list(),
             Commands::Stop(cmd) => self.run_stop(cmd),
+            Commands::Shell(cmd) => self.run_shell(cmd),
         }
     }
 }

@@ -82,7 +82,7 @@ fn trunc_with_ellipsis(s: &str, max_len: usize) -> String {
 }
 
 pub fn list_linux_partitions() -> anyhow::Result<List> {
-    let part_type_pattern = Regex::new(r"(Linux Filesystem|Linux)").unwrap();
+    let part_type_pattern = Regex::new(r"(Linux Filesystem|Linux_LVM|Linux)").unwrap();
     let mut disk_entries = Vec::new();
 
     let output = Command::new("diskutil")
@@ -113,6 +113,7 @@ pub fn list_linux_partitions() -> anyhow::Result<List> {
                     .last()
                     .map(|part| DevInfo::new(&format!("/dev/{part}")).ok())
                     .flatten();
+
                 let line = match dev_info {
                     Some(dev_info) => {
                         let mut line = line.to_owned();
@@ -125,6 +126,11 @@ pub fn list_linux_partitions() -> anyhow::Result<List> {
                             &format!("{:>26} {:<23}", part_type, ""),
                             &format!("{:>26} {:<23}", fs_type, label),
                         );
+
+                        // println!("part_type: {}", part_type);
+                        // if part_type == "Linux_LVM" {
+                        //     let _volumes = DevInfo::logical_volumes("/dev/disk7");
+                        // }
 
                         line
                     }
