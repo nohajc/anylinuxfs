@@ -93,6 +93,7 @@ fn main() {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct Config {
     root_path: PathBuf,
+    root_ver_file_path: PathBuf,
     config_file_path: PathBuf,
     log_file_path: PathBuf,
     init_rootfs_path: PathBuf,
@@ -385,7 +386,9 @@ fn load_config() -> anyhow::Result<Config> {
         .context("Failed to get prefix directory")?;
 
     // ~/.anylinuxfs/alpine/rootfs
-    let root_path = home_dir.join(".anylinuxfs").join("alpine").join("rootfs");
+    let alpine_path = home_dir.join(".anylinuxfs").join("alpine");
+    let root_path = alpine_path.join("rootfs");
+    let root_ver_file_path = alpine_path.join("rootfs.ver");
     let config_file_path = home_dir.join(".anylinuxfs").join("config.toml");
     let log_file_path = home_dir.join("Library").join("Logs").join("anylinuxfs.log");
 
@@ -401,6 +404,7 @@ fn load_config() -> anyhow::Result<Config> {
 
     Ok(Config {
         root_path,
+        root_ver_file_path,
         config_file_path,
         log_file_path,
         init_rootfs_path,
@@ -790,6 +794,25 @@ fn wait_for_file(file: impl AsRef<Path>) -> anyhow::Result<()> {
     Ok(())
 }
 
+const ROOTFS_CURRENT_VERSION: &str = "1.0.0";
+
+fn rootfs_version_matches(config: &Config) -> bool {
+    let root_ver_file_path = config.root_ver_file_path.as_path();
+    let version = if root_ver_file_path.exists() {
+        fs::read_to_string(root_ver_file_path)
+            .unwrap_or_default()
+            .trim()
+            .to_string()
+    } else {
+        "".into()
+    };
+    if version != ROOTFS_CURRENT_VERSION {
+        host_eprintln!("New version detected.");
+        return false;
+    }
+    true
+}
+
 fn init_rootfs(config: &Config, force: bool) -> anyhow::Result<()> {
     if !force {
         let bash_path = config.root_path.join("bin/bash");
@@ -814,7 +837,7 @@ fn init_rootfs(config: &Config, force: bool) -> anyhow::Result<()> {
             }
             false => false,
         };
-        if required_files_exist && fstab_configured {
+        if required_files_exist && fstab_configured && rootfs_version_matches(&config) {
             // host_println!("VM root filesystem is initialized");
             return Ok(());
         }
@@ -864,6 +887,10 @@ fn init_rootfs(config: &Config, force: bool) -> anyhow::Result<()> {
                 .map(|c| c.to_string())
                 .unwrap_or("unknown".to_owned())
         ));
+    }
+
+    if let Err(e) = fs::write(config.root_ver_file_path.as_path(), ROOTFS_CURRENT_VERSION) {
+        host_eprintln!("Failed to write rootfs version file: {}", e);
     }
 
     Ok(())
