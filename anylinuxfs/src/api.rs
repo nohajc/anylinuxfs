@@ -7,7 +7,7 @@ use std::{
     thread,
 };
 
-use anyhow::Context;
+use anyhow::{Context, anyhow};
 use common_utils::host_eprintln;
 use serde::{Deserialize, Serialize};
 
@@ -86,10 +86,10 @@ impl Handler {
             .context("Failed to read request size")?;
         let size = u32::from_be_bytes(size_buf) as usize;
         if size == 0 {
-            return Err(anyhow::anyhow!("Request size is zero"));
+            return Err(anyhow!("Request size is zero"));
         }
         if size > 4096 {
-            return Err(anyhow::anyhow!("Request size is too large"));
+            return Err(anyhow!("Request size is too large"));
         }
 
         let mut payload_buf = vec![0u8; size];
@@ -149,10 +149,10 @@ impl Client {
             .context("Failed to read response size")?;
         let size = u32::from_be_bytes(size_buf) as usize;
         if size == 0 {
-            return Err(anyhow::anyhow!("Response size is zero"));
+            return Err(anyhow!("Response size is zero"));
         }
         if size > 4096 {
-            return Err(anyhow::anyhow!("Response size is too large"));
+            return Err(anyhow!("Response size is too large"));
         }
 
         let mut payload_buf = vec![0u8; size];

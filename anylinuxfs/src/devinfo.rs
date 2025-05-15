@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use anyhow::Context;
+use anyhow::{Context, anyhow};
 use libblkid_rs::{BlkidProbe, BlkidSublks, BlkidSublksFlags};
 use serde::{Deserialize, Serialize};
 
@@ -19,7 +19,7 @@ const RAW_PREFIX: &str = "/dev/rdisk";
 impl DevInfo {
     pub fn new(path: &str) -> anyhow::Result<DevInfo> {
         if path.is_empty() {
-            return Err(anyhow::anyhow!("Empty device path"));
+            return Err(anyhow!("Empty device path"));
         }
         let (path, rpath) = if path.starts_with(BUF_PREFIX) {
             (path.to_owned(), path.replace(BUF_PREFIX, RAW_PREFIX))
@@ -29,8 +29,9 @@ impl DevInfo {
             (path.to_owned(), path.to_owned())
         };
 
-        let mut probe = BlkidProbe::new_from_filename(Path::new(&path))
-            .context("Cannot initialize device probe")?;
+        let Ok(mut probe) = BlkidProbe::new_from_filename(Path::new(&path)) else {
+            return Err(anyhow!("Cannot probe device. Insufficient permissions?"));
+        };
         probe
             .enable_superblocks(true)
             .context("Cannot enable device superblock probe")?;

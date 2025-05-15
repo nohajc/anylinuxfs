@@ -976,13 +976,6 @@ impl AppRunner {
             return Err(anyhow!("disk {} not found", &config.disk_path));
         }
 
-        if config.disk_path.starts_with("/dev/disk") && config.common.sudo_uid.is_none() {
-            return Err(anyhow!(
-                "insufficient permissions to open {}, please use sudo",
-                &config.disk_path
-            ));
-        }
-
         let dev_info = DevInfo::new(&config.disk_path)?;
 
         let _disk = File::open(dev_info.rdisk())?.acquire_lock(if config.read_only {
@@ -1060,13 +1053,6 @@ impl AppRunner {
 
         if !Path::new(&config.disk_path).exists() {
             return Err(anyhow!("disk {} not found", &config.disk_path));
-        }
-
-        if config.disk_path.starts_with("/dev/disk") && config.common.sudo_uid.is_none() {
-            return Err(anyhow!(
-                "insufficient permissions to open {}, please use sudo",
-                &config.disk_path
-            ));
         }
 
         let dev_info = DevInfo::new(&config.disk_path)?;

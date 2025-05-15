@@ -1,4 +1,4 @@
-use anyhow::Context;
+use anyhow::{Context, anyhow};
 use common_utils::host_println;
 use libc::{SIGINT, SIGTERM};
 use nix::sys::signal::Signal;
@@ -106,7 +106,7 @@ fn diskutil_list_from_plist() -> anyhow::Result<Plist> {
         .expect("Failed to execute diskutil");
 
     if !output.status.success() {
-        return Err(anyhow::anyhow!("diskutil command failed"));
+        return Err(anyhow!("diskutil command failed"));
     }
 
     let plist: Plist = plist::from_bytes(&output.stdout).context("Failed to parse plist")?;
@@ -177,7 +177,7 @@ pub fn list_linux_partitions() -> anyhow::Result<List> {
         .expect("Failed to execute diskutil");
 
     if !output.status.success() {
-        return Err(anyhow::anyhow!("diskutil command failed"));
+        return Err(anyhow!("diskutil command failed"));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
