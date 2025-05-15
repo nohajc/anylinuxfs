@@ -10,6 +10,7 @@ use objc2_disk_arbitration::{
     DAUnregisterCallback,
 };
 use regex::Regex;
+use serde::Deserialize;
 use signal_hook::iterator::Signals;
 use std::{
     ffi::c_void,
@@ -25,11 +26,16 @@ use url::Url;
 
 use crate::{devinfo::DevInfo, fsutil};
 
-pub struct Entry(String, String, Vec<String>);
+pub struct Entry(String, String, String, Vec<String>);
 
 impl Entry {
     pub fn new(disk: &str) -> Self {
-        Entry(disk.to_owned(), String::default(), Vec::new())
+        Entry(
+            disk.to_owned(),
+            String::default(),
+            String::default(),
+            Vec::new(),
+        )
     }
 
     pub fn disk(&self) -> &str {
@@ -44,12 +50,20 @@ impl Entry {
         &mut self.1
     }
 
+    pub fn scheme(&self) -> &str {
+        self.2.as_str()
+    }
+
+    pub fn scheme_mut(&mut self) -> &mut String {
+        &mut self.2
+    }
+
     pub fn partitions(&self) -> &[String] {
-        &self.2
+        &self.3
     }
 
     pub fn partitions_mut(&mut self) -> &mut Vec<String> {
-        &mut self.2
+        &mut self.3
     }
 }
 
@@ -64,6 +78,9 @@ impl Display for List {
             writeln!(f, "{}", entry.disk())?;
             if !entry.header().is_empty() {
                 writeln!(f, "{}", entry.header())?;
+            }
+            if !entry.scheme().is_empty() {
+                writeln!(f, "{}", entry.scheme())?;
             }
             for partition in entry.partitions() {
                 writeln!(f, "{}", partition)?;
@@ -81,9 +98,78 @@ fn trunc_with_ellipsis(s: &str, max_len: usize) -> String {
     }
 }
 
+fn diskutil_list_from_plist() -> anyhow::Result<Plist> {
+    let output = Command::new("diskutil")
+        .arg("list")
+        .arg("-plist")
+        .output()
+        .expect("Failed to execute diskutil");
+
+    if !output.status.success() {
+        return Err(anyhow::anyhow!("diskutil command failed"));
+    }
+
+    let plist: Plist = plist::from_bytes(&output.stdout).context("Failed to parse plist")?;
+    Ok(plist)
+}
+
+fn disks_without_partition_table(plist: &Plist) -> Vec<String> {
+    let mut disks = Vec::new();
+    for disk in &plist.all_disks_and_partitions {
+        if disk.partitions.is_none() && disk.content.as_deref() == Some("") {
+            disks.push(disk.device_identifier.clone());
+        }
+    }
+    disks
+}
+
+// normally, we match any filesystem with the following partition type
+const LINUX_PART_TYPES: [&str; 3] = ["Linux Filesystem", "Linux_LVM", "Linux"];
+// static fs list only used for matching drives without any partition table
+const LINUX_FS_TYPES: [&str; 6] = ["btrfs", "ext2", "ext3", "ext4", "squashfs", "zfs"];
+
+fn partitions_with_linux_fs(plist: &Plist) -> Vec<String> {
+    let mut partitions = Vec::new();
+    for disk in &plist.all_disks_and_partitions {
+        if let Some(partitions_list) = &disk.partitions {
+            for partition in partitions_list {
+                if LINUX_PART_TYPES
+                    .iter()
+                    .any(|&fs_type| partition.content.as_deref() == Some(fs_type))
+                {
+                    partitions.push(partition.device_identifier.clone());
+                }
+            }
+        }
+    }
+    partitions
+}
+
+fn augment_line(line: &str, part_type: &str, dev_info: Option<&DevInfo>, fs_type: &str) -> String {
+    let label = trunc_with_ellipsis(
+        dev_info
+            .map(|di| di.label())
+            .flatten()
+            .unwrap_or("                       "),
+        23,
+    );
+    line.replace(
+        &format!("{:>27} {:<23}", part_type, ""),
+        &format!("{:>27} {:<23}", fs_type, label),
+    )
+}
+
 pub fn list_linux_partitions() -> anyhow::Result<List> {
-    let part_type_pattern = Regex::new(r"(Linux Filesystem|Linux_LVM|Linux)").unwrap();
+    let numbered_pattern = Regex::new(r"^\s+\d+:").unwrap();
+    let part_type_pattern = Regex::new(&format!(r"({})", LINUX_PART_TYPES.join("|"))).unwrap();
     let mut disk_entries = Vec::new();
+
+    let plist_out = diskutil_list_from_plist()?;
+    // println!("plist_out: {:#?}", plist_out);
+    let linux_partitions = partitions_with_linux_fs(&plist_out);
+    // println!("linux_partitions: {:?}", linux_partitions);
+    let disks_without_part_table = disks_without_partition_table(&plist_out);
+    // println!("disks_without_part_table: {:?}", disks_without_part_table);
 
     let output = Command::new("diskutil")
         .arg("list")
@@ -106,39 +192,56 @@ pub fn list_linux_partitions() -> anyhow::Result<List> {
             current_entry.as_mut().map(|entry| {
                 entry.header_mut().push_str(line);
             });
-        } else {
+        } else if numbered_pattern.is_match(line) {
+            let Some(dev_ident) = line.split_whitespace().last() else {
+                continue;
+            };
             if let Some(part_type) = part_type_pattern.find(line).map(|m| m.as_str()) {
-                let dev_info = line
-                    .split_whitespace()
-                    .last()
-                    .map(|part| DevInfo::new(&format!("/dev/{part}")).ok())
-                    .flatten();
+                // check the device identifier against partition list we parsed from plist
+                // (otherwise regex matching alone might give false positives)
+                if !linux_partitions.iter().any(|p| p == dev_ident) {
+                    continue;
+                }
+                let dev_info = DevInfo::new(&format!("/dev/{dev_ident}")).ok();
 
                 let line = match dev_info {
                     Some(dev_info) => {
-                        let mut line = line.to_owned();
                         let fs_type = dev_info.fs_type().unwrap_or(part_type);
-                        let label = trunc_with_ellipsis(
-                            dev_info.label().unwrap_or("                       "),
-                            23,
-                        );
-                        line = line.replace(
-                            &format!("{:>26} {:<23}", part_type, ""),
-                            &format!("{:>26} {:<23}", fs_type, label),
-                        );
+                        augment_line(line, part_type, Some(&dev_info), fs_type)
 
                         // println!("part_type: {}", part_type);
                         // if part_type == "Linux_LVM" {
                         //     let _volumes = DevInfo::logical_volumes("/dev/disk7");
                         // }
-
-                        line
                     }
                     None => line.to_owned(),
                 };
                 current_entry.as_mut().map(|entry| {
                     entry.partitions_mut().push(line);
                 });
+            } else if line.trim_start().starts_with("0:") {
+                if disks_without_part_table.iter().any(|d| d == dev_ident) {
+                    // This is a disk without partition table, it might still contain a Linux filesystem
+                    let dev_info = DevInfo::new(&format!("/dev/{dev_ident}")).ok();
+
+                    let fs_type = dev_info
+                        .as_ref()
+                        .map(|di| di.fs_type())
+                        .flatten()
+                        .unwrap_or("Unknown");
+                    // if DevInfo is available, show linux fs types only
+                    if fs_type != "Unknown" && !LINUX_FS_TYPES.into_iter().any(|t| t == fs_type) {
+                        continue;
+                    }
+                    let line = augment_line(line, "", dev_info.as_ref(), fs_type);
+                    current_entry.as_mut().map(|entry| {
+                        entry.partitions_mut().push(line);
+                    });
+                } else {
+                    current_entry.as_mut().map(|entry| {
+                        entry.scheme_mut().push_str(line);
+                    });
+                }
             }
         }
     }
@@ -407,4 +510,91 @@ impl EventSession {
         let callback_nonnull: NonNull<c_void> = NonNull::new(callback_ptr).unwrap();
         unsafe { DAUnregisterCallback(&self.session, callback_nonnull, null_mut()) };
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct Plist {
+    #[serde(rename = "AllDisksAndPartitions")]
+    all_disks_and_partitions: Vec<Disk>,
+}
+
+#[allow(unused)]
+#[derive(Debug, Deserialize)]
+struct Disk {
+    #[serde(rename = "Content")]
+    content: Option<String>,
+    #[serde(rename = "DeviceIdentifier")]
+    device_identifier: String,
+    #[serde(rename = "OSInternal")]
+    os_internal: Option<bool>,
+    #[serde(rename = "Size")]
+    size: Option<u64>,
+    #[serde(rename = "Partitions")]
+    partitions: Option<Vec<Partition>>,
+    #[serde(rename = "APFSPhysicalStores")]
+    apfs_physical_stores: Option<Vec<PhysicalStore>>,
+    #[serde(rename = "APFSVolumes")]
+    apfs_volumes: Option<Vec<ApfsVolume>>,
+}
+
+#[allow(unused)]
+#[derive(Debug, Deserialize)]
+struct Partition {
+    #[serde(rename = "Content")]
+    content: Option<String>,
+    #[serde(rename = "DeviceIdentifier")]
+    device_identifier: String,
+    #[serde(rename = "DiskUUID")]
+    disk_uuid: Option<String>,
+    #[serde(rename = "Size")]
+    size: Option<u64>,
+    #[serde(rename = "VolumeName")]
+    volume_name: Option<String>,
+    #[serde(rename = "VolumeUUID")]
+    volume_uuid: Option<String>,
+}
+
+#[allow(unused)]
+#[derive(Debug, Deserialize)]
+struct PhysicalStore {
+    #[serde(rename = "DeviceIdentifier")]
+    device_identifier: String,
+}
+
+#[allow(unused)]
+#[derive(Debug, Deserialize)]
+struct ApfsVolume {
+    #[serde(rename = "CapacityInUse")]
+    capacity_in_use: Option<u64>,
+    #[serde(rename = "DeviceIdentifier")]
+    device_identifier: String,
+    #[serde(rename = "DiskUUID")]
+    disk_uuid: Option<String>,
+    #[serde(rename = "MountPoint")]
+    mount_point: Option<String>,
+    #[serde(rename = "MountedSnapshots")]
+    mounted_snapshots: Option<Vec<Snapshot>>,
+    #[serde(rename = "OSInternal")]
+    os_internal: Option<bool>,
+    #[serde(rename = "Size")]
+    size: Option<u64>,
+    #[serde(rename = "VolumeName")]
+    volume_name: Option<String>,
+    #[serde(rename = "VolumeUUID")]
+    volume_uuid: Option<String>,
+}
+
+#[allow(unused)]
+#[derive(Debug, Deserialize)]
+struct Snapshot {
+    #[serde(rename = "Sealed")]
+    sealed: Option<String>,
+    #[serde(rename = "SnapshotBSD")]
+    snapshot_bsd: Option<String>,
+    #[serde(rename = "SnapshotMountPoint")]
+    snapshot_mount_point: Option<String>,
+    #[serde(rename = "SnapshotName")]
+    snapshot_name: Option<String>,
+    #[serde(rename = "SnapshotUUID")]
+    snapshot_uuid: Option<String>,
 }
