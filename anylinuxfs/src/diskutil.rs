@@ -134,8 +134,8 @@ fn partitions_with_linux_fs(plist: &Plist) -> Vec<String> {
         if let Some(partitions_list) = &disk.partitions {
             for partition in partitions_list {
                 if LINUX_PART_TYPES
-                    .iter()
-                    .any(|&fs_type| partition.content.as_deref() == Some(fs_type))
+                    .into_iter()
+                    .any(|fs_type| partition.content.as_deref() == Some(fs_type))
                 {
                     partitions.push(partition.device_identifier.clone());
                 }
