@@ -29,9 +29,9 @@ use crate::{devinfo::DevInfo, fsutil};
 pub struct Entry(String, String, String, Vec<String>);
 
 impl Entry {
-    pub fn new(disk: &str) -> Self {
+    pub fn new(disk: impl Into<String>) -> Self {
         Entry(
-            disk.to_owned(),
+            disk.into(),
             String::default(),
             String::default(),
             Vec::new(),
@@ -85,6 +85,7 @@ impl Display for List {
             for partition in entry.partitions() {
                 writeln!(f, "{}", partition)?;
             }
+            writeln!(f, "")?;
         }
         Ok(())
     }
@@ -170,10 +171,35 @@ fn augment_line(line: &str, part_type: &str, dev_info: Option<&DevInfo>, fs_type
     )
 }
 
+fn format_lv_size(size: &str) -> String {
+    let size_last_char = size.chars().last().unwrap_or('0');
+    let (size_val, unit_prefix) = if size_last_char.is_digit(10) {
+        (size, "".to_string())
+    } else {
+        (size.strip_suffix(|_| true).unwrap(), size_last_char.into())
+    };
+
+    let mut size_val = size_val.parse::<f64>().unwrap_or(0.0);
+    // lsblk actually shows sizes in KiB, MiB, GiB, TiB, PiB, EiB
+    // so we need to convert them to KB, MB, GB, TB, PB, EB
+    size_val = match unit_prefix.as_str() {
+        "K" => size_val as f64 * 1.024,
+        "M" => size_val as f64 * 1.048576,
+        "G" => size_val as f64 * 1.073741824,
+        "T" => size_val as f64 * 1.099511627776,
+        "P" => size_val as f64 * 1.125899906842624,
+        "E" => size_val as f64 * 1.152921504606847,
+        _ => size_val as f64,
+    };
+
+    format!("{:.1} {}B", size_val, unit_prefix)
+}
+
 pub fn list_linux_partitions(config: crate::Config) -> anyhow::Result<List> {
     let numbered_pattern = Regex::new(r"^\s+\d+:").unwrap();
     let part_type_pattern = Regex::new(&format!(r"({})", LINUX_PART_TYPES.join("|"))).unwrap();
     let mut disk_entries = Vec::new();
+    let mut lvm_entries = Vec::new();
 
     let plist_out = diskutil_list_from_plist()?;
     // println!("plist_out: {:#?}", plist_out);
@@ -221,27 +247,42 @@ pub fn list_linux_partitions(config: crate::Config) -> anyhow::Result<List> {
                         let fs_type = dev_info.fs_type().unwrap_or(part_type);
                         if fs_type == "LVM2_member" {
                             if let Ok(lsblk) = get_lsblk_info(&config, disk_path, &dev_info) {
-                                // println!("lsblk: {:#?}", lsblk);
-                                println!("lvm:disk7 (volume group):");
-                                println!(
+                                if !lsblk.blockdevices.is_empty() {
+                                    // println!("lsblk: {:#?}", lsblk);
+                                    let mut lvm_entry =
+                                        Entry::new(format!("lvm:{} (volume group):", dev_ident));
+                                    lvm_entry.header_mut().push_str(
                                     "   #:                       TYPE NAME                    SIZE       IDENTIFIER"
-                                );
-
-                                for (i, child) in lsblk.blockdevices[0]
-                                    .children
-                                    .as_ref()
-                                    .unwrap_or(&vec![])
-                                    .iter()
-                                    .enumerate()
-                                {
-                                    println!(
-                                        "{:>4}: {:>26} {:<23} {:<10} {}",
-                                        i + 1,
-                                        child.fstype.as_deref().unwrap_or(""),
-                                        child.label.as_deref().unwrap_or(""),
-                                        format!("{}B", &child.size),
-                                        child.name,
                                     );
+
+                                    let mut vg_name = String::new();
+                                    for (i, child) in
+                                        lsblk.blockdevices[0].children.iter().flatten().enumerate()
+                                    {
+                                        lvm_entry.partitions_mut().push(format!(
+                                            "{:>4}: {:>26} {:<23} {:<10} {}",
+                                            i + 1,
+                                            child.fstype.as_deref().unwrap_or(""),
+                                            child.label.as_deref().unwrap_or(""),
+                                            format_lv_size(&child.size),
+                                            child.name,
+                                        ));
+                                        if i == 0 {
+                                            if let Some(vg) = child.name.split('-').next() {
+                                                vg_name.push_str(vg);
+                                            }
+                                        }
+                                    }
+
+                                    if !lvm_entry.partitions().is_empty() {
+                                        *lvm_entry.scheme_mut() = format!(
+                                            "   0:                LVM2_scheme                        +{:<10} {}",
+                                            format_lv_size(&lsblk.blockdevices[0].size),
+                                            &vg_name
+                                        );
+
+                                        lvm_entries.push(lvm_entry);
+                                    }
                                 }
                             }
                         }
@@ -283,6 +324,8 @@ pub fn list_linux_partitions(config: crate::Config) -> anyhow::Result<List> {
             }
         }
     }
+
+    disk_entries.append(&mut lvm_entries);
     Ok(List(disk_entries))
 }
 
@@ -678,6 +721,7 @@ struct LsBlk {
     blockdevices: Vec<LsBlkDevice>,
 }
 
+#[allow(unused)]
 #[derive(Debug, Deserialize)]
 struct LsBlkDevice {
     name: String,
