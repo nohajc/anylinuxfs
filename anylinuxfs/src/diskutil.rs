@@ -13,7 +13,7 @@ use regex::Regex;
 use serde::Deserialize;
 use signal_hook::iterator::Signals;
 use std::{
-    ffi::c_void,
+    ffi::{CString, c_void},
     fmt::Display,
     marker::PhantomData,
     ops::Deref,
@@ -170,7 +170,7 @@ fn augment_line(line: &str, part_type: &str, dev_info: Option<&DevInfo>, fs_type
     )
 }
 
-pub fn list_linux_partitions() -> anyhow::Result<List> {
+pub fn list_linux_partitions(config: crate::Config) -> anyhow::Result<List> {
     let numbered_pattern = Regex::new(r"^\s+\d+:").unwrap();
     let part_type_pattern = Regex::new(&format!(r"({})", LINUX_PART_TYPES.join("|"))).unwrap();
     let mut disk_entries = Vec::new();
@@ -213,11 +213,38 @@ pub fn list_linux_partitions() -> anyhow::Result<List> {
                 if !linux_partitions.iter().any(|p| p == dev_ident) {
                     continue;
                 }
-                let dev_info = DevInfo::new(&format!("/dev/{dev_ident}")).ok();
+                let disk_path = format!("/dev/{dev_ident}");
+                let dev_info = DevInfo::new(&disk_path).ok();
 
                 let line = match dev_info {
                     Some(dev_info) => {
                         let fs_type = dev_info.fs_type().unwrap_or(part_type);
+                        if fs_type == "LVM2_member" {
+                            if let Ok(lsblk) = get_lsblk_info(&config, disk_path, &dev_info) {
+                                // println!("lsblk: {:#?}", lsblk);
+                                println!("lvm:disk7 (volume group):");
+                                println!(
+                                    "   #:                       TYPE NAME                    SIZE       IDENTIFIER"
+                                );
+
+                                for (i, child) in lsblk.blockdevices[0]
+                                    .children
+                                    .as_ref()
+                                    .unwrap_or(&vec![])
+                                    .iter()
+                                    .enumerate()
+                                {
+                                    println!(
+                                        "{:>4}: {:>26} {:<23} {:<10} {}",
+                                        i + 1,
+                                        child.fstype.as_deref().unwrap_or(""),
+                                        child.label.as_deref().unwrap_or(""),
+                                        format!("{}B", &child.size),
+                                        child.name,
+                                    );
+                                }
+                            }
+                        }
                         augment_line(line, part_type, Some(&dev_info), fs_type)
 
                         // println!("part_type: {}", part_type);
@@ -257,6 +284,42 @@ pub fn list_linux_partitions() -> anyhow::Result<List> {
         }
     }
     Ok(List(disk_entries))
+}
+
+fn get_lsblk_info(
+    config: &crate::Config,
+    disk_path: String,
+    dev_info: &DevInfo,
+) -> anyhow::Result<LsBlk> {
+    let mount_config = crate::MountConfig {
+        disk_path,
+        read_only: true,
+        mount_options: None,
+        verbose: false,
+        common: config.clone(),
+    };
+    // TODO: try to avoid running a VM for each device separately
+    let ctx =
+        crate::setup_vm(&mount_config, &dev_info, false).context("Failed to setup microVM")?;
+    let lsblk_args = vec![
+        CString::new("/bin/busybox").unwrap(),
+        CString::new("sh").unwrap(),
+        CString::new("-c").unwrap(),
+        CString::new("/sbin/vgchange -ay >/dev/null && /bin/lsblk -O --json").unwrap(),
+    ];
+    let lsblk_cmd =
+        crate::run_vmcommand(ctx, lsblk_args).context("Failed to start microVM shell")?;
+    // let lsblk_output =
+    //     String::from_utf8(lsblk_cmd.output).context("Failed to convert lsblk output to String")?;
+    // println!("lsblk_status: {}", &lsblk_cmd.status);
+    // println!("lsblk_output: {}", &lsblk_output);
+    if lsblk_cmd.status != 0 {
+        return Err(anyhow!("lsblk command failed"));
+    }
+
+    let lsblk = serde_json::from_slice(&lsblk_cmd.output)
+        .context("failed to parse lsblk command output")?;
+    Ok(lsblk)
 }
 
 unsafe fn cfdict_get_value<'a, T>(dict: &'a CFDictionary, key: &str) -> Option<&'a T> {
@@ -608,4 +671,25 @@ struct Snapshot {
     snapshot_name: Option<String>,
     #[serde(rename = "SnapshotUUID")]
     snapshot_uuid: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LsBlk {
+    blockdevices: Vec<LsBlkDevice>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LsBlkDevice {
+    name: String,
+    #[serde(default)]
+    size: String,
+    fstype: Option<String>,
+    fsver: Option<String>,
+    label: Option<String>,
+    uuid: Option<String>,
+    fsavail: Option<String>,
+    #[serde(rename = "fsuse%")]
+    fsuse_percent: Option<String>,
+    mountpoints: Vec<Option<String>>,
+    children: Option<Vec<LsBlkDevice>>,
 }

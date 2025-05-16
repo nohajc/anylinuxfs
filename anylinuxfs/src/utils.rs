@@ -152,7 +152,6 @@ pub fn fork_with_pty_output(out_action: OutputAction) -> anyhow::Result<ForkOutp
     }
 }
 
-#[allow(unused)]
 pub fn fork_with_piped_output() -> anyhow::Result<ForkOutput> {
     let mut child_output_fds: [libc::c_int; 2] = [0; 2];
     let res = unsafe { libc::pipe(child_output_fds.as_mut_ptr()) };
@@ -174,6 +173,8 @@ pub fn fork_with_piped_output() -> anyhow::Result<ForkOutput> {
         if res < 0 {
             return Err(io::Error::last_os_error()).context("Failed to close read end of pipe");
         }
+
+        redirect_to_null(libc::STDIN_FILENO)?;
 
         // Redirect stdout and stderr to the write end of the pipe
         let res = unsafe { libc::dup2(child_write_fd, libc::STDOUT_FILENO) };
@@ -252,7 +253,6 @@ pub fn fork_with_comm_pipe() -> anyhow::Result<ForkOutput> {
     }
 }
 
-#[allow(unused)]
 pub fn redirect_to_null(fd: libc::c_int) -> anyhow::Result<()> {
     let dev_null_fd = unsafe { libc::open(b"/dev/null\0".as_ptr() as *const i8, libc::O_RDONLY) };
     if dev_null_fd < 0 {
@@ -260,7 +260,7 @@ pub fn redirect_to_null(fd: libc::c_int) -> anyhow::Result<()> {
     }
     let res = unsafe { libc::dup2(dev_null_fd, fd) };
     if res < 0 {
-        return Err(io::Error::last_os_error()).context("Failed to redirect stdin to /dev/null");
+        return Err(io::Error::last_os_error()).context("Failed to redirect fd to /dev/null");
     }
     let res = unsafe { libc::close(dev_null_fd) };
     if res < 0 {

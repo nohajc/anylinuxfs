@@ -638,6 +638,56 @@ fn start_vmshell(ctx: u32) -> anyhow::Result<()> {
     Ok(())
 }
 
+struct VMOutput {
+    status: i32,
+    output: Vec<u8>,
+}
+
+fn run_vmcommand(ctx: u32, args: Vec<CString>) -> anyhow::Result<VMOutput> {
+    let argv = args
+        .iter()
+        .map(|s| s.as_ptr())
+        .chain([std::ptr::null()])
+        .collect::<Vec<_>>();
+    let envp = vec![std::ptr::null()];
+
+    unsafe { bindings::krun_set_exec(ctx, argv[0], argv[1..].as_ptr(), envp.as_ptr()) }
+        .context("Failed to set exec")?;
+
+    let forked = utils::fork_with_piped_output()?;
+    if forked.pid == 0 {
+        // child process
+        unsafe { bindings::krun_start_enter(ctx) }.context("Failed to start VM")?;
+        unreachable!();
+    } else {
+        // parent process
+        let mut output = Vec::new();
+        let mut reader = unsafe { File::from_raw_fd(forked.pipe_fd) };
+        let mut buf = [0; 1024];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => output.extend_from_slice(&buf[..n]),
+                Err(e) => {
+                    if e.kind() == io::ErrorKind::Interrupted {
+                        continue;
+                    }
+                    return Err(e).context("Failed to read from pipe");
+                }
+            }
+        }
+
+        let mut status = 0;
+        if unsafe { libc::waitpid(forked.pid, &mut status, 0) } < 0 {
+            return Err(io::Error::last_os_error()).context("Failed to wait for child process");
+        }
+        return Ok(VMOutput {
+            status: to_exit_code(status),
+            output,
+        });
+    }
+}
+
 fn gvproxy_cleanup(config: &Config) -> anyhow::Result<()> {
     let sock_krun_path = config.vfkit_sock_path.replace(".sock", ".sock-krun.sock");
     match remove_file(&sock_krun_path) {
@@ -1341,7 +1391,8 @@ impl AppRunner {
     }
 
     fn run_list(&mut self) -> anyhow::Result<()> {
-        println!("{}", diskutil::list_linux_partitions()?);
+        let config = load_config()?;
+        println!("{}", diskutil::list_linux_partitions(config)?);
         Ok(())
     }
 
