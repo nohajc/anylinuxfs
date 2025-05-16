@@ -126,7 +126,16 @@ fn disks_without_partition_table(plist: &Plist) -> Vec<String> {
 // normally, we match any filesystem with the following partition type
 const LINUX_PART_TYPES: [&str; 4] = ["Linux Filesystem", "Linux LVM", "Linux_LVM", "Linux"];
 // static fs list only used for matching drives without any partition table
-const LINUX_FS_TYPES: [&str; 6] = ["btrfs", "ext2", "ext3", "ext4", "squashfs", "zfs"];
+const LINUX_FS_TYPES: [&str; 8] = [
+    "btrfs",
+    "ext2",
+    "ext3",
+    "ext4",
+    "squashfs",
+    "zfs",
+    "crypto_LUKS",
+    "LVM2_member",
+];
 
 fn partitions_with_linux_fs(plist: &Plist) -> Vec<String> {
     let mut partitions = Vec::new();
