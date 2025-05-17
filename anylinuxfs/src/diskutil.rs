@@ -250,7 +250,7 @@ pub fn list_linux_partitions(config: crate::Config) -> anyhow::Result<List> {
                     Some(dev_info) => {
                         let fs_type = dev_info.fs_type().unwrap_or(part_type);
                         if fs_type == "LVM2_member" {
-                            match get_lsblk_info(&config, disk_path, &dev_info) {
+                            match get_lsblk_info(&config, &dev_info) {
                                 Ok(lsblk) => {
                                     // println!("lsblk: {:#?}", lsblk);
                                     if !lsblk.blockdevices.is_empty() {
@@ -346,18 +346,7 @@ pub fn list_linux_partitions(config: crate::Config) -> anyhow::Result<List> {
     Ok(List(disk_entries))
 }
 
-fn get_lsblk_info(
-    config: &crate::Config,
-    disk_path: String,
-    dev_info: &DevInfo,
-) -> anyhow::Result<LsBlk> {
-    let mount_config = crate::MountConfig {
-        disk_path,
-        read_only: true,
-        mount_options: None,
-        verbose: false,
-        common: config.clone(),
-    };
+fn get_lsblk_info(config: &crate::Config, dev_info: &DevInfo) -> anyhow::Result<LsBlk> {
     // TODO: try to avoid running a VM for each device separately
     let lsblk_args = vec![
         CString::new("/bin/busybox").unwrap(),
@@ -365,7 +354,7 @@ fn get_lsblk_info(
         CString::new("-c").unwrap(),
         CString::new("/sbin/vgchange -ay >/dev/null; /bin/lsblk -O --json").unwrap(),
     ];
-    let lsblk_cmd = crate::run_vmcommand(&mount_config, &dev_info, false, lsblk_args)
+    let lsblk_cmd = crate::run_vmcommand(config, &dev_info, false, true, lsblk_args)
         .context("Failed to start microVM shell")?;
     // let lsblk_output =
     //     String::from_utf8(lsblk_cmd.output).context("Failed to convert lsblk output to String")?;

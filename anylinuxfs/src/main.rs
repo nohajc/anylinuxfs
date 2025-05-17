@@ -478,27 +478,32 @@ fn drop_privileges(
     Ok(())
 }
 
-fn setup_vm(config: &MountConfig, dev_info: &DevInfo, use_gvproxy: bool) -> anyhow::Result<u32> {
+fn setup_vm(
+    config: &Config,
+    dev_info: &DevInfo,
+    use_gvproxy: bool,
+    add_disks_ro: bool,
+) -> anyhow::Result<u32> {
     let ctx = unsafe { bindings::krun_create_ctx() }.context("Failed to create context")?;
 
-    let level = config.common.krun.log_level_numeric;
+    let level = config.krun.log_level_numeric;
     unsafe { bindings::krun_set_log_level(level) }.context("Failed to set log level")?;
 
-    let num_vcpus = config.common.krun.num_vcpus;
-    let ram_mib = config.common.krun.ram_size_mib;
+    let num_vcpus = config.krun.num_vcpus;
+    let ram_mib = config.krun.ram_size_mib;
     unsafe { bindings::krun_set_vm_config(ctx, num_vcpus, ram_mib) }
         .context("Failed to set VM config")?;
 
     // run vmm as the original user if he used sudo
-    if let Some(uid) = config.common.sudo_uid {
+    if let Some(uid) = config.sudo_uid {
         unsafe { bindings::krun_setuid(ctx, uid) }.context("Failed to set vmm uid")?;
     }
 
-    if let Some(gid) = config.common.sudo_gid {
+    if let Some(gid) = config.sudo_gid {
         unsafe { bindings::krun_setgid(ctx, gid) }.context("Failed to set vmm gid")?;
     }
 
-    unsafe { bindings::krun_set_root(ctx, CString::from_path(&config.common.root_path).as_ptr()) }
+    unsafe { bindings::krun_set_root(ctx, CString::from_path(&config.root_path).as_ptr()) }
         .context("Failed to set root")?;
 
     unsafe {
@@ -506,7 +511,7 @@ fn setup_vm(config: &MountConfig, dev_info: &DevInfo, use_gvproxy: bool) -> anyh
             ctx,
             CString::new("data").unwrap().as_ptr(),
             CString::new(dev_info.rdisk()).unwrap().as_ptr(),
-            config.read_only,
+            add_disks_ro,
         )
     }
     .context("Failed to add disk")?;
@@ -515,7 +520,7 @@ fn setup_vm(config: &MountConfig, dev_info: &DevInfo, use_gvproxy: bool) -> anyh
         unsafe {
             bindings::krun_set_gvproxy_path(
                 ctx,
-                CString::new(config.common.vfkit_sock_path.as_str())
+                CString::new(config.vfkit_sock_path.as_str())
                     .unwrap()
                     .as_ptr(),
             )
@@ -539,15 +544,13 @@ fn setup_vm(config: &MountConfig, dev_info: &DevInfo, use_gvproxy: bool) -> anyh
     // unsafe { bindings::krun_set_port_map(ctx, port_map.as_ptr()) }
     //     .context("Failed to set port map")?;
 
-    vsock_cleanup(&config.common)?;
+    vsock_cleanup(&config)?;
 
     unsafe {
         bindings::krun_add_vsock_port2(
             ctx,
             12700,
-            CString::new(config.common.vsock_path.as_str())
-                .unwrap()
-                .as_ptr(),
+            CString::new(config.vsock_path.as_str()).unwrap().as_ptr(),
             true,
         )
     }
@@ -559,7 +562,7 @@ fn setup_vm(config: &MountConfig, dev_info: &DevInfo, use_gvproxy: bool) -> anyh
     unsafe {
         bindings::krun_set_kernel(
             ctx,
-            CString::from_path(&config.common.kernel_path).as_ptr(),
+            CString::from_path(&config.kernel_path).as_ptr(),
             0, // KRUN_KERNEL_FORMAT_RAW
             null(),
             null(),
@@ -664,15 +667,16 @@ fn read_all_from_fd(fd: i32) -> anyhow::Result<Vec<u8>> {
 }
 
 fn run_vmcommand(
-    config: &MountConfig,
+    config: &Config,
     dev_info: &DevInfo,
     use_gvproxy: bool,
+    add_disks_ro: bool,
     args: Vec<CString>,
 ) -> anyhow::Result<VMOutput> {
     let forked = utils::fork_with_piped_output()?;
     if forked.pid == 0 {
         // child process
-        let ctx = setup_vm(config, dev_info, use_gvproxy)?;
+        let ctx = setup_vm(config, dev_info, use_gvproxy, add_disks_ro)?;
 
         let argv = args
             .iter()
@@ -1086,7 +1090,8 @@ impl AppRunner {
         host_println!("uuid: {:?}", dev_info.uuid());
         host_println!("mount name: {}", dev_info.auto_mount_name());
 
-        let ctx = setup_vm(&config, &dev_info, false).context("Failed to setup microVM")?;
+        let ctx = setup_vm(&config.common, &dev_info, false, config.read_only)
+            .context("Failed to setup microVM")?;
         start_vmshell(ctx).context("Failed to start microVM shell")?;
 
         Ok(())
@@ -1209,7 +1214,8 @@ impl AppRunner {
             // Child process
             deferred.remove_all(); // deferred actions must be only called in the parent process
 
-            let ctx = setup_vm(&config, &dev_info, true).context("Failed to setup microVM")?;
+            let ctx = setup_vm(&config.common, &dev_info, true, config.read_only)
+                .context("Failed to setup microVM")?;
             start_vmproxy(ctx, &config, &dev_info, || forked.redirect())
                 .context("Failed to start microVM")?;
         } else {
