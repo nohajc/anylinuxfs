@@ -587,11 +587,13 @@ fn start_vmproxy(
         // CString::new("false").unwrap(),
         CString::new("/vmproxy").unwrap(),
         CString::new(dev_info.vm_path()).unwrap(),
-        CString::new(dev_info.auto_mount_name()).unwrap(),
-        CString::new("-t").unwrap(),
-        CString::new(dev_info.fs_type().unwrap_or("auto")).unwrap(),
     ]
     .into_iter()
+    .chain(dev_info.label().map(|di| CString::new(di).unwrap()))
+    .chain([
+        CString::new("-t").unwrap(),
+        CString::new(dev_info.fs_type().unwrap_or("auto")).unwrap(),
+    ])
     .chain(
         config
             .mount_options
@@ -607,7 +609,7 @@ fn start_vmproxy(
     )
     .collect();
 
-    // host_println!("vmproxy args: {:?}", &args);
+    host_println!("vmproxy args: {:?}", &args);
 
     // let args = vec![CString::new("/bin/bash").unwrap()];
     let argv = args
@@ -764,13 +766,13 @@ fn start_gvproxy(config: &Config) -> anyhow::Result<Child> {
 }
 
 enum NfsStatus {
-    Ready,
+    Ready(Option<String>, Option<String>),
     Failed(Option<i32>),
 }
 
 impl NfsStatus {
     fn ok(&self) -> bool {
-        matches!(self, NfsStatus::Ready)
+        matches!(self, NfsStatus::Ready(_, _))
     }
 }
 
@@ -1099,7 +1101,7 @@ fn claim_devices(config: &MountConfig) -> anyhow::Result<(Vec<DevInfo>, DevInfo,
             disks.push(disk);
         }
 
-        // TODO: how to get fs label here?
+        // fs label will be obtained later from the VM output
         let lv_info = DevInfo::lv(&config.disk_path, None, vm_path)?;
         print_dev_info(&lv_info, DevType::LV);
         lv_info
@@ -1220,7 +1222,7 @@ impl AppRunner {
         host_println!("num_vcpus: {}", config.common.krun.num_vcpus);
         host_println!("ram_size_mib: {}", config.common.krun.ram_size_mib);
 
-        let (dev_info, mnt_dev_info, _disks) = claim_devices(&config)?;
+        let (dev_info, mut mnt_dev_info, _disks) = claim_devices(&config)?;
 
         let mut can_detach = true;
         let session_pgid = unsafe { libc::setsid() };
@@ -1293,9 +1295,12 @@ impl AppRunner {
             // Spawn a thread to read from the pipe
             _ = thread::spawn(move || {
                 let mut nfs_ready = false;
+                let mut fslabel: Option<String> = None;
+                let mut fstype: Option<String> = None;
                 let mut exit_code = None;
                 let mut buf_reader = BufReader::new(unsafe { File::from_raw_fd(forked.out_fd) });
                 let mut line = String::new();
+
                 while let Ok(bytes) = buf_reader.read_line(&mut line) {
                     let mut skip_line = false;
                     if bytes == 0 {
@@ -1303,7 +1308,9 @@ impl AppRunner {
                     }
                     if line.contains("READY AND WAITING FOR NFS CLIENT CONNECTIONS") {
                         // Notify the main thread that NFS server is ready
-                        nfs_ready_tx.send(NfsStatus::Ready).unwrap();
+                        nfs_ready_tx
+                            .send(NfsStatus::Ready(fslabel.take(), fstype.take()))
+                            .unwrap();
                         nfs_ready = true;
                     } else if line.starts_with("<anylinuxfs-exit-code") {
                         skip_line = true;
@@ -1319,6 +1326,24 @@ impl AppRunner {
                                     .ok()
                             })
                             .flatten();
+                    } else if line.starts_with("<anylinuxfs-label") {
+                        skip_line = true;
+                        fslabel = line.split(':').nth(1).map(|pattern| {
+                            pattern
+                                .trim()
+                                .strip_suffix(">")
+                                .unwrap_or(pattern)
+                                .to_string()
+                        })
+                    } else if line.starts_with("<anylinuxfs-type:") {
+                        skip_line = true;
+                        fstype = line.split(':').nth(1).map(|pattern| {
+                            pattern
+                                .trim()
+                                .strip_suffix(">")
+                                .unwrap_or(pattern)
+                                .to_string()
+                        })
                     }
 
                     if !skip_line {
@@ -1340,7 +1365,17 @@ impl AppRunner {
                 host_println!("Port 111 open, NFS server ready");
 
                 let event_session = diskutil::EventSession::new()?;
-                // mount nfs share
+
+                if let NfsStatus::Ready(Some(label), _) = &nfs_status {
+                    mnt_dev_info.set_label(label);
+                    rt_info.lock().unwrap().dev_info.set_label(label);
+                }
+
+                if let NfsStatus::Ready(_, Some(fstype)) = &nfs_status {
+                    mnt_dev_info.set_fs_type(fstype);
+                    rt_info.lock().unwrap().dev_info.set_fs_type(fstype);
+                }
+
                 let share_name = mnt_dev_info.auto_mount_name();
                 match mount_nfs(&share_name) {
                     Ok(_) => host_println!("Requested NFS share mount"),

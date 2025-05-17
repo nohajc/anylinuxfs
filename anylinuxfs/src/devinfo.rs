@@ -88,8 +88,16 @@ impl DevInfo {
         self.label.as_deref()
     }
 
+    pub fn set_label(&mut self, label: &str) {
+        self.label = Some(label.to_owned());
+    }
+
     pub fn fs_type(&self) -> Option<&str> {
         self.fs_type.as_deref()
+    }
+
+    pub fn set_fs_type(&mut self, fs_type: &str) {
+        self.fs_type = Some(fs_type.to_owned());
     }
 
     pub fn uuid(&self) -> Option<&str> {
@@ -103,6 +111,7 @@ impl DevInfo {
     pub fn auto_mount_name(&self) -> &str {
         self.label()
             // .or(self.uuid())
+            // .unwrap_or("lvol0")
             .unwrap_or(self.disk().split('/').last().expect("non-empty disk path"))
     }
 }

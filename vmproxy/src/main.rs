@@ -145,16 +145,51 @@ fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     let disk_path = cli.disk_path;
-    let mount_point = format!("/mnt/{}", cli.mount_name.unwrap_or("hostblk".to_owned()));
-    let fs_type = cli.fs_type;
+    let mut fs_type = cli.fs_type;
     let mount_options = cli.mount_options;
     let verbose = cli.verbose;
 
+    // activate LVM volumes if any
     // vgchange can return non-zero but still partially succeed
     let _vgchange_result = Command::new("/sbin/vgchange")
         .arg("-ay")
         .status()
         .context("Failed to run vgchange command")?;
+
+    let mount_name = match &cli.mount_name {
+        Some(name) => name.to_owned(),
+        None => {
+            let fs = Command::new("/sbin/blkid")
+                .arg(&disk_path)
+                .arg("-s")
+                .arg("TYPE")
+                .arg("-o")
+                .arg("value")
+                .output()
+                .context("Failed to run blkid command")?
+                .stdout;
+
+            let fs = String::from_utf8_lossy(&fs).trim().to_owned();
+            println!("<anylinuxfs-type:{}>", &fs);
+            fs_type = Some(fs.clone());
+
+            let label = Command::new("/sbin/blkid")
+                .arg(&disk_path)
+                .arg("-s")
+                .arg("LABEL")
+                .arg("-o")
+                .arg("value")
+                .output()
+                .context("Failed to run blkid command")?
+                .stdout;
+
+            let label = String::from_utf8_lossy(&label).trim().to_owned();
+            println!("<anylinuxfs-label:{}>", &label);
+            label
+        }
+    };
+
+    let mount_point = format!("/mnt/{}", mount_name);
 
     fs::create_dir_all(&mount_point)
         .context(format!("Failed to create directory '{}'", &mount_point))?;

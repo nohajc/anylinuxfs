@@ -201,7 +201,7 @@ func writeSetupScript(rootfsPath, vmSetupScriptPath string) error {
 	vmSetupScriptPath = fmt.Sprintf("%s%s", rootfsPath, vmSetupScriptPath)
 	vmSetupScriptContent := `#!/bin/sh
 
-apk --update --no-cache add bash lvm2 lsblk nfs-utils
+apk --update --no-cache add bash blkid lsblk lvm2 nfs-utils
 rm -v /etc/idmapd.conf /etc/exports
 `
 
