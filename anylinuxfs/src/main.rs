@@ -482,6 +482,7 @@ fn setup_vm(
     config: &Config,
     dev_info: &[DevInfo],
     use_gvproxy: bool,
+    use_vsock: bool,
     add_disks_ro: bool,
 ) -> anyhow::Result<u32> {
     let ctx = unsafe { bindings::krun_create_ctx() }.context("Failed to create context")?;
@@ -548,15 +549,17 @@ fn setup_vm(
 
     vsock_cleanup(&config)?;
 
-    unsafe {
-        bindings::krun_add_vsock_port2(
-            ctx,
-            12700,
-            CString::new(config.vsock_path.as_str()).unwrap().as_ptr(),
-            true,
-        )
+    if use_vsock {
+        unsafe {
+            bindings::krun_add_vsock_port2(
+                ctx,
+                12700,
+                CString::new(config.vsock_path.as_str()).unwrap().as_ptr(),
+                true,
+            )
+        }
+        .context("Failed to add vsock port")?;
     }
-    .context("Failed to add vsock port")?;
 
     unsafe { bindings::krun_set_workdir(ctx, CString::new("/").unwrap().as_ptr()) }
         .context("Failed to set workdir")?;
@@ -681,7 +684,7 @@ fn run_vmcommand(
     let forked = utils::fork_with_piped_output()?;
     if forked.pid == 0 {
         // child process
-        let ctx = setup_vm(config, dev_info, use_gvproxy, add_disks_ro)?;
+        let ctx = setup_vm(config, dev_info, use_gvproxy, false, add_disks_ro)?;
 
         let argv = args
             .iter()
@@ -1161,8 +1164,14 @@ impl AppRunner {
 
         let (dev_info, _, _disks) = claim_devices(&config)?;
 
-        let ctx = setup_vm(&config.common, dev_info.as_slice(), false, config.read_only)
-            .context("Failed to setup microVM")?;
+        let ctx = setup_vm(
+            &config.common,
+            dev_info.as_slice(),
+            false,
+            false,
+            config.read_only,
+        )
+        .context("Failed to setup microVM")?;
         start_vmshell(ctx).context("Failed to start microVM shell")?;
 
         Ok(())
@@ -1268,7 +1277,7 @@ impl AppRunner {
             // Child process
             deferred.remove_all(); // deferred actions must be only called in the parent process
 
-            let ctx = setup_vm(&config.common, &dev_info, true, config.read_only)
+            let ctx = setup_vm(&config.common, &dev_info, true, true, config.read_only)
                 .context("Failed to setup microVM")?;
 
             start_vmproxy(ctx, &config, &mnt_dev_info, || forked.redirect())
