@@ -640,42 +640,59 @@ fn start_vmshell(ctx: u32) -> anyhow::Result<()> {
 
 struct VMOutput {
     status: i32,
-    output: Vec<u8>,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
 }
 
-fn run_vmcommand(ctx: u32, args: Vec<CString>) -> anyhow::Result<VMOutput> {
-    let argv = args
-        .iter()
-        .map(|s| s.as_ptr())
-        .chain([std::ptr::null()])
-        .collect::<Vec<_>>();
-    let envp = vec![std::ptr::null()];
+fn read_all_from_fd(fd: i32) -> anyhow::Result<Vec<u8>> {
+    let mut output = Vec::new();
+    let mut reader = unsafe { File::from_raw_fd(fd) };
+    let mut buf = [0; 1024];
+    loop {
+        match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => output.extend_from_slice(&buf[..n]),
+            Err(e) => {
+                if e.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(e).context("Failed to read from pipe");
+            }
+        }
+    }
+    Ok(output)
+}
 
-    unsafe { bindings::krun_set_exec(ctx, argv[0], argv[1..].as_ptr(), envp.as_ptr()) }
-        .context("Failed to set exec")?;
-
+fn run_vmcommand(
+    config: &MountConfig,
+    dev_info: &DevInfo,
+    use_gvproxy: bool,
+    args: Vec<CString>,
+) -> anyhow::Result<VMOutput> {
     let forked = utils::fork_with_piped_output()?;
     if forked.pid == 0 {
         // child process
+        let ctx = setup_vm(config, dev_info, use_gvproxy)?;
+
+        let argv = args
+            .iter()
+            .map(|s| s.as_ptr())
+            .chain([std::ptr::null()])
+            .collect::<Vec<_>>();
+        let envp = vec![std::ptr::null()];
+
+        unsafe { bindings::krun_set_exec(ctx, argv[0], argv[1..].as_ptr(), envp.as_ptr()) }
+            .context("Failed to set exec")?;
+
         unsafe { bindings::krun_start_enter(ctx) }.context("Failed to start VM")?;
         unreachable!();
     } else {
         // parent process
-        let mut output = Vec::new();
-        let mut reader = unsafe { File::from_raw_fd(forked.pipe_fd) };
-        let mut buf = [0; 1024];
-        loop {
-            match reader.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => output.extend_from_slice(&buf[..n]),
-                Err(e) => {
-                    if e.kind() == io::ErrorKind::Interrupted {
-                        continue;
-                    }
-                    return Err(e).context("Failed to read from pipe");
-                }
-            }
-        }
+        let stdout = read_all_from_fd(forked.out_fd)?;
+        let stderr = match forked.err_fd {
+            Some(fd) => read_all_from_fd(fd)?,
+            None => Vec::new(),
+        };
 
         let mut status = 0;
         if unsafe { libc::waitpid(forked.pid, &mut status, 0) } < 0 {
@@ -683,7 +700,8 @@ fn run_vmcommand(ctx: u32, args: Vec<CString>) -> anyhow::Result<VMOutput> {
         }
         return Ok(VMOutput {
             status: to_exit_code(status),
-            output,
+            stdout,
+            stderr,
         });
     }
 }
@@ -1096,12 +1114,12 @@ impl AppRunner {
         if forked.pid == 0 {
             self.is_child = true;
             let verbose = config.verbose;
-            let res = self.run_mount_child(config, forked.pipe_fd);
+            let res = self.run_mount_child(config, forked.out_fd);
             if res.is_err() {
                 if !verbose {
                     self.print_log = true;
                 }
-                unsafe { write_to_pipe(forked.pipe_fd, b"join\n") }
+                unsafe { write_to_pipe(forked.out_fd, b"join\n") }
                     .context("Failed to write to pipe")?;
             }
             res
@@ -1217,7 +1235,7 @@ impl AppRunner {
             _ = thread::spawn(move || {
                 let mut nfs_ready = false;
                 let mut exit_code = None;
-                let mut buf_reader = BufReader::new(unsafe { File::from_raw_fd(forked.pipe_fd) });
+                let mut buf_reader = BufReader::new(unsafe { File::from_raw_fd(forked.out_fd) });
                 let mut line = String::new();
                 while let Ok(bytes) = buf_reader.read_line(&mut line) {
                     let mut skip_line = false;
@@ -1325,7 +1343,7 @@ impl AppRunner {
     }
 
     fn run_mount_parent(&mut self, forked: utils::ForkOutput) -> anyhow::Result<()> {
-        let comm_read_fd = forked.pipe_fd;
+        let comm_read_fd = forked.out_fd;
         let mut buf_reader = BufReader::new(unsafe { File::from_raw_fd(comm_read_fd) });
         let mut line = String::new();
         while let Ok(bytes) = buf_reader.read_line(&mut line) {

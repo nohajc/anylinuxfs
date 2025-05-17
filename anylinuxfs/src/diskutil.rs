@@ -42,6 +42,10 @@ impl Entry {
         self.0.as_str()
     }
 
+    pub fn disk_mut(&mut self) -> &mut String {
+        &mut self.0
+    }
+
     pub fn header(&self) -> &str {
         self.1.as_str()
     }
@@ -246,43 +250,56 @@ pub fn list_linux_partitions(config: crate::Config) -> anyhow::Result<List> {
                     Some(dev_info) => {
                         let fs_type = dev_info.fs_type().unwrap_or(part_type);
                         if fs_type == "LVM2_member" {
-                            if let Ok(lsblk) = get_lsblk_info(&config, disk_path, &dev_info) {
-                                if !lsblk.blockdevices.is_empty() {
+                            match get_lsblk_info(&config, disk_path, &dev_info) {
+                                Ok(lsblk) => {
                                     // println!("lsblk: {:#?}", lsblk);
-                                    let mut lvm_entry =
-                                        Entry::new(format!("lvm:{} (volume group):", dev_ident));
-                                    lvm_entry.header_mut().push_str(
-                                    "   #:                       TYPE NAME                    SIZE       IDENTIFIER"
-                                    );
-
-                                    let mut vg_name = String::new();
-                                    for (i, child) in
-                                        lsblk.blockdevices[0].children.iter().flatten().enumerate()
-                                    {
-                                        lvm_entry.partitions_mut().push(format!(
-                                            "{:>4}: {:>26} {:<23} {:<10} {}",
-                                            i + 1,
-                                            child.fstype.as_deref().unwrap_or(""),
-                                            child.label.as_deref().unwrap_or(""),
-                                            format_lv_size(&child.size),
-                                            child.name,
-                                        ));
-                                        if i == 0 {
-                                            if let Some(vg) = child.name.split('-').next() {
-                                                vg_name.push_str(vg);
-                                            }
-                                        }
-                                    }
-
-                                    if !lvm_entry.partitions().is_empty() {
-                                        *lvm_entry.scheme_mut() = format!(
-                                            "   0:                LVM2_scheme                        +{:<10} {}",
-                                            format_lv_size(&lsblk.blockdevices[0].size),
-                                            &vg_name
+                                    if !lsblk.blockdevices.is_empty() {
+                                        let mut lvm_entry = Entry::new("");
+                                        lvm_entry.header_mut().push_str(
+                                        "   #:                       TYPE NAME                    SIZE       IDENTIFIER"
                                         );
 
-                                        lvm_entries.push(lvm_entry);
+                                        let mut vg_name = String::new();
+                                        for (i, child) in lsblk.blockdevices[0]
+                                            .children
+                                            .iter()
+                                            .flatten()
+                                            .enumerate()
+                                        {
+                                            lvm_entry.partitions_mut().push(format!(
+                                                "{:>4}: {:>26} {:<23} {:<10} {}:{}",
+                                                i + 1,
+                                                child.fstype.as_deref().unwrap_or(""),
+                                                child.label.as_deref().unwrap_or(""),
+                                                format_lv_size(&child.size),
+                                                dev_ident,
+                                                child.name.replacen("-", ":", 1),
+                                            ));
+                                            if i == 0 {
+                                                if let Some(vg) = child.name.split('-').next() {
+                                                    vg_name.push_str(vg);
+                                                }
+                                            }
+                                        }
+
+                                        if !lvm_entry.partitions().is_empty() {
+                                            *lvm_entry.disk_mut() = format!(
+                                                "lvm:{}:{} (volume group):",
+                                                dev_ident, &vg_name
+                                            );
+                                            *lvm_entry.scheme_mut() = format!(
+                                                "   0:                LVM2_scheme                        +{:<10} {}:{}",
+                                                format_lv_size(&lsblk.blockdevices[0].size),
+                                                dev_ident,
+                                                &vg_name
+                                            );
+
+                                            lvm_entries.push(lvm_entry);
+                                        }
                                     }
+                                }
+                                Err(e) => {
+                                    eprintln!("Failed to get lsblk info: {}", e);
                                 }
                             }
                         }
@@ -342,16 +359,14 @@ fn get_lsblk_info(
         common: config.clone(),
     };
     // TODO: try to avoid running a VM for each device separately
-    let ctx =
-        crate::setup_vm(&mount_config, &dev_info, false).context("Failed to setup microVM")?;
     let lsblk_args = vec![
         CString::new("/bin/busybox").unwrap(),
         CString::new("sh").unwrap(),
         CString::new("-c").unwrap(),
-        CString::new("/sbin/vgchange -ay >/dev/null && /bin/lsblk -O --json").unwrap(),
+        CString::new("/sbin/vgchange -ay >/dev/null; /bin/lsblk -O --json").unwrap(),
     ];
-    let lsblk_cmd =
-        crate::run_vmcommand(ctx, lsblk_args).context("Failed to start microVM shell")?;
+    let lsblk_cmd = crate::run_vmcommand(&mount_config, &dev_info, false, lsblk_args)
+        .context("Failed to start microVM shell")?;
     // let lsblk_output =
     //     String::from_utf8(lsblk_cmd.output).context("Failed to convert lsblk output to String")?;
     // println!("lsblk_status: {}", &lsblk_cmd.status);
@@ -360,8 +375,12 @@ fn get_lsblk_info(
         return Err(anyhow!("lsblk command failed"));
     }
 
-    let lsblk = serde_json::from_slice(&lsblk_cmd.output)
+    // println!("{}", String::from_utf8(lsblk_cmd.output.clone())?);
+    eprintln!("{}", String::from_utf8_lossy(&lsblk_cmd.stderr));
+
+    let lsblk = serde_json::from_slice(&lsblk_cmd.stdout)
         .context("failed to parse lsblk command output")?;
+
     Ok(lsblk)
 }
 
