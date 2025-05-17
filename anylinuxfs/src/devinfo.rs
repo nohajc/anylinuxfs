@@ -11,13 +11,29 @@ pub struct DevInfo {
     label: Option<String>,
     fs_type: Option<String>,
     uuid: Option<String>,
+    vm_path: String,
 }
 
 const BUF_PREFIX: &str = "/dev/disk";
 const RAW_PREFIX: &str = "/dev/rdisk";
 
 impl DevInfo {
-    pub fn new(path: &str) -> anyhow::Result<DevInfo> {
+    pub fn lv(
+        path: &str,
+        label: Option<&str>,
+        vm_path: impl Into<String>,
+    ) -> anyhow::Result<DevInfo> {
+        Ok(DevInfo {
+            path: path.into(),
+            rpath: path.into(),
+            label: label.map(|l| l.to_owned()),
+            fs_type: Some("auto".into()),
+            uuid: None,
+            vm_path: vm_path.into(),
+        })
+    }
+
+    pub fn pv(path: &str) -> anyhow::Result<DevInfo> {
         if path.is_empty() {
             return Err(anyhow!("Empty device path"));
         }
@@ -56,6 +72,7 @@ impl DevInfo {
             label,
             fs_type,
             uuid,
+            vm_path: "/dev/vda".to_owned(),
         })
     }
 
@@ -77,6 +94,10 @@ impl DevInfo {
 
     pub fn uuid(&self) -> Option<&str> {
         self.uuid.as_deref()
+    }
+
+    pub fn vm_path(&self) -> &str {
+        &self.vm_path
     }
 
     pub fn auto_mount_name(&self) -> &str {

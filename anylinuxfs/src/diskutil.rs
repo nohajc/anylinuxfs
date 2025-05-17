@@ -262,6 +262,7 @@ pub fn list_linux_partitions(config: crate::Config) -> anyhow::Result<List> {
     let disks_without_part_table = disks_without_partition_table(&plist_out);
     // println!("disks_without_part_table: {:?}", disks_without_part_table);
     let mut lvm_dev_infos = Vec::new();
+    let mut lvm_dev_idents = Vec::new();
 
     let output = Command::new("diskutil")
         .arg("list")
@@ -295,13 +296,14 @@ pub fn list_linux_partitions(config: crate::Config) -> anyhow::Result<List> {
                     continue;
                 }
                 let disk_path = format!("/dev/{dev_ident}");
-                let dev_info = DevInfo::new(&disk_path).ok();
+                let dev_info = DevInfo::pv(&disk_path).ok();
 
                 let line = match dev_info {
                     Some(dev_info) => {
                         let fs_type = dev_info.fs_type().unwrap_or(part_type);
                         if fs_type == "LVM2_member" {
-                            lvm_dev_infos.push((dev_ident.to_owned(), dev_info.clone()));
+                            lvm_dev_infos.push(dev_info.clone());
+                            lvm_dev_idents.push(dev_ident.to_owned());
                         }
                         augment_line(line, part_type, Some(&dev_info), fs_type)
                     }
@@ -313,7 +315,7 @@ pub fn list_linux_partitions(config: crate::Config) -> anyhow::Result<List> {
             } else if line.trim_start().starts_with("0:") {
                 if disks_without_part_table.iter().any(|d| d == dev_ident) {
                     // This is a disk without partition table, it might still contain a Linux filesystem
-                    let dev_info = DevInfo::new(&format!("/dev/{dev_ident}")).ok();
+                    let dev_info = DevInfo::pv(&format!("/dev/{dev_ident}")).ok();
 
                     let fs_type = dev_info
                         .as_ref()
@@ -338,9 +340,7 @@ pub fn list_linux_partitions(config: crate::Config) -> anyhow::Result<List> {
     }
 
     if lvm_dev_infos.len() > 0 {
-        let devs: Vec<_> = lvm_dev_infos.iter().map(|(_, dev_info)| dev_info).collect();
-
-        match get_lsblk_info(&config, &devs) {
+        match get_lsblk_info(&config, &lvm_dev_infos) {
             Ok(lsblk) => {
                 // println!("lsblk: {:#?}", lsblk);
                 if !lsblk.blockdevices.is_empty() {
@@ -348,7 +348,7 @@ pub fn list_linux_partitions(config: crate::Config) -> anyhow::Result<List> {
                         IndexMap::new();
 
                     for (i, blkdev) in lsblk.blockdevices.iter().enumerate() {
-                        let dev_ident = &lvm_dev_infos[i].0;
+                        let dev_ident = &lvm_dev_idents[i];
                         for (j, child) in blkdev.children.iter().flatten().enumerate() {
                             if let Some(vg_name) = child.name.split('-').next() {
                                 let VgEntry {
@@ -427,14 +427,14 @@ pub fn list_linux_partitions(config: crate::Config) -> anyhow::Result<List> {
     Ok(List(disk_entries))
 }
 
-fn get_lsblk_info(config: &crate::Config, dev_info: &[&DevInfo]) -> anyhow::Result<LsBlk> {
+fn get_lsblk_info(config: &crate::Config, dev_info: &[DevInfo]) -> anyhow::Result<LsBlk> {
     let lsblk_args = vec![
         CString::new("/bin/busybox").unwrap(),
         CString::new("sh").unwrap(),
         CString::new("-c").unwrap(),
         CString::new("/sbin/vgchange -ay >/dev/null; /bin/lsblk -O --json").unwrap(),
     ];
-    let lsblk_cmd = crate::run_vmcommand(config, &dev_info, false, true, lsblk_args)
+    let lsblk_cmd = crate::run_vmcommand(config, dev_info, false, true, lsblk_args)
         .context("Failed to start microVM shell")?;
     // let lsblk_output =
     //     String::from_utf8(lsblk_cmd.output).context("Failed to convert lsblk output to String")?;

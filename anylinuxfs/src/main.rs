@@ -480,7 +480,7 @@ fn drop_privileges(
 
 fn setup_vm(
     config: &Config,
-    dev_info: &[&DevInfo],
+    dev_info: &[DevInfo],
     use_gvproxy: bool,
     add_disks_ro: bool,
 ) -> anyhow::Result<u32> {
@@ -506,7 +506,7 @@ fn setup_vm(
     unsafe { bindings::krun_set_root(ctx, CString::from_path(&config.root_path).as_ptr()) }
         .context("Failed to set root")?;
 
-    for (i, &di) in dev_info.iter().enumerate() {
+    for (i, di) in dev_info.iter().enumerate() {
         unsafe {
             bindings::krun_add_disk(
                 ctx,
@@ -586,6 +586,7 @@ fn start_vmproxy(
         // CString::new("-c").unwrap(),
         // CString::new("false").unwrap(),
         CString::new("/vmproxy").unwrap(),
+        CString::new(dev_info.vm_path()).unwrap(),
         CString::new(dev_info.auto_mount_name()).unwrap(),
         CString::new("-t").unwrap(),
         CString::new(dev_info.fs_type().unwrap_or("auto")).unwrap(),
@@ -670,7 +671,7 @@ fn read_all_from_fd(fd: i32) -> anyhow::Result<Vec<u8>> {
 
 fn run_vmcommand(
     config: &Config,
-    dev_info: &[&DevInfo],
+    dev_info: &[DevInfo],
     use_gvproxy: bool,
     add_disks_ro: bool,
     args: Vec<CString>,
@@ -1043,6 +1044,89 @@ fn validated_mount_point(rt_info: &api::RuntimeInfo) -> MountStatus {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DevType {
+    Direct,
+    PV,
+    LV,
+}
+
+fn print_dev_info(dev_info: &DevInfo, dev_type: DevType) {
+    if dev_type == DevType::Direct || dev_type == DevType::PV {
+        host_println!("disk: {}", dev_info.disk());
+        host_println!("rdisk: {}", dev_info.rdisk());
+    }
+
+    if dev_type == DevType::Direct || dev_type == DevType::LV {
+        host_println!("label: {:?}", dev_info.label());
+        host_println!("fs_type: {:?}", dev_info.fs_type());
+        host_println!("uuid: {:?}", dev_info.uuid());
+        host_println!("mount name: {}", dev_info.auto_mount_name());
+    }
+}
+
+fn claim_devices(config: &MountConfig) -> anyhow::Result<(Vec<DevInfo>, DevInfo, Vec<File>)> {
+    let mut dev_infos = Vec::new();
+    let mut disks = Vec::new();
+
+    let mnt_dev_info = if config.disk_path.starts_with("lvm:") {
+        // example: lvm:vg1:disk7s1:lvol0
+        let disk_ident: Vec<&str> = config.disk_path.split(':').collect();
+        if disk_ident.len() < 4 {
+            return Err(anyhow!("Invalid LVM disk path"));
+        }
+
+        let vm_path = format!(
+            "/dev/mapper/{}-{}",
+            disk_ident[1],
+            disk_ident[disk_ident.len() - 1]
+        );
+
+        for (i, &di) in disk_ident.iter().skip(2).enumerate() {
+            if i == disk_ident.len() - 3 {
+                continue;
+            }
+            let dev_info = DevInfo::pv(&format!("/dev/{}", di))?;
+            let disk = File::open(dev_info.rdisk())?.acquire_lock(if config.read_only {
+                FlockKind::Shared
+            } else {
+                FlockKind::Exclusive
+            })?;
+
+            print_dev_info(&dev_info, DevType::PV);
+
+            dev_infos.push(dev_info);
+            disks.push(disk);
+        }
+
+        // TODO: how to get fs label here?
+        let lv_info = DevInfo::lv(&config.disk_path, None, vm_path)?;
+        print_dev_info(&lv_info, DevType::LV);
+        lv_info
+    } else {
+        if !Path::new(&config.disk_path).exists() {
+            return Err(anyhow!("disk {} not found", &config.disk_path));
+        }
+
+        let di = DevInfo::pv(&config.disk_path)?;
+
+        let disk = File::open(di.rdisk())?.acquire_lock(if config.read_only {
+            FlockKind::Shared
+        } else {
+            FlockKind::Exclusive
+        })?;
+
+        print_dev_info(&di, DevType::Direct);
+
+        dev_infos.push(di);
+        disks.push(disk);
+
+        dev_infos[0].clone()
+    };
+
+    Ok((dev_infos, mnt_dev_info, disks))
+}
+
 struct AppRunner {
     is_child: bool,
     print_log: bool,
@@ -1073,26 +1157,9 @@ impl AppRunner {
         host_println!("num_vcpus: {}", config.common.krun.num_vcpus);
         host_println!("ram_size_mib: {}", config.common.krun.ram_size_mib);
 
-        if !Path::new(&config.disk_path).exists() {
-            return Err(anyhow!("disk {} not found", &config.disk_path));
-        }
+        let (dev_info, _, _disks) = claim_devices(&config)?;
 
-        let dev_info = DevInfo::new(&config.disk_path)?;
-
-        let _disk = File::open(dev_info.rdisk())?.acquire_lock(if config.read_only {
-            FlockKind::Shared
-        } else {
-            FlockKind::Exclusive
-        })?;
-
-        host_println!("disk: {}", dev_info.disk());
-        host_println!("rdisk: {}", dev_info.rdisk());
-        host_println!("label: {:?}", dev_info.label());
-        host_println!("fs_type: {:?}", dev_info.fs_type());
-        host_println!("uuid: {:?}", dev_info.uuid());
-        host_println!("mount name: {}", dev_info.auto_mount_name());
-
-        let ctx = setup_vm(&config.common, &[&dev_info], false, config.read_only)
+        let ctx = setup_vm(&config.common, dev_info.as_slice(), false, config.read_only)
             .context("Failed to setup microVM")?;
         start_vmshell(ctx).context("Failed to start microVM shell")?;
 
@@ -1153,24 +1220,7 @@ impl AppRunner {
         host_println!("num_vcpus: {}", config.common.krun.num_vcpus);
         host_println!("ram_size_mib: {}", config.common.krun.ram_size_mib);
 
-        if !Path::new(&config.disk_path).exists() {
-            return Err(anyhow!("disk {} not found", &config.disk_path));
-        }
-
-        let dev_info = DevInfo::new(&config.disk_path)?;
-
-        let _disk = File::open(dev_info.rdisk())?.acquire_lock(if config.read_only {
-            FlockKind::Shared
-        } else {
-            FlockKind::Exclusive
-        })?;
-
-        host_println!("disk: {}", dev_info.disk());
-        host_println!("rdisk: {}", dev_info.rdisk());
-        host_println!("label: {:?}", dev_info.label());
-        host_println!("fs_type: {:?}", dev_info.fs_type());
-        host_println!("uuid: {:?}", dev_info.uuid());
-        host_println!("mount name: {}", dev_info.auto_mount_name());
+        let (dev_info, mnt_dev_info, _disks) = claim_devices(&config)?;
 
         let mut can_detach = true;
         let session_pgid = unsafe { libc::setsid() };
@@ -1216,9 +1266,10 @@ impl AppRunner {
             // Child process
             deferred.remove_all(); // deferred actions must be only called in the parent process
 
-            let ctx = setup_vm(&config.common, &[&dev_info], true, config.read_only)
+            let ctx = setup_vm(&config.common, &dev_info, true, config.read_only)
                 .context("Failed to setup microVM")?;
-            start_vmproxy(ctx, &config, &dev_info, || forked.redirect())
+
+            start_vmproxy(ctx, &config, &mnt_dev_info, || forked.redirect())
                 .context("Failed to start microVM")?;
         } else {
             // Parent process
@@ -1229,7 +1280,7 @@ impl AppRunner {
 
             let rt_info = Arc::new(Mutex::new(api::RuntimeInfo {
                 mount_config: config.clone(),
-                dev_info: dev_info.clone(),
+                dev_info: mnt_dev_info.clone(),
                 session_pgid,
                 vmm_pid: child_pid,
                 gvproxy_pid,
@@ -1290,7 +1341,7 @@ impl AppRunner {
 
                 let event_session = diskutil::EventSession::new()?;
                 // mount nfs share
-                let share_name = dev_info.auto_mount_name();
+                let share_name = mnt_dev_info.auto_mount_name();
                 match mount_nfs(&share_name) {
                     Ok(_) => host_println!("Requested NFS share mount"),
                     Err(e) => host_eprintln!("Failed to request NFS mount: {:#}", e),
@@ -1301,7 +1352,7 @@ impl AppRunner {
                 if let Some(mount_point) = &mount_point_opt {
                     host_println!(
                         "{} was mounted as {}",
-                        dev_info.disk(),
+                        mnt_dev_info.disk(),
                         mount_point.display()
                     );
 

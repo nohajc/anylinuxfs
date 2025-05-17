@@ -12,6 +12,7 @@ use vsock::{VsockAddr, VsockListener};
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 struct Cli {
+    disk_path: String,
     mount_name: Option<String>,
     #[arg(short = 't', long = "types")]
     fs_type: Option<String>,
@@ -143,10 +144,17 @@ fn run() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
+    let disk_path = cli.disk_path;
     let mount_point = format!("/mnt/{}", cli.mount_name.unwrap_or("hostblk".to_owned()));
     let fs_type = cli.fs_type;
     let mount_options = cli.mount_options;
     let verbose = cli.verbose;
+
+    // vgchange can return non-zero but still partially succeed
+    let _vgchange_result = Command::new("/sbin/vgchange")
+        .arg("-ay")
+        .status()
+        .context("Failed to run vgchange command")?;
 
     fs::create_dir_all(&mount_point)
         .context(format!("Failed to create directory '{}'", &mount_point))?;
@@ -173,7 +181,7 @@ fn run() -> anyhow::Result<()> {
     let mnt_args = [
         "-t",
         fs_type.as_deref().unwrap_or("auto"),
-        "/dev/vda",
+        &disk_path,
         &mount_point,
     ]
     .into_iter()
@@ -196,7 +204,7 @@ fn run() -> anyhow::Result<()> {
     if !mnt_result.success() {
         return Err(anyhow!(
             "Mounting {} on {} failed with error code {}",
-            "/dev/vda",
+            &disk_path,
             &mount_point,
             mnt_result
                 .code()
@@ -206,7 +214,8 @@ fn run() -> anyhow::Result<()> {
     }
 
     println!(
-        "'/dev/vda' mounted successfully on '{}', filesystem {}.",
+        "'{}' mounted successfully on '{}', filesystem {}.",
+        &disk_path,
         &mount_point,
         fs_type.unwrap_or("unknown".to_owned())
     );
@@ -270,5 +279,7 @@ fn run() -> anyhow::Result<()> {
         backoff = std::cmp::min(backoff * 2, Duration::from_secs(32));
     }
     println!("Unmounted '{mount_point}' successfully.");
+
+    _ = fs::remove_dir_all(&mount_point);
     Ok(())
 }
