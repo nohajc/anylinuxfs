@@ -480,7 +480,7 @@ fn drop_privileges(
 
 fn setup_vm(
     config: &Config,
-    dev_info: &DevInfo,
+    dev_info: &[&DevInfo],
     use_gvproxy: bool,
     add_disks_ro: bool,
 ) -> anyhow::Result<u32> {
@@ -506,15 +506,17 @@ fn setup_vm(
     unsafe { bindings::krun_set_root(ctx, CString::from_path(&config.root_path).as_ptr()) }
         .context("Failed to set root")?;
 
-    unsafe {
-        bindings::krun_add_disk(
-            ctx,
-            CString::new("data").unwrap().as_ptr(),
-            CString::new(dev_info.rdisk()).unwrap().as_ptr(),
-            add_disks_ro,
-        )
+    for (i, &di) in dev_info.iter().enumerate() {
+        unsafe {
+            bindings::krun_add_disk(
+                ctx,
+                CString::new(format!("data{}", i)).unwrap().as_ptr(),
+                CString::new(di.rdisk()).unwrap().as_ptr(),
+                add_disks_ro,
+            )
+        }
+        .context("Failed to add disk")?;
     }
-    .context("Failed to add disk")?;
 
     if use_gvproxy {
         unsafe {
@@ -668,7 +670,7 @@ fn read_all_from_fd(fd: i32) -> anyhow::Result<Vec<u8>> {
 
 fn run_vmcommand(
     config: &Config,
-    dev_info: &DevInfo,
+    dev_info: &[&DevInfo],
     use_gvproxy: bool,
     add_disks_ro: bool,
     args: Vec<CString>,
@@ -1090,7 +1092,7 @@ impl AppRunner {
         host_println!("uuid: {:?}", dev_info.uuid());
         host_println!("mount name: {}", dev_info.auto_mount_name());
 
-        let ctx = setup_vm(&config.common, &dev_info, false, config.read_only)
+        let ctx = setup_vm(&config.common, &[&dev_info], false, config.read_only)
             .context("Failed to setup microVM")?;
         start_vmshell(ctx).context("Failed to start microVM shell")?;
 
@@ -1214,7 +1216,7 @@ impl AppRunner {
             // Child process
             deferred.remove_all(); // deferred actions must be only called in the parent process
 
-            let ctx = setup_vm(&config.common, &dev_info, true, config.read_only)
+            let ctx = setup_vm(&config.common, &[&dev_info], true, config.read_only)
                 .context("Failed to setup microVM")?;
             start_vmproxy(ctx, &config, &dev_info, || forked.redirect())
                 .context("Failed to start microVM")?;

@@ -1,5 +1,7 @@
 use anyhow::{Context, anyhow};
 use common_utils::host_println;
+use derive_more::AddAssign;
+use indexmap::IndexMap;
 use libc::{SIGINT, SIGTERM};
 use nix::sys::signal::Signal;
 use objc2_core_foundation::{
@@ -15,6 +17,7 @@ use signal_hook::iterator::Signals;
 use std::{
     ffi::{CString, c_void},
     fmt::Display,
+    hash::{Hash, Hasher},
     marker::PhantomData,
     ops::Deref,
     path::Path,
@@ -175,13 +178,19 @@ fn augment_line(line: &str, part_type: &str, dev_info: Option<&DevInfo>, fs_type
     )
 }
 
-fn format_lv_size(size: &str) -> String {
+fn lv_size_split_val_and_units(size: &str) -> (&str, String) {
     let size_last_char = size.chars().last().unwrap_or('0');
     let (size_val, unit_prefix) = if size_last_char.is_digit(10) {
         (size, "".to_string())
     } else {
         (size.strip_suffix(|_| true).unwrap(), size_last_char.into())
     };
+
+    (size_val, unit_prefix)
+}
+
+fn format_lv_size(size: &str) -> String {
+    let (size_val, unit_prefix) = lv_size_split_val_and_units(size);
 
     let mut size_val = size_val.parse::<f64>().unwrap_or(0.0);
     // lsblk actually shows sizes in KiB, MiB, GiB, TiB, PiB, EiB
@@ -199,11 +208,52 @@ fn format_lv_size(size: &str) -> String {
     format!("{:.1} {}B", size_val, unit_prefix)
 }
 
+#[derive(AddAssign, Debug)]
+struct LvSize(u64);
+
+impl Display for LvSize {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut size = self.0 as f64;
+        let prefixes = ["", "K", "M", "G", "T", "P", "E"];
+        let mut unit_prefix = "";
+
+        for &p in &prefixes {
+            if size < 1000.0 {
+                unit_prefix = p;
+                break;
+            }
+            size /= 1000.0;
+        }
+
+        format!("{:.1} {}B", size, unit_prefix).fmt(f)
+    }
+}
+
+fn parse_lv_size(size: &str) -> anyhow::Result<LvSize> {
+    let (size_val, unit_prefix) = lv_size_split_val_and_units(size);
+
+    // lsblk actually shows sizes in KiB, MiB, GiB, TiB, PiB, EiB
+    // so we need to convert them to KB, MB, GB, TB, PB, EB
+    let size_integer = (size_val.parse::<f64>().unwrap_or(0.0) * 10.0) as u64;
+    let size_bytes = match unit_prefix.as_str() {
+        "K" => size_integer * 1024,
+        "M" => size_integer * 1024 * 1024,
+        "G" => size_integer * 1024 * 1024 * 1024,
+        "T" => size_integer * 1024 * 1024 * 1024 * 1024,
+        "P" => size_integer * 1024 * 1024 * 1024 * 1024 * 1024,
+        "E" => size_integer * 1024 * 1024 * 1024 * 1024 * 1024 * 1024,
+        _ => size_integer,
+    } / 10;
+
+    // println!("DEBUG: size={size}, size_bytes={size_bytes}, unit_prefix={unit_prefix}");
+
+    Ok(LvSize(size_bytes))
+}
+
 pub fn list_linux_partitions(config: crate::Config) -> anyhow::Result<List> {
     let numbered_pattern = Regex::new(r"^\s+\d+:").unwrap();
     let part_type_pattern = Regex::new(&format!(r"({})", LINUX_PART_TYPES.join("|"))).unwrap();
     let mut disk_entries = Vec::new();
-    let mut lvm_entries = Vec::new();
 
     let plist_out = diskutil_list_from_plist()?;
     // println!("plist_out: {:#?}", plist_out);
@@ -211,6 +261,7 @@ pub fn list_linux_partitions(config: crate::Config) -> anyhow::Result<List> {
     // println!("linux_partitions: {:?}", linux_partitions);
     let disks_without_part_table = disks_without_partition_table(&plist_out);
     // println!("disks_without_part_table: {:?}", disks_without_part_table);
+    let mut lvm_dev_infos = Vec::new();
 
     let output = Command::new("diskutil")
         .arg("list")
@@ -250,65 +301,9 @@ pub fn list_linux_partitions(config: crate::Config) -> anyhow::Result<List> {
                     Some(dev_info) => {
                         let fs_type = dev_info.fs_type().unwrap_or(part_type);
                         if fs_type == "LVM2_member" {
-                            match get_lsblk_info(&config, &dev_info) {
-                                Ok(lsblk) => {
-                                    // println!("lsblk: {:#?}", lsblk);
-                                    if !lsblk.blockdevices.is_empty() {
-                                        let mut lvm_entry = Entry::new("");
-                                        lvm_entry.header_mut().push_str(
-                                        "   #:                       TYPE NAME                    SIZE       IDENTIFIER"
-                                        );
-
-                                        let mut vg_name = String::new();
-                                        for (i, child) in lsblk.blockdevices[0]
-                                            .children
-                                            .iter()
-                                            .flatten()
-                                            .enumerate()
-                                        {
-                                            lvm_entry.partitions_mut().push(format!(
-                                                "{:>4}: {:>26} {:<23} {:<10} {}:{}",
-                                                i + 1,
-                                                child.fstype.as_deref().unwrap_or(""),
-                                                child.label.as_deref().unwrap_or(""),
-                                                format_lv_size(&child.size),
-                                                dev_ident,
-                                                child.name.replacen("-", ":", 1),
-                                            ));
-                                            if i == 0 {
-                                                if let Some(vg) = child.name.split('-').next() {
-                                                    vg_name.push_str(vg);
-                                                }
-                                            }
-                                        }
-
-                                        if !lvm_entry.partitions().is_empty() {
-                                            *lvm_entry.disk_mut() = format!(
-                                                "lvm:{}:{} (volume group):",
-                                                dev_ident, &vg_name
-                                            );
-                                            *lvm_entry.scheme_mut() = format!(
-                                                "   0:                LVM2_scheme                        +{:<10} {}:{}",
-                                                format_lv_size(&lsblk.blockdevices[0].size),
-                                                dev_ident,
-                                                &vg_name
-                                            );
-
-                                            lvm_entries.push(lvm_entry);
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    eprintln!("Failed to get lsblk info: {}", e);
-                                }
-                            }
+                            lvm_dev_infos.push((dev_ident.to_owned(), dev_info.clone()));
                         }
                         augment_line(line, part_type, Some(&dev_info), fs_type)
-
-                        // println!("part_type: {}", part_type);
-                        // if part_type == "Linux_LVM" {
-                        //     let _volumes = DevInfo::logical_volumes("/dev/disk7");
-                        // }
                     }
                     None => line.to_owned(),
                 };
@@ -342,12 +337,97 @@ pub fn list_linux_partitions(config: crate::Config) -> anyhow::Result<List> {
         }
     }
 
-    disk_entries.append(&mut lvm_entries);
+    if lvm_dev_infos.len() > 0 {
+        let devs: Vec<_> = lvm_dev_infos.iter().map(|(_, dev_info)| dev_info).collect();
+
+        match get_lsblk_info(&config, &devs) {
+            Ok(lsblk) => {
+                // println!("lsblk: {:#?}", lsblk);
+                if !lsblk.blockdevices.is_empty() {
+                    let mut logical_volumes: IndexMap<String /* vg_name */, VgEntry> =
+                        IndexMap::new();
+
+                    for (i, blkdev) in lsblk.blockdevices.iter().enumerate() {
+                        let dev_ident = &lvm_dev_infos[i].0;
+                        for (j, child) in blkdev.children.iter().flatten().enumerate() {
+                            if let Some(vg_name) = child.name.split('-').next() {
+                                let VgEntry {
+                                    vg_size,
+                                    vg_dev_idents,
+                                    lvs,
+                                } = logical_volumes
+                                    .entry(vg_name.to_string())
+                                    .or_insert_with(VgEntry::default);
+
+                                if j == 0 {
+                                    *vg_size += parse_lv_size(&blkdev.size)?;
+
+                                    vg_dev_idents.push(dev_ident.clone());
+                                }
+
+                                lvs.entry(child.clone())
+                                    .or_insert_with(Vec::new)
+                                    .push(dev_ident.clone());
+                            }
+                        }
+                    }
+                    // println!("logical_volumes: {:#?}", logical_volumes);
+
+                    for (
+                        vg_name,
+                        VgEntry {
+                            vg_size,
+                            vg_dev_idents,
+                            lvs,
+                        },
+                    ) in &logical_volumes
+                    {
+                        let mut lvm_entry = Entry::new("");
+                        lvm_entry.header_mut().push_str(
+                        "   #:                       TYPE NAME                    SIZE       IDENTIFIER"
+                        );
+
+                        for (j, (child, devs)) in lvs.iter().enumerate() {
+                            let dev_ident = devs.join(":");
+                            lvm_entry.partitions_mut().push(format!(
+                                "{:>4}: {:>26} {:<23} {:<10} {}",
+                                j + 1,
+                                child.fstype.as_deref().unwrap_or(""),
+                                child.label.as_deref().unwrap_or(""),
+                                format_lv_size(&child.size),
+                                child.name.replacen("-", &format!(":{}:", &dev_ident), 1),
+                            ));
+                        }
+
+                        if !lvm_entry.partitions().is_empty() {
+                            *lvm_entry.disk_mut() = format!("lvm:{} (volume group):", &vg_name);
+                            *lvm_entry.scheme_mut() = format!(
+                                "   0:                LVM2_scheme                        +{:<10} {}",
+                                vg_size, &vg_name
+                            );
+
+                            let mut label = "Physical Store";
+                            for dev_ident in vg_dev_idents {
+                                *lvm_entry.scheme_mut() +=
+                                    &format!("\n{:<33} {} {}", "", label, dev_ident);
+                                label = "              ";
+                            }
+
+                            disk_entries.push(lvm_entry);
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("Failed to get lsblk info: {}", e);
+            }
+        }
+    }
+
     Ok(List(disk_entries))
 }
 
-fn get_lsblk_info(config: &crate::Config, dev_info: &DevInfo) -> anyhow::Result<LsBlk> {
-    // TODO: try to avoid running a VM for each device separately
+fn get_lsblk_info(config: &crate::Config, dev_info: &[&DevInfo]) -> anyhow::Result<LsBlk> {
     let lsblk_args = vec![
         CString::new("/bin/busybox").unwrap(),
         CString::new("sh").unwrap(),
@@ -729,8 +809,25 @@ struct LsBlk {
     blockdevices: Vec<LsBlkDevice>,
 }
 
+#[derive(Debug)]
+struct VgEntry {
+    vg_size: LvSize,
+    vg_dev_idents: Vec<String>,
+    lvs: IndexMap<LsBlkDevice /* lv_uuid */, Vec<String /* dev_ident */>>,
+}
+
+impl Default for VgEntry {
+    fn default() -> Self {
+        Self {
+            vg_size: LvSize(0),
+            vg_dev_idents: Vec::new(),
+            lvs: IndexMap::new(),
+        }
+    }
+}
+
 #[allow(unused)]
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 struct LsBlkDevice {
     name: String,
     #[serde(default)]
@@ -744,4 +841,18 @@ struct LsBlkDevice {
     fsuse_percent: Option<String>,
     mountpoints: Vec<Option<String>>,
     children: Option<Vec<LsBlkDevice>>,
+}
+
+impl PartialEq for LsBlkDevice {
+    fn eq(&self, other: &Self) -> bool {
+        self.uuid == other.uuid
+    }
+}
+
+impl Eq for LsBlkDevice {}
+
+impl Hash for LsBlkDevice {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.uuid.hash(state);
+    }
 }
