@@ -18,11 +18,13 @@ use std::{
     ffi::{CString, c_void},
     fmt::Display,
     hash::{Hash, Hasher},
+    iter,
     marker::PhantomData,
     ops::Deref,
     path::Path,
     process::Command,
     ptr::{NonNull, null, null_mut},
+    str::FromStr,
     thread,
 };
 use url::Url;
@@ -251,6 +253,35 @@ fn parse_lv_size(size: &str) -> anyhow::Result<LvSize> {
     Ok(LvSize(size_bytes))
 }
 
+struct LvIdent {
+    vg_name: String,
+    lv_name: String,
+}
+
+impl FromStr for LvIdent {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut chars = s.chars().peekable();
+        let mut vg_name: String = "".into();
+
+        while chars.peek().is_some() {
+            vg_name += &iter::from_fn(|| chars.by_ref().next_if(|&c| c != '-')).collect::<String>();
+            let dash_count = &iter::from_fn(|| chars.by_ref().next_if(|&c| c == '-')).count();
+            vg_name += &"-".repeat(dash_count / 2);
+            if dash_count % 2 == 1 {
+                break;
+            }
+        }
+        let lv_name = chars.collect::<String>().replace("--", "-");
+
+        if vg_name.is_empty() || lv_name.is_empty() {
+            return Err(anyhow!("Invalid LV identifier: {}", s));
+        }
+        Ok(LvIdent { vg_name, lv_name })
+    }
+}
+
 pub fn list_linux_partitions(config: crate::Config) -> anyhow::Result<List> {
     let numbered_pattern = Regex::new(r"^\s+\d+:").unwrap();
     let part_type_pattern = Regex::new(&format!(r"({})", LINUX_PART_TYPES.join("|"))).unwrap();
@@ -351,13 +382,13 @@ pub fn list_linux_partitions(config: crate::Config) -> anyhow::Result<List> {
                     for (i, blkdev) in lsblk.blockdevices.iter().enumerate() {
                         let dev_ident = &lvm_dev_idents[i];
                         for (j, child) in blkdev.children.iter().flatten().enumerate() {
-                            if let Some(vg_name) = child.name.split('-').next() {
+                            if let Ok(lv_ident) = child.name.parse::<LvIdent>() {
                                 let VgEntry {
                                     vg_size,
                                     vg_dev_idents,
                                     lvs,
                                 } = logical_volumes
-                                    .entry(vg_name.to_string())
+                                    .entry(lv_ident.vg_name.to_string())
                                     .or_insert_with(VgEntry::default);
 
                                 if j == 0 {
@@ -389,6 +420,7 @@ pub fn list_linux_partitions(config: crate::Config) -> anyhow::Result<List> {
                         );
 
                         for (j, (child, devs)) in lvs.iter().enumerate() {
+                            let lv_ident = child.name.parse::<LvIdent>().unwrap();
                             let dev_ident = devs.join(":");
                             lvm_entry.partitions_mut().push(format!(
                                 "{:>4}: {:>26} {:<23} {:<10} {}",
@@ -396,7 +428,10 @@ pub fn list_linux_partitions(config: crate::Config) -> anyhow::Result<List> {
                                 child.fstype.as_deref().unwrap_or(""),
                                 child.label.as_deref().unwrap_or(""),
                                 format_lv_size(&child.size),
-                                child.name.replacen("-", &format!(":{}:", &dev_ident), 1),
+                                format!(
+                                    "{}:{}:{}",
+                                    &lv_ident.vg_name, &dev_ident, &lv_ident.lv_name
+                                ),
                             ));
                         }
 
@@ -855,5 +890,60 @@ impl Eq for LsBlkDevice {}
 impl Hash for LsBlkDevice {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.uuid.hash(state);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_lv_ident_from_str() {
+        let input = "vgname-lvname";
+        let lv_ident = input.parse::<LvIdent>().unwrap();
+        assert_eq!(lv_ident.vg_name, "vgname");
+        assert_eq!(lv_ident.lv_name, "lvname");
+
+        let input_with_dash = "vgname--withdash-lvname--withdash";
+        let lv_ident_with_dash = input_with_dash.parse::<LvIdent>().unwrap();
+        assert_eq!(lv_ident_with_dash.vg_name, "vgname-withdash");
+        assert_eq!(lv_ident_with_dash.lv_name, "lvname-withdash");
+
+        let input_with_trailing_dash = "vgname---lvname--";
+        let lv_ident_with_trailing_dash = input_with_trailing_dash.parse::<LvIdent>().unwrap();
+        assert_eq!(lv_ident_with_trailing_dash.vg_name, "vgname-");
+        assert_eq!(lv_ident_with_trailing_dash.lv_name, "lvname-");
+
+        let input_with_leading_dash = "---lvname";
+        let lv_ident_with_leading_dash = input_with_leading_dash.parse::<LvIdent>().unwrap();
+        assert_eq!(lv_ident_with_leading_dash.vg_name, "-");
+        assert_eq!(lv_ident_with_leading_dash.lv_name, "lvname");
+
+        let input_with_double_dash = "vg--long--name-lvname";
+        let lv_ident_with_double_dash = input_with_double_dash.parse::<LvIdent>().unwrap();
+        assert_eq!(lv_ident_with_double_dash.vg_name, "vg-long-name");
+        assert_eq!(lv_ident_with_double_dash.lv_name, "lvname");
+
+        let invalid_input = "invalidinput";
+        assert!(invalid_input.parse::<LvIdent>().is_err());
+
+        let empty_input = "";
+        assert!(empty_input.parse::<LvIdent>().is_err());
+
+        let invalid_input_with_dash = "vgname-";
+        assert!(invalid_input_with_dash.parse::<LvIdent>().is_err());
+
+        let invalid_input_with_double_dash = "vgname--";
+        assert!(invalid_input_with_double_dash.parse::<LvIdent>().is_err());
+
+        let invalid_input_with_leading_dash = "-lvname";
+        assert!(invalid_input_with_leading_dash.parse::<LvIdent>().is_err());
+
+        let invalid_input_with_leading_double_dash = "--vgname";
+        assert!(
+            invalid_input_with_leading_double_dash
+                .parse::<LvIdent>()
+                .is_err()
+        );
     }
 }
