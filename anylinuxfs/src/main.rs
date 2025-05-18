@@ -31,7 +31,10 @@ use std::{
 
 use notify::{RecursiveMode, Watcher};
 use std::sync::{Arc, Mutex, mpsc};
-use utils::{AcquireLock, Deferred, FlockKind, LockFile, OutputAction, StatusError, write_to_pipe};
+use utils::{
+    AcquireLock, CommFd, Deferred, FlockKind, HasCommFd, HasPipeFds, HasPtyFd, LockFile,
+    OutputAction, StatusError, write_to_pipe,
+};
 
 mod api;
 #[allow(unused)]
@@ -712,11 +715,8 @@ fn run_vmcommand(
         unreachable!();
     } else {
         // parent process
-        let stdout = read_all_from_fd(forked.out_fd)?;
-        let stderr = match forked.err_fd {
-            Some(fd) => read_all_from_fd(fd)?,
-            None => Vec::new(),
-        };
+        let stdout = read_all_from_fd(forked.out_fd())?;
+        let stderr = read_all_from_fd(forked.err_fd())?;
 
         let mut status = 0;
         if unsafe { libc::waitpid(forked.pid, &mut status, 0) } < 0 {
@@ -1207,12 +1207,12 @@ impl AppRunner {
         if forked.pid == 0 {
             self.is_child = true;
             let verbose = config.verbose;
-            let res = self.run_mount_child(config, forked.out_fd);
+            let res = self.run_mount_child(config, forked.comm_fd());
             if res.is_err() {
                 if !verbose {
                     self.print_log = true;
                 }
-                unsafe { write_to_pipe(forked.out_fd, b"join\n") }
+                unsafe { write_to_pipe(forked.comm_fd(), b"join\n") }
                     .context("Failed to write to pipe")?;
             }
             res
@@ -1315,7 +1315,7 @@ impl AppRunner {
                 let mut fslabel: Option<String> = None;
                 let mut fstype: Option<String> = None;
                 let mut exit_code = None;
-                let mut buf_reader = BufReader::new(unsafe { File::from_raw_fd(forked.out_fd) });
+                let mut buf_reader = BufReader::new(unsafe { File::from_raw_fd(forked.pty_fd()) });
                 let mut line = String::new();
 
                 while let Ok(bytes) = buf_reader.read_line(&mut line) {
@@ -1453,8 +1453,8 @@ impl AppRunner {
         Ok(())
     }
 
-    fn run_mount_parent(&mut self, forked: utils::ForkOutput) -> anyhow::Result<()> {
-        let comm_read_fd = forked.out_fd;
+    fn run_mount_parent(&mut self, forked: utils::ForkOutput<CommFd>) -> anyhow::Result<()> {
+        let comm_read_fd = forked.comm_fd();
         let mut buf_reader = BufReader::new(unsafe { File::from_raw_fd(comm_read_fd) });
         let mut line = String::new();
         while let Ok(bytes) = buf_reader.read_line(&mut line) {
