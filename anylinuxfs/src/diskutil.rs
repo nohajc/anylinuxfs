@@ -409,7 +409,7 @@ pub fn list_linux_partitions(config: crate::Config) -> anyhow::Result<List> {
                             let mut label = "Physical Store";
                             for dev_ident in vg_dev_idents {
                                 *lvm_entry.scheme_mut() +=
-                                    &format!("\n{:<33} {} {}", "", label, dev_ident);
+                                    &format!("\n{:<32} {} {}", "", label, dev_ident);
                                 label = "              ";
                             }
 
