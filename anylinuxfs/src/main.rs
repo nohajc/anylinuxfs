@@ -1153,10 +1153,6 @@ impl AppRunner {
 
         init_rootfs(&config.common, false)?;
 
-        if !config.verbose {
-            log::disable_console_log();
-        }
-
         // host_println!("disk_path: {}", config.disk_path);
         host_println!("root_path: {}", config.common.root_path.display());
         host_println!("num_vcpus: {}", config.common.krun.num_vcpus);
