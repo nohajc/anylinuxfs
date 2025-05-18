@@ -248,8 +248,8 @@ enum Commands {
     List,
     /// Stop anylinuxfs (can be used if unresponsive)
     Stop(StopCmd),
-    /// microVM shell for debugging
-    Shell(MountCmd),
+    /// microVM shell for debugging (configures the VM according to mount options but only starts a shell)
+    Shell(ShellCmd),
 }
 
 #[derive(Args)]
@@ -288,6 +288,15 @@ struct StopCmd {
     /// Force stop the VM
     #[arg(short, long)]
     force: bool,
+}
+
+#[derive(Args)]
+struct ShellCmd {
+    /// Command to run in the shell
+    #[arg(short, long)]
+    command: Option<String>,
+    #[command(flatten)]
+    mnt: MountCmd,
 }
 
 #[derive(Parser)]
@@ -631,8 +640,11 @@ fn start_vmproxy(
     Ok(())
 }
 
-fn start_vmshell(ctx: u32) -> anyhow::Result<()> {
-    let args = vec![CString::new("/bin/bash").unwrap()];
+fn start_vmshell(ctx: u32, command: Option<String>) -> anyhow::Result<()> {
+    let mut args = vec![CString::new("/bin/bash").unwrap()];
+    if let Some(cmd) = command {
+        args.extend_from_slice(&[CString::new("-c").unwrap(), CString::new(cmd).unwrap()]);
+    }
 
     let argv = args
         .iter()
@@ -1147,9 +1159,9 @@ impl Default for AppRunner {
 }
 
 impl AppRunner {
-    fn run_shell(&mut self, cmd: MountCmd) -> anyhow::Result<()> {
+    fn run_shell(&mut self, cmd: ShellCmd) -> anyhow::Result<()> {
         let _lock_file = LockFile::new(LOCK_FILE)?.acquire_lock(FlockKind::Exclusive)?;
-        let config = load_mount_config(cmd)?;
+        let config = load_mount_config(cmd.mnt)?;
 
         init_rootfs(&config.common, false)?;
 
@@ -1168,7 +1180,7 @@ impl AppRunner {
             config.read_only,
         )
         .context("Failed to setup microVM")?;
-        start_vmshell(ctx).context("Failed to start microVM shell")?;
+        start_vmshell(ctx, cmd.command).context("Failed to start microVM shell")?;
 
         Ok(())
     }
