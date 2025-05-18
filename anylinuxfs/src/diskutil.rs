@@ -213,17 +213,18 @@ struct LvSize(u64);
 
 impl Display for LvSize {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut size = self.0 as f64;
+        let mut size_integer = self.0 * 10;
         let prefixes = ["", "K", "M", "G", "T", "P", "E"];
         let mut unit_prefix = "";
 
         for &p in &prefixes {
-            if size < 1000.0 {
+            if size_integer < 1000 {
                 unit_prefix = p;
                 break;
             }
-            size /= 1000.0;
+            size_integer /= 1000;
         }
+        let size = size_integer as f64 / 10.0;
 
         format!("{:.1} {}B", size, unit_prefix).fmt(f)
     }
