@@ -248,7 +248,7 @@ enum Commands {
     /// Show or change microVM parameters
     Config(ConfigCmd),
     /// List all available disks with Linux filesystems
-    List,
+    List(ListCmd),
     /// Stop anylinuxfs (can be used if unresponsive)
     Stop(StopCmd),
     /// microVM shell for debugging (configures the VM according to mount options but only starts a shell)
@@ -284,6 +284,13 @@ struct ConfigCmd {
     /// Set RAM size in MiB
     #[arg(short, long)]
     ram_size_mib: Option<u32>,
+}
+
+#[derive(Args)]
+struct ListCmd {
+    /// Decrypt selected LUKS partition
+    #[arg(short, long)]
+    decrypt: Option<String>,
 }
 
 #[derive(Args)]
@@ -695,6 +702,7 @@ fn run_vmcommand(
     use_gvproxy: bool,
     add_disks_ro: bool,
     args: Vec<CString>,
+    process_stdin: Option<impl FnOnce(libc::c_int) -> anyhow::Result<()>>,
 ) -> anyhow::Result<VMOutput> {
     let forked = utils::fork_with_piped_output()?;
     if forked.pid == 0 {
@@ -715,6 +723,10 @@ fn run_vmcommand(
         unreachable!();
     } else {
         // parent process
+        if let Some(process_stdin) = process_stdin {
+            process_stdin(forked.in_fd())?;
+        }
+
         let stdout = read_all_from_fd(forked.out_fd())?;
         let stderr = read_all_from_fd(forked.err_fd())?;
 
@@ -1519,9 +1531,12 @@ impl AppRunner {
         Ok(())
     }
 
-    fn run_list(&mut self) -> anyhow::Result<()> {
+    fn run_list(&mut self, cmd: ListCmd) -> anyhow::Result<()> {
         let config = load_config()?;
-        println!("{}", diskutil::list_linux_partitions(config)?);
+        println!(
+            "{}",
+            diskutil::list_linux_partitions(config, cmd.decrypt.as_deref())?
+        );
         Ok(())
     }
 
@@ -1732,7 +1747,7 @@ impl AppRunner {
             Commands::Status => self.run_status(),
             Commands::Log(cmd) => self.run_log(cmd),
             Commands::Config(cmd) => self.run_config(cmd),
-            Commands::List => self.run_list(),
+            Commands::List(cmd) => self.run_list(cmd),
             Commands::Stop(cmd) => self.run_stop(cmd),
             Commands::Shell(cmd) => self.run_shell(cmd),
         }

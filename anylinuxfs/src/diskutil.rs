@@ -219,14 +219,16 @@ impl Display for LvSize {
         let prefixes = ["", "K", "M", "G", "T", "P", "E"];
         let mut unit_prefix = "";
 
+        let mut size_rem = 0;
         for &p in &prefixes {
             if size_integer < 1000 {
                 unit_prefix = p;
                 break;
             }
+            size_rem = size_integer % 1000;
             size_integer /= 1000;
         }
-        let size = size_integer as f64 / 10.0;
+        let size = size_integer as f64 / 10.0 + size_rem as f64 / 10000.0;
 
         format!("{:.1} {}B", size, unit_prefix).fmt(f)
     }
@@ -253,6 +255,7 @@ fn parse_lv_size(size: &str) -> anyhow::Result<LvSize> {
     Ok(LvSize(size_bytes))
 }
 
+#[derive(Debug)]
 struct LvIdent {
     vg_name: String,
     lv_name: String,
@@ -282,7 +285,10 @@ impl FromStr for LvIdent {
     }
 }
 
-pub fn list_linux_partitions(config: crate::Config) -> anyhow::Result<List> {
+pub fn list_linux_partitions(
+    config: crate::Config,
+    enc_partition: Option<&str>,
+) -> anyhow::Result<List> {
     let numbered_pattern = Regex::new(r"^\s+\d+:").unwrap();
     let part_type_pattern = Regex::new(&format!(r"({})", LINUX_PART_TYPES.join("|"))).unwrap();
     let mut disk_entries = Vec::new();
@@ -293,8 +299,8 @@ pub fn list_linux_partitions(config: crate::Config) -> anyhow::Result<List> {
     // println!("linux_partitions: {:?}", linux_partitions);
     let disks_without_part_table = disks_without_partition_table(&plist_out);
     // println!("disks_without_part_table: {:?}", disks_without_part_table);
-    let mut lvm_dev_infos = Vec::new();
-    let mut lvm_dev_idents = Vec::new();
+    let mut lvm_luks_dev_infos = Vec::new();
+    let mut lvm_luks_dev_idents = Vec::new();
 
     let output = Command::new("diskutil")
         .arg("list")
@@ -333,9 +339,11 @@ pub fn list_linux_partitions(config: crate::Config) -> anyhow::Result<List> {
                 let line = match dev_info {
                     Some(dev_info) => {
                         let fs_type = dev_info.fs_type().unwrap_or(part_type);
-                        if fs_type == "LVM2_member" {
-                            lvm_dev_infos.push(dev_info.clone());
-                            lvm_dev_idents.push(dev_ident.to_owned());
+                        if fs_type == "LVM2_member"
+                            || (enc_partition.is_some() && fs_type == "crypto_LUKS")
+                        {
+                            lvm_luks_dev_infos.push(dev_info.clone());
+                            lvm_luks_dev_idents.push(dev_ident.to_owned());
                         }
                         augment_line(line, part_type, Some(&dev_info), fs_type)
                     }
@@ -371,38 +379,12 @@ pub fn list_linux_partitions(config: crate::Config) -> anyhow::Result<List> {
         }
     }
 
-    if lvm_dev_infos.len() > 0 {
-        match get_lsblk_info(&config, &lvm_dev_infos) {
+    if lvm_luks_dev_infos.len() > 0 {
+        match get_lsblk_info(&config, &lvm_luks_dev_infos, enc_partition) {
             Ok(lsblk) => {
                 // println!("lsblk: {:#?}", lsblk);
                 if !lsblk.blockdevices.is_empty() {
-                    let mut logical_volumes: IndexMap<String /* vg_name */, VgEntry> =
-                        IndexMap::new();
-
-                    for (i, blkdev) in lsblk.blockdevices.iter().enumerate() {
-                        let dev_ident = &lvm_dev_idents[i];
-                        for (j, child) in blkdev.children.iter().flatten().enumerate() {
-                            if let Ok(lv_ident) = child.name.parse::<LvIdent>() {
-                                let VgEntry {
-                                    vg_size,
-                                    vg_dev_idents,
-                                    lvs,
-                                } = logical_volumes
-                                    .entry(lv_ident.vg_name.to_string())
-                                    .or_insert_with(VgEntry::default);
-
-                                if j == 0 {
-                                    *vg_size += parse_lv_size(&blkdev.size)?;
-
-                                    vg_dev_idents.push(dev_ident.clone());
-                                }
-
-                                lvs.entry(child.clone())
-                                    .or_insert_with(Vec::new)
-                                    .push(dev_ident.clone());
-                            }
-                        }
-                    }
+                    let logical_volumes = create_volume_map(&lsblk, &lvm_luks_dev_idents);
                     // println!("logical_volumes: {:#?}", logical_volumes);
 
                     for (
@@ -455,7 +437,7 @@ pub fn list_linux_partitions(config: crate::Config) -> anyhow::Result<List> {
                 }
             }
             Err(e) => {
-                eprintln!("Failed to get lsblk info: {}", e);
+                eprintln!("Failed to get lsblk info: {:#}", e);
             }
         }
     }
@@ -463,15 +445,102 @@ pub fn list_linux_partitions(config: crate::Config) -> anyhow::Result<List> {
     Ok(List(disk_entries))
 }
 
-fn get_lsblk_info(config: &crate::Config, dev_info: &[DevInfo]) -> anyhow::Result<LsBlk> {
+fn create_volume_map(lsblk: &LsBlk, lvm_dev_idents: &[String]) -> IndexMap<String, VgEntry> {
+    let mut logical_volumes: IndexMap<String /* vg_name */, VgEntry> = IndexMap::new();
+
+    for (i, blkdev) in lsblk.blockdevices.iter().enumerate() {
+        let dev_ident = &lvm_dev_idents[i];
+
+        fn iterate_children(
+            logical_volumes: &mut IndexMap<String, VgEntry>,
+            dev_ident: &str,
+            blkdev: &LsBlkDevice,
+            children: Option<&Vec<LsBlkDevice>>,
+        ) {
+            for (j, child) in children.into_iter().flatten().enumerate() {
+                if !&["LVM2_member", "crypto_LUKS"].contains(&child.fstype.as_deref().unwrap_or(""))
+                {
+                    if let Ok(lv_ident) = child.name.parse::<LvIdent>() {
+                        // println!("lv_ident: {:#?}", &lv_ident);
+                        let VgEntry {
+                            vg_size,
+                            vg_dev_idents,
+                            lvs,
+                        } = logical_volumes
+                            .entry(lv_ident.vg_name.to_string())
+                            .or_insert_with(VgEntry::default);
+
+                        if j == 0 {
+                            *vg_size += parse_lv_size(&blkdev.size).unwrap_or(LvSize(0));
+
+                            vg_dev_idents.push(dev_ident.into());
+                        }
+
+                        lvs.entry(child.clone())
+                            .or_insert_with(Vec::new)
+                            .push(dev_ident.into());
+                    }
+                }
+                iterate_children(logical_volumes, dev_ident, child, child.children.as_ref());
+            }
+        }
+
+        iterate_children(
+            &mut logical_volumes,
+            dev_ident,
+            blkdev,
+            blkdev.children.as_ref(),
+        )
+    }
+
+    logical_volumes
+}
+
+fn get_lsblk_info(
+    config: &crate::Config,
+    dev_info: &[DevInfo],
+    enc_partition: Option<&str>,
+) -> anyhow::Result<LsBlk> {
+    let enc_part_idx = dev_info
+        .iter()
+        .position(|di| Some(di.disk()) == enc_partition);
+    let decrypt_script = match enc_part_idx {
+        Some(idx) => format!(
+            "cryptsetup open /dev/vd{} luks; ",
+            ('a'..='z')
+                .nth(idx)
+                .context("block device index out of range")?
+        ),
+        None => String::new(),
+    };
+    let script = format!(
+        "{}/sbin/vgchange -ay >/dev/null; /bin/lsblk -O --json",
+        decrypt_script
+    );
+    // println!("lsblk script: {}", &script);
     let lsblk_args = vec![
         CString::new("/bin/busybox").unwrap(),
         CString::new("sh").unwrap(),
         CString::new("-c").unwrap(),
-        CString::new("/sbin/vgchange -ay >/dev/null; /bin/lsblk -O --json").unwrap(),
+        CString::new(script.as_str()).unwrap(),
     ];
-    let lsblk_cmd = crate::run_vmcommand(config, dev_info, false, true, lsblk_args)
-        .context("Failed to start microVM shell")?;
+    let prompt_fn = enc_partition.map(|partition| {
+        |in_fd| {
+            // prompt user for passphrase
+            let passphrase = rpassword::prompt_password(format!(
+                "Enter passphrase for {}: ",
+                partition.to_owned()
+            ))
+            .context("Failed to read passphrase")?;
+
+            unsafe { crate::write_to_pipe(in_fd, format!("{passphrase}\n").as_bytes()) }
+                .context("Failed to write to pipe")?;
+
+            Ok(())
+        }
+    });
+    let lsblk_cmd = crate::run_vmcommand(config, dev_info, false, true, lsblk_args, prompt_fn)
+        .context("Failed to run command in microVM")?;
     // let lsblk_output =
     //     String::from_utf8(lsblk_cmd.output).context("Failed to convert lsblk output to String")?;
     // println!("lsblk_status: {}", &lsblk_cmd.status);
@@ -480,7 +549,7 @@ fn get_lsblk_info(config: &crate::Config, dev_info: &[DevInfo]) -> anyhow::Resul
         return Err(anyhow!("lsblk command failed"));
     }
 
-    // println!("{}", String::from_utf8(lsblk_cmd.output.clone())?);
+    // println!("{}", String::from_utf8_lossy(&lsblk_cmd.stdout));
     eprintln!("{}", String::from_utf8_lossy(&lsblk_cmd.stderr));
 
     let lsblk = serde_json::from_slice(&lsblk_cmd.stdout)
