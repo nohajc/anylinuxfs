@@ -445,50 +445,78 @@ pub fn list_linux_partitions(
     Ok(List(disk_entries))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BlkDevKind {
+    Simple,
+    LVM,
+    LUKS,
+}
+
+impl BlkDevKind {
+    fn from_fstype(fstype: Option<&str>) -> Self {
+        match fstype {
+            Some("LVM2_member") => BlkDevKind::LVM,
+            Some("crypto_LUKS") => BlkDevKind::LUKS,
+            _ => BlkDevKind::Simple,
+        }
+    }
+}
+
 fn create_volume_map(lsblk: &LsBlk, lvm_dev_idents: &[String]) -> IndexMap<String, VgEntry> {
     let mut logical_volumes: IndexMap<String /* vg_name */, VgEntry> = IndexMap::new();
 
+    fn iterate_children(
+        logical_volumes: &mut IndexMap<String, VgEntry>,
+        dev_ident: &str,
+        blkdev: &LsBlkDevice,
+        kind: BlkDevKind,
+        children: Option<&Vec<LsBlkDevice>>,
+    ) {
+        for (j, child) in children.into_iter().flatten().enumerate() {
+            let child_kind = BlkDevKind::from_fstype(child.fstype.as_deref());
+
+            if child_kind == BlkDevKind::Simple && kind == BlkDevKind::LVM {
+                if let Ok(lv_ident) = child.name.parse::<LvIdent>() {
+                    // println!("lv_ident: {:#?}", &lv_ident);
+                    let VgEntry {
+                        vg_size,
+                        vg_dev_idents,
+                        lvs,
+                    } = logical_volumes
+                        .entry(lv_ident.vg_name.to_string())
+                        .or_insert_with(VgEntry::default);
+
+                    if j == 0 {
+                        *vg_size += parse_lv_size(&blkdev.size).unwrap_or(LvSize(0));
+
+                        vg_dev_idents.push(dev_ident.into());
+                    }
+
+                    lvs.entry(child.clone())
+                        .or_insert_with(Vec::new)
+                        .push(dev_ident.into());
+                }
+            }
+
+            iterate_children(
+                logical_volumes,
+                dev_ident,
+                child,
+                child_kind,
+                child.children.as_ref(),
+            );
+        }
+    }
+
     for (i, blkdev) in lsblk.blockdevices.iter().enumerate() {
         let dev_ident = &lvm_dev_idents[i];
-
-        fn iterate_children(
-            logical_volumes: &mut IndexMap<String, VgEntry>,
-            dev_ident: &str,
-            blkdev: &LsBlkDevice,
-            children: Option<&Vec<LsBlkDevice>>,
-        ) {
-            for (j, child) in children.into_iter().flatten().enumerate() {
-                if !&["LVM2_member", "crypto_LUKS"].contains(&child.fstype.as_deref().unwrap_or(""))
-                {
-                    if let Ok(lv_ident) = child.name.parse::<LvIdent>() {
-                        // println!("lv_ident: {:#?}", &lv_ident);
-                        let VgEntry {
-                            vg_size,
-                            vg_dev_idents,
-                            lvs,
-                        } = logical_volumes
-                            .entry(lv_ident.vg_name.to_string())
-                            .or_insert_with(VgEntry::default);
-
-                        if j == 0 {
-                            *vg_size += parse_lv_size(&blkdev.size).unwrap_or(LvSize(0));
-
-                            vg_dev_idents.push(dev_ident.into());
-                        }
-
-                        lvs.entry(child.clone())
-                            .or_insert_with(Vec::new)
-                            .push(dev_ident.into());
-                    }
-                }
-                iterate_children(logical_volumes, dev_ident, child, child.children.as_ref());
-            }
-        }
+        let kind = BlkDevKind::from_fstype(blkdev.fstype.as_deref());
 
         iterate_children(
             &mut logical_volumes,
             dev_ident,
             blkdev,
+            kind,
             blkdev.children.as_ref(),
         )
     }
@@ -935,6 +963,7 @@ impl Default for VgEntry {
 #[derive(Debug, Deserialize, Clone)]
 struct LsBlkDevice {
     name: String,
+    path: String,
     #[serde(default)]
     size: String,
     fstype: Option<String>,
