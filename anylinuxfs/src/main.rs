@@ -210,6 +210,7 @@ impl KrunConfig {
 struct MountConfig {
     disk_path: String,
     read_only: bool,
+    encrypted: bool,
     mount_options: Option<String>,
     verbose: bool,
     common: Config,
@@ -469,6 +470,7 @@ fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
     };
 
     let read_only = is_read_only_set(mount_options.as_deref());
+    let encrypted = disk_path.starts_with("luks:");
     let verbose = cmd.verbose;
 
     let common = load_config()?;
@@ -476,6 +478,7 @@ fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
     Ok(MountConfig {
         disk_path,
         read_only,
+        encrypted,
         mount_options,
         verbose,
         common,
@@ -1098,9 +1101,14 @@ fn claim_devices(config: &MountConfig) -> anyhow::Result<(Vec<DevInfo>, DevInfo,
     let mut dev_infos = Vec::new();
     let mut disks = Vec::new();
 
-    let mnt_dev_info = if config.disk_path.starts_with("lvm:") {
+    let mut disk_path = config.disk_path.as_str();
+    if disk_path.starts_with("luks:") {
+        disk_path = &disk_path[5..];
+    }
+
+    let mnt_dev_info = if disk_path.starts_with("lvm:") {
         // example: lvm:vg1:disk7s1:lvol0
-        let disk_ident: Vec<&str> = config.disk_path.split(':').collect();
+        let disk_ident: Vec<&str> = disk_path.split(':').collect();
         if disk_ident.len() < 4 {
             return Err(anyhow!("Invalid LVM disk path"));
         }
@@ -1113,7 +1121,7 @@ fn claim_devices(config: &MountConfig) -> anyhow::Result<(Vec<DevInfo>, DevInfo,
 
         for (i, &di) in disk_ident.iter().skip(2).enumerate() {
             if i == disk_ident.len() - 3 {
-                continue;
+                break;
             }
             let dev_info = DevInfo::pv(&format!("/dev/{}", di))?;
             let disk = File::open(dev_info.rdisk())?.acquire_lock(if config.read_only {
@@ -1129,15 +1137,15 @@ fn claim_devices(config: &MountConfig) -> anyhow::Result<(Vec<DevInfo>, DevInfo,
         }
 
         // fs label will be obtained later from the VM output
-        let lv_info = DevInfo::lv(&config.disk_path, None, vm_path)?;
+        let lv_info = DevInfo::lv(&disk_path, None, vm_path)?;
         print_dev_info(&lv_info, DevType::LV);
         lv_info
     } else {
-        if !Path::new(&config.disk_path).exists() {
-            return Err(anyhow!("disk {} not found", &config.disk_path));
+        if !Path::new(&disk_path).exists() {
+            return Err(anyhow!("disk {} not found", &disk_path));
         }
 
-        let di = DevInfo::pv(&config.disk_path)?;
+        let di = DevInfo::pv(&disk_path)?;
 
         let disk = File::open(di.rdisk())?.acquire_lock(if config.read_only {
             FlockKind::Shared
@@ -1308,6 +1316,11 @@ impl AppRunner {
             let vm_wait_action = deferred.add(move || {
                 _ = wait_for_vm_status(child_pid);
             });
+
+            if config.encrypted {
+                let prompt_fn = diskutil::passphrase_prompt_fn(mnt_dev_info.disk());
+                prompt_fn(forked.pty_fd())?;
+            }
 
             let rt_info = Arc::new(Mutex::new(api::RuntimeInfo {
                 mount_config: config.clone(),

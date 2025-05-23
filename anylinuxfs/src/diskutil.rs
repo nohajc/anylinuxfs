@@ -384,27 +384,28 @@ pub fn list_linux_partitions(
             Ok(lsblk) => {
                 // println!("lsblk: {:#?}", lsblk);
                 if !lsblk.blockdevices.is_empty() {
-                    let logical_volumes = create_volume_map(&lsblk, &lvm_luks_dev_idents);
+                    let volumes = create_volume_map(&lsblk, &lvm_luks_dev_idents);
                     // println!("logical_volumes: {:#?}", logical_volumes);
 
                     for (
                         vg_name,
                         VgEntry {
-                            vg_size,
-                            vg_dev_idents,
+                            size,
+                            dev_idents,
                             lvs,
+                            encrypted,
                         },
-                    ) in &logical_volumes
+                    ) in &volumes
                     {
-                        let mut lvm_entry = Entry::new("");
-                        lvm_entry.header_mut().push_str(
+                        let mut entry = Entry::new("");
+                        entry.header_mut().push_str(
                         "   #:                       TYPE NAME                    SIZE       IDENTIFIER"
                         );
 
                         for (j, (child, devs)) in lvs.iter().enumerate() {
                             let lv_ident = child.name.parse::<LvIdent>().unwrap();
                             let dev_ident = devs.join(":");
-                            lvm_entry.partitions_mut().push(format!(
+                            entry.partitions_mut().push(format!(
                                 "{:>4}: {:>26} {:<23} {:<10} {}",
                                 j + 1,
                                 child.fstype.as_deref().unwrap_or(""),
@@ -417,21 +418,23 @@ pub fn list_linux_partitions(
                             ));
                         }
 
-                        if !lvm_entry.partitions().is_empty() {
-                            *lvm_entry.disk_mut() = format!("lvm:{} (volume group):", &vg_name);
-                            *lvm_entry.scheme_mut() = format!(
+                        if !entry.partitions().is_empty() {
+                            let enc_prefix = if *encrypted { "luks:" } else { "" };
+                            *entry.disk_mut() =
+                                format!("{}lvm:{} (volume group):", enc_prefix, &vg_name);
+                            *entry.scheme_mut() = format!(
                                 "   0:                LVM2_scheme                        +{:<10} {}",
-                                vg_size, &vg_name
+                                size, &vg_name
                             );
 
                             let mut label = "Physical Store";
-                            for dev_ident in vg_dev_idents {
-                                *lvm_entry.scheme_mut() +=
+                            for dev_ident in dev_idents {
+                                *entry.scheme_mut() +=
                                     &format!("\n{:<32} {} {}", "", label, dev_ident);
                                 label = "              ";
                             }
 
-                            disk_entries.push(lvm_entry);
+                            disk_entries.push(entry);
                         }
                     }
                 }
@@ -468,6 +471,7 @@ fn create_volume_map(lsblk: &LsBlk, lvm_dev_idents: &[String]) -> IndexMap<Strin
     fn iterate_children(
         logical_volumes: &mut IndexMap<String, VgEntry>,
         dev_ident: &str,
+        dev_encrypted: bool,
         blkdev: &LsBlkDevice,
         kind: BlkDevKind,
         children: Option<&Vec<LsBlkDevice>>,
@@ -479,28 +483,32 @@ fn create_volume_map(lsblk: &LsBlk, lvm_dev_idents: &[String]) -> IndexMap<Strin
                 if let Ok(lv_ident) = child.name.parse::<LvIdent>() {
                     // println!("lv_ident: {:#?}", &lv_ident);
                     let VgEntry {
-                        vg_size,
-                        vg_dev_idents,
+                        size,
+                        dev_idents,
                         lvs,
+                        encrypted,
                     } = logical_volumes
                         .entry(lv_ident.vg_name.to_string())
                         .or_insert_with(VgEntry::default);
 
                     if j == 0 {
-                        *vg_size += parse_lv_size(&blkdev.size).unwrap_or(LvSize(0));
+                        *size += parse_lv_size(&blkdev.size).unwrap_or(LvSize(0));
 
-                        vg_dev_idents.push(dev_ident.into());
+                        dev_idents.push(dev_ident.into());
                     }
 
                     lvs.entry(child.clone())
                         .or_insert_with(Vec::new)
                         .push(dev_ident.into());
+
+                    *encrypted = dev_encrypted;
                 }
             }
 
             iterate_children(
                 logical_volumes,
                 dev_ident,
+                dev_encrypted || kind == BlkDevKind::LUKS,
                 child,
                 child_kind,
                 child.children.as_ref(),
@@ -511,10 +519,12 @@ fn create_volume_map(lsblk: &LsBlk, lvm_dev_idents: &[String]) -> IndexMap<Strin
     for (i, blkdev) in lsblk.blockdevices.iter().enumerate() {
         let dev_ident = &lvm_dev_idents[i];
         let kind = BlkDevKind::from_fstype(blkdev.fstype.as_deref());
+        let encrypted = kind == BlkDevKind::LUKS;
 
         iterate_children(
             &mut logical_volumes,
             dev_ident,
+            encrypted,
             blkdev,
             kind,
             blkdev.children.as_ref(),
@@ -524,15 +534,23 @@ fn create_volume_map(lsblk: &LsBlk, lvm_dev_idents: &[String]) -> IndexMap<Strin
     logical_volumes
 }
 
-fn get_lsblk_info(
-    config: &crate::Config,
-    dev_info: &[DevInfo],
-    enc_partition: Option<&str>,
-) -> anyhow::Result<LsBlk> {
-    let enc_part_idx = dev_info
-        .iter()
-        .position(|di| Some(di.disk()) == enc_partition);
-    let decrypt_script = match enc_part_idx {
+pub fn passphrase_prompt_fn(partition: &str) -> impl FnOnce(libc::c_int) -> anyhow::Result<()> {
+    |in_fd| {
+        // prompt user for passphrase
+        let passphrase =
+            rpassword::prompt_password(format!("Enter passphrase for {}: ", partition.to_owned()))
+                .context("Failed to read passphrase")?;
+
+        unsafe { crate::write_to_pipe(in_fd, format!("{passphrase}\n").as_bytes()) }
+            .context("Failed to write to pipe")?;
+
+        Ok(())
+    }
+}
+
+pub fn decrypt_script(dev_info: &[DevInfo], partition: Option<&str>) -> anyhow::Result<String> {
+    let enc_part_idx = dev_info.iter().position(|di| Some(di.disk()) == partition);
+    Ok(match enc_part_idx {
         Some(idx) => format!(
             "cryptsetup open /dev/vd{} luks; ",
             ('a'..='z')
@@ -540,10 +558,17 @@ fn get_lsblk_info(
                 .context("block device index out of range")?
         ),
         None => String::new(),
-    };
+    })
+}
+
+fn get_lsblk_info(
+    config: &crate::Config,
+    dev_info: &[DevInfo],
+    enc_partition: Option<&str>,
+) -> anyhow::Result<LsBlk> {
     let script = format!(
         "{}/sbin/vgchange -ay >/dev/null; /bin/lsblk -O --json",
-        decrypt_script
+        decrypt_script(dev_info, enc_partition)?
     );
     // println!("lsblk script: {}", &script);
     let lsblk_args = vec![
@@ -552,21 +577,7 @@ fn get_lsblk_info(
         CString::new("-c").unwrap(),
         CString::new(script.as_str()).unwrap(),
     ];
-    let prompt_fn = enc_partition.map(|partition| {
-        |in_fd| {
-            // prompt user for passphrase
-            let passphrase = rpassword::prompt_password(format!(
-                "Enter passphrase for {}: ",
-                partition.to_owned()
-            ))
-            .context("Failed to read passphrase")?;
-
-            unsafe { crate::write_to_pipe(in_fd, format!("{passphrase}\n").as_bytes()) }
-                .context("Failed to write to pipe")?;
-
-            Ok(())
-        }
-    });
+    let prompt_fn = enc_partition.map(passphrase_prompt_fn);
     let lsblk_cmd = crate::run_vmcommand(config, dev_info, false, true, lsblk_args, prompt_fn)
         .context("Failed to run command in microVM")?;
     // let lsblk_output =
@@ -944,17 +955,19 @@ struct LsBlk {
 
 #[derive(Debug)]
 struct VgEntry {
-    vg_size: LvSize,
-    vg_dev_idents: Vec<String>,
+    size: LvSize,
+    dev_idents: Vec<String>,
     lvs: IndexMap<LsBlkDevice /* lv_uuid */, Vec<String /* dev_ident */>>,
+    encrypted: bool,
 }
 
 impl Default for VgEntry {
     fn default() -> Self {
         Self {
-            vg_size: LvSize(0),
-            vg_dev_idents: Vec::new(),
+            size: LvSize(0),
+            dev_idents: Vec::new(),
             lvs: IndexMap::new(),
+            encrypted: false,
         }
     }
 }
