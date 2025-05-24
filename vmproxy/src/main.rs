@@ -135,7 +135,7 @@ fn main() -> ExitCode {
 }
 
 fn run() -> anyhow::Result<()> {
-    println!("vmproxy started");
+    // println!("vmproxy started");
     // println!("uid = {}", unsafe { libc::getuid() });
     // println!("gid = {}", unsafe { libc::getgid() });
 
@@ -147,7 +147,7 @@ fn run() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
-    let disk_path = cli.disk_path;
+    let mut disk_path = cli.disk_path;
     let mut fs_type = cli.fs_type;
     let mount_options = cli.mount_options;
     let verbose = cli.verbose;
@@ -184,9 +184,12 @@ fn run() -> anyhow::Result<()> {
         .context("Failed to run vgchange command")?;
 
     let name = &cli.mount_name;
-    let mount_name = if !name.starts_with("lvm:") && !name.starts_with("luks:") {
+    let mount_name = if !name.starts_with("lvm:") && fs_type.as_deref() != Some("crypto_LUKS") {
         name.to_owned()
     } else {
+        if fs_type.as_deref() == Some("crypto_LUKS") {
+            disk_path = "/dev/mapper/luks".into();
+        }
         let fs = Command::new("/sbin/blkid")
             .arg(&disk_path)
             .arg("-s")

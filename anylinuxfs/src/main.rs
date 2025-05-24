@@ -1112,10 +1112,7 @@ fn claim_devices(config: &MountConfig) -> anyhow::Result<(Vec<DevInfo>, DevInfo,
     let mut dev_infos = Vec::new();
     let mut disks = Vec::new();
 
-    let mut disk_path = config.disk_path.as_str();
-    if disk_path.starts_with("luks:") {
-        disk_path = &disk_path[5..];
-    }
+    let disk_path = config.disk_path.as_str();
 
     let mnt_dev_info = if disk_path.starts_with("lvm:") {
         // example: lvm:vg1:disk7s1:lvol0

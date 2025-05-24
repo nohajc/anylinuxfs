@@ -384,8 +384,8 @@ pub fn list_linux_partitions(
             Ok(lsblk) => {
                 // println!("lsblk: {:#?}", lsblk);
                 if !lsblk.blockdevices.is_empty() {
-                    let volumes = create_volume_map(&lsblk, &lvm_luks_dev_idents);
-                    // println!("logical_volumes: {:#?}", logical_volumes);
+                    let vol_map = create_volume_map(&lsblk, &lvm_luks_dev_idents);
+                    // println!("vol_map: {:#?}", vol_map);
 
                     for (
                         vg_name,
@@ -393,9 +393,9 @@ pub fn list_linux_partitions(
                             size,
                             dev_idents,
                             lvs,
-                            encrypted,
+                            encrypted: _,
                         },
-                    ) in &volumes
+                    ) in &vol_map.vol_groups
                     {
                         let mut entry = Entry::new("");
                         entry.header_mut().push_str(
@@ -419,9 +419,7 @@ pub fn list_linux_partitions(
                         }
 
                         if !entry.partitions().is_empty() {
-                            let enc_prefix = if *encrypted { "luks:" } else { "" };
-                            *entry.disk_mut() =
-                                format!("{}lvm:{} (volume group):", enc_prefix, &vg_name);
+                            *entry.disk_mut() = format!("lvm:{} (volume group):", &vg_name);
                             *entry.scheme_mut() = format!(
                                 "   0:                LVM2_scheme                        +{:<10} {}",
                                 size, &vg_name
@@ -435,6 +433,29 @@ pub fn list_linux_partitions(
                             }
 
                             disk_entries.push(entry);
+                        }
+                    }
+
+                    // extend entries with decrypted metadata
+                    for entry in &mut disk_entries {
+                        for part in entry.partitions_mut() {
+                            if part.contains("crypto_LUKS") {
+                                if let Some(dev_ident) = part.split_whitespace().last() {
+                                    if let Some(luks_dev) = vol_map.simple_luks_devs.get(dev_ident)
+                                    {
+                                        if let Some(fstype) = luks_dev.fstype.as_deref() {
+                                            *part = part.replace(
+                                                "               crypto_LUKS                        ",
+                                                &format!(
+                                                    "{:>26} {:<23}",
+                                                    format!("crypto_LUKS: {}", fstype),
+                                                    luks_dev.label.as_deref().unwrap_or(""),
+                                                ),
+                                            );
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -465,11 +486,26 @@ impl BlkDevKind {
     }
 }
 
-fn create_volume_map(lsblk: &LsBlk, lvm_dev_idents: &[String]) -> IndexMap<String, VgEntry> {
-    let mut logical_volumes: IndexMap<String /* vg_name */, VgEntry> = IndexMap::new();
+#[derive(Debug)]
+struct VolumeMap {
+    vol_groups: IndexMap<String, VgEntry>, // key: volume group name
+    simple_luks_devs: IndexMap<String, LsBlkDevice>, // key: device identifier
+}
+
+impl VolumeMap {
+    fn new() -> Self {
+        VolumeMap {
+            vol_groups: IndexMap::new(),
+            simple_luks_devs: IndexMap::new(),
+        }
+    }
+}
+
+fn create_volume_map(lsblk: &LsBlk, lvm_luks_dev_idents: &[String]) -> VolumeMap {
+    let mut vol_map = VolumeMap::new();
 
     fn iterate_children(
-        logical_volumes: &mut IndexMap<String, VgEntry>,
+        vol_map: &mut VolumeMap,
         dev_ident: &str,
         dev_encrypted: bool,
         blkdev: &LsBlkDevice,
@@ -479,6 +515,12 @@ fn create_volume_map(lsblk: &LsBlk, lvm_dev_idents: &[String]) -> IndexMap<Strin
         for (j, child) in children.into_iter().flatten().enumerate() {
             let child_kind = BlkDevKind::from_fstype(child.fstype.as_deref());
 
+            if child_kind == BlkDevKind::Simple && kind == BlkDevKind::LUKS {
+                vol_map
+                    .simple_luks_devs
+                    .insert(dev_ident.into(), child.clone());
+            }
+
             if child_kind == BlkDevKind::Simple && kind == BlkDevKind::LVM {
                 if let Ok(lv_ident) = child.name.parse::<LvIdent>() {
                     // println!("lv_ident: {:#?}", &lv_ident);
@@ -487,7 +529,8 @@ fn create_volume_map(lsblk: &LsBlk, lvm_dev_idents: &[String]) -> IndexMap<Strin
                         dev_idents,
                         lvs,
                         encrypted,
-                    } = logical_volumes
+                    } = vol_map
+                        .vol_groups
                         .entry(lv_ident.vg_name.to_string())
                         .or_insert_with(VgEntry::default);
 
@@ -506,7 +549,7 @@ fn create_volume_map(lsblk: &LsBlk, lvm_dev_idents: &[String]) -> IndexMap<Strin
             }
 
             iterate_children(
-                logical_volumes,
+                vol_map,
                 dev_ident,
                 dev_encrypted || kind == BlkDevKind::LUKS,
                 child,
@@ -517,12 +560,12 @@ fn create_volume_map(lsblk: &LsBlk, lvm_dev_idents: &[String]) -> IndexMap<Strin
     }
 
     for (i, blkdev) in lsblk.blockdevices.iter().enumerate() {
-        let dev_ident = &lvm_dev_idents[i];
+        let dev_ident = &lvm_luks_dev_idents[i];
         let kind = BlkDevKind::from_fstype(blkdev.fstype.as_deref());
         let encrypted = kind == BlkDevKind::LUKS;
 
         iterate_children(
-            &mut logical_volumes,
+            &mut vol_map,
             dev_ident,
             encrypted,
             blkdev,
@@ -531,7 +574,7 @@ fn create_volume_map(lsblk: &LsBlk, lvm_dev_idents: &[String]) -> IndexMap<Strin
         )
     }
 
-    logical_volumes
+    vol_map
 }
 
 fn read_passphrase(partition: &str) -> anyhow::Result<String> {
