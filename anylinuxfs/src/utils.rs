@@ -2,6 +2,7 @@ use std::{
     error::Error,
     fs::{File, Permissions},
     io::{self, Write},
+    mem::ManuallyDrop,
     os::{
         fd::{AsRawFd, FromRawFd},
         unix::{fs::PermissionsExt, process::CommandExt},
@@ -37,48 +38,73 @@ impl std::fmt::Display for StatusError {
     }
 }
 
-pub trait HasFds {
-    type Fds;
+pub struct CommFd {
+    fd: libc::c_int,
+}
+pub struct PtyFd {
+    fd: libc::c_int,
+}
+pub struct PipeOutFds {
+    out_fd: libc::c_int,
+    err_fd: libc::c_int,
 }
 
-pub struct CommFd;
-pub struct PtyFd;
-pub struct PipeFds;
-
-impl HasFds for CommFd {
-    type Fds = [libc::c_int; 1];
-}
-
-impl HasFds for PtyFd {
-    type Fds = [libc::c_int; 1];
-}
-
-impl HasFds for PipeFds {
-    type Fds = [libc::c_int; 3];
+pub struct PipeInFd {
+    in_fd: libc::c_int,
 }
 
 pub trait HasCommFd {
     fn comm_fd(&self) -> libc::c_int;
 }
 
+impl HasCommFd for CommFd {
+    fn comm_fd(&self) -> libc::c_int {
+        self.fd
+    }
+}
+
 pub trait HasPtyFd {
     fn pty_fd(&self) -> libc::c_int;
 }
 
-pub trait HasPipeFds {
+impl HasPtyFd for PtyFd {
+    fn pty_fd(&self) -> libc::c_int {
+        self.fd
+    }
+}
+
+pub trait HasPipeOutFds {
     fn out_fd(&self) -> libc::c_int;
     fn err_fd(&self) -> libc::c_int;
-    #[allow(unused)]
+}
+
+impl HasPipeOutFds for PipeOutFds {
+    fn out_fd(&self) -> libc::c_int {
+        self.out_fd
+    }
+    fn err_fd(&self) -> libc::c_int {
+        self.err_fd
+    }
+}
+
+pub trait HasPipeInFd {
     fn in_fd(&self) -> libc::c_int;
 }
 
-pub struct ForkOutput<T: HasFds> {
+impl HasPipeInFd for PipeInFd {
+    fn in_fd(&self) -> libc::c_int {
+        self.in_fd
+    }
+}
+
+pub struct ForkOutput<O, I = ()> {
     pub pid: libc::pid_t,
-    pub fds: T::Fds,
+    pub out_fds: O,
+    pub in_fds: I,
     redirect_action: Option<Box<dyn FnOnce() -> anyhow::Result<()>>>,
 }
 
-impl<T: HasFds> ForkOutput<T> {
+impl<O, I> ForkOutput<O, I> {
     pub fn redirect(&mut self) -> anyhow::Result<()> {
         if let Some(redirect_fn) = self.redirect_action.take() {
             redirect_fn()?;
@@ -87,31 +113,32 @@ impl<T: HasFds> ForkOutput<T> {
     }
 }
 
-impl HasCommFd for ForkOutput<CommFd> {
+impl<I> HasCommFd for ForkOutput<CommFd, I> {
     fn comm_fd(&self) -> libc::c_int {
-        self.fds[0]
+        self.out_fds.comm_fd()
     }
 }
 
-impl HasPtyFd for ForkOutput<PtyFd> {
+impl<I> HasPtyFd for ForkOutput<PtyFd, I> {
     fn pty_fd(&self) -> libc::c_int {
-        self.fds[0]
+        self.out_fds.pty_fd()
     }
 }
 
-impl HasPipeFds for ForkOutput<PipeFds> {
+impl<I> HasPipeOutFds for ForkOutput<PipeOutFds, I> {
     fn out_fd(&self) -> libc::c_int {
-        self.fds[0]
+        self.out_fds.out_fd()
     }
     fn err_fd(&self) -> libc::c_int {
-        self.fds[1]
-    }
-    fn in_fd(&self) -> libc::c_int {
-        self.fds[2]
+        self.out_fds.err_fd()
     }
 }
 
-unsafe impl<T: HasFds> Send for ForkOutput<T> {}
+impl<O> HasPipeInFd for ForkOutput<O, PipeInFd> {
+    fn in_fd(&self) -> libc::c_int {
+        self.in_fds.in_fd()
+    }
+}
 
 #[allow(unused)]
 pub enum OutputAction {
@@ -119,9 +146,13 @@ pub enum OutputAction {
     RedirectLater,
 }
 
-pub fn fork_with_pty_output(out_action: OutputAction) -> anyhow::Result<ForkOutput<PtyFd>> {
+pub fn fork_with_pty_output(
+    out_action: OutputAction,
+) -> anyhow::Result<ForkOutput<PtyFd, PipeInFd>> {
     let mut master_fd: libc::c_int = 0;
     let mut slave_fd: libc::c_int = 0;
+
+    let (child_in_read_fd, child_in_write_fd) = new_pipe()?;
 
     // Create a new pseudo-terminal
     let mut winp: libc::winsize = libc::winsize {
@@ -149,6 +180,12 @@ pub fn fork_with_pty_output(out_action: OutputAction) -> anyhow::Result<ForkOutp
     } else if pid == 0 {
         // Child process
 
+        // Close the write end of the pipe
+        let res = unsafe { libc::close(child_in_write_fd) };
+        if res < 0 {
+            return Err(io::Error::last_os_error()).context("Failed to close write end of pipe");
+        }
+
         // Close the master end of the pty
         let res = unsafe { libc::close(master_fd) };
         if res < 0 {
@@ -167,9 +204,21 @@ pub fn fork_with_pty_output(out_action: OutputAction) -> anyhow::Result<ForkOutp
             }
 
             // Redirect stdin to the slave end of the pty
-            let res = unsafe { libc::dup2(slave_fd, libc::STDIN_FILENO) };
+            // let res = unsafe { libc::dup2(slave_fd, libc::STDIN_FILENO) };
+            // if res < 0 {
+            //     return Err(io::Error::last_os_error()).context("Failed to redirect stdin to pty");
+            // }
+
+            // Redirect stdin to the read end of the pipe
+            let res = unsafe { libc::dup2(child_in_read_fd, libc::STDIN_FILENO) };
             if res < 0 {
-                return Err(io::Error::last_os_error()).context("Failed to redirect stdin to pty");
+                return Err(io::Error::last_os_error()).context("Failed to redirect stdin");
+            }
+
+            // Close the read end of the pipe
+            let res = unsafe { libc::close(child_in_read_fd) };
+            if res < 0 {
+                return Err(io::Error::last_os_error()).context("Failed to close read end of pipe");
             }
 
             // Close the slave end of the pty
@@ -193,11 +242,20 @@ pub fn fork_with_pty_output(out_action: OutputAction) -> anyhow::Result<ForkOutp
 
         Ok(ForkOutput {
             pid,
-            fds: [slave_fd],
+            out_fds: PtyFd { fd: slave_fd },
+            in_fds: PipeInFd {
+                in_fd: child_in_write_fd,
+            },
             redirect_action,
         })
     } else {
         // Parent process
+
+        // Close the read end of the pipe
+        let res = unsafe { libc::close(child_in_read_fd) };
+        if res < 0 {
+            return Err(io::Error::last_os_error()).context("Failed to close read end of pipe");
+        }
 
         // Close the slave end of the pty
         let res = unsafe { libc::close(slave_fd) };
@@ -207,7 +265,10 @@ pub fn fork_with_pty_output(out_action: OutputAction) -> anyhow::Result<ForkOutp
 
         Ok(ForkOutput {
             pid,
-            fds: [master_fd],
+            out_fds: PtyFd { fd: master_fd },
+            in_fds: PipeInFd {
+                in_fd: child_in_write_fd,
+            },
             redirect_action: None,
         })
     }
@@ -222,7 +283,7 @@ fn new_pipe() -> anyhow::Result<(libc::c_int, libc::c_int)> {
     Ok((fds[0], fds[1]))
 }
 
-pub fn fork_with_piped_output() -> anyhow::Result<ForkOutput<PipeFds>> {
+pub fn fork_with_piped_output() -> anyhow::Result<ForkOutput<PipeOutFds, PipeInFd>> {
     let (child_out_read_fd, child_out_write_fd) = new_pipe()?;
     let (child_err_read_fd, child_err_write_fd) = new_pipe()?;
     let (child_in_read_fd, child_in_write_fd) = new_pipe()?;
@@ -302,7 +363,13 @@ pub fn fork_with_piped_output() -> anyhow::Result<ForkOutput<PipeFds>> {
 
     Ok(ForkOutput {
         pid,
-        fds: [child_out_read_fd, child_err_read_fd, child_in_write_fd],
+        out_fds: PipeOutFds {
+            out_fd: child_out_read_fd,
+            err_fd: child_err_read_fd,
+        },
+        in_fds: PipeInFd {
+            in_fd: child_in_write_fd,
+        },
         redirect_action: None,
     })
 }
@@ -326,7 +393,8 @@ pub fn fork_with_comm_pipe() -> anyhow::Result<ForkOutput<CommFd>> {
 
         Ok(ForkOutput {
             pid,
-            fds: [child_write_fd],
+            out_fds: CommFd { fd: child_write_fd },
+            in_fds: (),
             redirect_action: None,
         })
     } else {
@@ -340,7 +408,8 @@ pub fn fork_with_comm_pipe() -> anyhow::Result<ForkOutput<CommFd>> {
 
         Ok(ForkOutput {
             pid,
-            fds: [parent_read_fd],
+            out_fds: CommFd { fd: parent_read_fd },
+            in_fds: (),
             redirect_action: None,
         })
     }
@@ -365,9 +434,8 @@ pub fn redirect_to_null(fd: libc::c_int) -> anyhow::Result<()> {
 }
 
 pub unsafe fn write_to_pipe(pipe_fd: libc::c_int, data: &[u8]) -> anyhow::Result<()> {
-    unsafe { File::from_raw_fd(pipe_fd) }
-        .write_all(data)
-        .context("Failed to write to pipe")?;
+    let mut f = ManuallyDrop::new(unsafe { File::from_raw_fd(pipe_fd) });
+    f.write_all(data).context("Failed to write to pipe")?;
     Ok(())
 }
 

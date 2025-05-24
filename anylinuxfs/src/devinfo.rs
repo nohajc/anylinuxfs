@@ -112,6 +112,13 @@ impl DevInfo {
         self.label()
             // .or(self.uuid())
             // .unwrap_or("lvol0")
-            .unwrap_or(self.disk().split('/').last().expect("non-empty disk path"))
+            .unwrap_or(
+                self.disk()
+                    .split('/')
+                    .last()
+                    .map(|d| d.split(':').last())
+                    .flatten()
+                    .expect("non-empty disk path"),
+            )
     }
 }

@@ -534,31 +534,65 @@ fn create_volume_map(lsblk: &LsBlk, lvm_dev_idents: &[String]) -> IndexMap<Strin
     logical_volumes
 }
 
-pub fn passphrase_prompt_fn(partition: &str) -> impl FnOnce(libc::c_int) -> anyhow::Result<()> {
-    |in_fd| {
-        // prompt user for passphrase
-        let passphrase =
-            rpassword::prompt_password(format!("Enter passphrase for {}: ", partition.to_owned()))
-                .context("Failed to read passphrase")?;
+fn read_passphrase(partition: &str) -> anyhow::Result<String> {
+    Ok(
+        rpassword::prompt_password(format!("Enter passphrase for {}: ", partition))
+            .context("Failed to read passphrase")?,
+    )
+}
 
+fn write_passphrase_to_pipe(in_fd: libc::c_int, passphrase: &str) -> anyhow::Result<()> {
+    Ok(
         unsafe { crate::write_to_pipe(in_fd, format!("{passphrase}\n").as_bytes()) }
-            .context("Failed to write to pipe")?;
+            .context("Failed to write to pipe")?,
+    )
+}
+
+fn passphrase_prompt_lazy(partition: &str) -> impl FnOnce(libc::c_int) -> anyhow::Result<()> {
+    move |in_fd| {
+        // prompt user for passphrase
+        let passphrase = read_passphrase(partition)?;
+        write_passphrase_to_pipe(in_fd, &passphrase)?;
 
         Ok(())
     }
 }
 
-pub fn decrypt_script(dev_info: &[DevInfo], partition: Option<&str>) -> anyhow::Result<String> {
-    let enc_part_idx = dev_info.iter().position(|di| Some(di.disk()) == partition);
+pub fn passphrase_prompt(
+    partition: &str,
+) -> anyhow::Result<impl FnOnce(libc::c_int) -> anyhow::Result<()>> {
+    // prompt user for passphrase
+    let passphrase = read_passphrase(&partition)?;
+    Ok(move |in_fd| {
+        // write passphrase to pipe
+        write_passphrase_to_pipe(in_fd, &passphrase)?;
+
+        Ok(())
+    })
+}
+
+fn virt_disk_to_decrypt(dev_info: &[DevInfo], partition: &str) -> anyhow::Result<String> {
+    let enc_part_idx = dev_info.iter().position(|di| di.disk() == partition);
     Ok(match enc_part_idx {
         Some(idx) => format!(
-            "cryptsetup open /dev/vd{} luks; ",
+            "/dev/vd{}",
             ('a'..='z')
                 .nth(idx)
                 .context("block device index out of range")?
         ),
-        None => String::new(),
+        None => Err(anyhow!("Partition {} not found", partition))?,
     })
+}
+
+fn decrypt_script(dev_info: &[DevInfo], partition: Option<&str>) -> anyhow::Result<String> {
+    let Some(partition) = partition else {
+        return Ok(String::new());
+    };
+
+    Ok(format!(
+        "cryptsetup open {} luks; ",
+        virt_disk_to_decrypt(dev_info, partition)?
+    ))
 }
 
 fn get_lsblk_info(
@@ -577,7 +611,7 @@ fn get_lsblk_info(
         CString::new("-c").unwrap(),
         CString::new(script.as_str()).unwrap(),
     ];
-    let prompt_fn = enc_partition.map(passphrase_prompt_fn);
+    let prompt_fn = enc_partition.map(passphrase_prompt_lazy);
     let lsblk_cmd = crate::run_vmcommand(config, dev_info, false, true, lsblk_args, prompt_fn)
         .context("Failed to run command in microVM")?;
     // let lsblk_output =

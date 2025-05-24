@@ -3,7 +3,7 @@ use clap::Parser;
 use libc::VMADDR_CID_ANY;
 use serde::Serialize;
 use std::io::{BufRead, Write};
-use std::process::{Child, Command, ExitCode};
+use std::process::{Child, Command, ExitCode, Stdio};
 use std::time::Duration;
 use std::{fs, io::BufReader};
 use sys_mount::{UnmountFlags, unmount};
@@ -13,11 +13,13 @@ use vsock::{VsockAddr, VsockListener};
 #[command(version, about, long_about = None)]
 struct Cli {
     disk_path: String,
-    mount_name: Option<String>,
+    mount_name: String,
     #[arg(short = 't', long = "types")]
     fs_type: Option<String>,
     #[arg(short = 'o', long = "options")]
     mount_options: Option<String>,
+    #[arg(short, long)]
+    decrypt: Option<String>,
     #[arg(short, long)]
     verbose: bool,
 }
@@ -133,6 +135,7 @@ fn main() -> ExitCode {
 }
 
 fn run() -> anyhow::Result<()> {
+    println!("vmproxy started");
     // println!("uid = {}", unsafe { libc::getuid() });
     // println!("gid = {}", unsafe { libc::getgid() });
 
@@ -149,6 +152,30 @@ fn run() -> anyhow::Result<()> {
     let mount_options = cli.mount_options;
     let verbose = cli.verbose;
 
+    // decrypt LUKS volumes if any
+    if let Some(decrypt) = &cli.decrypt {
+        for dev in decrypt.split(",") {
+            let cryptsetup_result = Command::new("/sbin/cryptsetup")
+                .arg("open")
+                .arg(&dev)
+                .arg("luks")
+                .stdout(Stdio::null())
+                .status()
+                .context(format!("Failed to run cryptsetup command for '{}'", dev))?;
+
+            if !cryptsetup_result.success() {
+                return Err(anyhow!(
+                    "Failed to open LUKS device '{}': {}",
+                    dev,
+                    cryptsetup_result
+                        .code()
+                        .map(|c| c.to_string())
+                        .unwrap_or("unknown".to_owned())
+                ));
+            }
+        }
+    }
+
     // activate LVM volumes if any
     // vgchange can return non-zero but still partially succeed
     let _vgchange_result = Command::new("/sbin/vgchange")
@@ -156,37 +183,44 @@ fn run() -> anyhow::Result<()> {
         .status()
         .context("Failed to run vgchange command")?;
 
-    let mount_name = match &cli.mount_name {
-        Some(name) => name.to_owned(),
-        None => {
-            let fs = Command::new("/sbin/blkid")
-                .arg(&disk_path)
-                .arg("-s")
-                .arg("TYPE")
-                .arg("-o")
-                .arg("value")
-                .output()
-                .context("Failed to run blkid command")?
-                .stdout;
+    let name = &cli.mount_name;
+    let mount_name = if !name.starts_with("lvm:") && !name.starts_with("luks:") {
+        name.to_owned()
+    } else {
+        let fs = Command::new("/sbin/blkid")
+            .arg(&disk_path)
+            .arg("-s")
+            .arg("TYPE")
+            .arg("-o")
+            .arg("value")
+            .output()
+            .context("Failed to run blkid command")?
+            .stdout;
 
-            let fs = String::from_utf8_lossy(&fs).trim().to_owned();
-            println!("<anylinuxfs-type:{}>", &fs);
-            fs_type = Some(fs.clone());
+        let fs = String::from_utf8_lossy(&fs).trim().to_owned();
+        println!("<anylinuxfs-type:{}>", &fs);
+        fs_type = if !fs.is_empty() {
+            Some(fs.clone())
+        } else {
+            None
+        };
 
-            let label = Command::new("/sbin/blkid")
-                .arg(&disk_path)
-                .arg("-s")
-                .arg("LABEL")
-                .arg("-o")
-                .arg("value")
-                .output()
-                .context("Failed to run blkid command")?
-                .stdout;
+        let label = Command::new("/sbin/blkid")
+            .arg(&disk_path)
+            .arg("-s")
+            .arg("LABEL")
+            .arg("-o")
+            .arg("value")
+            .output()
+            .context("Failed to run blkid command")?
+            .stdout;
 
-            let label = String::from_utf8_lossy(&label).trim().to_owned();
-            println!("<anylinuxfs-label:{}>", &label);
-            label
+        let mut label = String::from_utf8_lossy(&label).trim().to_owned();
+        if label.is_empty() {
+            label = name.to_owned();
         }
+        println!("<anylinuxfs-label:{}>", &label);
+        label
     };
 
     let mount_point = format!("/mnt/{}", mount_name);
@@ -266,7 +300,7 @@ fn run() -> anyhow::Result<()> {
     };
 
     let exports_content = format!(
-        "{}      *({},no_subtree_check,no_root_squash,insecure)\n",
+        "\"{}\"      *({},no_subtree_check,no_root_squash,insecure)\n",
         &mount_point, mode,
     );
 

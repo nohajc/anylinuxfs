@@ -18,7 +18,6 @@ use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 use std::ptr::null;
-use std::thread;
 use std::time::Duration;
 use std::{
     env,
@@ -28,12 +27,13 @@ use std::{
     os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
 };
+use std::{iter, thread};
 
 use notify::{RecursiveMode, Watcher};
 use std::sync::{Arc, Mutex, mpsc};
 use utils::{
-    AcquireLock, CommFd, Deferred, FlockKind, HasCommFd, HasPipeFds, HasPtyFd, LockFile,
-    OutputAction, StatusError, write_to_pipe,
+    AcquireLock, CommFd, Deferred, FlockKind, HasCommFd, HasPipeInFd, HasPipeOutFds, HasPtyFd,
+    LockFile, OutputAction, StatusError, write_to_pipe,
 };
 
 mod api;
@@ -210,7 +210,6 @@ impl KrunConfig {
 struct MountConfig {
     disk_path: String,
     read_only: bool,
-    encrypted: bool,
     mount_options: Option<String>,
     verbose: bool,
     common: Config,
@@ -470,7 +469,6 @@ fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
     };
 
     let read_only = is_read_only_set(mount_options.as_deref());
-    let encrypted = disk_path.starts_with("luks:");
     let verbose = cmd.verbose;
 
     let common = load_config()?;
@@ -478,7 +476,6 @@ fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
     Ok(MountConfig {
         disk_path,
         read_only,
-        encrypted,
         mount_options,
         verbose,
         common,
@@ -604,17 +601,24 @@ fn start_vmproxy(
     ctx: u32,
     config: &MountConfig,
     dev_info: &DevInfo,
+    to_decrypt: Vec<String>,
     before_start: impl FnOnce() -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
+    let to_decrypt_arg = if to_decrypt.is_empty() {
+        None
+    } else {
+        Some(to_decrypt.join(","))
+    };
+
     let args: Vec<_> = [
         // CString::new("/bin/bash").unwrap(),
         // CString::new("-c").unwrap(),
         // CString::new("false").unwrap(),
         CString::new("/vmproxy").unwrap(),
         CString::new(dev_info.vm_path()).unwrap(),
+        CString::new(dev_info.auto_mount_name()).unwrap(),
     ]
     .into_iter()
-    .chain(dev_info.label().map(|di| CString::new(di).unwrap()))
     .chain([
         CString::new("-t").unwrap(),
         CString::new(dev_info.fs_type().unwrap_or("auto")).unwrap(),
@@ -625,6 +629,12 @@ fn start_vmproxy(
             .as_deref()
             .into_iter()
             .flat_map(|opts| [CString::new("-o").unwrap(), CString::new(opts).unwrap()]),
+    )
+    .chain(
+        to_decrypt_arg
+            .as_deref()
+            .into_iter()
+            .flat_map(|d| vec![CString::new("-d").unwrap(), CString::new(d).unwrap()]),
     )
     .chain(
         config
@@ -795,6 +805,7 @@ fn start_gvproxy(config: &Config) -> anyhow::Result<Child> {
     Ok(gvproxy_process)
 }
 
+#[derive(Debug)]
 enum NfsStatus {
     Ready(Option<String>, Option<String>),
     Failed(Option<i32>),
@@ -1115,8 +1126,8 @@ fn claim_devices(config: &MountConfig) -> anyhow::Result<(Vec<DevInfo>, DevInfo,
 
         let vm_path = format!(
             "/dev/mapper/{}-{}",
-            disk_ident[1],
-            disk_ident[disk_ident.len() - 1]
+            disk_ident[1].replace("-", "--"),
+            disk_ident[disk_ident.len() - 1].replace("-", "--")
         );
 
         for (i, &di) in disk_ident.iter().skip(2).enumerate() {
@@ -1261,6 +1272,14 @@ impl AppRunner {
 
         let (dev_info, mut mnt_dev_info, _disks) = claim_devices(&config)?;
 
+        let mut passphrase_callbacks = Vec::new();
+        for di in &dev_info {
+            if di.fs_type() == Some("crypto_LUKS") {
+                let prompt_fn = diskutil::passphrase_prompt(di.disk())?;
+                passphrase_callbacks.push(prompt_fn);
+            }
+        }
+
         let mut can_detach = true;
         let session_pgid = unsafe { libc::setsid() };
         if session_pgid < 0 {
@@ -1308,19 +1327,26 @@ impl AppRunner {
             let ctx = setup_vm(&config.common, &dev_info, true, true, config.read_only)
                 .context("Failed to setup microVM")?;
 
-            start_vmproxy(ctx, &config, &mnt_dev_info, || forked.redirect())
-                .context("Failed to start microVM")?;
+            let to_decrypt: Vec<_> = iter::zip(dev_info.iter(), 'a'..='z')
+                .filter_map(|(di, letter)| {
+                    if di.fs_type() == Some("crypto_LUKS") {
+                        Some(format!("/dev/vd{}", letter))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            start_vmproxy(ctx, &config, &mnt_dev_info, to_decrypt, || {
+                forked.redirect()
+            })
+            .context("Failed to start microVM")?;
         } else {
             // Parent process
             let child_pid = forked.pid;
             let vm_wait_action = deferred.add(move || {
                 _ = wait_for_vm_status(child_pid);
             });
-
-            if config.encrypted {
-                let prompt_fn = diskutil::passphrase_prompt_fn(mnt_dev_info.disk());
-                prompt_fn(forked.pty_fd())?;
-            }
 
             let rt_info = Arc::new(Mutex::new(api::RuntimeInfo {
                 mount_config: config.clone(),
@@ -1330,20 +1356,31 @@ impl AppRunner {
                 gvproxy_pid,
                 mount_point: None,
             }));
+
+            // TODO: looks like if the program exits before we drop privileges,
+            // API_SOCKET is owned by root which makes the status command fail
             api::serve_info(rt_info.clone());
 
             let (nfs_ready_tx, nfs_ready_rx) = mpsc::channel();
 
+            let pty_fd = forked.pty_fd();
             // Spawn a thread to read from the pipe
             _ = thread::spawn(move || {
                 let mut nfs_ready = false;
                 let mut fslabel: Option<String> = None;
                 let mut fstype: Option<String> = None;
                 let mut exit_code = None;
-                let mut buf_reader = BufReader::new(unsafe { File::from_raw_fd(forked.pty_fd()) });
+                let mut buf_reader = BufReader::new(unsafe { File::from_raw_fd(pty_fd) });
                 let mut line = String::new();
 
-                while let Ok(bytes) = buf_reader.read_line(&mut line) {
+                loop {
+                    let bytes = match buf_reader.read_line(&mut line) {
+                        Ok(bytes) => bytes,
+                        Err(e) => {
+                            host_eprintln!("Error reading from pty: {}", e);
+                            break;
+                        }
+                    };
                     let mut skip_line = false;
                     if bytes == 0 {
                         break; // EOF
@@ -1394,12 +1431,17 @@ impl AppRunner {
                     line.clear();
                 }
                 if !nfs_ready {
+                    // TODO: why do we end up here?
                     nfs_ready_tx.send(NfsStatus::Failed(exit_code)).unwrap();
                 }
             });
 
             // drop privileges back to the original user if he used sudo
             drop_privileges(config.common.sudo_uid, config.common.sudo_gid)?;
+
+            for passphrase_fn in passphrase_callbacks {
+                passphrase_fn(forked.in_fd()).unwrap();
+            }
 
             let nfs_status =
                 wait_for_nfs_server(111, nfs_ready_rx).unwrap_or(NfsStatus::Failed(None));
