@@ -38,7 +38,7 @@ You can also run `anylinuxfs init` to download a fresh copy of `alpine:latest` a
 
 ## Troubleshooting
 - Check your mount flags (e.g. the `subvol` flag from demo is specific to btrfs, make sure you don't use it with other filesystems)
-- Check file owner and permissions with `ls -l` and adjust accordingly. Typically, your macOS user won't have write access to your drive out of the box so you need to write files as root or first prepare a target directory writable by everyone (chmod 777).
+- Check file owner and permissions with `ls -l` and adjust accordingly. Typically, your macOS user won't have write access to your drive out of the box so you need to write files as root or first prepare a target directory writable by everyone (`chmod 777`).
 - If you get `fcopyfile failed: Operation not permitted`, it can actually mean the file you're trying to copy has the quarantine attribute set (can be removed with `xattr -d com.apple.quarantine <filename>`)
 - Accessing disks might require Full Disk Access permission (although you should get pop-ups that let you allow access case-by-case)
 
