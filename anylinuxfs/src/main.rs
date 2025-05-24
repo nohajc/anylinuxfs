@@ -1431,7 +1431,6 @@ impl AppRunner {
                     line.clear();
                 }
                 if !nfs_ready {
-                    // TODO: why do we end up here?
                     nfs_ready_tx.send(NfsStatus::Failed(exit_code)).unwrap();
                 }
             });
