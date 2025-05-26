@@ -302,6 +302,10 @@ pub fn list_linux_partitions(
     let mut lvm_luks_dev_infos = Vec::new();
     let mut lvm_luks_dev_idents = Vec::new();
 
+    let decrypt_all = enc_partitions.is_some() && enc_partitions.unwrap()[0] == "all";
+    let mut all_luks_partitions = Vec::new();
+    let mut enc_partitions = enc_partitions;
+
     let output = Command::new("diskutil")
         .arg("list")
         .output()
@@ -339,12 +343,17 @@ pub fn list_linux_partitions(
                 let line = match dev_info {
                     Some(dev_info) => {
                         let fs_type = dev_info.fs_type().unwrap_or(part_type);
-                        if fs_type == "LVM2_member"
-                            || (enc_partitions.is_some() && fs_type == "crypto_LUKS")
-                        {
+                        let is_luks = fs_type == "crypto_LUKS";
+
+                        if fs_type == "LVM2_member" || (enc_partitions.is_some() && is_luks) {
                             lvm_luks_dev_infos.push(dev_info.clone());
                             lvm_luks_dev_idents.push(dev_ident.to_owned());
+
+                            if decrypt_all && is_luks {
+                                all_luks_partitions.push(disk_path);
+                            }
                         }
+
                         augment_line(line, part_type, Some(&dev_info), fs_type)
                     }
                     None => line.to_owned(),
@@ -355,7 +364,8 @@ pub fn list_linux_partitions(
             } else if line.trim_start().starts_with("0:") {
                 if disks_without_part_table.iter().any(|d| d == dev_ident) {
                     // This is a disk without partition table, it might still contain a Linux filesystem
-                    let dev_info = DevInfo::pv(&format!("/dev/{dev_ident}")).ok();
+                    let disk_path = format!("/dev/{dev_ident}");
+                    let dev_info = DevInfo::pv(&disk_path).ok();
 
                     let fs_type = dev_info
                         .as_ref()
@@ -366,12 +376,17 @@ pub fn list_linux_partitions(
                     if fs_type != "Unknown" && !LINUX_FS_TYPES.into_iter().any(|t| t == fs_type) {
                         continue;
                     }
+
+                    let is_luks = fs_type == "crypto_LUKS";
                     if dev_info.is_some()
-                        && (fs_type == "LVM2_member"
-                            || (enc_partitions.is_some() && fs_type == "crypto_LUKS"))
+                        && (fs_type == "LVM2_member" || (enc_partitions.is_some() && is_luks))
                     {
                         lvm_luks_dev_infos.push(dev_info.as_ref().unwrap().clone());
                         lvm_luks_dev_idents.push(dev_ident.to_owned());
+
+                        if decrypt_all && is_luks {
+                            all_luks_partitions.push(disk_path);
+                        }
                     }
 
                     let line = augment_line(line, "", dev_info.as_ref(), fs_type);
@@ -388,6 +403,9 @@ pub fn list_linux_partitions(
     }
 
     if lvm_luks_dev_infos.len() > 0 {
+        if decrypt_all {
+            enc_partitions = Some(&all_luks_partitions);
+        }
         match get_lsblk_info(&config, &lvm_luks_dev_infos, enc_partitions) {
             Ok(lsblk) => {
                 // println!("lsblk: {:#?}", lsblk);
