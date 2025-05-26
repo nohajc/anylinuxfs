@@ -366,6 +366,14 @@ pub fn list_linux_partitions(
                     if fs_type != "Unknown" && !LINUX_FS_TYPES.into_iter().any(|t| t == fs_type) {
                         continue;
                     }
+                    if dev_info.is_some()
+                        && (fs_type == "LVM2_member"
+                            || (enc_partition.is_some() && fs_type == "crypto_LUKS"))
+                    {
+                        lvm_luks_dev_infos.push(dev_info.as_ref().unwrap().clone());
+                        lvm_luks_dev_idents.push(dev_ident.to_owned());
+                    }
+
                     let line = augment_line(line, "", dev_info.as_ref(), fs_type);
                     current_entry.as_mut().map(|entry| {
                         entry.partitions_mut().push(line);
