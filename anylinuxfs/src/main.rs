@@ -1584,6 +1584,8 @@ impl AppRunner {
 
     fn run_list(&mut self, cmd: ListCmd) -> anyhow::Result<()> {
         let config = load_config()?;
+        init_rootfs(&config, false)?;
+
         println!(
             "{}",
             diskutil::list_linux_partitions(config, cmd.decrypt.as_deref())?
