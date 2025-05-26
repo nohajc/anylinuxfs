@@ -1172,6 +1172,16 @@ fn claim_devices(config: &MountConfig) -> anyhow::Result<(Vec<DevInfo>, DevInfo,
     Ok((dev_infos, mnt_dev_info, disks))
 }
 
+fn ensure_enough_ram_for_luks(config: &mut Config) {
+    if config.krun.ram_size_mib < 2560 {
+        config.krun.ram_size_mib = 2560;
+        println!(
+            "Configured RAM size is lower than the minimum required for LUKS decryption, setting to {} MiB",
+            config.krun.ram_size_mib
+        );
+    }
+}
+
 struct AppRunner {
     is_child: bool,
     print_log: bool,
@@ -1251,7 +1261,7 @@ impl AppRunner {
 
     fn run_mount_child(
         &mut self,
-        config: MountConfig,
+        mut config: MountConfig,
         comm_write_fd: libc::c_int,
     ) -> anyhow::Result<()> {
         let mut deferred = Deferred::new();
@@ -1272,6 +1282,7 @@ impl AppRunner {
         let mut passphrase_callbacks = Vec::new();
         for di in &dev_info {
             if di.fs_type() == Some("crypto_LUKS") {
+                ensure_enough_ram_for_luks(&mut config.common);
                 let prompt_fn = diskutil::passphrase_prompt(di.disk())?;
                 passphrase_callbacks.push(prompt_fn);
             }
@@ -1583,8 +1594,12 @@ impl AppRunner {
     }
 
     fn run_list(&mut self, cmd: ListCmd) -> anyhow::Result<()> {
-        let config = load_config()?;
+        let mut config = load_config()?;
         init_rootfs(&config, false)?;
+
+        if cmd.decrypt.is_some() {
+            ensure_enough_ram_for_luks(&mut config);
+        }
 
         println!(
             "{}",
