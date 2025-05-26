@@ -288,9 +288,9 @@ struct ConfigCmd {
 
 #[derive(Args)]
 struct ListCmd {
-    /// Decrypt selected LUKS partition
-    #[arg(short, long)]
-    decrypt: Option<String>,
+    /// Decrypt selected LUKS partitions (comma-separated list of paths)
+    #[arg(short, long, value_delimiter = ',', num_args = 1..)]
+    decrypt: Option<Vec<String>>,
 }
 
 #[derive(Args)]

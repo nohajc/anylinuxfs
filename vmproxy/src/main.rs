@@ -154,11 +154,11 @@ fn run() -> anyhow::Result<()> {
 
     // decrypt LUKS volumes if any
     if let Some(decrypt) = &cli.decrypt {
-        for dev in decrypt.split(",") {
+        for (i, dev) in decrypt.split(",").enumerate() {
             let cryptsetup_result = Command::new("/sbin/cryptsetup")
                 .arg("open")
                 .arg(&dev)
-                .arg("luks")
+                .arg(format!("luks{i}"))
                 .stdout(Stdio::null())
                 .status()
                 .context(format!("Failed to run cryptsetup command for '{}'", dev))?;
@@ -188,7 +188,7 @@ fn run() -> anyhow::Result<()> {
         name.to_owned()
     } else {
         if fs_type.as_deref() == Some("crypto_LUKS") {
-            disk_path = "/dev/mapper/luks".into();
+            disk_path = "/dev/mapper/luks0".into();
         }
         let fs = Command::new("/sbin/blkid")
             .arg(&disk_path)

@@ -287,7 +287,7 @@ impl FromStr for LvIdent {
 
 pub fn list_linux_partitions(
     config: crate::Config,
-    enc_partition: Option<&str>,
+    enc_partitions: Option<&[String]>,
 ) -> anyhow::Result<List> {
     let numbered_pattern = Regex::new(r"^\s+\d+:").unwrap();
     let part_type_pattern = Regex::new(&format!(r"({})", LINUX_PART_TYPES.join("|"))).unwrap();
@@ -340,7 +340,7 @@ pub fn list_linux_partitions(
                     Some(dev_info) => {
                         let fs_type = dev_info.fs_type().unwrap_or(part_type);
                         if fs_type == "LVM2_member"
-                            || (enc_partition.is_some() && fs_type == "crypto_LUKS")
+                            || (enc_partitions.is_some() && fs_type == "crypto_LUKS")
                         {
                             lvm_luks_dev_infos.push(dev_info.clone());
                             lvm_luks_dev_idents.push(dev_ident.to_owned());
@@ -368,7 +368,7 @@ pub fn list_linux_partitions(
                     }
                     if dev_info.is_some()
                         && (fs_type == "LVM2_member"
-                            || (enc_partition.is_some() && fs_type == "crypto_LUKS"))
+                            || (enc_partitions.is_some() && fs_type == "crypto_LUKS"))
                     {
                         lvm_luks_dev_infos.push(dev_info.as_ref().unwrap().clone());
                         lvm_luks_dev_idents.push(dev_ident.to_owned());
@@ -388,7 +388,7 @@ pub fn list_linux_partitions(
     }
 
     if lvm_luks_dev_infos.len() > 0 {
-        match get_lsblk_info(&config, &lvm_luks_dev_infos, enc_partition) {
+        match get_lsblk_info(&config, &lvm_luks_dev_infos, enc_partitions) {
             Ok(lsblk) => {
                 // println!("lsblk: {:#?}", lsblk);
                 if !lsblk.blockdevices.is_empty() {
@@ -635,25 +635,31 @@ fn virt_disk_to_decrypt(dev_info: &[DevInfo], partition: &str) -> anyhow::Result
     })
 }
 
-fn decrypt_script(dev_info: &[DevInfo], partition: Option<&str>) -> anyhow::Result<String> {
-    let Some(partition) = partition else {
+fn decrypt_script(dev_info: &[DevInfo], partitions: Option<&[String]>) -> anyhow::Result<String> {
+    let Some(partitions) = partitions else {
         return Ok(String::new());
     };
 
-    Ok(format!(
-        "cryptsetup open {} luks; ",
-        virt_disk_to_decrypt(dev_info, partition)?
-    ))
+    let mut script = String::new();
+
+    for (i, part) in partitions.iter().enumerate() {
+        script += &format!(
+            "cryptsetup open {} luks{i}; ",
+            virt_disk_to_decrypt(dev_info, part)?,
+        );
+    }
+
+    Ok(script)
 }
 
 fn get_lsblk_info(
     config: &crate::Config,
     dev_info: &[DevInfo],
-    enc_partition: Option<&str>,
+    enc_partitions: Option<&[String]>,
 ) -> anyhow::Result<LsBlk> {
     let script = format!(
         "{}/sbin/vgchange -ay >/dev/null; /bin/lsblk -O --json",
-        decrypt_script(dev_info, enc_partition)?
+        decrypt_script(dev_info, enc_partitions)?
     );
     // println!("lsblk script: {}", &script);
     let lsblk_args = vec![
@@ -662,7 +668,18 @@ fn get_lsblk_info(
         CString::new("-c").unwrap(),
         CString::new(script.as_str()).unwrap(),
     ];
-    let prompt_fn = enc_partition.map(passphrase_prompt_lazy);
+    let prompt_fn = enc_partitions.map(|partitions| {
+        let mut passphrase_prompts = Vec::new();
+        for part in partitions {
+            passphrase_prompts.push(passphrase_prompt_lazy(part));
+        }
+        move |in_fd: libc::c_int| -> anyhow::Result<()> {
+            for passphrase_fn in passphrase_prompts {
+                passphrase_fn(in_fd)?;
+            }
+            Ok(())
+        }
+    });
     let lsblk_cmd = crate::run_vmcommand(config, dev_info, false, true, lsblk_args, prompt_fn)
         .context("Failed to run command in microVM")?;
     // let lsblk_output =
