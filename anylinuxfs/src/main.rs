@@ -238,6 +238,16 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Mount a filesystem (the default if no command given)
+    #[command(after_help = "Things you can mount:
+- physical partitions
+- LVM volumes spanning one or more disks
+- LUKS-encrypted partitions
+- LVM on LUKS
+
+Supported partition schemes:
+- GPT
+- MBR
+- disk without partitions (single filesystem or LVM/LUKS container).")]
     Mount(MountCmd),
     /// Init Linux rootfs (can be used to reinitialize virtual environment)
     Init,
@@ -247,7 +257,10 @@ enum Commands {
     Log(LogCmd),
     /// Show or change microVM parameters
     Config(ConfigCmd),
-    /// List all available disks with Linux filesystems
+    /// List all available disks with Linux filesystems (run with sudo to get more detailed info)
+    #[command(
+        after_help = "Lists all physical partitions and LVM volumes. Can decrypt LUKS partition metadata too."
+    )]
     List(ListCmd),
     /// Stop anylinuxfs (can be used if unresponsive)
     Stop(StopCmd),
@@ -257,7 +270,7 @@ enum Commands {
 
 #[derive(Args)]
 struct MountCmd {
-    /// Currently supports individual disk partitions
+    /// Either a path (/dev/diskXsY) or a LVM identifier (lvm:<vg-name>:diskXsY[,diskYsZ,...]:<lv-name>), see `list` command output for available volumes
     disk_path: String,
     /// Options passed to the Linux mount command
     #[arg(short, long)]
