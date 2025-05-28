@@ -1,5 +1,7 @@
 #!/bin/bash
 
+set -e
+
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 
 IMAGE_ARCHIVE_NAME="linux-aarch64-Image-v6.6-nfs-lvm.tar.gz"

@@ -1,5 +1,7 @@
 #!/bin/bash
 
+set -e
+
 PREFIX=${1:-"/opt/anylinuxfs"}
 
 # sudo mkdir -p "$PREFIX"
