@@ -3,6 +3,14 @@ macOS: mount any linux-supported filesystem read/write using NFS and a microVM
 
 <a href='https://ko-fi.com/Q5Q41EHAGK' target='_blank'><img height='36' style='border:0px;height:36px;' src='https://storage.ko-fi.com/cdn/kofi1.png?v=6' border='0' alt='Buy Me a Coffee at ko-fi.com' /></a>
 
+## Features
+- mounts any filesystem supported by Linux
+- supports LUKS-encrypted drives
+- supports LVM (even volume groups spanning multiple drives)
+- supports LVM on LUKS (i.e. encrypted LVM)
+- supports disks with GPT, MBR or no partition table (single filesystem or LVM/LUKS container)
+- NFS share by default only reachable from localhost but can be shared across network too
+
 ## Installation
 ```
 brew tap nohajc/anylinuxfs
