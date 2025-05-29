@@ -26,6 +26,7 @@ plist = "1.7.1"
 indexmap = "2.9.0"
 derive_more = { version = "2.0.1", features = ["add_assign"] }
 rpassword = "7.4.0"
+if-addrs = "0.13.4"
 
 [patch.crates-io]
 libblkid-rs = { git = 'https://github.com/stratis-storage/libblkid-rs.git', rev = "5c08342" }

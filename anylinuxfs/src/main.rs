@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt::Display;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{Ipv4Addr, SocketAddrV4, TcpStream};
+use std::net::{IpAddr, Ipv4Addr, SocketAddrV4, TcpStream};
 use std::os::fd::FromRawFd;
 use std::os::unix::fs::chown;
 use std::os::unix::net::UnixStream;
@@ -211,6 +211,7 @@ struct MountConfig {
     disk_path: String,
     read_only: bool,
     mount_options: Option<String>,
+    bind_addr: IpAddr,
     verbose: bool,
     common: Config,
 }
@@ -275,6 +276,9 @@ struct MountCmd {
     /// Options passed to the Linux mount command
     #[arg(short, long)]
     options: Option<String>,
+    /// Override this to share the mount to a different machine
+    #[arg(short, long, default_value = "127.0.0.1")]
+    bind_addr: String,
     #[arg(short, long)]
     verbose: bool,
 }
@@ -481,8 +485,24 @@ fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
         std::process::exit(1);
     };
 
+    let bind_addr = cmd
+        .bind_addr
+        .parse()
+        .with_context(|| format!("invalid IP address given: {}", &cmd.bind_addr))?;
     let read_only = is_read_only_set(mount_options.as_deref());
     let verbose = cmd.verbose;
+
+    if bind_addr != Ipv4Addr::UNSPECIFIED && bind_addr != Ipv4Addr::LOCALHOST {
+        // check if the given bind address is assigned to any interface
+        if let Ok(interfaces) = if_addrs::get_if_addrs() {
+            if !interfaces.iter().any(|iface| iface.ip() == bind_addr) {
+                return Err(anyhow::anyhow!(
+                    "Bind address {} is not assigned to any interface",
+                    bind_addr
+                ));
+            }
+        }
+    }
 
     let common = load_config()?;
 
@@ -490,6 +510,7 @@ fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
         disk_path,
         read_only,
         mount_options,
+        bind_addr,
         verbose,
         common,
     })
@@ -630,6 +651,8 @@ fn start_vmproxy(
         CString::new("/vmproxy").unwrap(),
         CString::new(dev_info.vm_path()).unwrap(),
         CString::new(dev_info.auto_mount_name()).unwrap(),
+        CString::new("-b").unwrap(),
+        CString::new(config.bind_addr.to_string()).unwrap(),
     ]
     .into_iter()
     .chain([

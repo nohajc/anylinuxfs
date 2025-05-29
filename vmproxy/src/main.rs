@@ -20,6 +20,8 @@ struct Cli {
     mount_options: Option<String>,
     #[arg(short, long)]
     decrypt: Option<String>,
+    #[arg(short, long, default_value = LOCALHOST)]
+    bind_addr: String,
     #[arg(short, long)]
     verbose: bool,
 }
@@ -31,6 +33,7 @@ struct PortDef<'a> {
 }
 
 const EXPOSE_PORT_SVC: &str = "http://192.168.127.1/services/forwarder/expose";
+const LOCALHOST: &str = "127.0.0.1";
 
 fn expose_port(client: &reqwest::blocking::Client, port_def: &PortDef) -> anyhow::Result<()> {
     client
@@ -43,7 +46,7 @@ fn expose_port(client: &reqwest::blocking::Client, port_def: &PortDef) -> anyhow
     Ok(())
 }
 
-fn init_network() -> anyhow::Result<()> {
+fn init_network(bind_addr: &str) -> anyhow::Result<()> {
     fs::write("/etc/resolv.conf", "nameserver 192.168.127.1\n")
         .context("Failed to write /etc/resolv.conf")?;
 
@@ -57,6 +60,11 @@ fn init_network() -> anyhow::Result<()> {
         .status()
         .context("Failed to configure network interface")?;
 
+    let mut bind_addr_list = vec![bind_addr];
+    if bind_addr != LOCALHOST {
+        bind_addr_list.push(LOCALHOST);
+    }
+
     let client = reqwest::blocking::Client::new();
     expose_port(
         &client,
@@ -65,27 +73,30 @@ fn init_network() -> anyhow::Result<()> {
             remote: "192.168.127.2:111",
         },
     )?;
-    expose_port(
-        &client,
-        &PortDef {
-            local: "127.0.0.1:2049",
-            remote: "192.168.127.2:2049",
-        },
-    )?;
-    expose_port(
-        &client,
-        &PortDef {
-            local: "127.0.0.1:32765",
-            remote: "192.168.127.2:32765",
-        },
-    )?;
-    expose_port(
-        &client,
-        &PortDef {
-            local: "127.0.0.1:32767",
-            remote: "192.168.127.2:32767",
-        },
-    )?;
+
+    for addr in bind_addr_list {
+        expose_port(
+            &client,
+            &PortDef {
+                local: &format!("{addr}:2049"),
+                remote: "192.168.127.2:2049",
+            },
+        )?;
+        expose_port(
+            &client,
+            &PortDef {
+                local: &format!("{addr}:32765"),
+                remote: "192.168.127.2:32765",
+            },
+        )?;
+        expose_port(
+            &client,
+            &PortDef {
+                local: &format!("{addr}:32767"),
+                remote: "192.168.127.2:32767",
+            },
+        )?;
+    }
 
     Ok(())
 }
@@ -292,7 +303,7 @@ fn run() -> anyhow::Result<()> {
         fs_type.unwrap_or("unknown".to_owned())
     );
 
-    init_network().context("Failed to initialize network")?;
+    init_network(&cli.bind_addr).context("Failed to initialize network")?;
 
     // list_dir(mount_point);
 
