@@ -33,6 +33,108 @@ You pick a drive, mount it with `anylinuxfs` and it appears as a NFS share on lo
 This all sounds like a lot of work but it's actually very fast. Not like a traditional virtual machine which takes a while to boot.
 This one is just a stripped down version of Linux, there's not even a UEFI firmware. Practically, it takes only a couple of seconds before the drive is mounted and ready to use.
 
+## Examples
+
+### List available drives with Linux filesystems
+```
+sudo anylinuxfs list
+```
+**Possible output**
+```
+/dev/disk0 (internal, physical):
+   #:                       TYPE NAME                    SIZE       IDENTIFIER
+   0:      GUID_partition_scheme                        *500.3 GB   disk0
+   5:                       ext4 BOOT                    1.0 GB     disk0s5
+   6:                      btrfs fedora                  144.2 GB   disk0s6
+
+/dev/disk7 (external, physical):
+   #:                       TYPE NAME                    SIZE       IDENTIFIER
+   0:     FDisk_partition_scheme                        *30.8 GB    disk7
+   1:                LVM2_member                         30.8 GB    disk7s1
+
+/dev/disk8 (external, physical):
+   #:                       TYPE NAME                    SIZE       IDENTIFIER
+   0:      GUID_partition_scheme                        *4.2 GB     disk8
+   1:                LVM2_member                         4.2 GB     disk8s1
+
+/dev/disk9 (external, physical):
+   #:                       TYPE NAME                    SIZE       IDENTIFIER
+   0:                crypto_LUKS                        *8.1 GB     disk9
+
+lvm:vg1 (volume group):
+   #:                       TYPE NAME                    SIZE       IDENTIFIER
+   0:                LVM2_scheme                        +35.0 GB    vg1
+                                 Physical Store disk7s1
+                                                disk8s1
+   1:                       ext4 lvol0                   15.4 GB    vg1:disk7s1:lvol0
+   2:                        xfs lvol1                   7.7 GB     vg1:disk7s1:lvol1
+   3:                      btrfs lvol2                   11.9 GB    vg1:disk7s1:disk8s1:lvol2
+```
+
+### Mount partition read/write
+```
+sudo anylinuxfs /dev/disk0s6
+```
+
+### Mount partition read-only
+```
+sudo anylinuxfs /dev/disk0s6 -o ro
+```
+
+### Mount logical volume from group vg1 backed by disk7s1
+```
+sudo anylinuxfs lvm:vg1:disk7s1:lvol0
+```
+
+### Mount logical volume from group vg1 backed by disk7s1 and disk8s1
+```
+sudo anylinuxfs lvm:vg1:disk7s1:disk8s1:lvol2
+```
+
+### List available drives and decrypt LUKS metadata of disk9
+```
+sudo anylinuxfs list -d /dev/disk9
+```
+**Output will show the encrypted partition filesystem and label**
+```
+...
+/dev/disk9 (external, physical):
+   #:                       TYPE NAME                    SIZE       IDENTIFIER
+   0:          crypto_LUKS: ext4 enc-ext4               *8.1 GB     disk9
+...
+```
+
+### List available drives and decrypt all LUKS metadata
+```
+sudo anylinuxfs list -d all
+```
+
+### Mount LUKS-encrypted partition
+```
+sudo anylinuxfs /dev/disk9
+```
+
+### Mount partition and share it via NFS to other devices too (in any subnet)
+```
+sudo anylinuxfs /dev/disk0s6 -b 0.0.0.0
+```
+
+### Mount partition and share it via NFS to devices within your subnet (more secure)
+```
+# by server, we mean the device which is sharing the mounted filesystem
+sudo anylinuxfs /dev/disk0s6 -b <YOUR_SERVER_IP>
+```
+
+### Show current mount status
+```
+anylinuxfs status
+```
+
+### Try to stop anylinuxfs in case umount or eject didn't completely terminate the VM
+```
+anylinuxfs stop
+```
+
 ## Notes
 
 - When you first run `anylinuxfs` to mount a drive, it will download the alpine Linux image from Docker hub and unpack it to your user profile (`~/.anylinuxfs/alpine`).
