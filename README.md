@@ -114,7 +114,7 @@ sudo anylinuxfs list -d all
 sudo anylinuxfs /dev/disk9
 ```
 
-### Mount partition and share it via NFS to other devices too (in any subnet)
+### Mount partition and share it via NFS to other devices in any subnet
 ```
 sudo anylinuxfs /dev/disk0s6 -b 0.0.0.0
 ```
