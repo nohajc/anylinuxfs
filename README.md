@@ -1,5 +1,6 @@
 # anylinuxfs
-macOS: mount any linux-supported filesystem read/write using NFS and a microVM
+An easy way to mount ext4, btrfs or in fact any linux-supported filesystem on a Mac.
+With full write support, based on the libkrun microVM hypervisor and NFS. Doesn't require installing any kernel extensions or lowering system security.
 
 <a href='https://ko-fi.com/Q5Q41EHAGK' target='_blank'><img height='36' style='border:0px;height:36px;' src='https://storage.ko-fi.com/cdn/kofi1.png?v=6' border='0' alt='Buy Me a Coffee at ko-fi.com' /></a>
 
