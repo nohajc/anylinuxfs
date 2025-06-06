@@ -9,6 +9,7 @@ With full write support, based on the libkrun microVM hypervisor and NFS. Doesn'
 - supports LUKS-encrypted drives
 - supports LVM (even volume groups spanning multiple drives)
 - supports LVM on LUKS (i.e. encrypted LVM)
+- works with both external and internal drives
 - supports disks with GPT, MBR or no partition table (single filesystem or LVM/LUKS container)
 - NFS share by default only reachable from localhost but can be shared across network too
 
