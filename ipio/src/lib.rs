@@ -45,7 +45,7 @@ impl server::Handler for IOHandler {
         active_request: &ActiveRequest<ipc::Service, [u8], IORequest, [u8], IOResponse>,
     ) -> anyhow::Result<()> {
         let req = active_request.user_header();
-        let req_data = active_request.payload();
+
         let mut resp_data;
 
         match *req {
@@ -69,6 +69,7 @@ impl server::Handler for IOHandler {
                 *resp = IOResponse::Read { size };
             }
             IORequest::Write { offset } => 'write: {
+                let req_data = active_request.payload();
                 resp_data = active_request.loan_slice_uninit(0)?;
                 let req_data_ptr = req_data.as_ptr();
                 let resp = resp_data.user_header_mut();

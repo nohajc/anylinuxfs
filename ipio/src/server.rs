@@ -42,6 +42,7 @@ impl<T: Handler> IOServer<T> {
         let server = service
             .server_builder()
             .initial_max_slice_len(4096)
+            .allocation_strategy(AllocationStrategy::PowerOfTwo)
             .create()?;
 
         Ok(IOServer {
