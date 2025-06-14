@@ -1,3 +1,5 @@
+#![allow(non_camel_case_types)]
+
 use libc::{c_char, c_int};
 
 #[link(name = "krun")]
@@ -41,4 +43,30 @@ unsafe extern "C" {
     pub fn krun_setuid(ctx_id: u32, uid: libc::uid_t) -> i32;
     pub fn krun_setgid(ctx_id: u32, gid: libc::gid_t) -> i32;
     pub fn krun_start_enter(ctx: u32) -> i32;
+
+    pub fn krun_add_disk_with_custom_io(
+        ctx_id: u32,
+        block_id: *const c_char,
+        handle: c_int,
+        preadv_fn: krun_preadv_fn_t,
+        pwritev_fn: krun_pwritev_fn_t,
+        size_fn: krun_size_fn_t,
+        read_only: bool,
+    ) -> i32;
 }
+
+pub type krun_preadv_fn_t = unsafe extern "C" fn(
+    hnd: c_int,
+    iov: *const libc::iovec,
+    iovcnt: c_int,
+    offset: libc::off_t,
+) -> libc::ssize_t;
+
+pub type krun_pwritev_fn_t = unsafe extern "C" fn(
+    hnd: c_int,
+    iov: *const libc::iovec,
+    iovcnt: c_int,
+    offset: libc::off_t,
+) -> libc::ssize_t;
+
+pub type krun_size_fn_t = unsafe extern "C" fn(hnd: c_int) -> libc::ssize_t;

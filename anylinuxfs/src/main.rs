@@ -4,15 +4,16 @@ use common_utils::{
     guest_println, host_eprintln, host_println, log, prefix_eprintln, prefix_println, safe_println,
 };
 use devinfo::DevInfo;
+use libc::{c_int, ssize_t};
 use nanoid::nanoid;
 use nix::unistd::{Uid, User};
 
 use serde::{Deserialize, Serialize};
 use std::fmt::Display;
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddrV4, TcpStream};
-use std::os::fd::FromRawFd;
+use std::os::fd::{FromRawFd, IntoRawFd};
 use std::os::unix::fs::chown;
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
@@ -586,6 +587,28 @@ fn drop_privileges(
     Ok(())
 }
 
+unsafe extern "C" fn size_fn(hnd: c_int) -> ssize_t {
+    let mut block_size: u32 = 0;
+    let block_size_ptr = &mut block_size as *mut _;
+
+    if unsafe { libc::ioctl(hnd, 0x40046418, block_size_ptr) } < 0 {
+        return -1;
+    }
+    let mut block_count: u64 = 0;
+    let block_count_ptr = &mut block_count as *mut _;
+
+    if unsafe { libc::ioctl(hnd, 0x40086419, block_count_ptr) } < 0 {
+        return -1;
+    }
+    let result = block_size as u64 * block_count;
+    // host_println!(
+    //     "size_fn called for handle {:#x}, calculated size {}",
+    //     hnd,
+    //     result
+    // );
+    result as ssize_t
+}
+
 fn setup_vm(
     config: &Config,
     dev_info: &[DevInfo],
@@ -624,6 +647,22 @@ fn setup_vm(
                 add_disks_ro,
             )
         }
+        // let file = OpenOptions::new()
+        //     .read(true)
+        //     .write(!add_disks_ro)
+        //     .open(&di.rdisk())?;
+        // let fd = file.into_raw_fd();
+        // unsafe {
+        //     bindings::krun_add_disk_with_custom_io(
+        //         ctx,
+        //         CString::new(format!("data{}", i)).unwrap().as_ptr(),
+        //         fd,
+        //         libc::preadv,
+        //         libc::pwritev,
+        //         size_fn,
+        //         add_disks_ro,
+        //     )
+        // }
         .context("Failed to add disk")?;
     }
 
