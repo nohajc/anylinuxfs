@@ -23,6 +23,12 @@ use crate::{IORequest, IOResponse};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SvcHandle(libc::c_int);
 
+impl SvcHandle {
+    pub fn raw(&self) -> libc::c_int {
+        self.0
+    }
+}
+
 static NODE: LazyLock<Node<ipc::Service>> = LazyLock::new(|| {
     NodeBuilder::new()
         .create::<ipc::Service>()
@@ -132,7 +138,12 @@ impl std::fmt::Display for ErrnoError {
 
 impl Error for ErrnoError {}
 
-pub unsafe fn readv(hnd: c_int, iov: *const libc::iovec, iovcnt: c_int, offset: off_t) -> ssize_t {
+pub unsafe extern "C" fn preadv(
+    hnd: c_int,
+    iov: *const libc::iovec,
+    iovcnt: c_int,
+    offset: off_t,
+) -> ssize_t {
     let iovecs = unsafe { slice::from_raw_parts(iov, iovcnt as usize) };
     let total_buf_len = iovecs.iter().map(|iov| iov.iov_len as usize).sum();
 
@@ -192,7 +203,7 @@ pub unsafe fn readv(hnd: c_int, iov: *const libc::iovec, iovcnt: c_int, offset: 
                     *libc::__error() = errno.value();
                 }
             } else {
-                eprintln!("Error in readv: {:#}", e);
+                eprintln!("Error in preadv: {:#}", e);
                 unsafe {
                     *libc::__error() = libc::EINVAL;
                 }
@@ -202,7 +213,12 @@ pub unsafe fn readv(hnd: c_int, iov: *const libc::iovec, iovcnt: c_int, offset: 
     }
 }
 
-pub unsafe fn writev(hnd: c_int, iov: *const libc::iovec, iovcnt: c_int, offset: off_t) -> ssize_t {
+pub unsafe extern "C" fn pwritev(
+    hnd: c_int,
+    iov: *const libc::iovec,
+    iovcnt: c_int,
+    offset: off_t,
+) -> ssize_t {
     let iovecs = unsafe { slice::from_raw_parts(iov, iovcnt as usize) };
     let total_buf_len: usize = iovecs.iter().map(|iov| iov.iov_len as usize).sum();
 
@@ -258,7 +274,7 @@ pub unsafe fn writev(hnd: c_int, iov: *const libc::iovec, iovcnt: c_int, offset:
                     *libc::__error() = errno.value();
                 }
             } else {
-                eprintln!("Error in writev: {:#}", e);
+                eprintln!("Error in pwritev: {:#}", e);
                 unsafe {
                     *libc::__error() = libc::EINVAL;
                 }
@@ -268,7 +284,7 @@ pub unsafe fn writev(hnd: c_int, iov: *const libc::iovec, iovcnt: c_int, offset:
     }
 }
 
-pub unsafe fn size(hnd: c_int) -> ssize_t {
+pub unsafe extern "C" fn size(hnd: c_int) -> ssize_t {
     let res = with_client(SvcHandle(hnd), |client| -> anyhow::Result<ssize_t> {
         let mut req_data = client.loan_slice_uninit(0)?;
         let req = req_data.user_header_mut();

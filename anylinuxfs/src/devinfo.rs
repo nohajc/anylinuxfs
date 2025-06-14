@@ -13,18 +13,15 @@ pub struct DevInfo {
     uuid: Option<String>,
     vm_path: String,
     fs_driver: Option<String>, // will be auto-detected if not set
+    custom_io: bool,
 }
 
 const BUF_PREFIX: &str = "/dev/disk";
 const RAW_PREFIX: &str = "/dev/rdisk";
 
 impl DevInfo {
-    pub fn lv(
-        path: &str,
-        label: Option<&str>,
-        vm_path: impl Into<String>,
-    ) -> anyhow::Result<DevInfo> {
-        Ok(DevInfo {
+    pub fn lv(path: &str, label: Option<&str>, vm_path: impl Into<String>) -> DevInfo {
+        DevInfo {
             path: path.into(),
             rpath: path.into(),
             label: label.map(|l| l.to_owned()),
@@ -32,7 +29,8 @@ impl DevInfo {
             uuid: None,
             vm_path: vm_path.into(),
             fs_driver: None,
-        })
+            custom_io: false,
+        }
     }
 
     pub fn pv(path: &str) -> anyhow::Result<DevInfo> {
@@ -76,7 +74,25 @@ impl DevInfo {
             uuid,
             vm_path: "/dev/vda".to_owned(),
             fs_driver: None,
+            custom_io: false,
         })
+    }
+
+    pub fn custom(path: &str) -> DevInfo {
+        DevInfo {
+            path: path.into(),
+            rpath: path.into(),
+            label: None,
+            fs_type: None,
+            uuid: None,
+            vm_path: "/dev/vda".to_owned(),
+            fs_driver: None,
+            custom_io: true,
+        }
+    }
+
+    pub fn is_custom_io(&self) -> bool {
+        self.custom_io
     }
 
     pub fn disk(&self) -> &str {
