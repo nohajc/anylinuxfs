@@ -194,31 +194,17 @@ fn run() -> anyhow::Result<()> {
         .status()
         .context("Failed to run vgchange command")?;
 
+    let fs_encrypted = fs_type.as_deref() == Some("crypto_LUKS");
+    if fs_encrypted {
+        disk_path = "/dev/mapper/luks0".into();
+        fs_type = None;
+    }
+    let is_logical = disk_path.starts_with("/dev/mapper");
+
     let name = &cli.mount_name;
-    let mount_name = if !name.starts_with("lvm:") && fs_type.as_deref() != Some("crypto_LUKS") {
+    let mount_name = if !is_logical {
         name.to_owned()
     } else {
-        if fs_type.as_deref() == Some("crypto_LUKS") {
-            disk_path = "/dev/mapper/luks0".into();
-        }
-        let fs = Command::new("/sbin/blkid")
-            .arg(&disk_path)
-            .arg("-s")
-            .arg("TYPE")
-            .arg("-o")
-            .arg("value")
-            .output()
-            .context("Failed to run blkid command")?
-            .stdout;
-
-        let fs = String::from_utf8_lossy(&fs).trim().to_owned();
-        println!("<anylinuxfs-type:{}>", &fs);
-        fs_type = if !fs.is_empty() {
-            Some(fs.clone())
-        } else {
-            None
-        };
-
         let label = Command::new("/sbin/blkid")
             .arg(&disk_path)
             .arg("-s")
@@ -236,6 +222,29 @@ fn run() -> anyhow::Result<()> {
         println!("<anylinuxfs-label:{}>", &label);
         label
     };
+
+    match fs_type.as_deref() {
+        Some("auto") | None => {
+            let fs = Command::new("/sbin/blkid")
+                .arg(&disk_path)
+                .arg("-s")
+                .arg("TYPE")
+                .arg("-o")
+                .arg("value")
+                .output()
+                .context("Failed to run blkid command")?
+                .stdout;
+
+            let fs = String::from_utf8_lossy(&fs).trim().to_owned();
+            println!("<anylinuxfs-type:{}>", &fs);
+            fs_type = if !fs.is_empty() {
+                Some(fs.clone())
+            } else {
+                None
+            };
+        }
+        _ => (),
+    }
 
     let mount_point = format!("/mnt/{}", mount_name);
 
