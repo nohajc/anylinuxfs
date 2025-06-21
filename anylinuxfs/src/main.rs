@@ -36,9 +36,11 @@ use utils::{
     LockFile, OutputAction, StatusError, write_to_pipe,
 };
 
+use krun as bindings;
+
 mod api;
-#[allow(unused)]
-mod bindings;
+// #[allow(unused)]
+// mod bindings;
 mod devinfo;
 mod diskutil;
 mod fsutil;

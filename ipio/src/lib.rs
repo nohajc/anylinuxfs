@@ -5,7 +5,7 @@ use std::{fs::File, os::fd::AsRawFd, time::Duration};
 pub mod client;
 pub mod server;
 
-const CYCLE_TIME: Duration = Duration::from_millis(10); // 10 ms
+const CYCLE_TIME: Duration = Duration::from_millis(25); // 25 ms
 
 #[derive(Debug, ZeroCopySend)]
 #[repr(C)]
