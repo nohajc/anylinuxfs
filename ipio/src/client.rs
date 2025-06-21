@@ -2,7 +2,6 @@
 // we also need to handle splitting or merging the iovec buffers to achieve vectorized I/O
 
 use std::{
-    cell::RefCell,
     cmp::min,
     collections::{HashMap, hash_map::Entry},
     error::Error,
@@ -29,12 +28,6 @@ impl SvcHandle {
     }
 }
 
-static NODE: LazyLock<Node<ipc::Service>> = LazyLock::new(|| {
-    NodeBuilder::new()
-        .create::<ipc::Service>()
-        .expect("Failed to create IPC node")
-});
-
 type ServiceType = PortFactory<ipc::Service, [u8], IORequest, [u8], IOResponse>;
 type ClientType = Client<ipc::Service, [u8], IORequest, [u8], IOResponse>;
 
@@ -45,31 +38,41 @@ static SERVICE_NAMES: LazyLock<Mutex<HashMap<SvcHandle, String>>> =
 static SERVICES: LazyLock<Mutex<HashMap<String, ServiceType>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-thread_local! {
-    static CLIENTS: LazyLock<RefCell<HashMap<SvcHandle, ClientType>>> =
-        LazyLock::new(|| RefCell::new(HashMap::new()));
-}
+static NODE: LazyLock<Mutex<Node<ipc::Service>>> = LazyLock::new(|| {
+    Mutex::new(
+        NodeBuilder::new()
+            .create::<ipc::Service>()
+            .expect("Failed to create IPC node"),
+    )
+});
+
+// thread_local! {
+static mut CLIENTS: LazyLock<Mutex<HashMap<SvcHandle, ClientType>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+// }
 
 pub fn new_service(service_name: impl AsRef<str>) -> anyhow::Result<SvcHandle> {
-    let node = &*NODE;
+    {
+        let node = NODE.lock().unwrap();
+        let mut services = SERVICES.lock().unwrap();
+        if services.contains_key(service_name.as_ref()) {
+            return Err(anyhow::anyhow!(
+                "Service '{}' already exists",
+                service_name.as_ref()
+            ));
+        }
 
-    let mut services = SERVICES.lock().unwrap();
-    if services.contains_key(service_name.as_ref()) {
-        return Err(anyhow::anyhow!(
-            "Service '{}' already exists",
-            service_name.as_ref()
-        ));
+        services.insert(
+            service_name.as_ref().into(),
+            node.service_builder(&service_name.as_ref().try_into().unwrap())
+                .request_response::<[u8], [u8]>()
+                .request_user_header::<IORequest>()
+                .response_user_header::<IOResponse>()
+                // .max_clients(16)
+                .open_or_create()
+                .expect("Failed to create IPC service"),
+        );
     }
-
-    services.insert(
-        service_name.as_ref().into(),
-        node.service_builder(&service_name.as_ref().try_into().unwrap())
-            .request_response::<[u8], [u8]>()
-            .request_user_header::<IORequest>()
-            .response_user_header::<IOResponse>()
-            .open_or_create()
-            .expect("Failed to create IPC service"),
-    );
 
     let mut service_names = SERVICE_NAMES.lock().unwrap();
     let handle = SvcHandle(SVC_HND_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
@@ -78,47 +81,52 @@ pub fn new_service(service_name: impl AsRef<str>) -> anyhow::Result<SvcHandle> {
     Ok(handle)
 }
 
+fn build_client(service_name: &str) -> anyhow::Result<ClientType> {
+    let services = SERVICES.lock().unwrap();
+
+    let svc = services
+        .get(service_name)
+        .ok_or_else(|| anyhow::anyhow!("Service '{}' not found", service_name))?;
+
+    svc.client_builder()
+        .initial_max_slice_len(4096)
+        .allocation_strategy(AllocationStrategy::PowerOfTwo)
+        .create()
+        .context("Failed to create IPC client")
+}
+
 // for a given service handle, look up or create
 // the client in thread-local storage and pass it to `f`
 pub fn with_client<R>(
     handle: SvcHandle,
-    f: impl FnOnce(&mut ClientType) -> anyhow::Result<R>,
+    f: impl FnOnce(&Node<ipc::Service>, &mut ClientType) -> anyhow::Result<R>,
 ) -> anyhow::Result<R> {
-    CLIENTS.with(|clients| {
-        let mut clients = clients.borrow_mut();
+    let mut clients = unsafe { &*CLIENTS }.lock().unwrap();
+    let thread_id: u64 = unsafe { std::mem::transmute(thread::current().id()) };
+    // println!("with_client called from thread: {thread_id}");
 
-        let client = match clients.entry(handle) {
-            Entry::Occupied(oe) => oe.into_mut(),
-            Entry::Vacant(ve) => {
-                let service_names = SERVICE_NAMES.lock().unwrap();
-                let service_name = service_names
-                    .get(&handle)
-                    .ok_or_else(|| anyhow::anyhow!("Service handle {:?} not found", handle))?;
+    let client = match clients.entry(handle) {
+        Entry::Occupied(oe) => oe.into_mut(),
+        Entry::Vacant(ve) => {
+            let service_names = SERVICE_NAMES.lock().unwrap();
 
-                println!(
-                    "Initializing new client for service: {} (thread: {:?})",
-                    service_name,
-                    thread::current().id()
-                );
+            let service_name = service_names
+                .get(&handle)
+                .ok_or_else(|| anyhow::anyhow!("Service handle {:?} not found", handle))?;
 
-                let services = SERVICES.lock().unwrap();
-                let svc = services
-                    .get(service_name)
-                    .ok_or_else(|| anyhow::anyhow!("Service '{}' not found", service_name))?;
+            println!(
+                "Initializing new client for service: {} (thread: {})",
+                service_name, thread_id
+            );
 
-                let client = svc
-                    .client_builder()
-                    .initial_max_slice_len(4096)
-                    .allocation_strategy(AllocationStrategy::PowerOfTwo)
-                    .create()
-                    .context("Failed to create IPC client")?;
+            let client = build_client(&service_name)?;
 
-                ve.insert(client)
-            }
-        };
+            ve.insert(client)
+        }
+    };
 
-        f(client)
-    })
+    let node = NODE.lock().unwrap();
+    f(&node, client)
 }
 
 #[derive(Debug)]
@@ -144,10 +152,14 @@ pub unsafe extern "C" fn preadv(
     iovcnt: c_int,
     offset: off_t,
 ) -> ssize_t {
+    // println!(
+    //     "preadv called with handle: {}, iov: {:?}, iovcnt: {}, offset: {}",
+    //     hnd, iov, iovcnt, offset
+    // );
     let iovecs = unsafe { slice::from_raw_parts(iov, iovcnt as usize) };
     let total_buf_len = iovecs.iter().map(|iov| iov.iov_len as usize).sum();
 
-    let res = with_client(SvcHandle(hnd), |client| -> anyhow::Result<ssize_t> {
+    let res = with_client(SvcHandle(hnd), |node, client| -> anyhow::Result<ssize_t> {
         let mut req_data = client.loan_slice_uninit(0)?;
         let req = req_data.user_header_mut();
         *req = IORequest::Read {
@@ -156,6 +168,8 @@ pub unsafe extern "C" fn preadv(
         };
         let req = unsafe { req_data.assume_init() };
         let pending_resp = req.send()?;
+
+        node.wait(crate::CYCLE_TIME).context("Failed to wait")?;
 
         if let Some(resp) = pending_resp.receive()? {
             let resp_data = resp.payload();
@@ -222,7 +236,7 @@ pub unsafe extern "C" fn pwritev(
     let iovecs = unsafe { slice::from_raw_parts(iov, iovcnt as usize) };
     let total_buf_len: usize = iovecs.iter().map(|iov| iov.iov_len as usize).sum();
 
-    let res = with_client(SvcHandle(hnd), |client| -> anyhow::Result<ssize_t> {
+    let res = with_client(SvcHandle(hnd), |node, client| -> anyhow::Result<ssize_t> {
         let mut req = client.loan_slice_uninit(total_buf_len)?;
         let req_header = req.user_header_mut();
         *req_header = IORequest::Write { offset };
@@ -241,6 +255,8 @@ pub unsafe extern "C" fn pwritev(
 
         let req = unsafe { req.assume_init() };
         let pending_resp = req.send()?;
+
+        node.wait(crate::CYCLE_TIME).context("Failed to wait")?;
 
         if let Some(resp) = pending_resp.receive()? {
             let resp_header = resp.user_header();
@@ -285,12 +301,14 @@ pub unsafe extern "C" fn pwritev(
 }
 
 pub unsafe extern "C" fn size(hnd: c_int) -> ssize_t {
-    let res = with_client(SvcHandle(hnd), |client| -> anyhow::Result<ssize_t> {
+    let res = with_client(SvcHandle(hnd), |node, client| -> anyhow::Result<ssize_t> {
         let mut req_data = client.loan_slice_uninit(0)?;
         let req = req_data.user_header_mut();
         *req = IORequest::Size;
         let req = unsafe { req_data.assume_init() };
         let pending_resp = req.send()?;
+
+        node.wait(crate::CYCLE_TIME).context("Failed to wait")?;
 
         if let Some(resp) = pending_resp.receive()? {
             let resp_header = resp.user_header();

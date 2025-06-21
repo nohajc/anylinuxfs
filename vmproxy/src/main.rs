@@ -235,7 +235,7 @@ fn run() -> anyhow::Result<()> {
     let is_logical = disk_path.starts_with("/dev/mapper") || is_raid;
 
     let name = &cli.mount_name;
-    let mount_name = if !is_logical {
+    let mount_name = if !is_logical && fs_type.is_some() && fs_type.as_deref() != Some("auto") {
         name.to_owned()
     } else {
         let label = Command::new("/sbin/blkid")
