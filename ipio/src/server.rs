@@ -38,7 +38,7 @@ impl<T: Handler> IOServer<T> {
             .request_response::<[T::ReqSliceElem], [T::RespSliceElem]>()
             .request_user_header::<T::ReqHeader>()
             .response_user_header::<T::RespHeader>()
-            // .max_clients(16)
+            .max_clients(16)
             .open_or_create()?;
         let server = service
             .server_builder()
@@ -58,8 +58,10 @@ impl<T: Handler> IOServer<T> {
 
         while self.node.wait(CYCLE_TIME).is_ok() {
             while let Some(active_request) = self.server.receive().ok().flatten() {
-                println!("received request: {:?}", active_request);
+                // println!("received request: {:?}", active_request);
+                println!("received request");
                 self.handler.handle_request(&active_request)?;
+                println!("sending response");
                 // println!("sending response: {:?}", *response);
             }
         }
