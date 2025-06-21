@@ -1,4 +1,8 @@
-use iceoryx2::{active_request::ActiveRequest, prelude::ZeroCopySend, service::ipc};
+use iceoryx2::{
+    active_request::ActiveRequest,
+    prelude::{LogLevel, ZeroCopySend, set_log_level},
+    service::ipc,
+};
 use libc::{c_int, iovec, off_t, size_t, ssize_t};
 use std::{fs::File, os::fd::AsRawFd};
 
@@ -121,6 +125,7 @@ impl server::Handler for IOHandler {
 }
 
 pub fn start_io_server(service_name: impl AsRef<str>, file: File) -> anyhow::Result<()> {
+    set_log_level(LogLevel::Fatal);
     let handler = IOHandler { file };
     let server = server::IOServer::new(service_name, handler)?;
     server.run()

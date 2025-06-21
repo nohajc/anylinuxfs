@@ -59,6 +59,7 @@ static NODE: LazyLock<Node<ipc::Service>> = LazyLock::new(|| {
 // }
 
 pub fn new_service(service_name: impl AsRef<str>) -> anyhow::Result<SvcHandle> {
+    set_log_level(LogLevel::Fatal);
     {
         let node = &*NODE;
         let mut services = SERVICES.lock().unwrap();
@@ -135,7 +136,7 @@ pub fn new_service(service_name: impl AsRef<str>) -> anyhow::Result<SvcHandle> {
                                 .send(resp_header.clone())
                                 .expect("Failed to send response header");
                         } else {
-                            println!("No response received");
+                            // println!("No response received");
                         }
                     }
                     write_req @ IORequest::Write { offset: _ } => {
@@ -175,7 +176,7 @@ pub fn new_service(service_name: impl AsRef<str>) -> anyhow::Result<SvcHandle> {
                                 .send(resp_header.clone())
                                 .expect("Failed to send response header");
                         } else {
-                            println!("No response received");
+                            // println!("No response received");
                         }
                     }
                     size_req @ IORequest::Size => {
@@ -194,7 +195,7 @@ pub fn new_service(service_name: impl AsRef<str>) -> anyhow::Result<SvcHandle> {
                                 .send(resp_header.clone())
                                 .expect("Failed to send response header");
                         } else {
-                            println!("No response received");
+                            // println!("No response received");
                         }
                     }
                 }
@@ -305,7 +306,7 @@ pub unsafe fn preadv(hnd: c_int, iov: *const libc::iovec, iovcnt: c_int, offset:
                     *libc::__error() = errno.value();
                 }
             } else {
-                eprintln!("Error in preadv: {:#}", e);
+                // eprintln!("Error in preadv: {:#}", e);
                 unsafe {
                     *libc::__error() = libc::EINVAL;
                 }
@@ -354,7 +355,7 @@ pub unsafe fn pwritev(
                     *libc::__error() = errno.value();
                 }
             } else {
-                eprintln!("Error in pwritev: {:#}", e);
+                // eprintln!("Error in pwritev: {:#}", e);
                 unsafe {
                     *libc::__error() = libc::EINVAL;
                 }
@@ -394,7 +395,7 @@ pub unsafe fn size(hnd: c_int) -> ssize_t {
                     *libc::__error() = errno.value();
                 }
             } else {
-                eprintln!("Error in size: {:#}", e);
+                // eprintln!("Error in size: {:#}", e);
                 unsafe {
                     *libc::__error() = libc::EINVAL;
                 }
