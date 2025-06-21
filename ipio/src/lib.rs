@@ -89,19 +89,30 @@ impl server::Handler for IOHandler {
             }
             IORequest::Size => 'size: {
                 let hnd = self.file.as_raw_fd();
-
+                let mut block_size: u32 = 0;
+                let block_size_ptr = &mut block_size as *mut _;
                 resp_data = active_request.loan_slice_uninit(0)?;
                 let resp = resp_data.user_header_mut();
 
-                let size_res = unsafe { size(hnd) };
-                if size_res < 0 {
+                if unsafe { libc::ioctl(hnd, 0x40046418, block_size_ptr) } < 0 {
+                    *resp = IOResponse::Error {
+                        errno: std::io::Error::last_os_error().raw_os_error().unwrap_or(0),
+                    };
+                    break 'size;
+                }
+                let mut block_count: u64 = 0;
+                let block_count_ptr = &mut block_count as *mut _;
+
+                if unsafe { libc::ioctl(hnd, 0x40086419, block_count_ptr) } < 0 {
                     *resp = IOResponse::Error {
                         errno: std::io::Error::last_os_error().raw_os_error().unwrap_or(0),
                     };
                     break 'size;
                 }
 
-                *resp = IOResponse::Size { size: size_res };
+                *resp = IOResponse::Size {
+                    size: (block_size as u64 * block_count) as ssize_t,
+                };
             }
         };
         let resp = unsafe { resp_data.assume_init() };
@@ -109,26 +120,6 @@ impl server::Handler for IOHandler {
 
         Ok(())
     }
-}
-
-unsafe fn size(hnd: c_int) -> ssize_t {
-    let mut block_size: u32 = 0;
-    let block_size_ptr = &mut block_size as *mut _;
-
-    let res = unsafe { libc::ioctl(hnd, 0x40046418, block_size_ptr) };
-    if res < 0 {
-        return res as ssize_t;
-    }
-
-    let mut block_count: u64 = 0;
-    let block_count_ptr = &mut block_count as *mut _;
-
-    let res = unsafe { libc::ioctl(hnd, 0x40086419, block_count_ptr) };
-    if res < 0 {
-        return res as ssize_t;
-    }
-
-    (block_size as u64 * block_count) as ssize_t
 }
 
 pub fn start_io_server(service_name: impl AsRef<str>, file: File) -> anyhow::Result<()> {
