@@ -38,20 +38,22 @@ static SERVICE_NAMES: LazyLock<Mutex<HashMap<SvcHandle, String>>> =
 static SERVICES: LazyLock<Mutex<HashMap<String, ServiceType>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-static NODE: LazyLock<Node<ipc::Service>> = LazyLock::new(|| {
-    NodeBuilder::new()
-        .create::<ipc::Service>()
-        .expect("Failed to create IPC node")
+static NODE: LazyLock<Mutex<Node<ipc::Service>>> = LazyLock::new(|| {
+    Mutex::new(
+        NodeBuilder::new()
+            .create::<ipc::Service>()
+            .expect("Failed to create IPC node"),
+    )
 });
 
 // thread_local! {
-static mut CLIENTS: LazyLock<Mutex<HashMap<u64, HashMap<SvcHandle, ClientType>>>> =
+static mut CLIENTS: LazyLock<Mutex<HashMap<SvcHandle, ClientType>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 // }
 
 pub fn new_service(service_name: impl AsRef<str>) -> anyhow::Result<SvcHandle> {
     {
-        let node = &*NODE;
+        let node = NODE.lock().unwrap();
         let mut services = SERVICES.lock().unwrap();
         if services.contains_key(service_name.as_ref()) {
             return Err(anyhow::anyhow!(
@@ -66,7 +68,7 @@ pub fn new_service(service_name: impl AsRef<str>) -> anyhow::Result<SvcHandle> {
                 .request_response::<[u8], [u8]>()
                 .request_user_header::<IORequest>()
                 .response_user_header::<IOResponse>()
-                .max_clients(16)
+                // .max_clients(16)
                 .open_or_create()
                 .expect("Failed to create IPC service"),
         );
@@ -75,14 +77,6 @@ pub fn new_service(service_name: impl AsRef<str>) -> anyhow::Result<SvcHandle> {
     let mut service_names = SERVICE_NAMES.lock().unwrap();
     let handle = SvcHandle(SVC_HND_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
     service_names.insert(handle, service_name.as_ref().into());
-
-    let mut all_clients = unsafe { &*CLIENTS }.lock().unwrap();
-    for i in 0..16 {
-        all_clients
-            .entry(i)
-            .or_default()
-            .insert(handle, build_client(service_name.as_ref())?);
-    }
 
     Ok(handle)
 }
@@ -107,9 +101,8 @@ pub fn with_client<R>(
     handle: SvcHandle,
     f: impl FnOnce(&Node<ipc::Service>, &mut ClientType) -> anyhow::Result<R>,
 ) -> anyhow::Result<R> {
-    let mut all_clients = unsafe { &*CLIENTS }.lock().unwrap();
+    let mut clients = unsafe { &*CLIENTS }.lock().unwrap();
     let thread_id: u64 = unsafe { std::mem::transmute(thread::current().id()) };
-    let clients = all_clients.entry(thread_id).or_insert_with(HashMap::new);
     // println!("with_client called from thread: {thread_id}");
 
     let client = match clients.entry(handle) {
@@ -132,8 +125,8 @@ pub fn with_client<R>(
         }
     };
 
-    let node = &*NODE;
-    f(node, client)
+    let node = NODE.lock().unwrap();
+    f(&node, client)
 }
 
 #[derive(Debug)]
@@ -153,7 +146,12 @@ impl std::fmt::Display for ErrnoError {
 
 impl Error for ErrnoError {}
 
-pub fn preadv(hnd: c_int, iov: *const libc::iovec, iovcnt: c_int, offset: off_t) -> ssize_t {
+pub unsafe extern "C" fn preadv(
+    hnd: c_int,
+    iov: *const libc::iovec,
+    iovcnt: c_int,
+    offset: off_t,
+) -> ssize_t {
     // println!(
     //     "preadv called with handle: {}, iov: {:?}, iovcnt: {}, offset: {}",
     //     hnd, iov, iovcnt, offset
@@ -188,16 +186,12 @@ pub fn preadv(hnd: c_int, iov: *const libc::iovec, iovcnt: c_int, offset: off_t)
                         let buf = unsafe {
                             slice::from_raw_parts_mut(iov.iov_base as *mut u8, iov.iov_len as usize)
                         };
-                        let buf_size = min(iov.iov_len as usize, remaining_size);
-                        buf.copy_from_slice(&resp_data[buf_pos..buf_pos + buf_size]);
+                        let buf_size = min(buf_pos + iov.iov_len as usize, remaining_size);
+                        buf.copy_from_slice(&resp_data[buf_pos..buf_size]);
                         buf_pos += iov.iov_len as usize;
                         remaining_size -= iov.iov_len as usize;
                     }
 
-                    // println!(
-                    //     "preadv: read {} bytes from handle: {}, offset: {}",
-                    //     size, hnd, offset
-                    // );
                     return Ok(size);
                 }
                 IOResponse::Error { errno } => {
@@ -233,7 +227,12 @@ pub fn preadv(hnd: c_int, iov: *const libc::iovec, iovcnt: c_int, offset: off_t)
     }
 }
 
-pub fn pwritev(hnd: c_int, iov: *const libc::iovec, iovcnt: c_int, offset: off_t) -> ssize_t {
+pub unsafe extern "C" fn pwritev(
+    hnd: c_int,
+    iov: *const libc::iovec,
+    iovcnt: c_int,
+    offset: off_t,
+) -> ssize_t {
     let iovecs = unsafe { slice::from_raw_parts(iov, iovcnt as usize) };
     let total_buf_len: usize = iovecs.iter().map(|iov| iov.iov_len as usize).sum();
 
@@ -301,7 +300,7 @@ pub fn pwritev(hnd: c_int, iov: *const libc::iovec, iovcnt: c_int, offset: off_t
     }
 }
 
-pub fn size(hnd: c_int) -> ssize_t {
+pub unsafe extern "C" fn size(hnd: c_int) -> ssize_t {
     let res = with_client(SvcHandle(hnd), |node, client| -> anyhow::Result<ssize_t> {
         let mut req_data = client.loan_slice_uninit(0)?;
         let req = req_data.user_header_mut();
