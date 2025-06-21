@@ -1,8 +1,8 @@
-use std::fmt;
+use std::{fmt, time::Duration};
 
 use iceoryx2::{active_request::ActiveRequest, port::server::Server, prelude::*};
 
-use crate::CYCLE_TIME;
+const CYCLE_TIME: Duration = Duration::from_millis(1); // 1 ms
 
 pub trait Handler {
     type ReqSliceElem: fmt::Debug + ZeroCopySend;
@@ -58,8 +58,10 @@ impl<T: Handler> IOServer<T> {
 
         while self.node.wait(CYCLE_TIME).is_ok() {
             while let Some(active_request) = self.server.receive().ok().flatten() {
-                println!("received request: {:?}", active_request);
+                // println!("received request: {:?}", active_request);
+                println!("received request");
                 self.handler.handle_request(&active_request)?;
+                println!("sending response");
                 // println!("sending response: {:?}", *response);
             }
         }

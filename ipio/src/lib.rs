@@ -1,13 +1,11 @@
 use iceoryx2::{active_request::ActiveRequest, prelude::ZeroCopySend, service::ipc};
 use libc::{c_int, iovec, off_t, size_t, ssize_t};
-use std::{fs::File, os::fd::AsRawFd, time::Duration};
+use std::{fs::File, os::fd::AsRawFd};
 
 pub mod client;
 pub mod server;
 
-const CYCLE_TIME: Duration = Duration::from_millis(25); // 25 ms
-
-#[derive(Debug, ZeroCopySend)]
+#[derive(Debug, Clone, ZeroCopySend)]
 #[repr(C)]
 pub enum IORequest {
     Read { size: size_t, offset: off_t },
@@ -15,7 +13,7 @@ pub enum IORequest {
     Size,
 }
 
-#[derive(Debug, ZeroCopySend)]
+#[derive(Debug, Clone, ZeroCopySend)]
 #[repr(C)]
 pub enum IOResponse {
     Read { size: ssize_t },
