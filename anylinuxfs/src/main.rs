@@ -587,7 +587,7 @@ fn setup_vm(
 
     for (i, di) in dev_info.iter().enumerate() {
         if di.is_custom_io() {
-            let handle = ipio::client::new_service(di.rdisk())?;
+            let handle = ipio::client::new_service(di.rdisk().into())?;
             unsafe {
                 bindings::krun_add_disk_with_custom_io(
                     ctx,
