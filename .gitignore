@@ -16,10 +16,10 @@ target/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
-bin/
-libexec/
-vmroot/
-tmp/
+/bin/
+/libexec/
+/vmroot/
+/tmp/
 
 init-rootfs/alpine/
 init-rootfs/init-rootfs
