@@ -39,6 +39,7 @@ impl<T: Handler> IOServer<T> {
             .request_user_header::<T::ReqHeader>()
             .response_user_header::<T::RespHeader>()
             // .max_clients(16)
+            // .max_active_requests_per_client(16)
             .open_or_create()?;
         let server = service
             .server_builder()
