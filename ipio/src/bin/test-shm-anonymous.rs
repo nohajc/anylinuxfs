@@ -12,7 +12,7 @@ use libc::{c_int, off_t};
 fn main() -> anyhow::Result<()> {
     let args = env::args().collect::<Vec<_>>();
     println!("Arguments: {:?}", args);
-    let shm = ipio::shm_create_anonymous(4096)?;
+    let shm = ipio::Shm::create_anonymous(4096)?;
 
     let exec_path = fs::canonicalize(env::current_exe().context("Failed to get executable path")?)
         .context("Failed to get resolved exec path")?;
@@ -37,7 +37,7 @@ fn main() -> anyhow::Result<()> {
         let shm_size = args[2]
             .parse::<off_t>()
             .context("Failed to parse shm_size")?;
-        let shm = ipio::shm_from_fd(shm_fd, shm_size)?;
+        let shm = ipio::Shm::from_fd(shm_fd, shm_size)?;
 
         let data = unsafe { shm.data() };
         data[0] = MaybeUninit::new(0xca);
