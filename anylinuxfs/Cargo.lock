@@ -1150,6 +1150,7 @@ dependencies = [
  "iceoryx2",
  "iceoryx2-bb-container",
  "libc",
+ "nanoid",
  "oneshot",
 ]
 
