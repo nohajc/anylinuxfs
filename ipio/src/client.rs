@@ -8,7 +8,7 @@ use std::{
     mem::MaybeUninit,
     slice,
     sync::{LazyLock, Mutex, atomic::AtomicI32, mpsc},
-    thread,
+    thread::{self, JoinHandle},
     time::Duration,
 };
 
@@ -53,6 +53,24 @@ static NODE: LazyLock<Node<ipc::Service>> = LazyLock::new(|| {
         .expect("Failed to create IPC node")
 });
 
+static THREADS: LazyLock<Mutex<Vec<JoinHandle<()>>>> = LazyLock::new(|| {
+    unsafe { libc::atexit(thread_cleanup) };
+    Mutex::new(Vec::new())
+});
+
+extern "C" fn thread_cleanup() {
+    println!("Cleaning up threads...");
+    let mut services = SERVICES.lock().unwrap();
+    services.clear();
+
+    let mut threads = THREADS.lock().unwrap();
+    for thnd in threads.drain(..) {
+        if let Err(e) = thnd.join() {
+            eprintln!("Failed to join thread: {:?}", e);
+        }
+    }
+}
+
 // thread_local! {
 // static mut CLIENTS: LazyLock<Mutex<HashMap<SvcHandle, ClientType>>> =
 //     LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -78,10 +96,11 @@ pub fn new_service(service_name: impl AsRef<str>) -> anyhow::Result<SvcHandle> {
             .request_user_header::<IORequest>()
             .response_user_header::<IOResponse>()
             // .max_clients(16)
+            // .max_active_requests_per_client(16)
             .open_or_create()
             .expect("Failed to create IPC service");
 
-        _ = thread::spawn(move || {
+        let thnd = thread::spawn(move || {
             let client = svc
                 .client_builder()
                 .initial_max_slice_len(4096)
@@ -102,7 +121,14 @@ pub fn new_service(service_name: impl AsRef<str>) -> anyhow::Result<SvcHandle> {
 
                         node.wait(CYCLE_TIME).context("Failed to wait").unwrap();
 
-                        if let Some(resp) = pending_resp.receive().unwrap() {
+                        if let Some(resp) = pending_resp.receive().transpose() {
+                            let resp = match resp {
+                                Ok(resp) => resp,
+                                Err(e) => {
+                                    eprintln!("Failed to receive response: {:?}", e);
+                                    break;
+                                }
+                            };
                             let resp_data = resp.payload();
                             let resp_header = resp.user_header();
 
@@ -202,6 +228,11 @@ pub fn new_service(service_name: impl AsRef<str>) -> anyhow::Result<SvcHandle> {
             }
         });
 
+        {
+            let mut threads = THREADS.lock().unwrap();
+            threads.push(thnd);
+        }
+
         services.insert(service_name.as_ref().into(), tx);
     }
 
@@ -230,19 +261,24 @@ pub fn with_client<R>(
     handle: SvcHandle,
     f: impl FnOnce(&RequestSenderType) -> anyhow::Result<R>,
 ) -> anyhow::Result<R> {
-    let service_names = SERVICE_NAMES.lock().unwrap();
+    let tx: RequestSenderType;
 
-    let service_name = service_names
-        .get(&handle)
-        .ok_or_else(|| anyhow::anyhow!("Service handle {:?} not found", handle))?;
+    {
+        let service_names = SERVICE_NAMES.lock().unwrap();
 
-    let services = SERVICES.lock().unwrap();
+        let service_name = service_names
+            .get(&handle)
+            .ok_or_else(|| anyhow::anyhow!("Service handle {:?} not found", handle))?;
 
-    let tx = services
-        .get(service_name)
-        .ok_or_else(|| anyhow::anyhow!("Service '{}' not found", service_name))?;
+        let services = SERVICES.lock().unwrap();
 
-    f(tx)
+        tx = services
+            .get(service_name)
+            .ok_or_else(|| anyhow::anyhow!("Service '{}' not found", service_name))?
+            .clone();
+    }
+
+    f(&tx)
 }
 
 #[derive(Debug)]
