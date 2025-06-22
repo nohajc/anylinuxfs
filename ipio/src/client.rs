@@ -5,9 +5,9 @@ use std::{
     cmp::min,
     collections::HashMap,
     error::Error,
-    mem::{self, MaybeUninit},
+    mem::MaybeUninit,
     slice,
-    sync::{LazyLock, Mutex, atomic::AtomicI32, mpsc},
+    sync::{LazyLock, Mutex, OnceLock, atomic::AtomicI32, mpsc},
     thread::{self, JoinHandle},
     time::Duration,
 };
@@ -22,6 +22,9 @@ use iceoryx2::{
 use libc::{c_int, off_t, ssize_t};
 
 use crate::{IORequest, IOResponse};
+
+// TODO: initialize
+static CLIENT: OnceLock<Mutex<crate::Client>> = OnceLock::new();
 
 const CYCLE_TIME: Duration = Duration::from_millis(5); // 5 ms
 
@@ -152,10 +155,10 @@ pub fn new_service(service_name: String) -> anyhow::Result<SvcHandle> {
             let service_name = service_name.clone();
             move || {
                 println!("Spawned a thread with IPC client");
-                let mut node = NODE.lock().unwrap();
-                let mut svc =
+                let node = NODE.lock().unwrap();
+                let svc =
                     build_service(&node, &service_name).expect("Failed to create IPC service");
-                let mut client = new_client(&svc).unwrap();
+                let client = new_client(&svc).unwrap();
 
                 while let Ok(req) = rx.recv() {
                     let (io_req, iovecs, resp_tx) = &req;
@@ -221,7 +224,7 @@ pub fn new_service(service_name: String) -> anyhow::Result<SvcHandle> {
                                     println!("No response received");
                                 }
                             }
-                            write_req @ IORequest::Write { offset: _ } => {
+                            write_req @ IORequest::Write { offset: _, size: _ } => {
                                 let CIOVecs { iov, iovcnt } =
                                     iovecs.expect("IOVecs must be provided for read requests");
                                 let iovecs = unsafe { slice::from_raw_parts(iov, iovcnt as usize) };
@@ -367,34 +370,36 @@ pub unsafe fn preadv(hnd: c_int, iov: *const libc::iovec, iovcnt: c_int, offset:
     let iovecs = unsafe { slice::from_raw_parts(iov, iovcnt as usize) };
     let total_buf_len = iovecs.iter().map(|iov| iov.iov_len as usize).sum();
 
-    let res = with_client(SvcHandle(hnd), |tx| -> anyhow::Result<ssize_t> {
-        let (resp_tx, resp_rx) = mpsc::channel();
-        tx.send((
-            IORequest::Read {
-                size: total_buf_len,
-                offset,
-            },
-            Some(CIOVecs { iov, iovcnt }),
-            resp_tx,
-        ))?;
-        let resp = resp_rx.recv()?;
-        // println!("Received response: {:?}", resp);
+    // let res = with_client(SvcHandle(hnd), |tx| -> anyhow::Result<ssize_t> {
+    //     let (resp_tx, resp_rx) = mpsc::channel();
+    //     tx.send((
+    //         IORequest::Read {
+    //             size: total_buf_len,
+    //             offset,
+    //         },
+    //         Some(CIOVecs { iov, iovcnt }),
+    //         resp_tx,
+    //     ))?;
+    //     let resp = resp_rx.recv()?;
+    //     // println!("Received response: {:?}", resp);
 
-        match resp {
-            IOResponse::Read { size } => {
-                if size < 0 {
-                    return Err(anyhow::anyhow!("Unexpected read error"));
-                }
-                return Ok(size);
-            }
-            IOResponse::Error { errno } => {
-                return Err(ErrnoError(errno).into());
-            }
-            _ => {
-                return Err(anyhow::anyhow!("Unexpected response header: {:?}", resp));
-            }
-        }
-    });
+    //     match resp {
+    //         IOResponse::Read { size } => {
+    //             if size < 0 {
+    //                 return Err(anyhow::anyhow!("Unexpected read error"));
+    //             }
+    //             return Ok(size);
+    //         }
+    //         IOResponse::Error { errno } => {
+    //             return Err(ErrnoError(errno).into());
+    //         }
+    //         _ => {
+    //             return Err(anyhow::anyhow!("Unexpected response header: {:?}", resp));
+    //         }
+    //     }
+    // });
+
+    let res = preadv_impl(hnd, iovecs, total_buf_len, offset);
 
     match res {
         Ok(size) => return size,
@@ -414,36 +419,87 @@ pub unsafe fn preadv(hnd: c_int, iov: *const libc::iovec, iovcnt: c_int, offset:
     }
 }
 
+fn preadv_impl(
+    _hnd: c_int,
+    iovecs: &[libc::iovec],
+    total_buf_len: usize,
+    offset: off_t,
+) -> anyhow::Result<ssize_t> {
+    let mut client = CLIENT
+        .get()
+        .context("IPC Client not initialized")?
+        .lock()
+        .unwrap();
+
+    let req = IORequest::Read {
+        size: total_buf_len,
+        offset,
+    };
+    client.send_request(req)?;
+    let resp = client.recv_response()?;
+
+    match resp {
+        IOResponse::Read { size } => {
+            if size < 0 {
+                return Err(anyhow::anyhow!("Unexpected read error"));
+            }
+            let resp_data = unsafe { client.shm.data() };
+            let mut buf_pos = 0;
+            let mut remaining_size = size as usize;
+            for iov in iovecs {
+                let buf = unsafe {
+                    slice::from_raw_parts_mut(
+                        iov.iov_base as *mut MaybeUninit<u8>,
+                        iov.iov_len as usize,
+                    )
+                };
+                let buf_size = min(iov.iov_len as usize, remaining_size);
+                buf.copy_from_slice(&resp_data[buf_pos..buf_pos + buf_size]);
+                buf_pos += iov.iov_len as usize;
+                remaining_size -= iov.iov_len as usize;
+            }
+            Ok(size)
+        }
+        IOResponse::Error { errno } => Err(ErrnoError(errno).into()),
+        _ => Err(anyhow::anyhow!("Unexpected response header: {:?}", resp)),
+    }
+}
+
 pub unsafe fn pwritev(
     hnd: c_int,
     iov: *const libc::iovec,
     iovcnt: c_int,
     offset: off_t,
 ) -> ssize_t {
-    let res = with_client(SvcHandle(hnd), |tx| -> anyhow::Result<ssize_t> {
-        let (resp_tx, resp_rx) = mpsc::channel();
-        tx.send((
-            IORequest::Write { offset },
-            Some(CIOVecs { iov, iovcnt }),
-            resp_tx,
-        ))?;
-        let resp = resp_rx.recv()?;
+    let iovecs = unsafe { slice::from_raw_parts(iov, iovcnt as usize) };
+    let total_buf_len = iovecs.iter().map(|iov| iov.iov_len as usize).sum();
 
-        match resp {
-            IOResponse::Write { size } => {
-                if size < 0 {
-                    return Err(anyhow::anyhow!("Unexpected write error"));
-                }
-                return Ok(size);
-            }
-            IOResponse::Error { errno } => {
-                return Err(ErrnoError(errno).into());
-            }
-            _ => {
-                return Err(anyhow::anyhow!("Unexpected response header: {:?}", resp));
-            }
-        }
-    });
+    // let res = with_client(SvcHandle(hnd), |tx| -> anyhow::Result<ssize_t> {
+    //     let (resp_tx, resp_rx) = mpsc::channel();
+    //     tx.send((
+    //         IORequest::Write { offset, size: 0 },
+    //         Some(CIOVecs { iov, iovcnt }),
+    //         resp_tx,
+    //     ))?;
+    //     let resp = resp_rx.recv()?;
+
+    //     match resp {
+    //         IOResponse::Write { size } => {
+    //             if size < 0 {
+    //                 return Err(anyhow::anyhow!("Unexpected write error"));
+    //             }
+    //             return Ok(size);
+    //         }
+    //         IOResponse::Error { errno } => {
+    //             return Err(ErrnoError(errno).into());
+    //         }
+    //         _ => {
+    //             return Err(anyhow::anyhow!("Unexpected response header: {:?}", resp));
+    //         }
+    //     }
+    // });
+
+    let res = pwritev_impl(hnd, iovecs, total_buf_len, offset);
 
     match res {
         Ok(size) => return size,
@@ -463,27 +519,76 @@ pub unsafe fn pwritev(
     }
 }
 
-pub unsafe fn size(hnd: c_int) -> ssize_t {
-    let res = with_client(SvcHandle(hnd), |tx| -> anyhow::Result<ssize_t> {
-        let (resp_tx, resp_rx) = mpsc::channel();
-        tx.send((IORequest::Size, None, resp_tx))?;
-        let resp = resp_rx.recv()?;
+fn pwritev_impl(
+    _hnd: c_int,
+    iovecs: &[libc::iovec],
+    total_buf_len: usize,
+    offset: off_t,
+) -> anyhow::Result<ssize_t> {
+    let mut client = CLIENT
+        .get()
+        .context("IPC Client not initialized")?
+        .lock()
+        .unwrap();
 
-        match resp {
-            IOResponse::Size { size } => {
-                if size < 0 {
-                    return Err(anyhow::anyhow!("Unexpected size error"));
-                }
-                return Ok(size);
-            }
-            IOResponse::Error { errno } => {
-                return Err(ErrnoError(errno).into());
-            }
-            _ => {
-                return Err(anyhow::anyhow!("Unexpected response header: {:?}", resp));
-            }
+    let req = IORequest::Write {
+        offset,
+        size: total_buf_len,
+    };
+
+    let resp = if offset as usize + total_buf_len <= client.shm.size() as usize {
+        let req_data = unsafe { client.shm.data() };
+        let mut buf_pos = 0;
+        for iov in iovecs {
+            let buf = unsafe {
+                slice::from_raw_parts(iov.iov_base as *const MaybeUninit<u8>, iov.iov_len as usize)
+            };
+            req_data[buf_pos..buf_pos + iov.iov_len as usize].copy_from_slice(buf);
+            buf_pos += iov.iov_len as usize;
         }
-    });
+
+        client.send_request(req)?;
+        client.recv_response()?
+    } else {
+        // TODO: handle buffers larger than the shared memory region
+        return Err(ErrnoError(libc::EINVAL).into());
+    };
+
+    match resp {
+        IOResponse::Write { size } => {
+            if size < 0 {
+                return Err(anyhow::anyhow!("Unexpected write error"));
+            }
+            Ok(size)
+        }
+        IOResponse::Error { errno } => Err(ErrnoError(errno).into()),
+        _ => Err(anyhow::anyhow!("Unexpected response header: {:?}", resp)),
+    }
+}
+
+pub unsafe fn size(hnd: c_int) -> ssize_t {
+    // let res = with_client(SvcHandle(hnd), |tx| -> anyhow::Result<ssize_t> {
+    //     let (resp_tx, resp_rx) = mpsc::channel();
+    //     tx.send((IORequest::Size, None, resp_tx))?;
+    //     let resp = resp_rx.recv()?;
+
+    //     match resp {
+    //         IOResponse::Size { size } => {
+    //             if size < 0 {
+    //                 return Err(anyhow::anyhow!("Unexpected size error"));
+    //             }
+    //             return Ok(size);
+    //         }
+    //         IOResponse::Error { errno } => {
+    //             return Err(ErrnoError(errno).into());
+    //         }
+    //         _ => {
+    //             return Err(anyhow::anyhow!("Unexpected response header: {:?}", resp));
+    //         }
+    //     }
+    // });
+
+    let res = size_impl(hnd);
 
     match res {
         Ok(size) => return size,
@@ -500,5 +605,27 @@ pub unsafe fn size(hnd: c_int) -> ssize_t {
             }
             return -1;
         }
+    }
+}
+
+fn size_impl(_hnd: c_int) -> anyhow::Result<ssize_t> {
+    let mut client = CLIENT
+        .get()
+        .context("IPC Client not initialized")?
+        .lock()
+        .unwrap();
+
+    client.send_request(IORequest::Size)?;
+    let resp = client.recv_response()?;
+
+    match resp {
+        IOResponse::Size { size } => {
+            if size < 0 {
+                return Err(anyhow::anyhow!("Unexpected size error"));
+            }
+            Ok(size)
+        }
+        IOResponse::Error { errno } => Err(ErrnoError(errno).into()),
+        _ => Err(anyhow::anyhow!("Unexpected response header: {:?}", resp)),
     }
 }
