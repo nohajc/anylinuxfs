@@ -619,12 +619,14 @@ fn setup_vm(
 
     for (i, di) in dev_info.iter().enumerate() {
         if di.is_custom_io() {
-            let handle = ipio::client::new_service(di.rdisk().into())?;
             unsafe {
+                let client = ipio::Client::from_conn_string(&di.rdisk())?;
+                ipio::client::CLIENT.get_or_init(|| Mutex::new(client));
+
                 bindings::krun_add_disk_with_custom_io(
                     ctx,
                     CString::new(format!("data{}", i)).unwrap().as_ptr(),
-                    handle.raw(),
+                    42,
                     ipio::client::preadv,
                     ipio::client::pwritev,
                     ipio::client::size,

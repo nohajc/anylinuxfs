@@ -1,16 +1,11 @@
 use anyhow::{Context, anyhow};
 use bincode::{Decode, Encode};
-use iceoryx2::{
-    active_request::ActiveRequest,
-    prelude::{LogLevel, ZeroCopySend, set_log_level},
-    service::ipc,
-};
 use libc::{c_int, iovec, off_t, size_t, ssize_t};
 use nanoid::nanoid;
 use std::{
     ffi::{CString, c_void},
     fs::File,
-    io::{Read, Write},
+    io::{self, Read, Write},
     mem::MaybeUninit,
     os::{
         fd::{AsRawFd, FromRawFd},
@@ -21,9 +16,8 @@ use std::{
 };
 
 pub mod client;
-pub mod server;
 
-#[derive(Debug, Clone, ZeroCopySend, Encode, Decode)]
+#[derive(Debug, Clone, Encode, Decode)]
 #[repr(C)]
 pub enum IORequest {
     Read { size: size_t, offset: off_t },
@@ -31,7 +25,7 @@ pub enum IORequest {
     Size,
 }
 
-#[derive(Debug, Clone, ZeroCopySend, Encode, Decode)]
+#[derive(Debug, Clone, Encode, Decode)]
 #[repr(C)]
 pub enum IOResponse {
     Read { size: ssize_t },
@@ -176,6 +170,8 @@ pub struct Server {
     pub sock: UnixStream,
 }
 
+unsafe impl Send for Server {}
+
 impl ServerBuilder {
     pub fn new(shm_size: off_t) -> anyhow::Result<Self> {
         let (sock1, sock2) = UnixStream::pair().context("Failed to create socket pair")?;
@@ -205,74 +201,90 @@ impl ServerBuilder {
 
 impl Server {
     pub fn serve(&mut self, file: File) -> anyhow::Result<()> {
-        let req = self.recv_request()?;
-        let resp = match req {
-            IORequest::Read { size, offset } => {
-                if offset as usize + size <= self.shm.size() as usize {
-                    let iov = iovec {
-                        iov_base: self.shm.data,
-                        iov_len: size,
-                    };
-                    let size = unsafe { libc::preadv(file.as_raw_fd(), &iov, 1, offset) };
-                    if size < 0 {
-                        IOResponse::Error {
-                            errno: std::io::Error::last_os_error().raw_os_error().unwrap_or(0),
+        loop {
+            let req = match self.recv_request() {
+                Ok(req) => req,
+                Err(e) => {
+                    if let Some(e) = e.downcast_ref::<io::Error>() {
+                        if e.kind() == io::ErrorKind::UnexpectedEof {
+                            break;
+                        }
+                    }
+                    eprintln!("SERVER: Error receiving request: {}", e);
+                    break;
+                }
+            };
+            // println!("SERVER: received request: {:?}", req);
+            let resp = match req {
+                IORequest::Read { size, offset } => {
+                    if size <= self.shm.size() as usize {
+                        let iov = iovec {
+                            iov_base: self.shm.data,
+                            iov_len: size,
+                        };
+                        let size = unsafe { libc::preadv(file.as_raw_fd(), &iov, 1, offset) };
+                        if size < 0 {
+                            IOResponse::Error {
+                                errno: std::io::Error::last_os_error().raw_os_error().unwrap_or(0),
+                            }
+                        } else {
+                            IOResponse::Read { size }
                         }
                     } else {
-                        IOResponse::Read { size }
-                    }
-                } else {
-                    IOResponse::Error {
-                        errno: libc::EINVAL,
+                        IOResponse::Error {
+                            errno: libc::EINVAL,
+                        }
                     }
                 }
-            }
-            IORequest::Write { size, offset } => {
-                if offset as usize + size <= self.shm.size() as usize {
-                    let iov = iovec {
-                        iov_base: self.shm.data,
-                        iov_len: size,
-                    };
-                    let size = unsafe { libc::pwritev(file.as_raw_fd(), &iov, 1, offset) };
-                    if size < 0 {
-                        IOResponse::Error {
-                            errno: std::io::Error::last_os_error().raw_os_error().unwrap_or(0),
+                IORequest::Write { size, offset } => {
+                    if size <= self.shm.size() as usize {
+                        let iov = iovec {
+                            iov_base: self.shm.data,
+                            iov_len: size,
+                        };
+                        let size = unsafe { libc::pwritev(file.as_raw_fd(), &iov, 1, offset) };
+                        if size < 0 {
+                            IOResponse::Error {
+                                errno: std::io::Error::last_os_error().raw_os_error().unwrap_or(0),
+                            }
+                        } else {
+                            IOResponse::Write { size }
                         }
                     } else {
-                        IOResponse::Write { size }
-                    }
-                } else {
-                    IOResponse::Error {
-                        errno: libc::EINVAL,
+                        IOResponse::Error {
+                            errno: libc::EINVAL,
+                        }
                     }
                 }
-            }
-            IORequest::Size => {
-                let hnd = file.as_raw_fd();
-                let mut block_size: u32 = 0;
-                let block_size_ptr = &mut block_size as *mut _;
+                IORequest::Size => {
+                    let hnd = file.as_raw_fd();
+                    let mut block_size: u32 = 0;
+                    let block_size_ptr = &mut block_size as *mut _;
 
-                if unsafe { libc::ioctl(hnd, 0x40046418, block_size_ptr) } < 0 {
-                    IOResponse::Error {
-                        errno: std::io::Error::last_os_error().raw_os_error().unwrap_or(0),
-                    }
-                } else {
-                    let mut block_count: u64 = 0;
-                    let block_count_ptr = &mut block_count as *mut _;
-
-                    if unsafe { libc::ioctl(hnd, 0x40086419, block_count_ptr) } < 0 {
+                    if unsafe { libc::ioctl(hnd, 0x40046418, block_size_ptr) } < 0 {
                         IOResponse::Error {
                             errno: std::io::Error::last_os_error().raw_os_error().unwrap_or(0),
                         }
                     } else {
-                        IOResponse::Size {
-                            size: (block_size as u64 * block_count) as ssize_t,
+                        let mut block_count: u64 = 0;
+                        let block_count_ptr = &mut block_count as *mut _;
+
+                        if unsafe { libc::ioctl(hnd, 0x40086419, block_count_ptr) } < 0 {
+                            IOResponse::Error {
+                                errno: std::io::Error::last_os_error().raw_os_error().unwrap_or(0),
+                            }
+                        } else {
+                            IOResponse::Size {
+                                size: (block_size as u64 * block_count) as ssize_t,
+                            }
                         }
                     }
                 }
-            }
-        };
-        self.send_response(resp)?;
+            };
+            // println!("SERVER: sending response: {:?}", resp);
+            self.send_response(resp)?;
+            // println!("SERVER: response sent successfully");
+        }
 
         Ok(())
     }
@@ -379,109 +391,4 @@ impl Client {
         let (resp, _) = bincode::decode_from_slice(&payload_buf, bincode::config::standard())?;
         Ok(resp)
     }
-}
-
-pub struct IOHandler {
-    file: File,
-}
-
-impl IOHandler {
-    pub fn new(file: File) -> Self {
-        IOHandler { file }
-    }
-}
-
-impl server::Handler for IOHandler {
-    type ReqHeader = IORequest;
-    type ReqSliceElem = u8;
-    type RespHeader = IOResponse;
-    type RespSliceElem = u8;
-
-    fn handle_request(
-        &self,
-        active_request: &ActiveRequest<ipc::Service, [u8], IORequest, [u8], IOResponse>,
-    ) -> anyhow::Result<()> {
-        let req = active_request.user_header();
-
-        let mut resp_data;
-
-        match *req {
-            IORequest::Read { size, offset } => 'read: {
-                resp_data = active_request.loan_slice_uninit(size as usize)?;
-                let resp_data_ptr = resp_data.payload_mut().as_mut_ptr();
-                let resp = resp_data.user_header_mut();
-
-                let iov = iovec {
-                    iov_base: resp_data_ptr as *mut _,
-                    iov_len: size,
-                };
-                let size = unsafe { libc::preadv(self.file.as_raw_fd(), &iov, 1, offset) };
-                if size < 0 {
-                    *resp = IOResponse::Error {
-                        errno: std::io::Error::last_os_error().raw_os_error().unwrap_or(0),
-                    };
-                    break 'read;
-                }
-
-                *resp = IOResponse::Read { size };
-            }
-            IORequest::Write { offset, size: _ } => 'write: {
-                let req_data = active_request.payload();
-                resp_data = active_request.loan_slice_uninit(0)?;
-                let req_data_ptr = req_data.as_ptr();
-                let resp = resp_data.user_header_mut();
-
-                let iov = iovec {
-                    iov_base: req_data_ptr as *mut _,
-                    iov_len: req_data.len(),
-                };
-                let size = unsafe { libc::pwritev(self.file.as_raw_fd(), &iov, 1, offset) };
-                if size < 0 {
-                    *resp = IOResponse::Error {
-                        errno: std::io::Error::last_os_error().raw_os_error().unwrap_or(0),
-                    };
-                    break 'write;
-                }
-                *resp = IOResponse::Write { size };
-            }
-            IORequest::Size => 'size: {
-                let hnd = self.file.as_raw_fd();
-                let mut block_size: u32 = 0;
-                let block_size_ptr = &mut block_size as *mut _;
-                resp_data = active_request.loan_slice_uninit(0)?;
-                let resp = resp_data.user_header_mut();
-
-                if unsafe { libc::ioctl(hnd, 0x40046418, block_size_ptr) } < 0 {
-                    *resp = IOResponse::Error {
-                        errno: std::io::Error::last_os_error().raw_os_error().unwrap_or(0),
-                    };
-                    break 'size;
-                }
-                let mut block_count: u64 = 0;
-                let block_count_ptr = &mut block_count as *mut _;
-
-                if unsafe { libc::ioctl(hnd, 0x40086419, block_count_ptr) } < 0 {
-                    *resp = IOResponse::Error {
-                        errno: std::io::Error::last_os_error().raw_os_error().unwrap_or(0),
-                    };
-                    break 'size;
-                }
-
-                *resp = IOResponse::Size {
-                    size: (block_size as u64 * block_count) as ssize_t,
-                };
-            }
-        };
-        let resp = unsafe { resp_data.assume_init() };
-        resp.send()?;
-
-        Ok(())
-    }
-}
-
-pub fn start_io_server(service_name: impl AsRef<str>, file: File) -> anyhow::Result<()> {
-    set_log_level(LogLevel::Fatal);
-    let handler = IOHandler { file };
-    let server = server::IOServer::new(service_name, handler)?;
-    server.run()
 }
