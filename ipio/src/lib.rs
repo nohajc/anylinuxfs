@@ -20,8 +20,16 @@ pub mod client;
 #[derive(Debug, Clone, Encode, Decode)]
 #[repr(C)]
 pub enum IORequest {
-    Read { size: size_t, offset: off_t },
-    Write { size: size_t, offset: off_t },
+    Read {
+        size: size_t,
+        offset: off_t,
+        shm_size: Option<off_t>,
+    },
+    Write {
+        size: size_t,
+        offset: off_t,
+        shm_size: Option<off_t>,
+    },
     Size,
 }
 
@@ -127,7 +135,50 @@ impl Shm {
         self.size
     }
 
-    fn close(&self) -> anyhow::Result<()> {
+    pub fn resize(&mut self, new_size: off_t, truncate: bool) -> anyhow::Result<()> {
+        if new_size <= 0 {
+            return Err(anyhow::anyhow!("New size must be greater than zero"));
+        }
+
+        if truncate {
+            let result = unsafe { libc::ftruncate(self.fd, new_size) };
+            if result < 0 {
+                return Err(anyhow::anyhow!(
+                    "Failed to resize shared memory segment: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+        }
+
+        self.unmap()?;
+
+        let data = unsafe {
+            libc::mmap(
+                self.data,
+                new_size as usize,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                self.fd,
+                0,
+            )
+        };
+        if data == libc::MAP_FAILED {
+            return Err(anyhow::anyhow!(
+                "Failed to map shared memory segment: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+
+        println!(
+            "Resized shared memory segment from {} to {}",
+            self.size, new_size
+        );
+        self.data = data;
+        self.size = new_size;
+        Ok(())
+    }
+
+    fn unmap(&mut self) -> anyhow::Result<()> {
         let result = unsafe { libc::munmap(self.data, self.size as usize) };
         if result < 0 {
             return Err(anyhow::anyhow!(
@@ -135,6 +186,11 @@ impl Shm {
                 std::io::Error::last_os_error()
             ));
         }
+        Ok(())
+    }
+
+    fn close(&mut self) -> anyhow::Result<()> {
+        self.unmap()?;
 
         let result = unsafe { libc::close(self.fd) };
         if result < 0 {
@@ -214,46 +270,52 @@ impl Server {
                     break;
                 }
             };
-            // println!("SERVER: received request: {:?}", req);
+            println!("SERVER: received request: {:?}", req);
             let resp = match req {
-                IORequest::Read { size, offset } => {
-                    if size <= self.shm.size() as usize {
-                        let iov = iovec {
-                            iov_base: self.shm.data,
-                            iov_len: size,
-                        };
-                        let size = unsafe { libc::preadv(file.as_raw_fd(), &iov, 1, offset) };
-                        if size < 0 {
-                            IOResponse::Error {
-                                errno: std::io::Error::last_os_error().raw_os_error().unwrap_or(0),
-                            }
-                        } else {
-                            IOResponse::Read { size }
-                        }
-                    } else {
-                        IOResponse::Error {
-                            errno: libc::EINVAL,
+                IORequest::Read {
+                    size,
+                    offset,
+                    shm_size,
+                } => {
+                    if let Some(new_size) = shm_size {
+                        if new_size > self.shm.size() {
+                            self.shm.resize(new_size, false)?;
                         }
                     }
-                }
-                IORequest::Write { size, offset } => {
-                    if size <= self.shm.size() as usize {
-                        let iov = iovec {
-                            iov_base: self.shm.data,
-                            iov_len: size,
-                        };
-                        let size = unsafe { libc::pwritev(file.as_raw_fd(), &iov, 1, offset) };
-                        if size < 0 {
-                            IOResponse::Error {
-                                errno: std::io::Error::last_os_error().raw_os_error().unwrap_or(0),
-                            }
-                        } else {
-                            IOResponse::Write { size }
+                    let iov = iovec {
+                        iov_base: self.shm.data,
+                        iov_len: size,
+                    };
+                    let size = unsafe { libc::preadv(file.as_raw_fd(), &iov, 1, offset) };
+                    if size < 0 {
+                        IOResponse::Error {
+                            errno: std::io::Error::last_os_error().raw_os_error().unwrap_or(0),
                         }
                     } else {
-                        IOResponse::Error {
-                            errno: libc::EINVAL,
+                        IOResponse::Read { size }
+                    }
+                }
+                IORequest::Write {
+                    size,
+                    offset,
+                    shm_size,
+                } => {
+                    if let Some(new_size) = shm_size {
+                        if new_size > self.shm.size() {
+                            self.shm.resize(new_size, false)?;
                         }
+                    }
+                    let iov = iovec {
+                        iov_base: self.shm.data,
+                        iov_len: size,
+                    };
+                    let size = unsafe { libc::pwritev(file.as_raw_fd(), &iov, 1, offset) };
+                    if size < 0 {
+                        IOResponse::Error {
+                            errno: std::io::Error::last_os_error().raw_os_error().unwrap_or(0),
+                        }
+                    } else {
+                        IOResponse::Write { size }
                     }
                 }
                 IORequest::Size => {
@@ -281,9 +343,9 @@ impl Server {
                     }
                 }
             };
-            // println!("SERVER: sending response: {:?}", resp);
+            println!("SERVER: sending response: {:?}", resp);
             self.send_response(resp)?;
-            // println!("SERVER: response sent successfully");
+            println!("SERVER: response sent successfully");
         }
 
         Ok(())

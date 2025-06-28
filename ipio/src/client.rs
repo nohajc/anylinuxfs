@@ -111,9 +111,17 @@ fn preadv_impl(
         .lock()
         .unwrap();
 
+    let mut shm_size = None;
+    if total_buf_len > client.shm.size() as usize {
+        let current_size = client.shm.size();
+        client.shm.resize(current_size * 2, true)?;
+        shm_size = Some(client.shm.size());
+    }
+
     let req = IORequest::Read {
         size: total_buf_len,
         offset,
+        shm_size,
     };
     // println!("Sending read request: {:?}", req);
     client.send_request(req)?;
@@ -189,30 +197,34 @@ fn pwritev_impl(
         .lock()
         .unwrap();
 
+    let mut shm_size = None;
+    if total_buf_len > client.shm.size() as usize {
+        let current_size = client.shm.size();
+        client.shm.resize(current_size * 2, true)?;
+        shm_size = Some(client.shm.size());
+    }
+
     let req = IORequest::Write {
         offset,
         size: total_buf_len,
+        shm_size,
     };
 
-    let resp = if total_buf_len <= client.shm.size() as usize {
-        let req_data = unsafe { client.shm.data() };
-        let mut buf_pos = 0;
-        for iov in iovecs {
-            let buf = unsafe {
-                slice::from_raw_parts(iov.iov_base as *const MaybeUninit<u8>, iov.iov_len as usize)
-            };
-            req_data[buf_pos..buf_pos + iov.iov_len as usize].copy_from_slice(buf);
-            buf_pos += iov.iov_len as usize;
-        }
+    let req_data = unsafe { client.shm.data() };
+    let mut buf_pos = 0;
+    for iov in iovecs {
+        let buf = unsafe {
+            slice::from_raw_parts(iov.iov_base as *const MaybeUninit<u8>, iov.iov_len as usize)
+        };
+        req_data[buf_pos..buf_pos + iov.iov_len as usize].copy_from_slice(buf);
+        buf_pos += iov.iov_len as usize;
+    }
 
-        // println!("Sending write request: {:?}", req);
-        client.send_request(req)?;
-        // println!("Waiting for response...");
-        client.recv_response()?
-    } else {
-        // TODO: handle buffers larger than the shared memory region
-        return Err(ErrnoError(libc::EINVAL).into());
-    };
+    println!("Sending write request: {:?}", req);
+    client.send_request(req)?;
+    println!("Waiting for response...");
+    let resp = client.recv_response()?;
+    println!("Received response: {:?}", resp);
 
     match resp {
         IOResponse::Write { size } => {
