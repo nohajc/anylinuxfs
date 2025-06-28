@@ -1,7 +1,7 @@
 #![allow(unused)]
 
 use std::{
-    cmp::min,
+    cmp::{max, min},
     error::Error,
     mem::MaybeUninit,
     slice,
@@ -114,7 +114,8 @@ fn preadv_impl(
     let mut shm_size = None;
     if total_buf_len > client.shm.size() as usize {
         let current_size = client.shm.size();
-        client.shm.resize(current_size * 2, true)?;
+        let new_size = max(current_size * 2, total_buf_len as off_t);
+        client.shm.resize(new_size, true)?;
         shm_size = Some(client.shm.size());
     }
 
@@ -200,13 +201,14 @@ fn pwritev_impl(
     let mut shm_size = None;
     if total_buf_len > client.shm.size() as usize {
         let current_size = client.shm.size();
-        client.shm.resize(current_size * 2, true)?;
+        let new_size = max(current_size * 2, total_buf_len as off_t);
+        client.shm.resize(new_size, true)?;
         shm_size = Some(client.shm.size());
     }
 
     let req = IORequest::Write {
-        offset,
         size: total_buf_len,
+        offset,
         shm_size,
     };
 
