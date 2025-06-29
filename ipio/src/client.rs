@@ -222,11 +222,11 @@ fn pwritev_impl(
         buf_pos += iov.iov_len as usize;
     }
 
-    println!("Sending write request: {:?}", req);
+    // println!("Sending write request: {:?}", req);
     client.send_request(req)?;
-    println!("Waiting for response...");
+    // println!("Waiting for response...");
     let resp = client.recv_response()?;
-    println!("Received response: {:?}", resp);
+    // println!("Received response: {:?}", resp);
 
     match resp {
         IOResponse::Write { size } => {
