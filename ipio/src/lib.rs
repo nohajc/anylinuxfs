@@ -270,7 +270,7 @@ impl Server {
                     break;
                 }
             };
-            println!("SERVER: received request: {:?}", req);
+            // println!("SERVER: received request: {:?}", req);
             let resp = match req {
                 IORequest::Read {
                     size,
@@ -343,9 +343,9 @@ impl Server {
                     }
                 }
             };
-            println!("SERVER: sending response: {:?}", resp);
+            // println!("SERVER: sending response: {:?}", resp);
             self.send_response(resp)?;
-            println!("SERVER: response sent successfully");
+            // println!("SERVER: response sent successfully");
         }
 
         Ok(())
