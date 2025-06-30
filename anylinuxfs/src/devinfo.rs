@@ -17,6 +17,8 @@ pub struct DevInfo {
 const BUF_PREFIX: &str = "/dev/disk";
 const RAW_PREFIX: &str = "/dev/rdisk";
 
+const FS_TYPE_TO_DRIVER: [(&str, &str); 1] = [("ntfs", "ntfs3")];
+
 impl DevInfo {
     pub fn lv(
         path: &str,
@@ -63,8 +65,17 @@ impl DevInfo {
             .context(format!("Cannot probe device {}", &path))?;
 
         let label = probe.lookup_value("LABEL").ok();
-        let fs_type = probe.lookup_value("TYPE").ok();
+        let mut fs_type = probe.lookup_value("TYPE").ok();
         let uuid = probe.lookup_value("UUID").ok();
+
+        if let Some(fs) = fs_type.as_deref() {
+            for (typ, driver) in FS_TYPE_TO_DRIVER {
+                if fs == typ {
+                    fs_type = Some(driver.to_owned());
+                    break;
+                }
+            }
+        }
 
         Ok(DevInfo {
             path,

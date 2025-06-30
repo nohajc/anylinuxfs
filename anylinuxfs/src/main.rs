@@ -258,7 +258,7 @@ Supported partition schemes:
     Log(LogCmd),
     /// Show or change microVM parameters
     Config(ConfigCmd),
-    /// List all available disks with Linux filesystems (run with sudo to get more detailed info)
+    /// List all available disks with compatible filesystems (run with sudo to get more detailed info)
     #[command(
         after_help = "Lists all physical partitions and LVM volumes. Can decrypt LUKS partition metadata too."
     )]
@@ -308,6 +308,9 @@ struct ListCmd {
     /// Decrypt LUKS partitions: comma-separated list of paths or "all"
     #[arg(short, long, value_delimiter = ',', num_args = 1..)]
     decrypt: Option<Vec<String>>,
+    /// Show Microsoft filesystems (NTFS, exFAT) instead of Linux filesystems
+    #[arg(short, long)]
+    microsoft: bool,
 }
 
 #[derive(Args)]
@@ -1644,9 +1647,13 @@ impl AppRunner {
             ensure_enough_ram_for_luks(&mut config);
         }
 
+        let labels = match cmd.microsoft {
+            true => diskutil::WINDOWS_LABELS,
+            false => diskutil::LINUX_LABELS,
+        };
         println!(
             "{}",
-            diskutil::list_linux_partitions(config, cmd.decrypt.as_deref())?
+            diskutil::list_partitions(config, cmd.decrypt.as_deref(), labels)?
         );
         Ok(())
     }

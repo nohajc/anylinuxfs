@@ -1,6 +1,6 @@
 use anyhow::{Context, anyhow};
 use common_utils::host_println;
-use derive_more::AddAssign;
+use derive_more::{AddAssign, Deref};
 use indexmap::IndexMap;
 use libc::{SIGINT, SIGTERM};
 use nix::sys::signal::Signal;
@@ -20,7 +20,6 @@ use std::{
     hash::{Hash, Hasher},
     iter,
     marker::PhantomData,
-    ops::Deref,
     path::Path,
     process::Command,
     ptr::{NonNull, null, null_mut},
@@ -133,29 +132,50 @@ fn disks_without_partition_table(plist: &Plist) -> Vec<String> {
     disks
 }
 
-// normally, we match any filesystem with the following partition type
-const LINUX_PART_TYPES: [&str; 4] = ["Linux Filesystem", "Linux LVM", "Linux_LVM", "Linux"];
-// static fs list only used for matching drives without any partition table
-const LINUX_FS_TYPES: [&str; 10] = [
-    "btrfs",
-    "erofs",
-    "ext2",
-    "ext3",
-    "ext4",
-    "squashfs",
-    "xfs",
-    "zfs",
-    "crypto_LUKS",
-    "LVM2_member",
-];
+#[derive(Deref)]
+pub struct PartTypes(&'static [&'static str]);
 
-fn partitions_with_linux_fs(plist: &Plist) -> Vec<String> {
+#[derive(Deref)]
+pub struct FsTypes(&'static [&'static str]);
+
+pub struct Labels {
+    // normally, we match any filesystem with the following partition type
+    part_types: PartTypes,
+    // static fs list only used for matching drives without any partition table
+    fs_types: FsTypes,
+}
+
+pub const LINUX_LABELS: Labels = Labels {
+    part_types: PartTypes(&["Linux Filesystem", "Linux LVM", "Linux_LVM", "Linux"]),
+    fs_types: FsTypes(&[
+        "btrfs",
+        "erofs",
+        "ext2",
+        "ext3",
+        "ext4",
+        "squashfs",
+        "xfs",
+        "zfs",
+        "crypto_LUKS",
+        "LVM2_member",
+    ]),
+};
+
+// GPT - Microsoft Basic Data (any Windows filesystem)
+// MBR - Windows_NTFS         (both NTFS and exFAT)
+pub const WINDOWS_LABELS: Labels = Labels {
+    part_types: PartTypes(&["Microsoft Basic Data", "Windows_NTFS"]),
+    fs_types: FsTypes(&["ntfs", "exfat"]),
+};
+
+fn partitions_with_part_type(plist: &Plist, part_types: PartTypes) -> Vec<String> {
     let mut partitions = Vec::new();
     for disk in &plist.all_disks_and_partitions {
         if let Some(partitions_list) = &disk.partitions {
             for partition in partitions_list {
-                if LINUX_PART_TYPES
-                    .into_iter()
+                if part_types
+                    .iter()
+                    .cloned()
                     .any(|fs_type| partition.content.as_deref() == Some(fs_type))
                 {
                     partitions.push(partition.device_identifier.clone());
@@ -285,17 +305,18 @@ impl FromStr for LvIdent {
     }
 }
 
-pub fn list_linux_partitions(
+pub fn list_partitions(
     config: crate::Config,
     enc_partitions: Option<&[String]>,
+    filter: Labels,
 ) -> anyhow::Result<List> {
     let numbered_pattern = Regex::new(r"^\s+\d+:").unwrap();
-    let part_type_pattern = Regex::new(&format!(r"({})", LINUX_PART_TYPES.join("|"))).unwrap();
+    let part_type_pattern = Regex::new(&format!(r"({})", filter.part_types.join("|"))).unwrap();
     let mut disk_entries = Vec::new();
 
     let plist_out = diskutil_list_from_plist()?;
     // println!("plist_out: {:#?}", plist_out);
-    let linux_partitions = partitions_with_linux_fs(&plist_out);
+    let linux_partitions = partitions_with_part_type(&plist_out, filter.part_types);
     // println!("linux_partitions: {:?}", linux_partitions);
     let disks_without_part_table = disks_without_partition_table(&plist_out);
     // println!("disks_without_part_table: {:?}", disks_without_part_table);
@@ -373,7 +394,9 @@ pub fn list_linux_partitions(
                         .flatten()
                         .unwrap_or("Unknown");
                     // if DevInfo is available, show linux fs types only
-                    if fs_type != "Unknown" && !LINUX_FS_TYPES.into_iter().any(|t| t == fs_type) {
+                    if fs_type != "Unknown"
+                        && !filter.fs_types.iter().cloned().any(|t| t == fs_type)
+                    {
                         continue;
                     }
 
@@ -719,7 +742,7 @@ fn get_lsblk_info(
 
 unsafe fn cfdict_get_value<'a, T>(dict: &'a CFDictionary, key: &str) -> Option<&'a T> {
     let key = CFString::from_str(key);
-    let key_ptr: *const CFString = key.deref();
+    let key_ptr: *const CFString = unsafe { CFRetained::as_ptr(&key).as_ref() };
     let mut value_ptr: *const c_void = null();
     let key_found = unsafe { dict.value_if_present(key_ptr as *const c_void, &mut value_ptr) };
 
@@ -754,7 +777,9 @@ impl<ContextType> DaDiskArgs<ContextType> {
     }
 
     fn descr(&self) -> Option<&CFDictionary> {
-        self.descr.as_ref().map(|d| d.deref())
+        self.descr
+            .as_ref()
+            .map(|d| unsafe { CFRetained::as_ptr(d).as_ref() })
     }
 
     fn volume_path(&self) -> Option<String> {
