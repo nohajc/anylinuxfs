@@ -10,6 +10,7 @@ pub struct DevInfo {
     rpath: String,
     label: Option<String>,
     fs_type: Option<String>,
+    fs_driver: Option<String>,
     uuid: Option<String>,
     vm_path: String,
 }
@@ -30,6 +31,7 @@ impl DevInfo {
             rpath: path.into(),
             label: label.map(|l| l.to_owned()),
             fs_type: Some("auto".into()),
+            fs_driver: Some("auto".into()),
             uuid: None,
             vm_path: vm_path.into(),
         })
@@ -65,13 +67,14 @@ impl DevInfo {
             .context(format!("Cannot probe device {}", &path))?;
 
         let label = probe.lookup_value("LABEL").ok();
-        let mut fs_type = probe.lookup_value("TYPE").ok();
+        let fs_type = probe.lookup_value("TYPE").ok();
         let uuid = probe.lookup_value("UUID").ok();
 
+        let mut fs_driver = fs_type.clone();
         if let Some(fs) = fs_type.as_deref() {
             for (typ, driver) in FS_TYPE_TO_DRIVER {
                 if fs == typ {
-                    fs_type = Some(driver.to_owned());
+                    fs_driver = Some(driver.to_owned());
                     break;
                 }
             }
@@ -82,6 +85,7 @@ impl DevInfo {
             rpath,
             label,
             fs_type,
+            fs_driver,
             uuid,
             vm_path: "/dev/vda".to_owned(),
         })
@@ -105,6 +109,10 @@ impl DevInfo {
 
     pub fn fs_type(&self) -> Option<&str> {
         self.fs_type.as_deref()
+    }
+
+    pub fn fs_driver(&self) -> Option<&str> {
+        self.fs_driver.as_deref()
     }
 
     pub fn set_fs_type(&mut self, fs_type: &str) {

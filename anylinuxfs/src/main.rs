@@ -660,7 +660,7 @@ fn start_vmproxy(
     .into_iter()
     .chain([
         CString::new("-t").unwrap(),
-        CString::new(dev_info.fs_type().unwrap_or("auto")).unwrap(),
+        CString::new(dev_info.fs_driver().unwrap_or("auto")).unwrap(),
     ])
     .chain(
         config
@@ -1325,6 +1325,25 @@ impl AppRunner {
 
         let (dev_info, mut mnt_dev_info, _disks) = claim_devices(&config)?;
 
+        // if this is NTFS or exFAT, we add uid/gid mount options
+        if let Some(fs_type) = mnt_dev_info.fs_type()
+            && diskutil::WINDOWS_LABELS
+                .fs_types
+                .iter()
+                .cloned()
+                .any(|t| t == fs_type)
+        {
+            let mut opts = config.mount_options.unwrap_or_default();
+            if !opts.is_empty() {
+                opts.push_str(",");
+            }
+            opts.push_str(&format!(
+                "uid={},gid={}",
+                config.common.invoker_uid, config.common.invoker_gid
+            ));
+            config.mount_options = Some(opts);
+        }
+
         let mut passphrase_callbacks = Vec::new();
         for di in &dev_info {
             if di.fs_type() == Some("crypto_LUKS") {
@@ -1736,7 +1755,7 @@ impl AppRunner {
 
                 let info: Vec<_> = rt_info
                     .dev_info
-                    .fs_type()
+                    .fs_driver()
                     .into_iter()
                     .chain(
                         rt_info
