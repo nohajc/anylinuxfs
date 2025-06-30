@@ -140,9 +140,9 @@ pub struct FsTypes(&'static [&'static str]);
 
 pub struct Labels {
     // normally, we match any filesystem with the following partition type
-    part_types: PartTypes,
+    pub part_types: PartTypes,
     // static fs list only used for matching drives without any partition table
-    fs_types: FsTypes,
+    pub fs_types: FsTypes,
 }
 
 pub const LINUX_LABELS: Labels = Labels {
