@@ -211,6 +211,7 @@ struct MountConfig {
     disk_path: String,
     read_only: bool,
     mount_options: Option<String>,
+    allow_remount: bool,
     bind_addr: IpAddr,
     verbose: bool,
     common: Config,
@@ -276,6 +277,9 @@ struct MountCmd {
     /// Options passed to the Linux mount command
     #[arg(short, long)]
     options: Option<String>,
+    /// Allow remount: proceed even if the disk is already mounted by macOS (NTFS, exFAT)
+    #[arg(short, long)]
+    remount: bool,
     /// Override this to share the mount to a different machine
     #[arg(short, long, default_value = "127.0.0.1")]
     bind_addr: String,
@@ -488,6 +492,8 @@ fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
         std::process::exit(1);
     };
 
+    let allow_remount = cmd.remount;
+
     let bind_addr = cmd
         .bind_addr
         .parse()
@@ -513,6 +519,7 @@ fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
         disk_path,
         read_only,
         mount_options,
+        allow_remount,
         bind_addr,
         verbose,
         common,
@@ -910,8 +917,11 @@ fn mount_nfs(share_name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn unmount_nfs(volume_path: &Path) -> anyhow::Result<()> {
-    let status = Command::new("umount").arg(volume_path).status()?;
+fn unmount_fs(volume_path: &Path) -> anyhow::Result<()> {
+    let status = Command::new("diskutil")
+        .arg("unmount")
+        .arg(volume_path)
+        .status()?;
 
     if !status.success() {
         return Err(anyhow!(
@@ -1155,6 +1165,9 @@ fn print_dev_info(dev_info: &DevInfo, dev_type: DevType) {
 }
 
 fn claim_devices(config: &MountConfig) -> anyhow::Result<(Vec<DevInfo>, DevInfo, Vec<File>)> {
+    let mount_table = fsutil::MountTable::new()?;
+    // host_println!("Current mount table: {:#?}", mount_table);
+
     let mut dev_infos = Vec::new();
     let mut disks = Vec::new();
 
@@ -1177,7 +1190,11 @@ fn claim_devices(config: &MountConfig) -> anyhow::Result<(Vec<DevInfo>, DevInfo,
             if i == disk_ident.len() - 3 {
                 break;
             }
-            let dev_info = DevInfo::pv(&format!("/dev/{}", di))?;
+            let pv_path = format!("/dev/{}", di);
+            if mount_table.is_mounted(&pv_path) {
+                return Err(anyhow!("{} is already mounted", &pv_path));
+            }
+            let dev_info = DevInfo::pv(&pv_path)?;
             let disk = File::open(dev_info.rdisk())?.acquire_lock(if config.read_only {
                 FlockKind::Shared
             } else {
@@ -1191,14 +1208,21 @@ fn claim_devices(config: &MountConfig) -> anyhow::Result<(Vec<DevInfo>, DevInfo,
         }
 
         // fs label will be obtained later from the VM output
-        let lv_info = DevInfo::lv(&disk_path, None, vm_path)?;
+        let lv_info = DevInfo::lv(disk_path, None, vm_path)?;
         print_dev_info(&lv_info, DevType::LV);
         lv_info
     } else {
-        if !Path::new(&disk_path).exists() {
-            return Err(anyhow!("disk {} not found", &disk_path));
+        if !Path::new(disk_path).exists() {
+            return Err(anyhow!("disk {} not found", disk_path));
         }
 
+        if mount_table.is_mounted(disk_path) {
+            if config.allow_remount {
+                unmount_fs(Path::new(disk_path))?;
+            } else {
+                return Err(anyhow!("{} is already mounted", disk_path));
+            }
+        }
         let di = DevInfo::pv(&disk_path)?;
 
         let disk = File::open(di.rdisk())?.acquire_lock(if config.read_only {
@@ -1807,7 +1831,7 @@ impl AppRunner {
                     // try to trigger normal shutdown first
                     if let MountStatus::Mounted(mount_point) = validated_mount_point(&rt_info) {
                         println!("Unmounting {}...", mount_point.display());
-                        unmount_nfs(&mount_point)?;
+                        unmount_fs(&mount_point)?;
                         return Ok(());
                     };
                     println!("Already unmounted, shutting down...");
