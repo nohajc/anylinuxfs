@@ -820,7 +820,14 @@ fn start_gvproxy(config: &Config) -> anyhow::Result<Child> {
 
     let net_sock_uri = format!("unix:///tmp/network-{}.sock", rand_string(8));
     let vfkit_sock_uri = format!("unixgram://{}", &config.vfkit_sock_path);
-    let gvproxy_args = ["--listen", &net_sock_uri, "--listen-vfkit", &vfkit_sock_uri];
+    let gvproxy_args = [
+        "--listen",
+        &net_sock_uri,
+        "--listen-vfkit",
+        &vfkit_sock_uri,
+        "--ssh-port",
+        "-1",
+    ];
 
     let mut gvproxy_cmd = Command::new(&config.gvproxy_path);
 
