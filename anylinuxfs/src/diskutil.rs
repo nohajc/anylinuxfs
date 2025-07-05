@@ -321,8 +321,8 @@ pub fn list_partitions(
 
     let plist_out = diskutil_list_from_plist()?;
     // println!("plist_out: {:#?}", plist_out);
-    let linux_partitions = partitions_with_part_type(&plist_out, filter.part_types);
-    // println!("linux_partitions: {:?}", linux_partitions);
+    let selected_partitions = partitions_with_part_type(&plist_out, filter.part_types);
+    // println!("selected_partitions: {:?}", selected_partitions);
     let disks_without_part_table = disks_without_partition_table(&plist_out);
     // println!("disks_without_part_table: {:?}", disks_without_part_table);
     let mut lvm_luks_dev_infos = Vec::new();
@@ -360,7 +360,7 @@ pub fn list_partitions(
             if let Some(part_type) = part_type_pattern.find(line).map(|m| m.as_str()) {
                 // check the device identifier against partition list we parsed from plist
                 // (otherwise regex matching alone might give false positives)
-                if !linux_partitions.iter().any(|p| p == dev_ident) {
+                if !selected_partitions.iter().any(|p| p == dev_ident) {
                     continue;
                 }
                 let disk_path = format!("/dev/{dev_ident}");
