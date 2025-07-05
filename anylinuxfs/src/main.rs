@@ -261,7 +261,7 @@ Supported partition schemes:
     Config(ConfigCmd),
     /// List all available disks with compatible filesystems (run with sudo to get more detailed info)
     #[command(
-        after_help = "Lists all physical partitions and LVM volumes. Can decrypt LUKS partition metadata too."
+        after_help = "Lists all physical partitions and LVM/RAID volumes. Can decrypt LUKS partition metadata too."
     )]
     List(ListCmd),
     /// Stop anylinuxfs (can be used if unresponsive)
