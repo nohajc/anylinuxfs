@@ -194,10 +194,15 @@ fn augment_line(line: &str, part_type: &str, dev_info: Option<&DevInfo>, fs_type
             .unwrap_or("                       "),
         23,
     );
-    line.replace(
-        &format!("{:>27} {:<23}", part_type, ""),
-        &format!("{:>27} {:<23}", fs_type, label),
-    )
+
+    // replace in two steps
+    // - part_type must be replaced with fs_type in any case
+    // - label might already be there (for fs_types supported by macOS)
+    line.replace(&format!("{:>27}", part_type), &format!("{:>27}", fs_type))
+        .replace(
+            &format!("{:>27} {:<23}", fs_type, ""),
+            &format!("{:>27} {:<23}", fs_type, label),
+        )
 }
 
 fn lv_size_split_val_and_units(size: &str) -> (&str, String) {
