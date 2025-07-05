@@ -10,7 +10,6 @@ pub struct DevInfo {
     rpath: String,
     label: Option<String>,
     fs_type: Option<String>,
-    fs_driver: Option<String>,
     uuid: Option<String>,
     vm_path: String,
 }
@@ -31,7 +30,6 @@ impl DevInfo {
             rpath: path.into(),
             label: label.map(|l| l.to_owned()),
             fs_type: Some("auto".into()),
-            fs_driver: Some("auto".into()),
             uuid: None,
             vm_path: vm_path.into(),
         })
@@ -70,22 +68,11 @@ impl DevInfo {
         let fs_type = probe.lookup_value("TYPE").ok();
         let uuid = probe.lookup_value("UUID").ok();
 
-        let mut fs_driver = fs_type.clone();
-        if let Some(fs) = fs_type.as_deref() {
-            for (typ, driver) in FS_TYPE_TO_DRIVER {
-                if fs == typ {
-                    fs_driver = Some(driver.to_owned());
-                    break;
-                }
-            }
-        }
-
         Ok(DevInfo {
             path,
             rpath,
             label,
             fs_type,
-            fs_driver,
             uuid,
             vm_path: "/dev/vda".to_owned(),
         })
@@ -112,7 +99,16 @@ impl DevInfo {
     }
 
     pub fn fs_driver(&self) -> Option<&str> {
-        self.fs_driver.as_deref()
+        let mut fs_driver = self.fs_type.as_deref();
+        if let Some(fs) = self.fs_type.as_deref() {
+            for (typ, driver) in FS_TYPE_TO_DRIVER {
+                if fs == typ {
+                    fs_driver = Some(driver);
+                    break;
+                }
+            }
+        }
+        fs_driver
     }
 
     pub fn set_fs_type(&mut self, fs_type: &str) {

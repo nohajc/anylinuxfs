@@ -242,9 +242,9 @@ enum Commands {
     /// Mount a filesystem (the default if no command given)
     #[command(after_help = "Things you can mount:
 - physical partitions
-- LVM volumes spanning one or more disks
+- LVM or RAID volumes spanning one or more disks
 - LUKS-encrypted partitions
-- LVM on LUKS
+- LVM/RAID on LUKS
 
 Supported partition schemes:
 - GPT
@@ -272,8 +272,13 @@ Supported partition schemes:
 
 #[derive(Args)]
 struct MountCmd {
-    /// Either a path (/dev/diskXsY) or a LVM identifier (lvm:<vg-name>:diskXsY[,diskYsZ,...]:<lv-name>), see `list` command output for available volumes
-    disk_path: String,
+    /// File path, LVM identifier or RAID identifier, e.g.:
+    /// /dev/diskXsY
+    /// lvm:<vg-name>:diskXsY[,diskYsZ,...]:<lv-name>
+    /// raid:diskXsY[,diskYsZ,...]
+    /// (see `list` command output for available volumes)
+    #[clap(verbatim_doc_comment)]
+    disk_ident: String,
     /// Options passed to the Linux mount command
     #[arg(short, long)]
     options: Option<String>,
@@ -354,7 +359,7 @@ impl Cli {
     // try parse Cli; if it fails with InvalidSubcommand, try parse CliMount instead
     // (this effectively makes `mount` the default command so the keyword can be omitted)
     fn try_parse_with_default_cmd() -> Result<Cli, clap::Error> {
-        let mount_cmd_usage = "\x1b[1manylinuxfs [mount]\x1b[0m [OPTIONS] <DISK_PATH>";
+        let mount_cmd_usage = "\x1b[1manylinuxfs [mount]\x1b[0m [OPTIONS] <DISK_IDENT>";
         let cmd = Cli::command().mut_subcommand("mount", |mount_cmd: clap::Command| {
             mount_cmd.override_usage(mount_cmd_usage)
         });
@@ -485,8 +490,8 @@ fn save_krun_config(krun_config: &KrunConfig, config_file_path: &Path) -> anyhow
 }
 
 fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
-    let (disk_path, mount_options) = if !cmd.disk_path.is_empty() {
-        (cmd.disk_path, cmd.options)
+    let (disk_path, mount_options) = if !cmd.disk_ident.is_empty() {
+        (cmd.disk_ident, cmd.options)
     } else {
         host_eprintln!("No disk path provided");
         std::process::exit(1);
@@ -968,7 +973,7 @@ fn wait_for_file(file: impl AsRef<Path>) -> anyhow::Result<()> {
     Ok(())
 }
 
-const ROOTFS_CURRENT_VERSION: &str = "1.0.0";
+const ROOTFS_CURRENT_VERSION: &str = "1.1.0";
 
 fn rootfs_version_matches(config: &Config) -> bool {
     let root_ver_file_path = config.root_ver_file_path.as_path();
@@ -1190,6 +1195,37 @@ fn claim_devices(config: &MountConfig) -> anyhow::Result<(Vec<DevInfo>, DevInfo,
             if i == disk_ident.len() - 3 {
                 break;
             }
+            let pv_path = format!("/dev/{}", di);
+            if mount_table.is_mounted(&pv_path) {
+                return Err(anyhow!("{} is already mounted", &pv_path));
+            }
+            let dev_info = DevInfo::pv(&pv_path)?;
+            let disk = File::open(dev_info.rdisk())?.acquire_lock(if config.read_only {
+                FlockKind::Shared
+            } else {
+                FlockKind::Exclusive
+            })?;
+
+            print_dev_info(&dev_info, DevType::PV);
+
+            dev_infos.push(dev_info);
+            disks.push(disk);
+        }
+
+        // fs label will be obtained later from the VM output
+        let lv_info = DevInfo::lv(disk_path, None, vm_path)?;
+        print_dev_info(&lv_info, DevType::LV);
+        lv_info
+    } else if disk_path.starts_with("raid:") {
+        // example: raid:disk7s1:disk8s1
+        let disk_ident: Vec<&str> = disk_path.split(':').collect();
+        if disk_ident.len() < 2 {
+            return Err(anyhow!("Invalid RAID disk path"));
+        }
+
+        let vm_path = "/dev/md127";
+
+        for (_, &di) in disk_ident.iter().skip(1).enumerate() {
             let pv_path = format!("/dev/{}", di);
             if mount_table.is_mounted(&pv_path) {
                 return Err(anyhow!("{} is already mounted", &pv_path));
@@ -1512,7 +1548,7 @@ impl AppRunner {
                                 .unwrap_or(pattern)
                                 .to_string()
                         })
-                    } else if line.starts_with("<anylinuxfs-type:") {
+                    } else if line.starts_with("<anylinuxfs-type") {
                         skip_line = true;
                         fstype = line.split(':').nth(1).map(|pattern| {
                             pattern

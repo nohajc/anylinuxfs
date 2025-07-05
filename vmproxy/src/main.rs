@@ -187,6 +187,28 @@ fn run() -> anyhow::Result<()> {
         }
     }
 
+    // activate RAID volumes if any
+    let is_raid = disk_path.starts_with("/dev/md");
+    if is_raid {
+        let _mdadm_assemble_result = Command::new("/sbin/mdadm")
+            .arg("--assemble")
+            .arg("--scan")
+            .status()
+            .context("Failed to run mdadm command")?;
+
+        let output = Command::new("/bin/busybox")
+            .arg("sh")
+            .arg("-c")
+            .arg("mdadm --detail --scan | cut -d' ' -f2")
+            .output()
+            .context("Failed to get RAID device path from mdadm")?;
+
+        let md_path = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        if !md_path.is_empty() {
+            disk_path = md_path;
+        }
+    }
+
     // activate LVM volumes if any
     // vgchange can return non-zero but still partially succeed
     let _vgchange_result = Command::new("/sbin/vgchange")
@@ -199,7 +221,7 @@ fn run() -> anyhow::Result<()> {
         disk_path = "/dev/mapper/luks0".into();
         fs_type = None;
     }
-    let is_logical = disk_path.starts_with("/dev/mapper");
+    let is_logical = disk_path.starts_with("/dev/mapper") || is_raid;
 
     let name = &cli.mount_name;
     let mount_name = if !is_logical {
