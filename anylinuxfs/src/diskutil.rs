@@ -331,8 +331,8 @@ pub fn list_partitions(
     // println!("selected_partitions: {:?}", selected_partitions);
     let disks_without_part_table = disks_without_partition_table(&plist_out);
     // println!("disks_without_part_table: {:?}", disks_without_part_table);
-    let mut logical_dev_infos = Vec::new();
-    let mut logical_dev_idents = Vec::new();
+    let mut pv_dev_infos = Vec::new();
+    let mut pv_dev_idents = Vec::new();
 
     let decrypt_all = enc_partitions.is_some() && enc_partitions.unwrap()[0] == "all";
     let mut all_luks_partitions = Vec::new();
@@ -349,6 +349,7 @@ pub fn list_partitions(
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let mut current_entry = None;
+    let mut assemble_raid = false;
 
     for line in stdout.lines() {
         if line.starts_with("/dev/disk") {
@@ -376,10 +377,16 @@ pub fn list_partitions(
                     Some(dev_info) => {
                         let fs_type = dev_info.fs_type().unwrap_or(part_type);
                         let is_luks = fs_type == "crypto_LUKS";
+                        let is_raid = fs_type == "linux_raid_member";
+                        let is_lvm = fs_type == "LVM2_member";
 
-                        if fs_type == "LVM2_member" || (enc_partitions.is_some() && is_luks) {
-                            logical_dev_infos.push(dev_info.clone());
-                            logical_dev_idents.push(dev_ident.to_owned());
+                        if is_raid {
+                            assemble_raid = true;
+                        }
+
+                        if is_lvm || is_raid || (enc_partitions.is_some() && is_luks) {
+                            pv_dev_infos.push(dev_info.clone());
+                            pv_dev_idents.push(dev_ident.to_owned());
 
                             if decrypt_all && is_luks {
                                 all_luks_partitions.push(disk_path);
@@ -415,8 +422,8 @@ pub fn list_partitions(
                     if dev_info.is_some()
                         && (fs_type == "LVM2_member" || (enc_partitions.is_some() && is_luks))
                     {
-                        logical_dev_infos.push(dev_info.as_ref().unwrap().clone());
-                        logical_dev_idents.push(dev_ident.to_owned());
+                        pv_dev_infos.push(dev_info.as_ref().unwrap().clone());
+                        pv_dev_idents.push(dev_ident.to_owned());
 
                         if decrypt_all && is_luks {
                             all_luks_partitions.push(disk_path);
@@ -436,16 +443,43 @@ pub fn list_partitions(
         }
     }
 
-    if logical_dev_infos.len() > 0 {
+    if pv_dev_infos.len() > 0 {
         if decrypt_all {
             enc_partitions = Some(&all_luks_partitions);
         }
-        match get_lsblk_info(&config, &logical_dev_infos, enc_partitions) {
+        match get_lsblk_info(&config, &pv_dev_infos, enc_partitions, assemble_raid) {
             Ok(lsblk) => {
                 // println!("lsblk: {:#?}", lsblk);
                 if !lsblk.blockdevices.is_empty() {
-                    let vol_map = create_volume_map(&lsblk, &logical_dev_idents);
+                    let vol_map = create_volume_map(&lsblk, &pv_dev_idents);
                     // println!("vol_map: {:#?}", vol_map);
+
+                    for (
+                        _,
+                        RaidEntry {
+                            dev_idents,
+                            logical_vol,
+                        },
+                    ) in &vol_map.raid_volumes
+                    {
+                        let mut entry = Entry::new("");
+                        entry.header_mut().push_str(
+                            "   #:                       TYPE NAME                    SIZE       IDENTIFIER",
+                        );
+
+                        let dev_ident = dev_idents.join(":");
+                        entry.partitions_mut().push(format!(
+                            "{:>4}: {:>26} {:<23} {:<10} {}",
+                            0,
+                            logical_vol.fstype.as_deref().unwrap_or(""),
+                            logical_vol.label.as_deref().unwrap_or(""),
+                            format_lv_size(&logical_vol.size),
+                            format!("{}", &dev_ident),
+                        ));
+
+                        *entry.disk_mut() = format!("raid:{} (volume):", &dev_ident);
+                        disk_entries.push(entry);
+                    }
 
                     for (
                         vg_name,
@@ -534,6 +568,7 @@ enum BlkDevKind {
     Simple,
     LVM,
     LUKS,
+    RAID,
 }
 
 impl BlkDevKind {
@@ -541,6 +576,7 @@ impl BlkDevKind {
         match fstype {
             Some("LVM2_member") => BlkDevKind::LVM,
             Some("crypto_LUKS") => BlkDevKind::LUKS,
+            Some("linux_raid_member") => BlkDevKind::RAID,
             _ => BlkDevKind::Simple,
         }
     }
@@ -550,6 +586,7 @@ impl BlkDevKind {
 struct VolumeMap {
     vol_groups: IndexMap<String, VgEntry>, // key: volume group name
     simple_luks_devs: IndexMap<String, LsBlkDevice>, // key: device identifier
+    raid_volumes: IndexMap<String, RaidEntry>, // key: md name (for deduplication)
 }
 
 impl VolumeMap {
@@ -557,11 +594,12 @@ impl VolumeMap {
         VolumeMap {
             vol_groups: IndexMap::new(),
             simple_luks_devs: IndexMap::new(),
+            raid_volumes: IndexMap::new(),
         }
     }
 }
 
-fn create_volume_map(lsblk: &LsBlk, logical_dev_idents: &[String]) -> VolumeMap {
+fn create_volume_map(lsblk: &LsBlk, pv_dev_idents: &[String]) -> VolumeMap {
     let mut vol_map = VolumeMap::new();
 
     fn iterate_children(
@@ -575,36 +613,49 @@ fn create_volume_map(lsblk: &LsBlk, logical_dev_idents: &[String]) -> VolumeMap 
         for (j, child) in children.into_iter().flatten().enumerate() {
             let child_kind = BlkDevKind::from_fstype(child.fstype.as_deref());
 
-            if child_kind == BlkDevKind::Simple && kind == BlkDevKind::LUKS {
-                vol_map
-                    .simple_luks_devs
-                    .insert(dev_ident.into(), child.clone());
-            }
+            if child_kind == BlkDevKind::Simple {
+                match kind {
+                    BlkDevKind::LUKS => {
+                        vol_map
+                            .simple_luks_devs
+                            .insert(dev_ident.into(), child.clone());
+                    }
+                    BlkDevKind::RAID => {
+                        let RaidEntry {
+                            dev_idents,
+                            logical_vol,
+                        } = vol_map.raid_volumes.entry(child.name.clone()).or_default();
 
-            if child_kind == BlkDevKind::Simple && kind == BlkDevKind::LVM {
-                if let Ok(lv_ident) = child.name.parse::<LvIdent>() {
-                    // println!("lv_ident: {:#?}", &lv_ident);
-                    let VgEntry {
-                        size,
-                        dev_idents,
-                        lvs,
-                        encrypted,
-                    } = vol_map
-                        .vol_groups
-                        .entry(lv_ident.vg_name.to_string())
-                        .or_insert_with(VgEntry::default);
-
-                    if j == 0 {
-                        *size += parse_lv_size(&blkdev.size).unwrap_or(LvSize(0));
-
+                        *logical_vol = child.clone();
                         dev_idents.push(dev_ident.into());
                     }
+                    BlkDevKind::LVM => {
+                        if let Ok(lv_ident) = child.name.parse::<LvIdent>() {
+                            // println!("lv_ident: {:#?}", &lv_ident);
+                            let VgEntry {
+                                size,
+                                dev_idents,
+                                lvs,
+                                encrypted,
+                            } = vol_map
+                                .vol_groups
+                                .entry(lv_ident.vg_name.to_string())
+                                .or_default();
 
-                    lvs.entry(child.clone())
-                        .or_insert_with(Vec::new)
-                        .push(dev_ident.into());
+                            if j == 0 {
+                                *size += parse_lv_size(&blkdev.size).unwrap_or(LvSize(0));
 
-                    *encrypted = dev_encrypted;
+                                dev_idents.push(dev_ident.into());
+                            }
+
+                            lvs.entry(child.clone())
+                                .or_insert_with(Vec::new)
+                                .push(dev_ident.into());
+
+                            *encrypted = dev_encrypted;
+                        }
+                    }
+                    _ => {}
                 }
             }
 
@@ -620,7 +671,7 @@ fn create_volume_map(lsblk: &LsBlk, logical_dev_idents: &[String]) -> VolumeMap 
     }
 
     for (i, blkdev) in lsblk.blockdevices.iter().enumerate() {
-        let dev_ident = &logical_dev_idents[i];
+        let dev_ident = &pv_dev_idents[i];
         let kind = BlkDevKind::from_fstype(blkdev.fstype.as_deref());
         let encrypted = kind == BlkDevKind::LUKS;
 
@@ -708,10 +759,16 @@ fn get_lsblk_info(
     config: &crate::Config,
     dev_info: &[DevInfo],
     enc_partitions: Option<&[String]>,
+    assemble_raid: bool,
 ) -> anyhow::Result<LsBlk> {
     let script = format!(
-        "{}/sbin/vgchange -ay >/dev/null; /bin/lsblk -O --json",
-        decrypt_script(dev_info, enc_partitions)?
+        "{}{}/sbin/vgchange -ay >/dev/null; /bin/lsblk -O --json",
+        decrypt_script(dev_info, enc_partitions)?,
+        if assemble_raid {
+            "/sbin/mdadm --assemble --scan 2>/dev/null; "
+        } else {
+            ""
+        }
     );
     // println!("lsblk script: {}", &script);
     let lsblk_args = vec![
@@ -1128,8 +1185,14 @@ impl Default for VgEntry {
     }
 }
 
+#[derive(Debug, Default)]
+struct RaidEntry {
+    dev_idents: Vec<String>,
+    logical_vol: LsBlkDevice,
+}
+
 #[allow(unused)]
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Default, Deserialize, Clone)]
 struct LsBlkDevice {
     name: String,
     path: String,
