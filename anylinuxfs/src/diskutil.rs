@@ -648,9 +648,7 @@ fn create_volume_map(lsblk: &LsBlk, pv_dev_idents: &[String]) -> VolumeMap {
                                 dev_idents.push(dev_ident.into());
                             }
 
-                            lvs.entry(child.clone())
-                                .or_insert_with(Vec::new)
-                                .push(dev_ident.into());
+                            lvs.entry(child.clone()).or_default().push(dev_ident.into());
 
                             *encrypted = dev_encrypted;
                         }
