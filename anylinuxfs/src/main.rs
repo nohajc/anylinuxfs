@@ -1219,6 +1219,7 @@ fn claim_devices(config: &MountConfig) -> anyhow::Result<(Vec<DevInfo>, DevInfo,
         if mount_table.is_mounted(disk_path) {
             if config.allow_remount {
                 unmount_fs(Path::new(disk_path))?;
+                println!("Remounting with anylinuxfs...");
             } else {
                 return Err(anyhow!("{} is already mounted", disk_path));
             }
