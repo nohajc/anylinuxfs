@@ -146,7 +146,13 @@ pub struct Labels {
 }
 
 pub const LINUX_LABELS: Labels = Labels {
-    part_types: PartTypes(&["Linux Filesystem", "Linux LVM", "Linux_LVM", "Linux"]),
+    part_types: PartTypes(&[
+        "Linux Filesystem",
+        "Linux LVM",
+        "Linux_LVM",
+        "Linux_RAID",
+        "Linux",
+    ]),
     fs_types: FsTypes(&[
         "btrfs",
         "erofs",
@@ -325,8 +331,8 @@ pub fn list_partitions(
     // println!("selected_partitions: {:?}", selected_partitions);
     let disks_without_part_table = disks_without_partition_table(&plist_out);
     // println!("disks_without_part_table: {:?}", disks_without_part_table);
-    let mut lvm_luks_dev_infos = Vec::new();
-    let mut lvm_luks_dev_idents = Vec::new();
+    let mut logical_dev_infos = Vec::new();
+    let mut logical_dev_idents = Vec::new();
 
     let decrypt_all = enc_partitions.is_some() && enc_partitions.unwrap()[0] == "all";
     let mut all_luks_partitions = Vec::new();
@@ -372,8 +378,8 @@ pub fn list_partitions(
                         let is_luks = fs_type == "crypto_LUKS";
 
                         if fs_type == "LVM2_member" || (enc_partitions.is_some() && is_luks) {
-                            lvm_luks_dev_infos.push(dev_info.clone());
-                            lvm_luks_dev_idents.push(dev_ident.to_owned());
+                            logical_dev_infos.push(dev_info.clone());
+                            logical_dev_idents.push(dev_ident.to_owned());
 
                             if decrypt_all && is_luks {
                                 all_luks_partitions.push(disk_path);
@@ -409,8 +415,8 @@ pub fn list_partitions(
                     if dev_info.is_some()
                         && (fs_type == "LVM2_member" || (enc_partitions.is_some() && is_luks))
                     {
-                        lvm_luks_dev_infos.push(dev_info.as_ref().unwrap().clone());
-                        lvm_luks_dev_idents.push(dev_ident.to_owned());
+                        logical_dev_infos.push(dev_info.as_ref().unwrap().clone());
+                        logical_dev_idents.push(dev_ident.to_owned());
 
                         if decrypt_all && is_luks {
                             all_luks_partitions.push(disk_path);
@@ -430,15 +436,15 @@ pub fn list_partitions(
         }
     }
 
-    if lvm_luks_dev_infos.len() > 0 {
+    if logical_dev_infos.len() > 0 {
         if decrypt_all {
             enc_partitions = Some(&all_luks_partitions);
         }
-        match get_lsblk_info(&config, &lvm_luks_dev_infos, enc_partitions) {
+        match get_lsblk_info(&config, &logical_dev_infos, enc_partitions) {
             Ok(lsblk) => {
                 // println!("lsblk: {:#?}", lsblk);
                 if !lsblk.blockdevices.is_empty() {
-                    let vol_map = create_volume_map(&lsblk, &lvm_luks_dev_idents);
+                    let vol_map = create_volume_map(&lsblk, &logical_dev_idents);
                     // println!("vol_map: {:#?}", vol_map);
 
                     for (
@@ -555,7 +561,7 @@ impl VolumeMap {
     }
 }
 
-fn create_volume_map(lsblk: &LsBlk, lvm_luks_dev_idents: &[String]) -> VolumeMap {
+fn create_volume_map(lsblk: &LsBlk, logical_dev_idents: &[String]) -> VolumeMap {
     let mut vol_map = VolumeMap::new();
 
     fn iterate_children(
@@ -614,7 +620,7 @@ fn create_volume_map(lsblk: &LsBlk, lvm_luks_dev_idents: &[String]) -> VolumeMap
     }
 
     for (i, blkdev) in lsblk.blockdevices.iter().enumerate() {
-        let dev_ident = &lvm_luks_dev_idents[i];
+        let dev_ident = &logical_dev_idents[i];
         let kind = BlkDevKind::from_fstype(blkdev.fstype.as_deref());
         let encrypted = kind == BlkDevKind::LUKS;
 
