@@ -64,6 +64,20 @@ sudo anylinuxfs list
    #:                       TYPE NAME                    SIZE       IDENTIFIER
    0:                crypto_LUKS                        *8.1 GB     disk9
 
+/dev/disk10 (disk image):
+   #:                       TYPE NAME                    SIZE       IDENTIFIER
+   0:     FDisk_partition_scheme                        +268.4 MB   disk10
+   1:          linux_raid_member debian:0                267.4 MB   disk10s1
+
+/dev/disk11 (disk image):
+   #:                       TYPE NAME                    SIZE       IDENTIFIER
+   0:      GUID_partition_scheme                        +268.4 MB   disk11
+   1:          linux_raid_member debian:0                266.3 MB   disk11s1
+
+raid:disk10s1:disk11s1 (volume):
+   #:                       TYPE NAME                    SIZE       IDENTIFIER
+   0:                       ext4 raid-test               265.3 MB   disk10s1:disk11s1
+
 lvm:vg1 (volume group):
    #:                       TYPE NAME                    SIZE       IDENTIFIER
    0:                LVM2_scheme                        +35.0 GB    vg1
@@ -72,6 +86,11 @@ lvm:vg1 (volume group):
    1:                       ext4 lvol0                   15.4 GB    vg1:disk7s1:lvol0
    2:                        xfs lvol1                   7.7 GB     vg1:disk7s1:lvol1
    3:                      btrfs lvol2                   11.9 GB    vg1:disk7s1:disk8s1:lvol2
+```
+
+### List available drives with Microsoft filesystems (exFAT, NTFS)
+```
+sudo anylinuxfs list -m
 ```
 
 ### Mount partition read/write
@@ -92,6 +111,11 @@ sudo anylinuxfs lvm:vg1:disk7s1:lvol0
 ### Mount logical volume from group vg1 backed by disk7s1 and disk8s1
 ```
 sudo anylinuxfs lvm:vg1:disk7s1:disk8s1:lvol2
+```
+
+### Mount RAID volume backed by disk10s1 and disk11s1
+```
+sudo anylinuxfs raid:disk10s1:disk11s1
 ```
 
 ### List available drives and decrypt LUKS metadata of disk9
