@@ -2,7 +2,7 @@
 
 use libc::{c_char, c_int};
 
-#[link(name = "krun")]
+#[link(name = "krun", kind = "static")]
 unsafe extern "C" {
     pub fn krun_set_log_level(level: u32) -> i32;
     pub fn krun_create_ctx() -> i32;

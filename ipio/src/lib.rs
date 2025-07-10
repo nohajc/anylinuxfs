@@ -9,13 +9,14 @@ use std::{
     mem::MaybeUninit,
     os::{
         fd::{AsRawFd, FromRawFd},
-        unix::net::UnixStream,
+        unix::{fs::MetadataExt, net::UnixStream},
     },
     process::{Child, Command},
     ptr,
 };
 
 pub mod client;
+pub mod launcher;
 
 #[derive(Debug, Clone, Encode, Decode)]
 #[repr(C)]
@@ -70,7 +71,7 @@ pub struct Shm {
 impl Shm {
     pub fn create_anonymous(size: off_t) -> anyhow::Result<Shm> {
         let name = nanoid!(16);
-        let name = CString::new(format!("{}", name))?;
+        let name = CString::new(format!("group.testgrp/{}", name))?;
         let shm_fd = unsafe { libc::shm_open(name.as_ptr(), libc::O_CREAT | libc::O_RDWR, 0o666) };
         if shm_fd < 0 {
             return Err(anyhow::anyhow!(
@@ -319,25 +320,36 @@ impl Server {
                     }
                 }
                 IORequest::Size => {
-                    let hnd = file.as_raw_fd();
-                    let mut block_size: u32 = 0;
-                    let block_size_ptr = &mut block_size as *mut _;
-
-                    if unsafe { libc::ioctl(hnd, 0x40046418, block_size_ptr) } < 0 {
-                        IOResponse::Error {
-                            errno: std::io::Error::last_os_error().raw_os_error().unwrap_or(0),
+                    let size = file.metadata().map(|md| md.size()).ok();
+                    if let Some(size) = size
+                        && size > 0
+                    {
+                        IOResponse::Size {
+                            size: size as ssize_t,
                         }
                     } else {
-                        let mut block_count: u64 = 0;
-                        let block_count_ptr = &mut block_count as *mut _;
+                        let hnd = file.as_raw_fd();
+                        let mut block_size: u32 = 0;
+                        let block_size_ptr = &mut block_size as *mut _;
 
-                        if unsafe { libc::ioctl(hnd, 0x40086419, block_count_ptr) } < 0 {
+                        if unsafe { libc::ioctl(hnd, 0x40046418, block_size_ptr) } < 0 {
                             IOResponse::Error {
                                 errno: std::io::Error::last_os_error().raw_os_error().unwrap_or(0),
                             }
                         } else {
-                            IOResponse::Size {
-                                size: (block_size as u64 * block_count) as ssize_t,
+                            let mut block_count: u64 = 0;
+                            let block_count_ptr = &mut block_count as *mut _;
+
+                            if unsafe { libc::ioctl(hnd, 0x40086419, block_count_ptr) } < 0 {
+                                IOResponse::Error {
+                                    errno: std::io::Error::last_os_error()
+                                        .raw_os_error()
+                                        .unwrap_or(0),
+                                }
+                            } else {
+                                IOResponse::Size {
+                                    size: (block_size as u64 * block_count) as ssize_t,
+                                }
                             }
                         }
                     }

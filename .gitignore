@@ -23,3 +23,7 @@ target/
 
 init-rootfs/alpine/
 init-rootfs/init-rootfs
+
+/generated
+
+.DS_Store

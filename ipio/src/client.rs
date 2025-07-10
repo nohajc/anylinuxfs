@@ -71,7 +71,12 @@ impl std::fmt::Display for ErrnoError {
 
 impl Error for ErrnoError {}
 
-pub unsafe fn preadv(hnd: c_int, iov: *const libc::iovec, iovcnt: c_int, offset: off_t) -> ssize_t {
+pub unsafe extern "C" fn preadv(
+    hnd: c_int,
+    iov: *const libc::iovec,
+    iovcnt: c_int,
+    offset: off_t,
+) -> ssize_t {
     // println!(
     //     "preadv called with handle: {}, iov: {:?}, iovcnt: {}, offset: {}",
     //     hnd, iov, iovcnt, offset
@@ -157,7 +162,7 @@ fn preadv_impl(
     }
 }
 
-pub unsafe fn pwritev(
+pub unsafe extern "C" fn pwritev(
     hnd: c_int,
     iov: *const libc::iovec,
     iovcnt: c_int,
@@ -240,7 +245,7 @@ fn pwritev_impl(
     }
 }
 
-pub unsafe fn size(hnd: c_int) -> ssize_t {
+pub unsafe extern "C" fn size(hnd: c_int) -> ssize_t {
     let res = size_impl(hnd);
 
     match res {
