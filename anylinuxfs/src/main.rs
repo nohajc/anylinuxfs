@@ -36,17 +36,20 @@ use utils::{
     LockFile, OutputAction, StatusError, write_to_pipe,
 };
 
-use krun as bindings;
-
 mod api;
-// #[allow(unused)]
-// mod bindings;
+#[allow(unused)]
+mod bindings;
 mod devinfo;
 mod diskutil;
 mod fsutil;
 mod utils;
 
-const LOCK_FILE: &str = "/tmp/anylinuxfs.lock";
+fn lock_file_path() -> PathBuf {
+    let path = env::temp_dir().join("anylinuxfs.lock");
+    // let path = PathBuf::from("/tmp/anylinuxfs.lock");
+    // println!("DEBUG: lock_file_path = {}", path.display());
+    path
+}
 
 fn to_exit_code(status: i32) -> i32 {
     if libc::WIFEXITED(status) {
@@ -104,8 +107,8 @@ struct Config {
     init_rootfs_path: PathBuf,
     kernel_path: PathBuf,
     gvproxy_path: PathBuf,
-    vsock_path: String,
-    vfkit_sock_path: String,
+    vsock_path: PathBuf,
+    vfkit_sock_path: PathBuf,
     invoker_uid: libc::uid_t,
     invoker_gid: libc::gid_t,
     sudo_uid: Option<libc::uid_t>,
@@ -464,8 +467,9 @@ fn load_config() -> anyhow::Result<Config> {
     let kernel_path = libexec_dir.join("Image").to_owned();
     let gvproxy_path = libexec_dir.join("gvproxy").to_owned();
 
-    let vsock_path = format!("/tmp/anylinuxfs-{}-vsock", rand_string(8));
-    let vfkit_sock_path = format!("/tmp/vfkit-{}.sock", rand_string(8));
+    let temp_dir = env::temp_dir();
+    let vsock_path = temp_dir.join(format!("anylinuxfs-{}-vsock", rand_string(8)));
+    let vfkit_sock_path = temp_dir.join(format!("vfkit-{}.sock", rand_string(8)));
 
     let krun = load_krun_config(&config_file_path)?;
 
@@ -650,9 +654,7 @@ fn setup_vm(
         unsafe {
             bindings::krun_set_gvproxy_path(
                 ctx,
-                CString::new(config.vfkit_sock_path.as_str())
-                    .unwrap()
-                    .as_ptr(),
+                CString::from_path(&config.vfkit_sock_path).as_ptr(),
             )
         }
         .context("Failed to set gvproxy path")?;
@@ -681,7 +683,7 @@ fn setup_vm(
             bindings::krun_add_vsock_port2(
                 ctx,
                 12700,
-                CString::new(config.vsock_path.as_str()).unwrap().as_ptr(),
+                CString::from_path(&config.vsock_path).as_ptr(),
                 true,
             )
         }
@@ -878,7 +880,11 @@ fn run_vmcommand(
 }
 
 fn gvproxy_cleanup(config: &Config) -> anyhow::Result<()> {
-    let sock_krun_path = config.vfkit_sock_path.replace(".sock", ".sock-krun.sock");
+    let sock_krun_path = config
+        .vfkit_sock_path
+        .to_str()
+        .unwrap()
+        .replace(".sock", ".sock-krun.sock");
     match remove_file(&sock_krun_path) {
         Ok(_) => {}
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
@@ -904,8 +910,12 @@ fn vsock_cleanup(config: &Config) -> anyhow::Result<()> {
 fn start_gvproxy(config: &Config) -> anyhow::Result<Child> {
     gvproxy_cleanup(config)?;
 
-    let net_sock_uri = format!("unix:///tmp/network-{}.sock", rand_string(8));
-    let vfkit_sock_uri = format!("unixgram://{}", &config.vfkit_sock_path);
+    let net_sock_uri = format!(
+        "unix://{}/network-{}.sock",
+        env::temp_dir().display(),
+        rand_string(8)
+    );
+    let vfkit_sock_uri = format!("unixgram://{}", config.vfkit_sock_path.display());
     let gvproxy_args = [
         "--listen",
         &net_sock_uri,
@@ -1419,7 +1429,7 @@ impl Default for AppRunner {
 
 impl AppRunner {
     fn run_shell(&mut self, cmd: ShellCmd) -> anyhow::Result<()> {
-        let _lock_file = LockFile::new(LOCK_FILE)?.acquire_lock(FlockKind::Exclusive)?;
+        let _lock_file = LockFile::new(lock_file_path())?.acquire_lock(FlockKind::Exclusive)?;
         let config = load_mount_config(cmd.mnt)?;
 
         if !cmd.skip_init {
@@ -1447,7 +1457,7 @@ impl AppRunner {
     }
 
     fn run_mount(&mut self, cmd: MountCmd) -> anyhow::Result<()> {
-        let _lock_file = LockFile::new(LOCK_FILE)?.acquire_lock(FlockKind::Exclusive)?;
+        let _lock_file = LockFile::new(lock_file_path())?.acquire_lock(FlockKind::Exclusive)?;
         let config = load_mount_config(cmd)?;
         let log_file_path = &config.common.log_file_path;
 
@@ -1837,7 +1847,7 @@ impl AppRunner {
     }
 
     fn run_init(&mut self) -> anyhow::Result<()> {
-        let _lock_file = LockFile::new(LOCK_FILE)?.acquire_lock(FlockKind::Exclusive)?;
+        let _lock_file = LockFile::new(lock_file_path())?.acquire_lock(FlockKind::Exclusive)?;
         let config = load_config()?;
         init_rootfs(&config, true)?;
 

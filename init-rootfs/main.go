@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"os/user"
 	"path/filepath"
 	"time"
 
@@ -319,16 +318,16 @@ func main() {
 		fmt.Printf("Error resolving exec dir: %v\n", err)
 		os.Exit(1)
 	}
-	currentUser, err := user.Current()
+	currentUserHome, err := os.UserHomeDir()
 	if err != nil {
-		fmt.Printf("Error getting current user: %v\n", err)
+		fmt.Printf("Error getting current user home directory: %v\n", err)
 		os.Exit(1)
 	}
-	if currentUser.HomeDir == "" {
+	if currentUserHome == "" {
 		fmt.Println("Current user does not have a home directory.")
 		os.Exit(1)
 	}
-	cfg := defaultConfig(currentUser.HomeDir, execDir)
+	cfg := defaultConfig(currentUserHome, execDir)
 
 	err = initRootfs(&cfg)
 	if err != nil {

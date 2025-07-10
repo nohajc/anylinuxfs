@@ -4,7 +4,7 @@ package vmrunner
 #include <stdlib.h>
 #include "vmrunner.h"
 #cgo CFLAGS: -I /opt/homebrew/opt/libkrun/include
-#cgo LDFLAGS: -L /opt/homebrew/opt/libkrun/lib -lkrun
+#cgo LDFLAGS: -L /Users/nohajan/gitprojs/3rd-party/libkrun/target/release -framework Hypervisor -lkrun
 */
 import "C"
 import (
