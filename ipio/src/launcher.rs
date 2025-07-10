@@ -1,24 +1,50 @@
 use std::{fs, process::Command, thread};
 
 use anyhow::Context;
-use ipio::ServerBuilder;
 
-fn main() -> anyhow::Result<()> {
-    let args: Vec<String> = std::env::args().collect();
+use crate::ServerBuilder;
+
+#[swift_bridge::bridge]
+mod ffi {
+    extern "Rust" {
+        fn run(args: Vec<String>);
+    }
+}
+
+fn run(args: Vec<String>) {
+    println!("Running with args: {:?}", args);
+    if let Err(e) = run_with_result(args) {
+        eprintln!("Error: {:#}", e);
+    }
+}
+
+fn run_with_result(args: Vec<String>) -> anyhow::Result<()> {
+    // test spawning a process using libc::posix_spawn
+    // let mut child_pid = 0;
+    // let res = unsafe {
+    //     libc::posix_spawn(
+    //         &mut child_pid,
+    //         "Downloads/anylinuxfs\0".as_bytes().as_ptr() as *const c_char,
+    //         std::ptr::null(),
+    //         std::ptr::null(),
+    //         std::ptr::null(),
+    //         std::ptr::null(),
+    //     )
+    // };
+    // if res != 0 {
+    //     return Err(anyhow::anyhow!("Failed to spawn process: {}", res));
+    // }
+    // _ = unsafe { libc::waitpid(child_pid, std::ptr::null_mut(), 0) };
+
     let disk_ident = args
         .iter()
         .find(|arg| arg.starts_with("custom:"))
         .context("Disk identifier not provided")?;
 
-    let mut disk_path = disk_ident.trim_start_matches("custom:").to_owned();
-    if disk_path.starts_with("disk") {
-        disk_path = format!("/dev/r{}", &disk_path);
-    }
     let file = fs::OpenOptions::new()
         .read(true)
         .write(true)
-        // .open(disk_ident.trim_start_matches("custom:"))
-        .open(&disk_path)
+        .open(disk_ident.trim_start_matches("custom:"))
         .context("Failed to open file")?;
 
     let server_builder = ServerBuilder::new(4194304).context("Failed to create server builder")?;
@@ -36,7 +62,7 @@ fn main() -> anyhow::Result<()> {
 
     // println!("args: {:?}", args);
 
-    let mut cmd = Command::new("bin/anylinuxfs");
+    let mut cmd = Command::new("Downloads/afs/bin/anylinuxfs");
     cmd.args(args);
     let (mut child, mut server) = server_builder.spawn_client(cmd)?;
     let hnd = thread::spawn(move || {

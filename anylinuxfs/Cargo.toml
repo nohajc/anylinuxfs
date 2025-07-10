@@ -11,7 +11,7 @@ objc2-core-foundation = "0.3.1"
 objc2-disk-arbitration = "0.3.1"
 url = "2.5.4"
 nanoid = "0.4.0"
-libblkid-rs = "0.4.0"
+libblkid-rs = { version = "0.4.0", features = ["static"] }
 clap = { version = "4.5.35", features = ["cargo", "derive"] }
 homedir = "0.3.4"
 common_utils = { path = "../common-utils" }
