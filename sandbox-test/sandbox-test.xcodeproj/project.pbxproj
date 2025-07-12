@@ -86,6 +86,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 03DACDD12E1EA2CF001D8847 /* Build configuration list for PBXNativeTarget "sandbox-test" */;
 			buildPhases = (
+				03DACDF72E2066C2001D8847 /* ShellScript */,
 				03DACDC62E1EA2CF001D8847 /* Sources */,
 				03DACDC72E1EA2CF001D8847 /* Frameworks */,
 				03DACDC82E1EA2CF001D8847 /* CopyFiles */,
@@ -138,6 +139,26 @@
 			);
 		};
 /* End PBXProject section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		03DACDF72E2066C2001D8847 /* ShellScript */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -e\n\ncd ../ipio\nexport PATH=\"$PATH:$HOME/.cargo/bin\"\n./build.sh\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		03DACDC62E1EA2CF001D8847 /* Sources */ = {
@@ -282,6 +303,7 @@
 				ENABLE_INCOMING_NETWORK_CONNECTIONS = YES;
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				ENABLE_RESOURCE_ACCESS_PRINTING = NO;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				ENABLE_USER_SELECTED_FILES = readwrite;
 				GENERATE_INFOPLIST_FILE = YES;
 				LIBRARY_SEARCH_PATHS = "$(PROJECT_DIR)/../ipio/target/debug";
@@ -306,6 +328,7 @@
 				ENABLE_INCOMING_NETWORK_CONNECTIONS = YES;
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				ENABLE_RESOURCE_ACCESS_PRINTING = NO;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				ENABLE_USER_SELECTED_FILES = readwrite;
 				GENERATE_INFOPLIST_FILE = YES;
 				LIBRARY_SEARCH_PATHS = "$(PROJECT_DIR)/../ipio/target/release";

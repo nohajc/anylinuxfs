@@ -21,7 +21,8 @@ fn main() -> anyhow::Result<()> {
         .open(&disk_path)
         .context("Failed to open file")?;
 
-    let server_builder = ServerBuilder::new(4194304).context("Failed to create server builder")?;
+    let server_builder =
+        ServerBuilder::new(42, 4194304).context("Failed to create server builder")?;
     let args = args
         .iter()
         .skip(1)

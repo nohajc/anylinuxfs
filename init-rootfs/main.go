@@ -247,9 +247,13 @@ func downloadEntrypointScript(rootfsPath string) error {
 
 func copyVmproxyBinary(prefixDir, rootfsPath string) error {
 	vmproxySrcPath := filepath.Join(prefixDir, "libexec", "vmproxy")
+	// need a way to override is due to macOS sandbox limitations
+	if pathOverride := os.Getenv("AFS_VMPROXY_SRC_PATH"); pathOverride != "" {
+		vmproxySrcPath = pathOverride
+	}
 	vmproxyDstPath := filepath.Join(rootfsPath, "vmproxy")
 
-	copyCmd := exec.Command("cp", "-v", vmproxySrcPath, vmproxyDstPath)
+	copyCmd := exec.Command("/bin/cp", "-v", vmproxySrcPath, vmproxyDstPath)
 	copyCmd.Stdout = os.Stdout
 	copyCmd.Stderr = os.Stderr
 
@@ -304,6 +308,7 @@ func resolveExecDir() (string, error) {
 		fmt.Printf("Error getting executable path: %v\n", err)
 		return "", err
 	}
+
 	execPath, err = filepath.EvalSymlinks(execPath)
 	if err != nil {
 		fmt.Printf("Error resolving symlinks: %v\n", err)
@@ -335,6 +340,11 @@ func main() {
 	}
 
 	kernelPath := filepath.Join(cfg.PrefixDir, "libexec", "Image")
+	// need a way to override is due to macOS sandbox limitations
+	if pathOverride := os.Getenv("AFS_KERNEL_IMAGE"); pathOverride != "" {
+		kernelPath = pathOverride
+	}
+
 	err = vmrunner.Run(kernelPath, cfg.RootfsPath, cfg.VmSetupScriptPath)
 	if err != nil {
 		fmt.Printf("Failed to run VM: %v\n", err)

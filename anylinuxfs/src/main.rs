@@ -446,13 +446,18 @@ fn load_config() -> anyhow::Result<Config> {
     let log_file_path = home_dir.join("Library").join("Logs").join("anylinuxfs.log");
 
     let libexec_dir = prefix_dir.join("libexec");
-    let init_rootfs_path = libexec_dir.join("init-rootfs").to_owned();
-    let kernel_path = libexec_dir.join("Image").to_owned();
-    let gvproxy_path = libexec_dir.join("gvproxy").to_owned();
+    let init_rootfs_path = libexec_dir.join("init-rootfs");
+    let kernel_path = if let Ok(path_override) = env::var("AFS_KERNEL_IMAGE") {
+        PathBuf::from(path_override)
+    } else {
+        libexec_dir.join("Image")
+    };
+    let gvproxy_path = libexec_dir.join("gvproxy");
 
     let temp_dir = env::temp_dir();
-    let vsock_path = temp_dir.join(format!("anylinuxfs-{}-vsock", rand_string(8)));
-    let vfkit_sock_path = temp_dir.join(format!("vfkit-{}.sock", rand_string(8)));
+    let vsock_path = temp_dir.join(format!("anylinuxfs-{}-vsck", rand_string(8)));
+    // we are dangerously close to the UNIX-domain address length limit of 104 bytes
+    let vfkit_sock_path = temp_dir.join(format!("vfkit-{}", rand_string(8)));
 
     let krun = load_krun_config(&config_file_path)?;
 
@@ -585,12 +590,13 @@ fn setup_vm(
         if di.is_custom_io() {
             unsafe {
                 let client = ipio::Client::from_conn_string(&di.rdisk())?;
+                let hnd = client.hnd;
                 ipio::client::CLIENT.get_or_init(|| Mutex::new(client));
 
                 bindings::krun_add_disk_with_custom_io(
                     ctx,
                     CString::new(format!("data{}", i)).unwrap().as_ptr(),
-                    42,
+                    hnd as i32, // TODO: change krun handle type?
                     ipio::client::preadv,
                     ipio::client::pwritev,
                     ipio::client::size,
@@ -1346,6 +1352,7 @@ impl AppRunner {
 
         // host_println!("disk_path: {}", config.disk_path);
         host_println!("root_path: {}", config.common.root_path.display());
+        host_println!("kernel_path: {}", config.common.kernel_path.display());
         host_println!("num_vcpus: {}", config.common.krun.num_vcpus);
         host_println!("ram_size_mib: {}", config.common.krun.ram_size_mib);
 
@@ -1415,6 +1422,7 @@ impl AppRunner {
 
         // host_println!("disk_path: {}", config.disk_path);
         host_println!("root_path: {}", config.common.root_path.display());
+        host_println!("kernel_path: {}", config.common.kernel_path.display());
         host_println!("num_vcpus: {}", config.common.krun.num_vcpus);
         host_println!("ram_size_mib: {}", config.common.krun.ram_size_mib);
 
@@ -1615,8 +1623,6 @@ impl AppRunner {
             if nfs_status.ok() {
                 host_println!("Port 111 open, NFS server ready");
 
-                let event_session = diskutil::EventSession::new()?;
-
                 if let NfsStatus::Ready(Some(label), _) = &nfs_status {
                     mnt_dev_info.set_label(label);
                     rt_info.lock().unwrap().dev_info.set_label(label);
@@ -1627,23 +1633,30 @@ impl AppRunner {
                     rt_info.lock().unwrap().dev_info.set_fs_type(fstype);
                 }
 
-                let share_name = mnt_dev_info.auto_mount_name();
-                match mount_nfs(&share_name) {
-                    Ok(_) => host_println!("Requested NFS share mount"),
-                    Err(e) => host_eprintln!("Failed to request NFS mount: {:#}", e),
-                }
-                let nfs_path = PathBuf::from(format!("localhost:/mnt/{}", share_name));
-                let mount_point_opt = event_session.wait_for_mount(&nfs_path);
+                let (event_session, mount_point_opt) = if !mnt_dev_info.is_custom_io() {
+                    let event_session = diskutil::EventSession::new()?;
 
-                if let Some(mount_point) = &mount_point_opt {
-                    host_println!(
-                        "{} was mounted as {}",
-                        mnt_dev_info.disk(),
-                        mount_point.display()
-                    );
+                    let share_name = mnt_dev_info.auto_mount_name();
+                    match mount_nfs(&share_name) {
+                        Ok(_) => host_println!("Requested NFS share mount"),
+                        Err(e) => host_eprintln!("Failed to request NFS mount: {:#}", e),
+                    }
+                    let nfs_path = PathBuf::from(format!("localhost:/mnt/{}", share_name));
+                    let mount_point_opt = event_session.wait_for_mount(&nfs_path);
 
-                    rt_info.lock().unwrap().mount_point = Some(mount_point.display().into());
-                }
+                    if let Some(mount_point) = &mount_point_opt {
+                        host_println!(
+                            "{} was mounted as {}",
+                            mnt_dev_info.disk(),
+                            mount_point.display()
+                        );
+
+                        rt_info.lock().unwrap().mount_point = Some(mount_point.display().into());
+                    }
+                    (Some(event_session), mount_point_opt)
+                } else {
+                    (None, None)
+                };
 
                 if can_detach {
                     // tell the parent to detach from console (i.e. exit)
@@ -1659,10 +1672,13 @@ impl AppRunner {
                 }
 
                 if let Some(mount_point) = &mount_point_opt {
-                    event_session.wait_for_unmount(mount_point.real());
+                    event_session.unwrap().wait_for_unmount(mount_point.real());
                     host_println!("Share {} was unmounted", mount_point.display());
                 }
-                send_quit_cmd(&config.common)?;
+
+                if !mnt_dev_info.is_custom_io() {
+                    send_quit_cmd(&config.common)?;
+                }
             } else {
                 host_println!("NFS server not ready");
                 // tell the parent to wait for the child to exit
@@ -1899,18 +1915,31 @@ impl AppRunner {
         match resp {
             Ok(api::Response::Config(rt_info)) => {
                 if !cmd.force {
-                    // try to trigger normal shutdown first
-                    if let MountStatus::Mounted(mount_point) = validated_mount_point(&rt_info) {
-                        println!("Unmounting {}...", mount_point.display());
-                        unmount_fs(&mount_point)?;
-                        return Ok(());
-                    };
-                    println!("Already unmounted, shutting down...");
-                    // not killing the whole process group, just the session leader;
-                    // this should trigger graceful shutdown of the VMM and its parent
-                    if unsafe { libc::kill(rt_info.session_pgid, libc::SIGTERM) } < 0 {
-                        return Err(io::Error::last_os_error())
-                            .context(format!("Failed to send SIGTERM to anylinuxfs"));
+                    match validated_mount_point(&rt_info) {
+                        MountStatus::Mounted(mount_point) => {
+                            // try to trigger normal shutdown
+                            println!("Unmounting {}...", mount_point.display());
+                            unmount_fs(&mount_point)?;
+                            return Ok(());
+                        }
+                        MountStatus::NotYet => {
+                            println!("Trying to shutdown anylinuxfs VM directly...");
+                            send_quit_cmd(&rt_info.mount_config.common)
+                                .context("could not send quit command to VM")?;
+                            // wait for vmm process to exit or become zombie
+                            wait_for_proc_exit(rt_info.vmm_pid)
+                                .context("error waiting for process to exit")?;
+                            println!("VM exited gracefully");
+                        }
+                        MountStatus::NoLonger => {
+                            println!("Already unmounted, shutting down...");
+                            // not killing the whole process group, just the session leader;
+                            // this should trigger graceful shutdown of the VMM and its parent
+                            if unsafe { libc::kill(rt_info.session_pgid, libc::SIGTERM) } < 0 {
+                                return Err(io::Error::last_os_error())
+                                    .context(format!("Failed to send SIGTERM to anylinuxfs"));
+                            }
+                        }
                     }
                 } else {
                     if let MountStatus::Mounted(mount_point) = validated_mount_point(&rt_info) {
