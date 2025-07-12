@@ -30,6 +30,11 @@ error setup_and_start_vm(const char* kernel_path, const char* root_path, const c
         return krun_error(ctx, "configuration context error");
     }
 
+    // int res = krun_set_log_level(2);
+    // if (is_error(res)) {
+    //     return krun_error(res, "set log level error");
+    // }
+
     int res = krun_set_vm_config(ctx, 1, 512);
     if (is_error(res)) {
         return krun_error(res, "vm configuration error");

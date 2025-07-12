@@ -11,6 +11,7 @@ swift-bridge-build = "0.1"
 
 [dependencies]
 anyhow = "1.0.98"
+base64 = "0.22.1"
 bincode = { version = "2.0.1", features = ["derive"] }
 libc = "0.2.172"
 nanoid = "0.4.0"

@@ -17,7 +17,9 @@ use serde::{Deserialize, Serialize};
 use crate::{MountConfig, devinfo::DevInfo};
 
 fn api_socket_path() -> PathBuf {
-    env::temp_dir().join("anylinuxfs.sock")
+    env::var("AFS_API_SOCKET")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| env::temp_dir().join("anylinuxfs.sock"))
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
