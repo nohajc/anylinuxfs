@@ -1,24 +1,40 @@
-use std::{fs, process::Command, thread};
+use std::{
+    ffi::c_void,
+    process::{Command, Stdio},
+    thread,
+};
 
 use anyhow::Context;
 
-use crate::ServerBuilder;
+use crate::{IOCallbacks, ServerBuilder};
+
+type Void = c_void;
 
 #[swift_bridge::bridge]
 mod ffi {
+    extern "Swift" {
+        fn blkdev_read(hnd: usize, buf: *mut Void, offset: i64, size: isize) -> i64;
+        fn blkdev_write(hnd: usize, buf: *mut Void, offset: i64, size: isize) -> i64;
+        fn blkdev_size(hnd: usize) -> i64;
+    }
+
     extern "Rust" {
-        fn run(args: Vec<String>);
+        // env - vector of key=value formatted strings
+        fn run(hnd: usize, args: Vec<String>, env: Vec<String>) -> String;
     }
 }
 
-fn run(args: Vec<String>) {
-    println!("Running with args: {:?}", args);
-    if let Err(e) = run_with_result(args) {
-        eprintln!("Error: {:#}", e);
+fn run(hnd: usize, args: Vec<String>, env: Vec<String>) -> String {
+    // println!("Running with args: {:?}", args);
+    match run_with_result(hnd, args, env) {
+        Ok(out) => out,
+        Err(e) => {
+            format!("Error: {:#}", e)
+        }
     }
 }
 
-fn run_with_result(args: Vec<String>) -> anyhow::Result<()> {
+fn run_with_result(hnd: usize, args: Vec<String>, env: Vec<String>) -> anyhow::Result<String> {
     // test spawning a process using libc::posix_spawn
     // let mut child_pid = 0;
     // let res = unsafe {
@@ -36,18 +52,8 @@ fn run_with_result(args: Vec<String>) -> anyhow::Result<()> {
     // }
     // _ = unsafe { libc::waitpid(child_pid, std::ptr::null_mut(), 0) };
 
-    let disk_ident = args
-        .iter()
-        .find(|arg| arg.starts_with("custom:"))
-        .context("Disk identifier not provided")?;
-
-    let file = fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(disk_ident.trim_start_matches("custom:"))
-        .context("Failed to open file")?;
-
-    let server_builder = ServerBuilder::new(4194304).context("Failed to create server builder")?;
+    let server_builder =
+        ServerBuilder::new(hnd, 4194304).context("Failed to create server builder")?;
     let args = args
         .iter()
         .skip(1)
@@ -64,19 +70,45 @@ fn run_with_result(args: Vec<String>) -> anyhow::Result<()> {
 
     let mut cmd = Command::new("Downloads/afs/bin/anylinuxfs");
     cmd.args(args);
+    cmd.envs(env.iter().filter_map(|s| {
+        let mut parts = s.splitn(2, '=');
+        let Some(key) = parts.next() else {
+            return None;
+        };
+        let Some(value) = parts.next() else {
+            return None;
+        };
+        Some((key.to_string(), value.to_string()))
+    }));
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
     let (mut child, mut server) = server_builder.spawn_client(cmd)?;
-    let hnd = thread::spawn(move || {
-        server.serve(file).unwrap();
+    let _hnd = thread::spawn(move || {
+        server
+            .serve(IOCallbacks {
+                read: ffi::blkdev_read,
+                write: ffi::blkdev_write,
+                size: ffi::blkdev_size,
+                hnd,
+            })
+            .unwrap();
     });
 
-    let status = child.wait().context("Failed to wait for child process")?;
-    if !status.success() {
-        return Err(anyhow::anyhow!(
-            "Child process exited with status: {}",
-            status
-        ));
-    }
-    hnd.join().unwrap();
+    // let _hnd2 = thread::spawn(move || {
+    _ = child.wait();
+    // });
 
-    Ok(())
+    // let out = child
+    //     .wait_with_output()
+    //     .context("Failed to wait for child process")?;
+    // if !out.status.success() {
+    //     return Err(anyhow::anyhow!(
+    //         "{}\n\nChild process exited with status: {}",
+    //         String::from_utf8_lossy(&out.stderr),
+    //         out.status
+    //     ));
+    // }
+
+    // Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    Ok("anylinuxfs started".into())
 }
