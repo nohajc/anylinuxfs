@@ -69,7 +69,7 @@ fn run_with_result(hnd: usize, args: Vec<String>, env: Vec<String>) -> anyhow::R
     // println!("args: {:?}", args);
 
     let mut cmd = Command::new("Downloads/afs/bin/anylinuxfs");
-    cmd.args(args);
+    cmd.args(&args);
     cmd.envs(env.iter().filter_map(|s| {
         let mut parts = s.splitn(2, '=');
         let Some(key) = parts.next() else {
@@ -82,20 +82,26 @@ fn run_with_result(hnd: usize, args: Vec<String>, env: Vec<String>) -> anyhow::R
     }));
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
-    let (mut child, mut server) = server_builder.spawn_client(cmd)?;
-    let _hnd = thread::spawn(move || {
-        server
-            .serve(IOCallbacks {
-                read: ffi::blkdev_read,
-                write: ffi::blkdev_write,
-                size: ffi::blkdev_size,
-                hnd,
-            })
-            .unwrap();
-    });
+
+    let mut child = if args[0] == "stop" {
+        cmd.spawn()?
+    } else {
+        let (child, mut server) = server_builder.spawn_client(cmd)?;
+        let _hnd = thread::spawn(move || {
+            server
+                .serve(IOCallbacks {
+                    read: ffi::blkdev_read,
+                    write: ffi::blkdev_write,
+                    size: ffi::blkdev_size,
+                    hnd,
+                })
+                .unwrap();
+        });
+        child
+    };
 
     // let _hnd2 = thread::spawn(move || {
-    _ = child.wait();
+    let status = child.wait()?;
     // });
 
     // let out = child
@@ -110,5 +116,5 @@ fn run_with_result(hnd: usize, args: Vec<String>, env: Vec<String>) -> anyhow::R
     // }
 
     // Ok(String::from_utf8_lossy(&out.stdout).into_owned())
-    Ok("anylinuxfs started".into())
+    Ok(status.to_string())
 }
