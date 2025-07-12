@@ -986,9 +986,7 @@ fn wait_for_nfs_server(
     Ok(nfs_ready)
 }
 
-fn mount_nfs(share_name: &str, config: &MountConfig) -> anyhow::Result<()> {
-    let share_path = format!("/mnt/{share_name}");
-
+fn mount_nfs(share_path: &str, config: &MountConfig) -> anyhow::Result<()> {
     let status = if let Some(mount_point) = config.custom_mount_point.as_deref() {
         let mut shell_script = format!(
             "mount -t nfs \"localhost:{}\" \"{}\"",
@@ -1748,11 +1746,13 @@ impl AppRunner {
                     }
                 }
 
+                let share_name = mnt_dev_info.auto_mount_name();
+                let share_path = format!("/mnt/{share_name}");
+
                 let (event_session, mount_point_opt) = if !mnt_dev_info.is_custom_io() {
                     let event_session = diskutil::EventSession::new()?;
 
-                    let share_name = mnt_dev_info.auto_mount_name();
-                    let mount_result = mount_nfs(&share_name, &config);
+                    let mount_result = mount_nfs(&share_path, &config);
                     match &mount_result {
                         Ok(_) => host_println!("Requested NFS share mount"),
                         Err(e) => host_eprintln!("Failed to request NFS mount: {:#}", e),
@@ -1762,7 +1762,7 @@ impl AppRunner {
                     drop_privileges(config.common.sudo_uid, config.common.sudo_gid)?;
 
                     let mount_point_opt = if mount_result.is_ok() {
-                        let nfs_path = PathBuf::from(format!("localhost:/mnt/{}", share_name));
+                        let nfs_path = PathBuf::from(format!("localhost:{}", share_path));
                         event_session.wait_for_mount(&nfs_path)
                     } else {
                         None
@@ -1779,6 +1779,7 @@ impl AppRunner {
                     }
                     (Some(event_session), mount_point_opt)
                 } else {
+                    println!("{}", &share_path);
                     (None, None)
                 };
 

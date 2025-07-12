@@ -1,5 +1,6 @@
 use std::{
     ffi::c_void,
+    io::{BufRead, BufReader},
     process::{Command, Stdio},
     thread,
 };
@@ -100,21 +101,15 @@ fn run_with_result(hnd: usize, args: Vec<String>, env: Vec<String>) -> anyhow::R
         child
     };
 
-    // let _hnd2 = thread::spawn(move || {
+    let mut out_reader = BufReader::new(child.stdout.take().unwrap());
+
     let status = child.wait()?;
-    // });
+    if !status.success() {
+        return Err(anyhow::anyhow!("Child process error: {}", status));
+    }
 
-    // let out = child
-    //     .wait_with_output()
-    //     .context("Failed to wait for child process")?;
-    // if !out.status.success() {
-    //     return Err(anyhow::anyhow!(
-    //         "{}\n\nChild process exited with status: {}",
-    //         String::from_utf8_lossy(&out.stderr),
-    //         out.status
-    //     ));
-    // }
+    let mut buffer = String::new();
+    out_reader.read_line(&mut buffer)?;
 
-    // Ok(String::from_utf8_lossy(&out.stdout).into_owned())
-    Ok(status.to_string())
+    Ok(buffer.trim().into())
 }
