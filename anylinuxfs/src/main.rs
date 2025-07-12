@@ -934,8 +934,7 @@ fn wait_for_nfs_server(
     Ok(nfs_ready)
 }
 
-fn mount_nfs(share_name: &str) -> anyhow::Result<()> {
-    let share_path = format!("/mnt/{share_name}");
+fn mount_nfs(share_path: &str) -> anyhow::Result<()> {
     let apple_script = format!(
         "tell application \"Finder\" to open location \"nfs://localhost:{}\"",
         share_path
@@ -1633,15 +1632,17 @@ impl AppRunner {
                     rt_info.lock().unwrap().dev_info.set_fs_type(fstype);
                 }
 
+                let share_name = mnt_dev_info.auto_mount_name();
+                let share_path = format!("/mnt/{share_name}");
+
                 let (event_session, mount_point_opt) = if !mnt_dev_info.is_custom_io() {
                     let event_session = diskutil::EventSession::new()?;
 
-                    let share_name = mnt_dev_info.auto_mount_name();
-                    match mount_nfs(&share_name) {
+                    match mount_nfs(&share_path) {
                         Ok(_) => host_println!("Requested NFS share mount"),
                         Err(e) => host_eprintln!("Failed to request NFS mount: {:#}", e),
                     }
-                    let nfs_path = PathBuf::from(format!("localhost:/mnt/{}", share_name));
+                    let nfs_path = PathBuf::from(format!("localhost:{}", share_path));
                     let mount_point_opt = event_session.wait_for_mount(&nfs_path);
 
                     if let Some(mount_point) = &mount_point_opt {
@@ -1655,6 +1656,7 @@ impl AppRunner {
                     }
                     (Some(event_session), mount_point_opt)
                 } else {
+                    println!("{}", &share_path);
                     (None, None)
                 };
 
