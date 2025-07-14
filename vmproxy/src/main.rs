@@ -260,11 +260,7 @@ fn run() -> anyhow::Result<()> {
             let fs = String::from_utf8_lossy(&fs).trim().to_owned();
             println!("<anylinuxfs-type:{}>", &fs);
             fs_type = if !fs.is_empty() {
-                if fs == "ntfs" {
-                    Some("ntfs3".into())
-                } else {
-                    Some(fs.clone())
-                }
+                Some(fs.clone())
             } else {
                 None
             };
