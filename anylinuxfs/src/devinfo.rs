@@ -17,7 +17,7 @@ pub struct DevInfo {
 const BUF_PREFIX: &str = "/dev/disk";
 const RAW_PREFIX: &str = "/dev/rdisk";
 
-const FS_TYPE_TO_DRIVER: [(&str, &str); 1] = [("ntfs", "ntfs3")];
+// const FS_TYPE_TO_DRIVER: [(&str, &str); 1] = [("ntfs", "ntfs3")];
 
 impl DevInfo {
     pub fn lv(
@@ -99,15 +99,15 @@ impl DevInfo {
     }
 
     pub fn fs_driver(&self) -> Option<&str> {
-        let mut fs_driver = self.fs_type.as_deref();
-        if let Some(fs) = self.fs_type.as_deref() {
-            for (typ, driver) in FS_TYPE_TO_DRIVER {
-                if fs == typ {
-                    fs_driver = Some(driver);
-                    break;
-                }
-            }
-        }
+        let fs_driver = self.fs_type.as_deref();
+        // if let Some(fs) = self.fs_type.as_deref() {
+        //     for (typ, driver) in FS_TYPE_TO_DRIVER {
+        //         if fs == typ {
+        //             fs_driver = Some(driver);
+        //             break;
+        //         }
+        //     }
+        // }
         fs_driver
     }
 

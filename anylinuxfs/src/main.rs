@@ -973,7 +973,7 @@ fn wait_for_file(file: impl AsRef<Path>) -> anyhow::Result<()> {
     Ok(())
 }
 
-const ROOTFS_CURRENT_VERSION: &str = "1.1.0";
+const ROOTFS_CURRENT_VERSION: &str = "1.1.1";
 
 fn rootfs_version_matches(config: &Config) -> bool {
     let root_ver_file_path = config.root_ver_file_path.as_path();
