@@ -1407,8 +1407,11 @@ impl AppRunner {
 
         let mut passphrase_callbacks = Vec::new();
         for di in &dev_info {
-            if di.fs_type() == Some("crypto_LUKS") || di.fs_type() == Some("BitLocker") {
-                ensure_enough_ram_for_luks(&mut config.common);
+            let is_luks = di.fs_type() == Some("crypto_LUKS");
+            if is_luks || di.fs_type() == Some("BitLocker") {
+                if is_luks {
+                    ensure_enough_ram_for_luks(&mut config.common);
+                }
                 let prompt_fn = diskutil::passphrase_prompt(di.disk())?;
                 passphrase_callbacks.push(prompt_fn);
             }
@@ -1723,7 +1726,7 @@ impl AppRunner {
         let mut config = load_config()?;
         init_rootfs(&config, false)?;
 
-        if cmd.decrypt.is_some() {
+        if cmd.decrypt.is_some() && !cmd.microsoft {
             ensure_enough_ram_for_luks(&mut config);
         }
 
