@@ -1868,18 +1868,31 @@ impl AppRunner {
         match resp {
             Ok(api::Response::Config(rt_info)) => {
                 if !cmd.force {
-                    // try to trigger normal shutdown first
-                    if let MountStatus::Mounted(mount_point) = validated_mount_point(&rt_info) {
-                        println!("Unmounting {}...", mount_point.display());
-                        unmount_fs(&mount_point)?;
-                        return Ok(());
-                    };
-                    println!("Already unmounted, shutting down...");
-                    // not killing the whole process group, just the session leader;
-                    // this should trigger graceful shutdown of the VMM and its parent
-                    if unsafe { libc::kill(rt_info.session_pgid, libc::SIGTERM) } < 0 {
-                        return Err(io::Error::last_os_error())
-                            .context(format!("Failed to send SIGTERM to anylinuxfs"));
+                    match validated_mount_point(&rt_info) {
+                        MountStatus::Mounted(mount_point) => {
+                            // try to trigger normal shutdown
+                            println!("Unmounting {}...", mount_point.display());
+                            unmount_fs(&mount_point)?;
+                            return Ok(());
+                        }
+                        MountStatus::NotYet => {
+                            println!("Trying to shutdown anylinuxfs VM directly...");
+                            send_quit_cmd(&rt_info.mount_config.common)
+                                .context("could not send quit command to VM")?;
+                            // wait for vmm process to exit or become zombie
+                            wait_for_proc_exit(rt_info.vmm_pid)
+                                .context("error waiting for process to exit")?;
+                            println!("VM exited gracefully");
+                        }
+                        MountStatus::NoLonger => {
+                            println!("Already unmounted, shutting down...");
+                            // not killing the whole process group, just the session leader;
+                            // this should trigger graceful shutdown of the VMM and its parent
+                            if unsafe { libc::kill(rt_info.session_pgid, libc::SIGTERM) } < 0 {
+                                return Err(io::Error::last_os_error())
+                                    .context(format!("Failed to send SIGTERM to anylinuxfs"));
+                            }
+                        }
                     }
                 } else {
                     if let MountStatus::Mounted(mount_point) = validated_mount_point(&rt_info) {
