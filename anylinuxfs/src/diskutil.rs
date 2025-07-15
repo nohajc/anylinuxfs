@@ -533,19 +533,29 @@ pub fn list_partitions(
                     // extend entries with decrypted metadata
                     for entry in &mut disk_entries {
                         for part in entry.partitions_mut() {
-                            if part.contains("crypto_LUKS") {
-                                if let Some(dev_ident) = part.split_whitespace().last() {
-                                    if let Some(luks_dev) = vol_map.simple_luks_devs.get(dev_ident)
-                                    {
-                                        if let Some(fstype) = luks_dev.fstype.as_deref() {
-                                            *part = part.replace(
-                                                "               crypto_LUKS                        ",
-                                                &format!(
-                                                    "{:>26} {:<23}",
-                                                    format!("crypto_LUKS: {}", fstype),
-                                                    luks_dev.label.as_deref().unwrap_or(""),
-                                                ),
-                                            );
+                            for enc_type in ["crypto_LUKS", "BitLocker"] {
+                                if part.contains(enc_type) {
+                                    if let Some(dev_ident) = part.split_whitespace().last() {
+                                        if let Some(enc_dev) =
+                                            vol_map.simple_enc_devs.get(dev_ident)
+                                        {
+                                            if let Some(fstype) = enc_dev.fstype.as_deref() {
+                                                let enc_fs_type =
+                                                    format!("{}: {}", enc_type, fstype);
+                                                *part = part
+                                                    .replace(
+                                                        &format!("{:>27}", enc_type),
+                                                        &format!("{:>27}", enc_fs_type),
+                                                    )
+                                                    .replace(
+                                                        &format!("{:>27} {:<23}", enc_fs_type, ""),
+                                                        &format!(
+                                                            "{:>27} {:<23}",
+                                                            enc_fs_type,
+                                                            enc_dev.label.as_deref().unwrap_or(""),
+                                                        ),
+                                                    );
+                                            }
                                         }
                                     }
                                 }
@@ -569,6 +579,7 @@ enum BlkDevKind {
     LVM,
     LUKS,
     RAID,
+    BitLocker,
 }
 
 impl BlkDevKind {
@@ -577,6 +588,7 @@ impl BlkDevKind {
             Some("LVM2_member") => BlkDevKind::LVM,
             Some("crypto_LUKS") => BlkDevKind::LUKS,
             Some("linux_raid_member") => BlkDevKind::RAID,
+            Some("BitLocker") => BlkDevKind::BitLocker,
             _ => BlkDevKind::Simple,
         }
     }
@@ -585,7 +597,7 @@ impl BlkDevKind {
 #[derive(Debug)]
 struct VolumeMap {
     vol_groups: IndexMap<String, VgEntry>, // key: volume group name
-    simple_luks_devs: IndexMap<String, LsBlkDevice>, // key: device identifier
+    simple_enc_devs: IndexMap<String, LsBlkDevice>, // key: device identifier
     raid_volumes: IndexMap<String, RaidEntry>, // key: md name (for deduplication)
 }
 
@@ -593,7 +605,7 @@ impl VolumeMap {
     fn new() -> Self {
         VolumeMap {
             vol_groups: IndexMap::new(),
-            simple_luks_devs: IndexMap::new(),
+            simple_enc_devs: IndexMap::new(),
             raid_volumes: IndexMap::new(),
         }
     }
@@ -615,9 +627,9 @@ fn create_volume_map(lsblk: &LsBlk, pv_dev_idents: &[String]) -> VolumeMap {
 
             if child_kind == BlkDevKind::Simple {
                 match kind {
-                    BlkDevKind::LUKS => {
+                    BlkDevKind::LUKS | BlkDevKind::BitLocker => {
                         vol_map
-                            .simple_luks_devs
+                            .simple_enc_devs
                             .insert(dev_ident.into(), child.clone());
                     }
                     BlkDevKind::RAID => {
@@ -753,7 +765,7 @@ fn decrypt_script(dev_info: &[DevInfo], partitions: Option<&[String]>) -> anyhow
         let (vdev_path, fs_type) = virt_disk_to_decrypt(dev_info, part)?;
         match fs_type.as_str() {
             "crypto_LUKS" => script += &format!("cryptsetup open {} luks{i}; ", vdev_path),
-            "BitLocker" => script += &format!("cryptsetup bitlkOpen {} btlk{i}", vdev_path),
+            "BitLocker" => script += &format!("cryptsetup bitlkOpen {} btlk{i}; ", vdev_path),
             _ => (),
         }
     }
