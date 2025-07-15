@@ -123,8 +123,9 @@ impl DevInfo {
         &self.vm_path
     }
 
-    pub fn auto_mount_name(&self) -> &str {
+    pub fn auto_mount_name(&self) -> String {
         self.label()
+            .map(|l| l.replace("/", "-").replace(" ", "_").replace(":", "_"))
             // .or(self.uuid())
             // .unwrap_or("lvol0")
             .unwrap_or(
@@ -133,7 +134,8 @@ impl DevInfo {
                     .last()
                     .map(|d| d.split(':').last())
                     .flatten()
-                    .expect("non-empty disk path"),
+                    .expect("non-empty disk path")
+                    .into(),
             )
     }
 }

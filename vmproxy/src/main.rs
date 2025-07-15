@@ -163,13 +163,19 @@ fn run() -> anyhow::Result<()> {
     let mount_options = cli.mount_options;
     let verbose = cli.verbose;
 
-    // decrypt LUKS volumes if any
+    let (mapper_ident_prefix, cryptsetup_op) = match fs_type.as_deref() {
+        Some("crypto_LUKS") => ("luks", "open"),
+        Some("BitLocker") => ("btlk", "bitlkOpen"),
+        _ => ("luks", "open"),
+    };
+
+    // decrypt LUKS/BitLocker volumes if any
     if let Some(decrypt) = &cli.decrypt {
         for (i, dev) in decrypt.split(",").enumerate() {
             let cryptsetup_result = Command::new("/sbin/cryptsetup")
-                .arg("open")
+                .arg(cryptsetup_op)
                 .arg(&dev)
-                .arg(format!("luks{i}"))
+                .arg(format!("{mapper_ident_prefix}{i}"))
                 .stdout(Stdio::null())
                 .status()
                 .context(format!("Failed to run cryptsetup command for '{}'", dev))?;
@@ -216,10 +222,16 @@ fn run() -> anyhow::Result<()> {
         .status()
         .context("Failed to run vgchange command")?;
 
-    let fs_encrypted = fs_type.as_deref() == Some("crypto_LUKS");
-    if fs_encrypted {
-        disk_path = "/dev/mapper/luks0".into();
-        fs_type = None;
+    match fs_type.as_deref() {
+        Some("crypto_LUKS") => {
+            disk_path = "/dev/mapper/luks0".into();
+            fs_type = None;
+        }
+        Some("BitLocker") => {
+            disk_path = "/dev/mapper/btlk0".into();
+            fs_type = None;
+        }
+        _ => {}
     }
     let is_logical = disk_path.starts_with("/dev/mapper") || is_raid;
 

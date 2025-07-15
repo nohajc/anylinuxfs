@@ -1407,7 +1407,7 @@ impl AppRunner {
 
         let mut passphrase_callbacks = Vec::new();
         for di in &dev_info {
-            if di.fs_type() == Some("crypto_LUKS") {
+            if di.fs_type() == Some("crypto_LUKS") || di.fs_type() == Some("BitLocker") {
                 ensure_enough_ram_for_luks(&mut config.common);
                 let prompt_fn = diskutil::passphrase_prompt(di.disk())?;
                 passphrase_callbacks.push(prompt_fn);
@@ -1463,7 +1463,7 @@ impl AppRunner {
 
             let to_decrypt: Vec<_> = iter::zip(dev_info.iter(), 'a'..='z')
                 .filter_map(|(di, letter)| {
-                    if di.fs_type() == Some("crypto_LUKS") {
+                    if di.fs_type() == Some("crypto_LUKS") || di.fs_type() == Some("BitLocker") {
                         Some(format!("/dev/vd{}", letter))
                     } else {
                         None

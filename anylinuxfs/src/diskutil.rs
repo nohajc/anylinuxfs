@@ -171,7 +171,7 @@ pub const LINUX_LABELS: Labels = Labels {
 // MBR - Windows_NTFS         (both NTFS and exFAT)
 pub const WINDOWS_LABELS: Labels = Labels {
     part_types: PartTypes(&["Microsoft Basic Data", "Windows_NTFS"]),
-    fs_types: FsTypes(&["ntfs", "exfat"]),
+    fs_types: FsTypes(&["ntfs", "exfat", "BitLocker"]),
 };
 
 fn partitions_with_part_type(plist: &Plist, part_types: PartTypes) -> Vec<String> {
@@ -335,7 +335,7 @@ pub fn list_partitions(
     let mut pv_dev_idents = Vec::new();
 
     let decrypt_all = enc_partitions.is_some() && enc_partitions.unwrap()[0] == "all";
-    let mut all_luks_partitions = Vec::new();
+    let mut all_enc_partitions = Vec::new();
     let mut enc_partitions = enc_partitions;
 
     let output = Command::new("diskutil")
@@ -376,7 +376,7 @@ pub fn list_partitions(
                 let line = match dev_info {
                     Some(dev_info) => {
                         let fs_type = dev_info.fs_type().unwrap_or(part_type);
-                        let is_luks = fs_type == "crypto_LUKS";
+                        let is_enc = fs_type == "crypto_LUKS" || fs_type == "BitLocker";
                         let is_raid = fs_type == "linux_raid_member";
                         let is_lvm = fs_type == "LVM2_member";
 
@@ -384,12 +384,12 @@ pub fn list_partitions(
                             assemble_raid = true;
                         }
 
-                        if is_lvm || is_raid || (enc_partitions.is_some() && is_luks) {
+                        if is_lvm || is_raid || (enc_partitions.is_some() && is_enc) {
                             pv_dev_infos.push(dev_info.clone());
                             pv_dev_idents.push(dev_ident.to_owned());
 
-                            if decrypt_all && is_luks {
-                                all_luks_partitions.push(disk_path);
+                            if decrypt_all && is_enc {
+                                all_enc_partitions.push(disk_path);
                             }
                         }
 
@@ -418,15 +418,15 @@ pub fn list_partitions(
                         continue;
                     }
 
-                    let is_luks = fs_type == "crypto_LUKS";
+                    let is_enc = fs_type == "crypto_LUKS" || fs_type == "BitLocker";
                     if dev_info.is_some()
-                        && (fs_type == "LVM2_member" || (enc_partitions.is_some() && is_luks))
+                        && (fs_type == "LVM2_member" || (enc_partitions.is_some() && is_enc))
                     {
                         pv_dev_infos.push(dev_info.as_ref().unwrap().clone());
                         pv_dev_idents.push(dev_ident.to_owned());
 
-                        if decrypt_all && is_luks {
-                            all_luks_partitions.push(disk_path);
+                        if decrypt_all && is_enc {
+                            all_enc_partitions.push(disk_path);
                         }
                     }
 
@@ -445,7 +445,7 @@ pub fn list_partitions(
 
     if pv_dev_infos.len() > 0 {
         if decrypt_all {
-            enc_partitions = Some(&all_luks_partitions);
+            enc_partitions = Some(&all_enc_partitions);
         }
         match get_lsblk_info(&config, &pv_dev_infos, enc_partitions, assemble_raid) {
             Ok(lsblk) => {
@@ -723,14 +723,20 @@ pub fn passphrase_prompt(
     })
 }
 
-fn virt_disk_to_decrypt(dev_info: &[DevInfo], partition: &str) -> anyhow::Result<String> {
+fn virt_disk_to_decrypt(dev_info: &[DevInfo], partition: &str) -> anyhow::Result<(String, String)> {
     let enc_part_idx = dev_info.iter().position(|di| di.disk() == partition);
     Ok(match enc_part_idx {
-        Some(idx) => format!(
-            "/dev/vd{}",
-            ('a'..='z')
-                .nth(idx)
-                .context("block device index out of range")?
+        Some(idx) => (
+            format!(
+                "/dev/vd{}",
+                ('a'..='z')
+                    .nth(idx)
+                    .context("block device index out of range")?
+            ),
+            dev_info[idx]
+                .fs_type()
+                .context("missing fs_type info")?
+                .into(),
         ),
         None => Err(anyhow!("Partition {} not found", partition))?,
     })
@@ -744,10 +750,12 @@ fn decrypt_script(dev_info: &[DevInfo], partitions: Option<&[String]>) -> anyhow
     let mut script = String::new();
 
     for (i, part) in partitions.iter().enumerate() {
-        script += &format!(
-            "cryptsetup open {} luks{i}; ",
-            virt_disk_to_decrypt(dev_info, part)?,
-        );
+        let (vdev_path, fs_type) = virt_disk_to_decrypt(dev_info, part)?;
+        match fs_type.as_str() {
+            "crypto_LUKS" => script += &format!("cryptsetup open {} luks{i}; ", vdev_path),
+            "BitLocker" => script += &format!("cryptsetup bitlkOpen {} btlk{i}", vdev_path),
+            _ => (),
+        }
     }
 
     Ok(script)
