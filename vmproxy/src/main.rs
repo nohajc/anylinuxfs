@@ -16,6 +16,8 @@ struct Cli {
     mount_name: String,
     #[arg(short = 't', long = "types")]
     fs_type: Option<String>,
+    #[arg(long = "fs-driver")]
+    fs_driver: Option<String>,
     #[arg(short = 'o', long = "options")]
     mount_options: Option<String>,
     #[arg(short, long)]
@@ -156,6 +158,7 @@ fn run() -> anyhow::Result<()> {
 
     let mut disk_path = cli.disk_path;
     let mut fs_type = cli.fs_type;
+    let fs_driver = cli.fs_driver;
     let mount_options = cli.mount_options;
     let verbose = cli.verbose;
 
@@ -178,7 +181,7 @@ fn run() -> anyhow::Result<()> {
 
             if !cryptsetup_result.success() {
                 return Err(anyhow!(
-                    "Failed to open LUKS device '{}': {}",
+                    "Failed to open encrypted device '{}': {}",
                     dev,
                     cryptsetup_result
                         .code()
@@ -267,11 +270,7 @@ fn run() -> anyhow::Result<()> {
 
             let fs = String::from_utf8_lossy(&fs).trim().to_owned();
             println!("<anylinuxfs-type:{}>", &fs);
-            fs_type = if !fs.is_empty() {
-                Some(fs.clone())
-            } else {
-                None
-            };
+            fs_type = if !fs.is_empty() { Some(fs) } else { None };
         }
         _ => (),
     }
@@ -302,7 +301,10 @@ fn run() -> anyhow::Result<()> {
 
     let mnt_args = [
         "-t",
-        fs_type.as_deref().unwrap_or("auto"),
+        fs_driver
+            .as_deref()
+            .or(fs_type.as_deref())
+            .unwrap_or("auto"),
         &disk_path,
         &mount_point,
     ]

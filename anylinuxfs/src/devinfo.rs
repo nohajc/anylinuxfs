@@ -12,12 +12,11 @@ pub struct DevInfo {
     fs_type: Option<String>,
     uuid: Option<String>,
     vm_path: String,
+    fs_driver: Option<String>, // will be auto-detected if not set
 }
 
 const BUF_PREFIX: &str = "/dev/disk";
 const RAW_PREFIX: &str = "/dev/rdisk";
-
-// const FS_TYPE_TO_DRIVER: [(&str, &str); 1] = [("ntfs", "ntfs3")];
 
 impl DevInfo {
     pub fn lv(
@@ -32,6 +31,7 @@ impl DevInfo {
             fs_type: Some("auto".into()),
             uuid: None,
             vm_path: vm_path.into(),
+            fs_driver: None,
         })
     }
 
@@ -75,6 +75,7 @@ impl DevInfo {
             fs_type,
             uuid,
             vm_path: "/dev/vda".to_owned(),
+            fs_driver: None,
         })
     }
 
@@ -99,20 +100,15 @@ impl DevInfo {
     }
 
     pub fn fs_driver(&self) -> Option<&str> {
-        let fs_driver = self.fs_type.as_deref();
-        // if let Some(fs) = self.fs_type.as_deref() {
-        //     for (typ, driver) in FS_TYPE_TO_DRIVER {
-        //         if fs == typ {
-        //             fs_driver = Some(driver);
-        //             break;
-        //         }
-        //     }
-        // }
-        fs_driver
+        self.fs_driver.as_deref().or(self.fs_type.as_deref())
     }
 
     pub fn set_fs_type(&mut self, fs_type: &str) {
         self.fs_type = Some(fs_type.to_owned());
+    }
+
+    pub fn set_fs_driver(&mut self, fs_driver: &str) {
+        self.fs_driver = Some(fs_driver.to_owned());
     }
 
     pub fn uuid(&self) -> Option<&str> {

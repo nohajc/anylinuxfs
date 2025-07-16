@@ -212,6 +212,7 @@ struct MountConfig {
     read_only: bool,
     mount_options: Option<String>,
     allow_remount: bool,
+    fs_driver: Option<String>,
     bind_addr: IpAddr,
     verbose: bool,
     common: Config,
@@ -285,6 +286,9 @@ struct MountCmd {
     /// Allow remount: proceed even if the disk is already mounted by macOS (NTFS, exFAT)
     #[arg(short, long)]
     remount: bool,
+    /// Filesystem driver override (e.g. for using ntfs3 instead of ntfs-3g)
+    #[arg(short = 't', long = "type")]
+    fs_driver: Option<String>,
     /// Override this to share the mount to a different machine
     #[arg(short, long, default_value = "127.0.0.1")]
     bind_addr: String,
@@ -506,6 +510,8 @@ fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
     let read_only = is_read_only_set(mount_options.as_deref());
     let verbose = cmd.verbose;
 
+    let fs_driver = cmd.fs_driver;
+
     if bind_addr != Ipv4Addr::UNSPECIFIED && bind_addr != Ipv4Addr::LOCALHOST {
         // check if the given bind address is assigned to any interface
         if let Ok(interfaces) = if_addrs::get_if_addrs() {
@@ -525,6 +531,7 @@ fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
         read_only,
         mount_options,
         allow_remount,
+        fs_driver,
         bind_addr,
         verbose,
         common,
@@ -672,8 +679,20 @@ fn start_vmproxy(
     .into_iter()
     .chain([
         CString::new("-t").unwrap(),
-        CString::new(dev_info.fs_driver().unwrap_or("auto")).unwrap(),
+        CString::new(dev_info.fs_type().unwrap_or("auto")).unwrap(),
     ])
+    .chain(
+        config
+            .fs_driver
+            .as_deref()
+            .into_iter()
+            .flat_map(|fs_driver| {
+                [
+                    CString::new("--fs-driver").unwrap(),
+                    CString::new(fs_driver).unwrap(),
+                ]
+            }),
+    )
     .chain(
         config
             .mount_options
@@ -1178,7 +1197,7 @@ fn claim_devices(config: &MountConfig) -> anyhow::Result<(Vec<DevInfo>, DevInfo,
 
     let disk_path = config.disk_path.as_str();
 
-    let mnt_dev_info = if disk_path.starts_with("lvm:") {
+    let mut mnt_dev_info = if disk_path.starts_with("lvm:") {
         // example: lvm:vg1:disk7s1:lvol0
         let disk_ident: Vec<&str> = disk_path.split(':').collect();
         if disk_ident.len() < 4 {
@@ -1274,6 +1293,10 @@ fn claim_devices(config: &MountConfig) -> anyhow::Result<(Vec<DevInfo>, DevInfo,
         disks.push(disk);
 
         dev_infos[0].clone()
+    };
+
+    if let Some(fs_driver) = &config.fs_driver {
+        mnt_dev_info.set_fs_driver(&fs_driver);
     };
 
     Ok((dev_infos, mnt_dev_info, disks))
