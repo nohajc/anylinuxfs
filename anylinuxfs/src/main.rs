@@ -865,13 +865,13 @@ fn start_gvproxy(config: &Config) -> anyhow::Result<Child> {
 
 #[derive(Debug)]
 enum NfsStatus {
-    Ready(Option<String>, Option<String>),
+    Ready(Option<String>, Option<String>, bool),
     Failed(Option<i32>),
 }
 
 impl NfsStatus {
     fn ok(&self) -> bool {
-        matches!(self, NfsStatus::Ready(_, _))
+        matches!(self, NfsStatus::Ready(_, _, _))
     }
 }
 
@@ -1506,6 +1506,7 @@ impl AppRunner {
                 let mut nfs_ready = false;
                 let mut fslabel: Option<String> = None;
                 let mut fstype: Option<String> = None;
+                let mut changed_to_ro = false;
                 let mut exit_code = None;
                 let mut buf_reader = BufReader::new(unsafe { File::from_raw_fd(pty_fd) });
                 let mut line = String::new();
@@ -1525,7 +1526,11 @@ impl AppRunner {
                     if line.contains("READY AND WAITING FOR NFS CLIENT CONNECTIONS") {
                         // Notify the main thread that NFS server is ready
                         nfs_ready_tx
-                            .send(NfsStatus::Ready(fslabel.take(), fstype.take()))
+                            .send(NfsStatus::Ready(
+                                fslabel.take(),
+                                fstype.take(),
+                                changed_to_ro,
+                            ))
                             .unwrap();
                         nfs_ready = true;
                     } else if line.starts_with("<anylinuxfs-exit-code") {
@@ -1560,6 +1565,9 @@ impl AppRunner {
                                 .unwrap_or(pattern)
                                 .to_string()
                         })
+                    } else if line.starts_with("<anylinuxfs-mount:changed-to-ro>") {
+                        skip_line = true;
+                        changed_to_ro = true;
                     } else if !config.verbose && line.contains("mounted successfully on") {
                         log::disable_console_log();
                     }
@@ -1592,14 +1600,25 @@ impl AppRunner {
 
                 let event_session = diskutil::EventSession::new()?;
 
-                if let NfsStatus::Ready(Some(label), _) = &nfs_status {
+                if let NfsStatus::Ready(Some(label), _, _) = &nfs_status {
                     mnt_dev_info.set_label(label);
                     rt_info.lock().unwrap().dev_info.set_label(label);
                 }
 
-                if let NfsStatus::Ready(_, Some(fstype)) = &nfs_status {
+                if let NfsStatus::Ready(_, Some(fstype), _) = &nfs_status {
                     mnt_dev_info.set_fs_type(fstype);
                     rt_info.lock().unwrap().dev_info.set_fs_type(fstype);
+                }
+
+                if let NfsStatus::Ready(_, _, changed_to_ro) = nfs_status {
+                    if changed_to_ro {
+                        rt_info.lock().unwrap().mount_config.read_only = true;
+                        let mount_opts = rt_info.lock().unwrap().mount_config.mount_options.clone();
+                        let new_mount_opts = mount_opts
+                            .map(|opts| format!("ro,{}", opts))
+                            .unwrap_or("ro".into());
+                        rt_info.lock().unwrap().mount_config.mount_options = Some(new_mount_opts);
+                    }
                 }
 
                 let share_name = mnt_dev_info.auto_mount_name();
@@ -1844,7 +1863,7 @@ impl AppRunner {
                         .unwrap_or("<unknown>".into());
 
                 println!(
-                    "{} on {} ({}, mounted by {}) VM[cpus: {}, ram: {} MiB]",
+                    "{} on {} ({}, mounted by {})\nVM[cpus: {}, ram: {} MiB]",
                     &rt_info.mount_config.disk_path,
                     mount_point.display(),
                     info.join(", "),

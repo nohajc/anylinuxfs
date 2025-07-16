@@ -124,12 +124,8 @@ fn wait_for_quit_cmd() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn is_read_only_set(mount_options: Option<&str>) -> bool {
-    if let Some(options) = mount_options {
-        options.split(',').any(|opt| opt == "ro")
-    } else {
-        false
-    }
+fn is_read_only_set<'a>(mut mount_options: impl Iterator<Item = &'a str>) -> bool {
+    mount_options.any(|opt| opt == "ro")
 }
 
 fn terminate_child(child: &mut Child, child_name: &str) -> anyhow::Result<()> {
@@ -346,19 +342,43 @@ fn run() -> anyhow::Result<()> {
         fs_type.unwrap_or("unknown".to_owned())
     );
 
+    let effective_mount_options = {
+        let output = Command::new("/bin/busybox")
+            .arg("sh")
+            .arg("-c")
+            .arg(format!(
+                "mount | grep {} | awk -F'(' '{{ print $2 }}' | tr -d ')'",
+                &disk_path
+            ))
+            .output()
+            .context(format!("Failed to get mount options for {}", &disk_path))?;
+
+        let opts = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        println!("Effective mount options: {}", opts);
+        opts
+    }
+    .split(',')
+    .map(|s| s.to_owned())
+    .collect::<Vec<String>>();
+
     init_network(&cli.bind_addr).context("Failed to initialize network")?;
 
     // list_dir(mount_point);
 
-    let mode = if is_read_only_set(mount_options.as_deref()) {
-        "ro"
-    } else {
-        "rw"
-    };
+    let specified_read_only = mount_options
+        .as_deref()
+        .map(|opts| is_read_only_set(opts.split(',')))
+        .unwrap_or(false);
+    let effective_read_only = is_read_only_set(effective_mount_options.iter().map(String::as_str));
 
+    if specified_read_only != effective_read_only {
+        println!("<anylinuxfs-mount:changed-to-ro>");
+    }
+
+    let export_mode = if effective_read_only { "ro" } else { "rw" };
     let exports_content = format!(
         "\"{}\"      *({},no_subtree_check,no_root_squash,insecure)\n",
-        &mount_point, mode,
+        &mount_point, export_mode,
     );
 
     fs::write("/etc/exports", exports_content).context("Failed to write to /etc/exports")?;
