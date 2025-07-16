@@ -28,6 +28,10 @@ pub fn init_log_file(path: impl AsRef<Path>) -> io::Result<()> {
     Ok(())
 }
 
+pub fn enable_console_log() {
+    CONSOLE_LOG_ENABLED.store(true, Ordering::Relaxed);
+}
+
 pub fn disable_console_log() {
     CONSOLE_LOG_ENABLED.store(false, Ordering::Relaxed);
 }

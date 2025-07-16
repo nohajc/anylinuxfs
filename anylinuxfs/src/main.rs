@@ -1560,10 +1560,16 @@ impl AppRunner {
                                 .unwrap_or(pattern)
                                 .to_string()
                         })
+                    } else if !config.verbose && line.contains("mounted successfully on") {
+                        log::disable_console_log();
                     }
 
                     if !skip_line {
                         guest_println!("{}", line.trim_end());
+                    }
+
+                    if !config.verbose && line.starts_with("mount args: [") {
+                        log::enable_console_log();
                     }
                     line.clear();
                 }
