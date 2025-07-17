@@ -15,7 +15,7 @@ With full write support, based on the libkrun microVM hypervisor and NFS. Doesn'
 - supports disks with **GPT**, **MBR** or no partition table (single filesystem or LVM/LUKS container)
 - NFS share by default only reachable from localhost but can be shared across network too
 
-> [!IMPORTANT]
+> [!CAUTION]
 > Before using anylinuxfs with **NTFS**, please read [the notes](#ntfs)
 
 ## Installation
