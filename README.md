@@ -5,13 +5,14 @@ With full write support, based on the libkrun microVM hypervisor and NFS. Doesn'
 <a href='https://ko-fi.com/Q5Q41EHAGK' target='_blank'><img height='36' style='border:0px;height:36px;' src='https://storage.ko-fi.com/cdn/kofi1.png?v=6' border='0' alt='Buy Me a Coffee at ko-fi.com' /></a>
 
 ## Features
-- mounts any filesystem supported by Linux (ext4, btrfs, xfs, ... but also NTFS and exFAT)
-- supports LUKS-encrypted drives
-- supports LVM (even volume groups spanning multiple drives)
-- supports LVM on LUKS (i.e. encrypted LVM)
-- supports Linux RAID
+- mounts any filesystem supported by Linux (**ext4**, **btrfs**, **xfs**, ... but also **NTFS** and **exFAT**)
+- supports **LUKS**-encrypted drives
+- supports **BitLocker**-encrypted drives (using your recovery key as passphrase)
+- supports **LVM** (even volume groups spanning multiple drives)
+- supports **LVM on LUKS** (i.e. encrypted LVM)
+- supports **Linux RAID**
 - works with both external and internal drives
-- supports disks with GPT, MBR or no partition table (single filesystem or LVM/LUKS container)
+- supports disks with **GPT**, **MBR** or no partition table (single filesystem or LVM/LUKS container)
 - NFS share by default only reachable from localhost but can be shared across network too
 
 ## Installation
@@ -118,7 +119,7 @@ sudo anylinuxfs lvm:vg1:disk7s1:disk8s1:lvol2
 sudo anylinuxfs raid:disk10s1:disk11s1
 ```
 
-### List available drives and decrypt LUKS metadata of disk9
+### List available drives and decrypt LUKS or BitLocker metadata of disk9
 ```
 sudo anylinuxfs list -d /dev/disk9
 ```
@@ -131,12 +132,12 @@ sudo anylinuxfs list -d /dev/disk9
 ...
 ```
 
-### List available drives and decrypt all LUKS metadata
+### List available drives and decrypt all LUKS or BitLocker metadata
 ```
 sudo anylinuxfs list -d all
 ```
 
-### Mount LUKS-encrypted partition
+### Mount LUKS-encrypted or BitLocker-encrypted partition
 ```
 sudo anylinuxfs /dev/disk9
 ```
@@ -164,12 +165,31 @@ anylinuxfs stop
 
 ## Notes
 
+### VM initialization
 - When you first run `anylinuxfs` to mount a drive, it will download the alpine Linux image from Docker hub and unpack it to your user profile (`~/.anylinuxfs/alpine`).
 Then it will spin up a VM so it can install dependencies and do the initial environment setup. After that, the Linux root filesystem will be reused for every mount operation.
 You can also run `anylinuxfs init` to download a fresh copy of `alpine:latest` and reinitialize the environment at any time.
+
+### Permissions
 - It is needed to run mount commands with `sudo` otherwise we're not allowed direct access to `/dev/disk*` files. However, the virtual machine itself will in fact run under the regular user who invoked `sudo` in the first place (i.e. all unnecessary permissions are dropped after the disk is opened)
+
+### Memory requirements for LUKS
 - When you mount a LUKS-encrypted drive, the microVM requires at least 2.5 GiB RAM for cryptsetup to work properly. If your VM is configured with a lower amount of memory, you'll get a warning about it and the RAM configuration will be adjusted automatically. If you don't want to see the warning, set your default RAM to match this requirement (`anylinuxfs config -r <size-in-MiB>`)
 - Configured amount of RAM is the maximum that can be allocated. The actual amount of memory consumed by the VM can be lower.
+
+### NTFS
+* anylinuxfs provides two different NTFS drivers
+  - the user-space FUSE-based ntfs-3g (better compatibility)
+  - the kernel-space NTFS3 (better performance)
+* **ntfs-3g** is enabled by default
+* **ntfs3** can still be enabled by specifying `-t ntfs3` option when mounting
+* important things to keep in mind
+  - **ntfs3** cannot mount NTFS drives from Windows systems which were hibernated or which have Fast Startup enabled
+  - **ntfs-3g** will fall back to read-only mount and issue a warning in this case
+  - **ntfs3** will generally refuse to mount a drive if it has any filesystem errors
+  - using any unofficial tools like `ntfsfix` to clear dirty flag will not really fix those errors and can lead to further data corruption!
+  - `chkdsk` on Windows is the recommended way to fix NTFS errors
+  - some users also have good experience with NTFS tools by Paragon (proprietary)
 
 ## Limitations
 - Only one drive can be mounted at a time (this might be improved in the future)
