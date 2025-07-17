@@ -245,6 +245,7 @@ enum Commands {
 - physical partitions
 - LVM or RAID volumes spanning one or more disks
 - LUKS-encrypted partitions
+- BitLocker-encrypted partitions
 - LVM/RAID on LUKS
 
 Supported partition schemes:
