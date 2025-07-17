@@ -184,8 +184,8 @@ You can also run `anylinuxfs init` to download a fresh copy of `alpine:latest` a
 * anylinuxfs provides two different NTFS drivers
   - the user-space FUSE-based ntfs-3g (better compatibility)
   - the kernel-space NTFS3 (better performance)
-* **ntfs-3g** is enabled by default
-* **ntfs3** can still be enabled by specifying `-t ntfs3` option when mounting
+* **ntfs-3g** is used by default
+* **ntfs3** can be used by specifying `-t ntfs3` option when mounting
 * important things to keep in mind
   - **ntfs3** cannot mount NTFS drives from Windows systems which were hibernated or which have Fast Startup enabled
   - **ntfs-3g** will fall back to read-only mount and issue a warning in this case
