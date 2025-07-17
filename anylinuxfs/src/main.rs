@@ -1886,7 +1886,7 @@ impl AppRunner {
                         .unwrap_or("<unknown>".into());
 
                 println!(
-                    "{} on {} ({}, mounted by {})\nVM[cpus: {}, ram: {} MiB]",
+                    "{} on {} ({}, mounted by {}) VM[cpus: {}, ram: {} MiB]",
                     &rt_info.mount_config.disk_path,
                     mount_point.display(),
                     info.join(", "),
