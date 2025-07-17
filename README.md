@@ -199,7 +199,7 @@ You can also run `anylinuxfs init` to download a fresh copy of `alpine:latest` a
 #### To summarize
 * There are stories online about data corruption (or system freezes) caused by the **ntfs3** driver.
 * They might or might not be caused by improper use of `ntfsfix`.
-* **ntfs3** is included in the mainline Linux kernel so it is considered stable.
+* **ntfs3** is included in the mainline Linux kernel so it is considered stable. It was contributed by Paragon Software in [2021](https://www.paragon-software.com/paragon-software-announces-the-inclusion-of-its-ntfs3-driver-into-linux-kernel-5-15/).
 * If you trust it, want the best performance and you're OK with inconsistent permissions on Windows system drives, use **ntfs3**
 * Otherwise you're probably better of with the default and more established **ntfs-3g**
 
