@@ -182,17 +182,26 @@ You can also run `anylinuxfs init` to download a fresh copy of `alpine:latest` a
 
 ### NTFS
 * anylinuxfs provides two different NTFS drivers
-  - the user-space FUSE-based ntfs-3g (better compatibility)
-  - the kernel-space NTFS3 (better performance)
+  - the user-space FUSE-based **ntfs-3g** (better compatibility)
+  - the more recent kernel-space **ntfs3** (significantly better performance)
 * **ntfs-3g** is used by default
 * **ntfs3** can be used by specifying `-t ntfs3` option when mounting
-* important things to keep in mind
+* Important things to keep in mind
   - **ntfs3** cannot mount NTFS drives from Windows systems which were hibernated or which have Fast Startup enabled
   - **ntfs-3g** will fall back to read-only mount and issue a warning in this case
   - **ntfs3** will generally refuse to mount a drive if it has any filesystem errors
   - using any unofficial tools like `ntfsfix` to clear dirty flag will not really fix those errors and can lead to further data corruption!
   - `chkdsk` on Windows is the recommended way to fix NTFS errors
   - some users also have good experience with NTFS tools by Paragon (proprietary)
+  - there are permission issues reported when using **ntfs3** with Windows system drives
+  - specifically, `/Program Files` some folders within `/Users` are read-only (see this [reddit](https://www.reddit.com/r/archlinux/comments/r325t3/permissions_problems_with_the_new_ntfs3_driver/) post for details)
+
+#### To summarize
+* There are stories online about data corruption caused by the **ntfs3** driver.
+* They might or might not be caused by improper use of `ntfsfix`.
+* **ntfs3** is included in the mainline Linux kernel so it is considered stable.
+* If you trust it, want the best performance and you're OK with inconsistent permissions on Windows system drives, use **ntfs3**
+* Otherwise you're probably better of with the default and more established **ntfs-3g**
 
 ## Limitations
 - Only one drive can be mounted at a time (this might be improved in the future)
