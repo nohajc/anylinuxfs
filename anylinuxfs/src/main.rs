@@ -339,6 +339,9 @@ struct ShellCmd {
     /// Command to run in the shell
     #[arg(short, long)]
     command: Option<String>,
+    /// Skip initialization of virtual environment
+    #[arg(short, long)]
+    skip_init: bool,
     #[command(flatten)]
     mnt: MountCmd,
 }
@@ -1332,7 +1335,9 @@ impl AppRunner {
         let _lock_file = LockFile::new(LOCK_FILE)?.acquire_lock(FlockKind::Exclusive)?;
         let config = load_mount_config(cmd.mnt)?;
 
-        init_rootfs(&config.common, false)?;
+        if !cmd.skip_init {
+            init_rootfs(&config.common, false)?;
+        }
 
         // host_println!("disk_path: {}", config.disk_path);
         host_println!("root_path: {}", config.common.root_path.display());
