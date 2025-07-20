@@ -192,7 +192,7 @@ You can also run `anylinuxfs init` to download a fresh copy of `alpine:latest` a
   - **ntfs3** will generally refuse to mount a drive if it has any filesystem errors
   - using any unofficial tools like `ntfsfix` to clear dirty flag will not really fix those errors and can lead to further data corruption!
   - `chkdsk` on Windows is the recommended way to fix NTFS errors
-  - some users also have good experience with NTFS tools by Paragon (proprietary)
+  - some users also have good experience with [`chkntfs`](https://gist.github.com/nohajc/51fdecb2dda75dd8c600173ea42b3700) by Paragon (proprietary)
   - there are permission issues reported when using **ntfs3** with Windows system drives
   - specifically, `/Program Files` some folders within `/Users` are read-only (see this [reddit](https://www.reddit.com/r/archlinux/comments/r325t3/permissions_problems_with_the_new_ntfs3_driver/) post for details)
 
