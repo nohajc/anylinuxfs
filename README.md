@@ -12,6 +12,7 @@ With full write support, based on the libkrun microVM hypervisor and NFS. Doesn'
 - supports **LVM on LUKS** (i.e. encrypted LVM)
 - supports **Linux RAID**
 - works with both external and internal drives
+- works with disk images
 - supports disks with **GPT**, **MBR** or no partition table (single filesystem or LVM/LUKS container)
 - NFS share by default only reachable from localhost but can be shared across network too
 
