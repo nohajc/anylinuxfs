@@ -216,6 +216,7 @@ struct MountConfig {
     fs_driver: Option<String>,
     bind_addr: IpAddr,
     verbose: bool,
+    open_finder: bool,
     common: Config,
 }
 
@@ -294,6 +295,9 @@ struct MountCmd {
     /// Filesystem driver override (e.g. for using ntfs3 instead of ntfs-3g)
     #[arg(short = 't', long = "type")]
     fs_driver: Option<String>,
+    /// Open Finder window with the mounted drive
+    #[arg(short, long, default_value = "true")]
+    window: Option<bool>,
     /// Override this to share the mount to a different machine
     #[arg(short, long, default_value = "127.0.0.1")]
     bind_addr: String,
@@ -549,6 +553,8 @@ fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
         }
     }
 
+    let open_finder = cmd.window.unwrap_or(true);
+
     let common = load_config()?;
 
     Ok(MountConfig {
@@ -560,6 +566,7 @@ fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
         fs_driver,
         bind_addr,
         verbose,
+        open_finder,
         common,
     })
 }
@@ -944,24 +951,37 @@ fn wait_for_nfs_server(
     Ok(nfs_ready)
 }
 
-fn mount_nfs(share_name: &str, custom_mount_point: Option<&Path>) -> anyhow::Result<()> {
+fn mount_nfs(
+    share_name: &str,
+    custom_mount_point: Option<&Path>,
+    open_finder: bool,
+) -> anyhow::Result<()> {
     let share_path = format!("/mnt/{share_name}");
 
     let status = if let Some(mount_point) = custom_mount_point {
-        Command::new("mount")
-            .arg("-t")
-            .arg("nfs")
-            .arg(format!("localhost:{}", share_path))
-            .arg(mount_point)
-            .status()?
-    } else {
-        let apple_script = format!(
-            "tell application \"Finder\" to open location \"nfs://localhost:{}\"",
-            share_path
+        let mut shell_script = format!(
+            "mount -t nfs \"localhost:{}\" \"{}\"",
+            share_path,
+            mount_point.display()
         );
+        if open_finder {
+            shell_script += &format!(" && open \"{}\"", mount_point.display());
+        }
+        Command::new("sh").arg("-c").arg(shell_script).status()?
+    } else {
+        let location = format!("nfs://localhost:{}", share_path);
+        let apple_script = if open_finder {
+            format!(
+                "tell application \"Finder\" to open location \"{}\"",
+                location
+            )
+        } else {
+            format!("mount volume \"{}\"", location)
+        };
         Command::new("osascript")
             .arg("-e")
             .arg(apple_script)
+            .stdout(Stdio::null())
             .status()?
     };
 
@@ -1677,7 +1697,11 @@ impl AppRunner {
                 }
 
                 let share_name = mnt_dev_info.auto_mount_name();
-                let mount_result = mount_nfs(&share_name, config.custom_mount_point.as_deref());
+                let mount_result = mount_nfs(
+                    &share_name,
+                    config.custom_mount_point.as_deref(),
+                    config.open_finder,
+                );
                 match &mount_result {
                     Ok(_) => host_println!("Requested NFS share mount"),
                     Err(e) => host_eprintln!("Failed to request NFS mount: {:#}", e),
