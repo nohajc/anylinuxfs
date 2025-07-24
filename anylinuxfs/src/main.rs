@@ -244,6 +244,7 @@ enum Commands {
     /// Mount a filesystem (the default if no command given)
     #[command(after_help = "Things you can mount:
 - physical partitions
+- raw disk images
 - LVM or RAID volumes spanning one or more disks
 - LUKS-encrypted partitions
 - BitLocker-encrypted partitions
