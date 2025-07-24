@@ -297,7 +297,7 @@ struct MountCmd {
     fs_driver: Option<String>,
     /// Open Finder window with the mounted drive
     #[arg(short, long, default_value = "true")]
-    window: Option<bool>,
+    window: std::primitive::bool,
     /// Override this to share the mount to a different machine
     #[arg(short, long, default_value = "127.0.0.1")]
     bind_addr: String,
@@ -553,7 +553,7 @@ fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
         }
     }
 
-    let open_finder = cmd.window.unwrap_or(true);
+    let open_finder = cmd.window;
 
     let common = load_config()?;
 
