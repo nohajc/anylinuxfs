@@ -1676,16 +1676,21 @@ impl AppRunner {
                 }
 
                 let share_name = mnt_dev_info.auto_mount_name();
-                match mount_nfs(&share_name, config.custom_mount_point.as_deref()) {
+                let mount_result = mount_nfs(&share_name, config.custom_mount_point.as_deref());
+                match &mount_result {
                     Ok(_) => host_println!("Requested NFS share mount"),
                     Err(e) => host_eprintln!("Failed to request NFS mount: {:#}", e),
-                }
+                };
 
                 // drop privileges back to the original user if he used sudo
                 drop_privileges(config.common.sudo_uid, config.common.sudo_gid)?;
 
-                let nfs_path = PathBuf::from(format!("localhost:/mnt/{}", share_name));
-                let mount_point_opt = event_session.wait_for_mount(&nfs_path);
+                let mount_point_opt = if mount_result.is_ok() {
+                    let nfs_path = PathBuf::from(format!("localhost:/mnt/{}", share_name));
+                    event_session.wait_for_mount(&nfs_path)
+                } else {
+                    None
+                };
 
                 if let Some(mount_point) = &mount_point_opt {
                     host_println!(
