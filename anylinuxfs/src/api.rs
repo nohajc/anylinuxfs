@@ -1,7 +1,10 @@
 use std::{
     fs,
     io::{Read, Write},
-    os::unix::net::{UnixListener, UnixStream},
+    os::unix::{
+        fs::chown,
+        net::{UnixListener, UnixStream},
+    },
     path::Path,
     sync::{Arc, Mutex},
     thread,
@@ -55,6 +58,19 @@ struct Handler {}
 impl Handler {
     fn serve(runtime_info: Arc<Mutex<RuntimeInfo>>, socket_path: &Path) -> anyhow::Result<()> {
         let listener = UnixListener::bind(socket_path).context("Failed to bind to Unix socket")?;
+
+        {
+            let rt_info = runtime_info.lock().unwrap();
+            chown(
+                socket_path,
+                Some(rt_info.mount_config.common.invoker_uid),
+                Some(rt_info.mount_config.common.invoker_gid),
+            )
+            .context(format!(
+                "Failed to change owner of {}",
+                socket_path.display(),
+            ))?;
+        }
 
         for stream in listener.incoming() {
             let Ok(stream) = stream else {

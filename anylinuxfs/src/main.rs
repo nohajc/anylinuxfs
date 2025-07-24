@@ -212,6 +212,7 @@ struct MountConfig {
     read_only: bool,
     mount_options: Option<String>,
     allow_remount: bool,
+    custom_mount_point: Option<PathBuf>,
     fs_driver: Option<String>,
     bind_addr: IpAddr,
     verbose: bool,
@@ -281,6 +282,8 @@ struct MountCmd {
     /// (see `list` command output for available volumes)
     #[clap(verbatim_doc_comment)]
     disk_ident: String,
+    /// Custom mount point (automatically assigned under /Volumes by default)
+    mount_point: Option<String>,
     /// Options passed to the Linux mount command
     #[arg(short, long)]
     options: Option<String>,
@@ -367,7 +370,8 @@ impl Cli {
     // try parse Cli; if it fails with InvalidSubcommand, try parse CliMount instead
     // (this effectively makes `mount` the default command so the keyword can be omitted)
     fn try_parse_with_default_cmd() -> Result<Cli, clap::Error> {
-        let mount_cmd_usage = "\x1b[1manylinuxfs [mount]\x1b[0m [OPTIONS] <DISK_IDENT>";
+        let mount_cmd_usage =
+            "\x1b[1manylinuxfs [mount]\x1b[0m [OPTIONS] <DISK_IDENT> [MOUNT_POINT]";
         let cmd = Cli::command().mut_subcommand("mount", |mount_cmd: clap::Command| {
             mount_cmd.override_usage(mount_cmd_usage)
         });
@@ -506,6 +510,22 @@ fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
     };
 
     let allow_remount = cmd.remount;
+    let custom_mount_point = match cmd.mount_point {
+        Some(path) => {
+            let path = fs::canonicalize(&path)
+                .with_context(|| format!("Failed to resolve path {}", &path))?;
+
+            if !fs::metadata(&path)
+                .with_context(|| format!("Failed to get metadata for {}", &path.display()))?
+                .is_dir()
+            {
+                return Err(anyhow!("{} is not a directory", &path.display()));
+            }
+
+            Some(path)
+        }
+        None => None,
+    };
 
     let bind_addr = cmd
         .bind_addr
@@ -535,6 +555,7 @@ fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
         read_only,
         mount_options,
         allow_remount,
+        custom_mount_point,
         fs_driver,
         bind_addr,
         verbose,
@@ -922,16 +943,26 @@ fn wait_for_nfs_server(
     Ok(nfs_ready)
 }
 
-fn mount_nfs(share_name: &str) -> anyhow::Result<()> {
+fn mount_nfs(share_name: &str, custom_mount_point: Option<&Path>) -> anyhow::Result<()> {
     let share_path = format!("/mnt/{share_name}");
-    let apple_script = format!(
-        "tell application \"Finder\" to open location \"nfs://localhost:{}\"",
-        share_path
-    );
-    let status = Command::new("osascript")
-        .arg("-e")
-        .arg(apple_script)
-        .status()?;
+
+    let status = if let Some(mount_point) = custom_mount_point {
+        Command::new("mount")
+            .arg("-t")
+            .arg("nfs")
+            .arg(format!("localhost:{}", share_path))
+            .arg(mount_point)
+            .status()?
+    } else {
+        let apple_script = format!(
+            "tell application \"Finder\" to open location \"nfs://localhost:{}\"",
+            share_path
+        );
+        Command::new("osascript")
+            .arg("-e")
+            .arg(apple_script)
+            .status()?
+    };
 
     if !status.success() {
         return Err(anyhow!(
@@ -1159,7 +1190,6 @@ fn validated_mount_point(rt_info: &api::RuntimeInfo) -> MountStatus {
     let Some(mount_point) = rt_info.mount_point.as_ref().map(Path::new) else {
         return MountStatus::NotYet;
     };
-    // let mount_point = Path::new("/Volumes").join("data");
 
     let expected_mount_dev = PathBuf::from(format!(
         "localhost:/mnt/{}",
@@ -1523,8 +1553,6 @@ impl AppRunner {
                 mount_point: None,
             }));
 
-            // TODO: looks like if the program exits before we drop privileges,
-            // API_SOCKET is owned by root which makes the status command fail
             api::serve_info(rt_info.clone());
 
             let (nfs_ready_tx, nfs_ready_rx) = mpsc::channel();
@@ -1615,9 +1643,6 @@ impl AppRunner {
                 }
             });
 
-            // drop privileges back to the original user if he used sudo
-            drop_privileges(config.common.sudo_uid, config.common.sudo_gid)?;
-
             for passphrase_fn in passphrase_callbacks {
                 passphrase_fn(forked.in_fd()).unwrap();
             }
@@ -1651,10 +1676,14 @@ impl AppRunner {
                 }
 
                 let share_name = mnt_dev_info.auto_mount_name();
-                match mount_nfs(&share_name) {
+                match mount_nfs(&share_name, config.custom_mount_point.as_deref()) {
                     Ok(_) => host_println!("Requested NFS share mount"),
                     Err(e) => host_eprintln!("Failed to request NFS mount: {:#}", e),
                 }
+
+                // drop privileges back to the original user if he used sudo
+                drop_privileges(config.common.sudo_uid, config.common.sudo_gid)?;
+
                 let nfs_path = PathBuf::from(format!("localhost:/mnt/{}", share_name));
                 let mount_point_opt = event_session.wait_for_mount(&nfs_path);
 
@@ -1688,6 +1717,10 @@ impl AppRunner {
                 send_quit_cmd(&config.common)?;
             } else {
                 host_println!("NFS server not ready");
+
+                // drop privileges back to the original user if he used sudo
+                drop_privileges(config.common.sudo_uid, config.common.sudo_gid)?;
+
                 // tell the parent to wait for the child to exit
                 unsafe { write_to_pipe(comm_write_fd, b"join\n") }
                     .context("Failed to write to pipe")?;
