@@ -1,13 +1,16 @@
 [package]
 name = "vmproxy"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 
 [dependencies]
 anyhow = "1.0.97"
 libc = "0.2.171"
 procfs = { version = "0.17.0", features = ["flate2"] }
-reqwest = { version = "0.12.15", default-features = false, features = ["blocking", "json"] }
+reqwest = { version = "0.12.15", default-features = false, features = [
+    "blocking",
+    "json",
+] }
 serde = { version = "1.0.219", features = ["derive"] }
 sys-mount = { version = "3.0.1", default-features = false }
 vsock = "0.5.1"

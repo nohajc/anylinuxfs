@@ -284,7 +284,7 @@ struct MountCmd {
     /// (see `list` command output for available volumes)
     #[clap(verbatim_doc_comment)]
     disk_ident: String,
-    /// Custom mount point (automatically assigned under /Volumes by default)
+    /// Custom mount path to override the default under /Volumes
     mount_point: Option<String>,
     /// Options passed to the Linux mount command
     #[arg(short, long)]
