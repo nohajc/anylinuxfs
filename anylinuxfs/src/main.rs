@@ -951,26 +951,38 @@ fn wait_for_nfs_server(
     Ok(nfs_ready)
 }
 
-fn mount_nfs(
-    share_name: &str,
-    custom_mount_point: Option<&Path>,
-    open_finder: bool,
-) -> anyhow::Result<()> {
+fn mount_nfs(share_name: &str, config: &MountConfig) -> anyhow::Result<()> {
     let share_path = format!("/mnt/{share_name}");
 
-    let status = if let Some(mount_point) = custom_mount_point {
+    let status = if let Some(mount_point) = config.custom_mount_point.as_deref() {
         let mut shell_script = format!(
             "mount -t nfs \"localhost:{}\" \"{}\"",
             share_path,
             mount_point.display()
         );
-        if open_finder {
+        if config.open_finder {
             shell_script += &format!(" && open \"{}\"", mount_point.display());
         }
-        Command::new("sh").arg("-c").arg(shell_script).status()?
+
+        // try to run mount as regular user first
+        // (if that succeeds, umount will work without sudo)
+        let mut status = Command::new("sh")
+            .arg("-c")
+            .arg(&shell_script)
+            .uid(config.common.invoker_uid)
+            .gid(config.common.invoker_gid)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()?;
+
+        if !status.success() {
+            // otherwise run as root (probably the mount point wasn't accessible)
+            status = Command::new("sh").arg("-c").arg(&shell_script).status()?;
+        }
+        status
     } else {
         let location = format!("nfs://localhost:{}", share_path);
-        let apple_script = if open_finder {
+        let apple_script = if config.open_finder {
             format!(
                 "tell application \"Finder\" to open location \"{}\"",
                 location
@@ -1697,11 +1709,7 @@ impl AppRunner {
                 }
 
                 let share_name = mnt_dev_info.auto_mount_name();
-                let mount_result = mount_nfs(
-                    &share_name,
-                    config.custom_mount_point.as_deref(),
-                    config.open_finder,
-                );
+                let mount_result = mount_nfs(&share_name, &config);
                 match &mount_result {
                     Ok(_) => host_println!("Requested NFS share mount"),
                     Err(e) => host_eprintln!("Failed to request NFS mount: {:#}", e),
