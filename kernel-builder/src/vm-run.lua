@@ -23,6 +23,7 @@ ffi.cdef [[
 
 -- Load libkrun
 local libkrun = ffi.load("/usr/local/lib/libkrun.dylib")
+-- local libkrun = ffi.load("krun")
 
 -- Helper function to check for errors
 local function check_error(result, operation)
@@ -132,18 +133,20 @@ local function launch_vm(config)
 
     -- Set kernel
     local kernel = config.kernel
-    if not kernel or not kernel.path then
-        error("Kernel path is required")
-    end
+    -- if not kernel or not kernel.path then
+    --     error("Kernel path is required")
+    -- end
 
-    print("Setting kernel: " .. kernel.path)
     local cmdline = kernel.cmdline
-
     if cmdline then
         cmdline = cmdline .. " KRUN_INIT=" .. command.path
     end
 
-    check_error(libkrun.krun_set_kernel(ctx, kernel.path, ffi.C.KRUN_KERNEL_FORMAT_RAW, nil, cmdline), "krun_set_kernel")
+    if kernel and kernel.path then
+        print("Setting kernel: " .. kernel.path)
+        check_error(libkrun.krun_set_kernel(ctx, kernel.path, ffi.C.KRUN_KERNEL_FORMAT_RAW, nil, cmdline),
+            "krun_set_kernel")
+    end
 
     print("Starting VM...")
     print("===========================================")

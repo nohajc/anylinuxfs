@@ -1,8 +1,8 @@
 return {
     kernel = {
         path = "/opt/homebrew/opt/anylinuxfs/libexec/Image",
-        cmdline =
-        "reboot=k panic=-1 panic_print=0 nomodule console=hvc0 root=/dev/vda rw quiet no-kvmapf init=/init.krun",
+        -- cmdline =
+        -- "reboot=k panic=-1 panic_print=0 nomodule console=hvc0 root=/dev/vda rw quiet no-kvmapf init=/init.krun",
     },
     vm = {
         vcpus = 4,
@@ -18,5 +18,8 @@ return {
         path = "/bin/bash",
         args = { "-c", "/start-shell.sh" },
     },
-    env = {}
+    env = {
+        "KRUN_ROOT=/dev/vda",
+    },
+    log_level = 1,
 }
