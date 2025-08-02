@@ -274,6 +274,8 @@ Supported partition schemes:
     Stop(StopCmd),
     /// microVM shell for debugging (configures the VM according to mount options but only starts a shell)
     Shell(ShellCmd),
+    /// Show dmesg output from the last run
+    Dmesg,
 }
 
 #[derive(Args)]
@@ -1423,6 +1425,30 @@ impl AppRunner {
         Ok(())
     }
 
+    fn run_dmesg(&mut self) -> anyhow::Result<()> {
+        let config = load_config()?;
+        let kernel_log_path = config.root_path.join("kernel.log");
+
+        if !kernel_log_path.exists() {
+            return Ok(());
+        }
+
+        let log_file = File::open(kernel_log_path).context("Failed to open kernel.log file")?;
+        let mut buf_reader = BufReader::new(log_file);
+        let mut line = String::new();
+
+        // Print existing lines in the log file
+        loop {
+            let size = buf_reader.read_line(&mut line)?;
+            if size == 0 {
+                break; // EOF
+            }
+            safe_println!("{}", line.trim_end())?;
+            line.clear();
+        }
+        Ok(())
+    }
+
     fn run_mount(&mut self, cmd: MountCmd) -> anyhow::Result<()> {
         let _lock_file = LockFile::new(LOCK_FILE)?.acquire_lock(FlockKind::Exclusive)?;
         let config = load_mount_config(cmd)?;
@@ -2090,6 +2116,7 @@ impl AppRunner {
             Commands::List(cmd) => self.run_list(cmd),
             Commands::Stop(cmd) => self.run_stop(cmd),
             Commands::Shell(cmd) => self.run_shell(cmd),
+            Commands::Dmesg => self.run_dmesg(),
         }
     }
 }
