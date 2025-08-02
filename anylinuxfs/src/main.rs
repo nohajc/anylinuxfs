@@ -1,7 +1,8 @@
 use anyhow::{Context, anyhow};
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use common_utils::{
-    guest_println, host_eprintln, host_println, log, prefix_eprintln, prefix_println, safe_println,
+    Deferred, guest_println, host_eprintln, host_println, log, prefix_eprintln, prefix_println,
+    safe_println,
 };
 use devinfo::DevInfo;
 use nanoid::nanoid;
@@ -32,8 +33,8 @@ use std::{iter, thread};
 use notify::{RecursiveMode, Watcher};
 use std::sync::{Arc, Mutex, mpsc};
 use utils::{
-    AcquireLock, CommFd, Deferred, FlockKind, HasCommFd, HasPipeInFd, HasPipeOutFds, HasPtyFd,
-    LockFile, OutputAction, StatusError, write_to_pipe,
+    AcquireLock, CommFd, FlockKind, HasCommFd, HasPipeInFd, HasPipeOutFds, HasPtyFd, LockFile,
+    OutputAction, StatusError, write_to_pipe,
 };
 
 mod api;

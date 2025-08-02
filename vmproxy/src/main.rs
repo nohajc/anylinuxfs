@@ -1,5 +1,6 @@
 use anyhow::{Context, anyhow};
 use clap::Parser;
+use common_utils::Deferred;
 use libc::VMADDR_CID_ANY;
 use serde::Serialize;
 use std::io::{BufRead, Write};
@@ -153,6 +154,26 @@ fn run() -> anyhow::Result<()> {
     // for (key, value) in kernel_cfg {
     //     println!("{} = {:?}", key, value);
     // }
+
+    let mut deferred = Deferred::new();
+
+    deferred.add(|| {
+        let kernel_log_warning = "Warning: failed to dump dmesg output to /kernel.log";
+        match Command::new("/bin/busybox")
+            .arg("sh")
+            .arg("-c")
+            .arg("dmesg > /kernel.log")
+            .status()
+        {
+            Ok(status) if !status.success() => {
+                eprintln!("{}", kernel_log_warning);
+            }
+            Err(e) => {
+                eprintln!("{}: {:#}", kernel_log_warning, e);
+            }
+            _ => {}
+        }
+    });
 
     let cli = Cli::parse();
 
@@ -344,6 +365,21 @@ fn run() -> anyhow::Result<()> {
         fs_type.unwrap_or("unknown".to_owned())
     );
 
+    deferred.add({
+        let mount_point = mount_point.clone();
+        move || {
+            let mut backoff = Duration::from_secs(1);
+            while let Err(e) = unmount(&mount_point, UnmountFlags::empty()) {
+                eprintln!("Failed to unmount '{}': {}", &mount_point, e);
+                std::thread::sleep(backoff);
+                backoff = std::cmp::min(backoff * 2, Duration::from_secs(32));
+            }
+            println!("Unmounted '{}' successfully.", &mount_point);
+
+            _ = fs::remove_dir_all(&mount_point);
+        }
+    });
+
     let effective_mount_options = {
         let output = Command::new("/bin/busybox")
             .arg("sh")
@@ -420,14 +456,5 @@ fn run() -> anyhow::Result<()> {
         }
     }
 
-    let mut backoff = Duration::from_secs(1);
-    while let Err(e) = unmount(&mount_point, UnmountFlags::empty()) {
-        eprintln!("Failed to unmount '{}': {}", &mount_point, e);
-        std::thread::sleep(backoff);
-        backoff = std::cmp::min(backoff * 2, Duration::from_secs(32));
-    }
-    println!("Unmounted '{mount_point}' successfully.");
-
-    _ = fs::remove_dir_all(&mount_point);
     Ok(())
 }
