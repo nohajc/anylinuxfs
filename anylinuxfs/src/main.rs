@@ -9,6 +9,7 @@ use nanoid::nanoid;
 use nix::unistd::{Uid, User};
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::fmt::Display;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -109,7 +110,25 @@ struct Config {
     invoker_gid: libc::gid_t,
     sudo_uid: Option<libc::uid_t>,
     sudo_gid: Option<libc::gid_t>,
+    preferences: Preferences,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+struct Preferences {
+    #[serde(default)]
+    alpine: AlpineConfig,
+    #[serde(default)]
     krun: KrunConfig,
+    // legacy config
+    #[serde(rename = "log_level")]
+    log_level_numeric: Option<u32>,
+    num_vcpus: Option<u8>,
+    ram_size_mib: Option<u32>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+struct AlpineConfig {
+    custom_packages: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -276,6 +295,9 @@ Supported partition schemes:
     Shell(ShellCmd),
     /// Show dmesg output from the last run
     Dmesg,
+    /// Manage custom alpine packages
+    #[command(subcommand)]
+    Apk(ApkCmd),
 }
 
 #[derive(Args)]
@@ -355,6 +377,22 @@ struct ShellCmd {
     skip_init: bool,
     #[command(flatten)]
     mnt: MountCmd,
+}
+
+#[derive(Subcommand)]
+enum ApkCmd {
+    /// List custom packages
+    Info,
+    /// Install custom packages
+    Add {
+        /// Packages to install
+        packages: Vec<String>,
+    },
+    /// Remove custom packages
+    Del {
+        /// Packages to remove
+        packages: Vec<String>,
+    },
 }
 
 #[derive(Parser)]
@@ -468,7 +506,7 @@ fn load_config() -> anyhow::Result<Config> {
     let vsock_path = format!("/tmp/anylinuxfs-{}-vsock", rand_string(8));
     let vfkit_sock_path = format!("/tmp/vfkit-{}.sock", rand_string(8));
 
-    let krun = load_krun_config(&config_file_path)?;
+    let preferences = load_preferences(&config_file_path)?;
 
     Ok(Config {
         root_path,
@@ -484,24 +522,37 @@ fn load_config() -> anyhow::Result<Config> {
         invoker_gid,
         sudo_uid,
         sudo_gid,
-        krun,
+        preferences,
     })
 }
 
-fn load_krun_config(path: &Path) -> anyhow::Result<KrunConfig> {
-    match fs::read_to_string(path) {
-        Ok(config_str) => {
-            let config: KrunConfig = toml::from_str(&config_str)
-                .context(format!("Failed to parse config file {}", path.display()))?;
-            Ok(config)
-        }
-        Err(_) => Ok(KrunConfig::default()),
+fn convert_legacy_config(config: &mut Preferences) {
+    if let Some(log_level_numeric) = config.log_level_numeric.take() {
+        config.krun.log_level_numeric = log_level_numeric;
+    }
+    if let Some(num_vcpus) = config.num_vcpus.take() {
+        config.krun.num_vcpus = num_vcpus;
+    }
+    if let Some(ram_size_mib) = config.ram_size_mib.take() {
+        config.krun.ram_size_mib = ram_size_mib;
     }
 }
 
-fn save_krun_config(krun_config: &KrunConfig, config_file_path: &Path) -> anyhow::Result<()> {
+fn load_preferences(path: &Path) -> anyhow::Result<Preferences> {
+    match fs::read_to_string(path) {
+        Ok(config_str) => {
+            let mut config: Preferences = toml::from_str(&config_str)
+                .context(format!("Failed to parse config file {}", path.display()))?;
+            convert_legacy_config(&mut config);
+            Ok(config)
+        }
+        Err(_) => Ok(Preferences::default()),
+    }
+}
+
+fn save_preferences(preferences: &Preferences, config_file_path: &Path) -> anyhow::Result<()> {
     let config_str =
-        toml::to_string(krun_config).context("Failed to serialize KrunConfig to TOML")?;
+        toml::to_string(preferences).context("Failed to serialize Preferences to TOML")?;
     fs::write(config_file_path, config_str).context(format!(
         "Failed to write config file {}",
         config_file_path.display()
@@ -598,11 +649,11 @@ fn setup_vm(
 ) -> anyhow::Result<u32> {
     let ctx = unsafe { bindings::krun_create_ctx() }.context("Failed to create context")?;
 
-    let level = config.krun.log_level_numeric;
+    let level = config.preferences.krun.log_level_numeric;
     unsafe { bindings::krun_set_log_level(level) }.context("Failed to set log level")?;
 
-    let num_vcpus = config.krun.num_vcpus;
-    let ram_mib = config.krun.ram_size_mib;
+    let num_vcpus = config.preferences.krun.num_vcpus;
+    let ram_mib = config.preferences.krun.ram_size_mib;
     unsafe { bindings::krun_set_vm_config(ctx, num_vcpus, ram_mib) }
         .context("Failed to set VM config")?;
 
@@ -767,6 +818,24 @@ fn start_vmproxy(
     unsafe { bindings::krun_start_enter(ctx) }.context("Failed to start VM")?;
 
     Ok(())
+}
+
+fn start_vmshell_forked(ctx: u32, command: Option<String>) -> anyhow::Result<i32> {
+    let pid = unsafe { libc::fork() };
+    if pid < 0 {
+        return Err(io::Error::last_os_error()).context("Failed to fork process");
+    } else if pid == 0 {
+        // Child process
+        start_vmshell(ctx, command)?;
+        unreachable!();
+    } else {
+        // Parent process
+        let mut status = 0;
+        if unsafe { libc::waitpid(pid, &mut status, 0) } < 0 {
+            return Err(io::Error::last_os_error()).context("Failed to wait for child process");
+        }
+        return Ok(to_exit_code(status));
+    }
 }
 
 fn start_vmshell(ctx: u32, command: Option<String>) -> anyhow::Result<()> {
@@ -1373,11 +1442,11 @@ fn claim_devices(config: &MountConfig) -> anyhow::Result<(Vec<DevInfo>, DevInfo,
 }
 
 fn ensure_enough_ram_for_luks(config: &mut Config) {
-    if config.krun.ram_size_mib < 2560 {
-        config.krun.ram_size_mib = 2560;
+    if config.preferences.krun.ram_size_mib < 2560 {
+        config.preferences.krun.ram_size_mib = 2560;
         println!(
             "Configured RAM size is lower than the minimum required for LUKS decryption, setting to {} MiB",
-            config.krun.ram_size_mib
+            config.preferences.krun.ram_size_mib
         );
     }
 }
@@ -1407,8 +1476,11 @@ impl AppRunner {
 
         // host_println!("disk_path: {}", config.disk_path);
         host_println!("root_path: {}", config.common.root_path.display());
-        host_println!("num_vcpus: {}", config.common.krun.num_vcpus);
-        host_println!("ram_size_mib: {}", config.common.krun.ram_size_mib);
+        host_println!("num_vcpus: {}", config.common.preferences.krun.num_vcpus);
+        host_println!(
+            "ram_size_mib: {}",
+            config.common.preferences.krun.ram_size_mib
+        );
 
         let (dev_info, _, _disks) = claim_devices(&config)?;
 
@@ -1446,6 +1518,57 @@ impl AppRunner {
             safe_println!("{}", line.trim_end())?;
             line.clear();
         }
+        Ok(())
+    }
+
+    fn run_apk(&mut self, cmd: ApkCmd) -> anyhow::Result<()> {
+        let mut config = load_config()?;
+        let config_file_path = &config.config_file_path;
+
+        let alpine_config = &mut config.preferences.alpine;
+
+        let vm_prelude = "echo nameserver 1.1.1.1 > /etc/resolv.conf";
+        let apk_command = match cmd {
+            ApkCmd::Info => {
+                // Show information about custom packages
+                for pkg in &alpine_config.custom_packages {
+                    safe_println!("{}", pkg)?;
+                }
+                return Ok(());
+            }
+            ApkCmd::Add { packages } => {
+                // Add custom packages
+                let mut package_set: BTreeSet<_> =
+                    BTreeSet::from_iter(alpine_config.custom_packages.iter().cloned());
+
+                package_set.extend(packages.iter().cloned());
+                alpine_config.custom_packages = package_set.into_iter().collect();
+
+                format!("apk add {}", packages.join(" "))
+            }
+            ApkCmd::Del { packages } => {
+                // Remove custom packages
+                alpine_config
+                    .custom_packages
+                    .retain(|pkg| !packages.contains(pkg));
+                format!("apk del {}", packages.join(" "))
+            }
+        };
+        let vm_command = format!("{vm_prelude} && {apk_command}");
+
+        let ctx = setup_vm(&config, &[], false, false, true).context("Failed to setup microVM")?;
+        let status =
+            start_vmshell_forked(ctx, Some(vm_command)).context("Failed to start microVM shell")?;
+
+        if status != 0 {
+            return Err(anyhow::anyhow!(
+                "microVM shell exited with status {}",
+                status
+            ));
+        }
+        // preferences are only saved if apk command was successful
+        save_preferences(&config.preferences, config_file_path)?;
+
         Ok(())
     }
 
@@ -1500,8 +1623,11 @@ impl AppRunner {
 
         // host_println!("disk_path: {}", config.disk_path);
         host_println!("root_path: {}", config.common.root_path.display());
-        host_println!("num_vcpus: {}", config.common.krun.num_vcpus);
-        host_println!("ram_size_mib: {}", config.common.krun.ram_size_mib);
+        host_println!("num_vcpus: {}", config.common.preferences.krun.num_vcpus);
+        host_println!(
+            "ram_size_mib: {}",
+            config.common.preferences.krun.ram_size_mib
+        );
 
         let (dev_info, mut mnt_dev_info, _disks) = claim_devices(&config)?;
 
@@ -1848,10 +1974,10 @@ impl AppRunner {
     }
 
     fn run_config(&mut self, cmd: ConfigCmd) -> anyhow::Result<()> {
-        let config = load_config()?;
+        let mut config = load_config()?;
         let config_file_path = &config.config_file_path;
 
-        let mut krun_config = config.krun;
+        let krun_config = &mut config.preferences.krun;
 
         if cmd == ConfigCmd::default() {
             println!("{}", &krun_config);
@@ -1868,8 +1994,8 @@ impl AppRunner {
             krun_config.ram_size_mib = ram_size_mib;
         }
 
-        save_krun_config(&krun_config, config_file_path)?;
         println!("{}", &krun_config);
+        save_preferences(&config.preferences, config_file_path)?;
 
         Ok(())
     }
@@ -1995,8 +2121,8 @@ impl AppRunner {
                     mount_point.display(),
                     info.join(", "),
                     &user_name,
-                    rt_info.mount_config.common.krun.num_vcpus,
-                    rt_info.mount_config.common.krun.ram_size_mib,
+                    rt_info.mount_config.common.preferences.krun.num_vcpus,
+                    rt_info.mount_config.common.preferences.krun.ram_size_mib,
                 );
             }
             Err(err) => {
@@ -2117,6 +2243,7 @@ impl AppRunner {
             Commands::Stop(cmd) => self.run_stop(cmd),
             Commands::Shell(cmd) => self.run_shell(cmd),
             Commands::Dmesg => self.run_dmesg(),
+            Commands::Apk(cmd) => self.run_apk(cmd),
         }
     }
 }

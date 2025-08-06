@@ -9,10 +9,12 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"anylinuxfs/init-rootfs/vmrunner"
 
+	"github.com/BurntSushi/toml"
 	"github.com/containers/image/v5/copy"
 	"github.com/containers/image/v5/docker"
 	"github.com/containers/image/v5/oci/layout"
@@ -34,6 +36,15 @@ type Config struct {
 	RootfsPath        string
 	VmSetupScriptPath string
 	PrefixDir         string
+	UserStore         string
+}
+
+type Preferences struct {
+	Alpine AlpineConfig `toml:"alpine"`
+}
+
+type AlpineConfig struct {
+	CustomPackages []string `toml:"custom_packages"`
 }
 
 func defaultConfig(userHomeDir, execDir string) Config {
@@ -63,6 +74,7 @@ func defaultConfig(userHomeDir, execDir string) Config {
 		RootfsPath:        rootfsPath,
 		VmSetupScriptPath: vmSetupScriptPath,
 		PrefixDir:         prefixDir,
+		UserStore:         userStore,
 	}
 }
 
@@ -197,19 +209,54 @@ nfsd        /proc/fs/nfsd            nfsd        defaults  0  0
 	return nil
 }
 
-func writeSetupScript(rootfsPath, vmSetupScriptPath string) error {
-	vmSetupScriptPath = fmt.Sprintf("%s%s", rootfsPath, vmSetupScriptPath)
-	vmSetupScriptContent := `#!/bin/sh
+func loadCustomPackages(userStore string) []string {
+	configPath := filepath.Join(userStore, "config.toml")
 
-apk --update --no-cache add bash blkid cryptsetup lsblk lvm2 mdadm mount nfs-utils ntfs-3g ntfs-3g-progs
+	// Check if config file exists
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		fmt.Printf("Config file not found at %s, using default packages only\n", configPath)
+		return []string{}
+	}
+
+	var preferences Preferences
+	if _, err := toml.DecodeFile(configPath, &preferences); err != nil {
+		fmt.Printf("Error reading config file %s: %v, using default packages only\n", configPath, err)
+		return []string{}
+	}
+
+	fmt.Printf("Loaded %d custom packages from config\n", len(preferences.Alpine.CustomPackages))
+	return preferences.Alpine.CustomPackages
+}
+
+func writeSetupScript(cfg *Config) error {
+	// Load custom packages from config
+	customPackages := loadCustomPackages(cfg.UserStore)
+
+	// Default packages
+	defaultPackages := []string{
+		"bash", "blkid", "cryptsetup", "lsblk", "lvm2", "mdadm", "mount",
+		"nfs-utils", "ntfs-3g", "ntfs-3g-progs",
+	}
+
+	// Combine default and custom packages
+	allPackages := append(defaultPackages, customPackages...)
+	packagesStr := strings.Join(allPackages, " ")
+
+	vmSetupScriptPath := fmt.Sprintf("%s%s", cfg.RootfsPath, cfg.VmSetupScriptPath)
+	vmSetupScriptContent := fmt.Sprintf(`#!/bin/sh
+
+apk --update --no-cache add %s
 rm -v /etc/idmapd.conf /etc/exports
-`
+`, packagesStr)
 
 	err := os.WriteFile(vmSetupScriptPath, []byte(vmSetupScriptContent), 0755)
 	if err != nil {
 		fmt.Printf("Error writing vm-setup.sh: %v\n", err)
 		return err
 	}
+
+	fmt.Printf("Generated setup script with %d packages (%d default + %d custom)\n",
+		len(allPackages), len(defaultPackages), len(customPackages))
 
 	return nil
 }
@@ -288,7 +335,7 @@ func initRootfs(cfg *Config) error {
 		return err
 	}
 
-	if err := writeSetupScript(cfg.RootfsPath, cfg.VmSetupScriptPath); err != nil {
+	if err := writeSetupScript(cfg); err != nil {
 		return err
 	}
 

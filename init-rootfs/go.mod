@@ -3,6 +3,7 @@ module anylinuxfs/init-rootfs
 go 1.24.2
 
 require (
+	github.com/BurntSushi/toml v1.5.0
 	github.com/containers/image/v5 v5.35.0
 	github.com/opencontainers/runtime-spec v1.2.1
 	github.com/opencontainers/umoci v0.4.7
@@ -10,7 +11,6 @@ require (
 
 require (
 	github.com/AdamKorcz/go-fuzz-headers v0.0.0-20210319161527-f761c2329661 // indirect
-	github.com/BurntSushi/toml v1.5.0 // indirect
 	github.com/VividCortex/ewma v1.2.0 // indirect
 	github.com/acarl005/stripansi v0.0.0-20180116102854-5a71ef0e047d // indirect
 	github.com/apex/log v1.9.0 // indirect
