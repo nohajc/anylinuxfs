@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	_ "embed"
 	"fmt"
 	"io"
 	"net/http"
@@ -209,6 +210,20 @@ nfsd        /proc/fs/nfsd            nfsd        defaults  0  0
 	return nil
 }
 
+//go:embed default-alpine-packages.txt
+var defaultPackagesData string
+
+func getDefaultPackages() []string {
+	lines := strings.Split(strings.TrimSpace(defaultPackagesData), "\n")
+	packages := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			packages = append(packages, trimmed)
+		}
+	}
+	return packages
+}
+
 func loadCustomPackages(userStore string) []string {
 	configPath := filepath.Join(userStore, "config.toml")
 
@@ -233,10 +248,7 @@ func writeSetupScript(cfg *Config) error {
 	customPackages := loadCustomPackages(cfg.UserStore)
 
 	// Default packages
-	defaultPackages := []string{
-		"bash", "blkid", "cryptsetup", "lsblk", "lvm2", "mdadm", "mount",
-		"nfs-utils", "ntfs-3g", "ntfs-3g-progs",
-	}
+	defaultPackages := getDefaultPackages()
 
 	// Combine default and custom packages
 	allPackages := append(defaultPackages, customPackages...)

@@ -1451,6 +1451,17 @@ fn ensure_enough_ram_for_luks(config: &mut Config) {
     }
 }
 
+const DEFAULT_PACKAGES_DATA: &str = include_str!("../../init-rootfs/default-alpine-packages.txt");
+
+fn get_default_packages() -> BTreeSet<String> {
+    DEFAULT_PACKAGES_DATA
+        .lines()
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty())
+        .map(String::from)
+        .collect()
+}
+
 struct AppRunner {
     is_child: bool,
     print_log: bool,
@@ -1526,6 +1537,7 @@ impl AppRunner {
         let config_file_path = &config.config_file_path;
 
         let alpine_config = &mut config.preferences.alpine;
+        let default_packages = get_default_packages();
 
         let vm_prelude = "echo nameserver 1.1.1.1 > /etc/resolv.conf";
         let apk_command = match cmd {
@@ -1536,21 +1548,37 @@ impl AppRunner {
                 }
                 return Ok(());
             }
-            ApkCmd::Add { packages } => {
+            ApkCmd::Add { mut packages } => {
+                // remove default packages from the list
+                packages.retain(|pkg| !default_packages.contains(pkg));
+
                 // Add custom packages
                 let mut package_set: BTreeSet<_> =
                     BTreeSet::from_iter(alpine_config.custom_packages.iter().cloned());
-
                 package_set.extend(packages.iter().cloned());
                 alpine_config.custom_packages = package_set.into_iter().collect();
 
+                if packages.is_empty() {
+                    // no-op
+                    return Ok(());
+                }
+
                 format!("apk add {}", packages.join(" "))
             }
-            ApkCmd::Del { packages } => {
+            ApkCmd::Del { mut packages } => {
+                // remove default packages from the list
+                packages.retain(|pkg| !default_packages.contains(pkg));
+
                 // Remove custom packages
                 alpine_config
                     .custom_packages
                     .retain(|pkg| !packages.contains(pkg));
+
+                if packages.is_empty() {
+                    // no-op
+                    return Ok(());
+                }
+
                 format!("apk del {}", packages.join(" "))
             }
         };

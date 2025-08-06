@@ -1,0 +1,10 @@
+bash
+blkid
+cryptsetup
+lsblk
+lvm2
+mdadm
+mount
+nfs-utils
+ntfs-3g
+ntfs-3g-progs
