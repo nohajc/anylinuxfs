@@ -104,6 +104,7 @@ struct Config {
     init_rootfs_path: PathBuf,
     kernel_path: PathBuf,
     gvproxy_path: PathBuf,
+    gvproxy_log_path: PathBuf,
     vsock_path: String,
     vfkit_sock_path: String,
     invoker_uid: libc::uid_t,
@@ -118,6 +119,8 @@ struct Preferences {
     #[serde(default)]
     alpine: AlpineConfig,
     #[serde(default)]
+    gvproxy: GvproxyConfig,
+    #[serde(default)]
     krun: KrunConfig,
     // legacy config
     #[serde(rename = "log_level")]
@@ -129,6 +132,11 @@ struct Preferences {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 struct AlpineConfig {
     custom_packages: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+struct GvproxyConfig {
+    debug: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -496,7 +504,9 @@ fn load_config() -> anyhow::Result<Config> {
     let root_path = alpine_path.join("rootfs");
     let root_ver_file_path = alpine_path.join("rootfs.ver");
     let config_file_path = home_dir.join(".anylinuxfs").join("config.toml");
-    let log_file_path = home_dir.join("Library").join("Logs").join("anylinuxfs.log");
+    let log_dir = home_dir.join("Library").join("Logs");
+    let log_file_path = log_dir.join("anylinuxfs.log");
+    let gvproxy_log_path = log_dir.join("gvproxy.log");
 
     let libexec_dir = prefix_dir.join("libexec");
     let init_rootfs_path = libexec_dir.join("init-rootfs").to_owned();
@@ -516,6 +526,7 @@ fn load_config() -> anyhow::Result<Config> {
         init_rootfs_path,
         kernel_path,
         gvproxy_path,
+        gvproxy_log_path,
         vsock_path,
         vfkit_sock_path,
         invoker_uid,
@@ -959,7 +970,7 @@ fn start_gvproxy(config: &Config) -> anyhow::Result<Child> {
 
     let net_sock_uri = format!("unix:///tmp/network-{}.sock", rand_string(8));
     let vfkit_sock_uri = format!("unixgram://{}", &config.vfkit_sock_path);
-    let gvproxy_args = [
+    let mut gvproxy_args = vec![
         "--listen",
         &net_sock_uri,
         "--listen-vfkit",
@@ -968,12 +979,21 @@ fn start_gvproxy(config: &Config) -> anyhow::Result<Child> {
         "-1",
     ];
 
+    if config.preferences.gvproxy.debug {
+        gvproxy_args.push("--debug");
+    }
+
     let mut gvproxy_cmd = Command::new(&config.gvproxy_path);
+
+    let gvproxy_out =
+        File::create(&config.gvproxy_log_path).context("Failed to create gvproxy.log file")?;
+    let gvproxy_err =
+        File::try_clone(&gvproxy_out).context("Failed to clone gvproxy.log file handle")?;
 
     gvproxy_cmd
         .args(&gvproxy_args)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stdout(gvproxy_out)
+        .stderr(gvproxy_err);
 
     if let (Some(uid), Some(gid)) = (config.sudo_uid, config.sudo_gid) {
         // run gvproxy with dropped privileges
