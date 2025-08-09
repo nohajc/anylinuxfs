@@ -1,5 +1,7 @@
 use std::{
+    collections::HashSet,
     error::Error,
+    ffi::CString,
     fs::{File, Permissions},
     io::{self, Write},
     mem::ManuallyDrop,
@@ -551,4 +553,315 @@ pub fn check_port_availability(ip: impl Into<IpAddr>, port: u16) -> anyhow::Resu
                 anyhow!("unexpected error checking port {port}: {e}")
             }
         })
+}
+
+pub trait ToPtrVec {
+    fn to_ptr_vec(self) -> Vec<*const libc::c_char>;
+}
+
+impl ToPtrVec for &[CString] {
+    fn to_ptr_vec(self) -> Vec<*const libc::c_char> {
+        self.iter()
+            .map(|s| s.as_ptr())
+            .chain([std::ptr::null()])
+            .collect()
+    }
+}
+
+pub trait ToCStringVec {
+    fn to_cstring_vec(self) -> Vec<CString>;
+}
+
+impl ToCStringVec for &[String] {
+    fn to_cstring_vec(self) -> Vec<CString> {
+        self.iter()
+            .map(|s| CString::new(s.as_str()).unwrap())
+            .collect()
+    }
+}
+
+pub fn find_env_vars(expression: &str) -> HashSet<String> {
+    let mut vars = HashSet::new();
+    let mut in_var = false;
+    let mut in_braces = false;
+    let mut var_name = String::new();
+
+    let mut last_char = '^';
+    for c in expression.chars() {
+        match (in_var, in_braces, c) {
+            // When we're in a variable with braces and encounter closing brace
+            (true, true, '}') => {
+                if !var_name.is_empty() {
+                    vars.insert(var_name.clone());
+                    var_name.clear();
+                }
+                in_var = false;
+                in_braces = false;
+            }
+            // When we're in a variable with braces and encounter valid identifier chars
+            (true, true, c) if c.is_alphanumeric() || c == '_' => {
+                var_name.push(c);
+            }
+            // When we're in a variable with braces but encounter invalid chars (error case)
+            (true, true, _) => {
+                // Invalid character inside ${}, ignore and reset
+                var_name.clear();
+                in_var = false;
+                in_braces = false;
+            }
+            // When we're in a variable without braces and encounter another $
+            (true, false, '$') => {
+                if !var_name.is_empty() {
+                    vars.insert(var_name.clone());
+                    var_name.clear();
+                }
+            }
+            // When we're in a variable without braces and encounter opening brace (only if var_name is empty)
+            (true, false, '{') if var_name.is_empty() => {
+                in_braces = true;
+            }
+            // When we're in a variable without braces and encounter valid identifier chars
+            (true, false, c) if c.is_alphanumeric() || c == '_' => {
+                var_name.push(c);
+            }
+            // When we're in a variable without braces and encounter invalid chars
+            (true, false, _) => {
+                if !var_name.is_empty() {
+                    vars.insert(var_name.clone());
+                    var_name.clear();
+                }
+                in_var = false;
+            }
+            // When we're not in a variable and encounter $ (start of variable)
+            (false, false, '$') => {
+                if last_char != '\\' {
+                    in_var = true;
+                }
+            }
+            // When we're not in a variable and encounter any other char, ignore
+            (false, false, _) => {}
+            // Invalid state: not in variable but in_braces is true (should never happen)
+            (false, true, _) => {
+                // Reset to safe state
+                in_braces = false;
+            }
+        }
+        last_char = c;
+    }
+
+    // Handle case where expression ends while we're in a variable (only for non-braced vars)
+    if in_var && !in_braces && !var_name.is_empty() {
+        vars.insert(var_name);
+    }
+
+    vars
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_find_env_vars_simple() {
+        // Basic $VAR syntax
+        assert_eq!(find_env_vars("$HOME"), HashSet::from(["HOME".to_string()]));
+        assert_eq!(find_env_vars("$PATH"), HashSet::from(["PATH".to_string()]));
+        assert_eq!(
+            find_env_vars("$USER_NAME"),
+            HashSet::from(["USER_NAME".to_string()])
+        );
+    }
+
+    #[test]
+    fn test_find_env_vars_braced() {
+        // Basic ${VAR} syntax
+        assert_eq!(
+            find_env_vars("${HOME}"),
+            HashSet::from(["HOME".to_string()])
+        );
+        assert_eq!(
+            find_env_vars("${PATH}"),
+            HashSet::from(["PATH".to_string()])
+        );
+        assert_eq!(
+            find_env_vars("${USER_NAME}"),
+            HashSet::from(["USER_NAME".to_string()])
+        );
+    }
+
+    #[test]
+    fn test_find_env_vars_mixed_syntax() {
+        // Mix of both syntaxes
+        assert_eq!(
+            find_env_vars("$HOME and ${PATH}"),
+            HashSet::from(["HOME".to_string(), "PATH".to_string()])
+        );
+        assert_eq!(
+            find_env_vars("${USER}:$GROUP"),
+            HashSet::from(["USER".to_string(), "GROUP".to_string()])
+        );
+    }
+
+    #[test]
+    fn test_find_env_vars_consecutive() {
+        // Consecutive variables
+        assert_eq!(
+            find_env_vars("$A$B"),
+            HashSet::from(["A".to_string(), "B".to_string()])
+        );
+        assert_eq!(
+            find_env_vars("$HOME$PATH"),
+            HashSet::from(["HOME".to_string(), "PATH".to_string()])
+        );
+        assert_eq!(
+            find_env_vars("${A}${B}"),
+            HashSet::from(["A".to_string(), "B".to_string()])
+        );
+        assert_eq!(
+            find_env_vars("$A${B}$C"),
+            HashSet::from(["A".to_string(), "B".to_string(), "C".to_string()])
+        );
+    }
+
+    #[test]
+    fn test_find_env_vars_with_text() {
+        // Variables mixed with regular text
+        assert_eq!(
+            find_env_vars("prefix-$VAR-suffix"),
+            HashSet::from(["VAR".to_string()])
+        );
+        assert_eq!(
+            find_env_vars("path/to/$HOME/file"),
+            HashSet::from(["HOME".to_string()])
+        );
+        assert_eq!(
+            find_env_vars("${USER}_config.txt"),
+            HashSet::from(["USER".to_string()])
+        );
+        assert_eq!(
+            find_env_vars("start-$A-middle-$B-end"),
+            HashSet::from(["A".to_string(), "B".to_string()])
+        );
+    }
+
+    #[test]
+    fn test_find_env_vars_empty_and_edge_cases() {
+        // Empty string
+        assert_eq!(find_env_vars(""), HashSet::new());
+
+        // No variables
+        assert_eq!(find_env_vars("just text"), HashSet::new());
+
+        // Just dollar sign
+        assert_eq!(find_env_vars("$"), HashSet::new());
+
+        assert_eq!(find_env_vars("END$"), HashSet::new()); // $ at end with no var name
+
+        // Empty braces
+        assert_eq!(find_env_vars("${}"), HashSet::new());
+
+        // Incomplete braced variable
+        assert_eq!(find_env_vars("${INCOMPLETE"), HashSet::new());
+
+        // Double dollar signs
+        assert_eq!(find_env_vars("$$VAR"), HashSet::from(["VAR".to_string()]));
+    }
+
+    #[test]
+    fn test_find_env_vars_invalid_chars() {
+        // Variables with invalid characters (should stop at invalid char)
+        assert_eq!(
+            find_env_vars("$VAR-suffix"),
+            HashSet::from(["VAR".to_string()])
+        );
+        assert_eq!(
+            find_env_vars("$VAR.ext"),
+            HashSet::from(["VAR".to_string()])
+        );
+        assert_eq!(
+            find_env_vars("$VAR@domain"),
+            HashSet::from(["VAR".to_string()])
+        );
+
+        // Braced variables should not include invalid chars
+        assert_eq!(find_env_vars("${VAR-invalid}"), HashSet::new());
+        assert_eq!(find_env_vars("${VAR.invalid}"), HashSet::new());
+    }
+
+    #[test]
+    fn test_find_env_vars_underscores_and_numbers() {
+        // Valid identifier characters
+        assert_eq!(
+            find_env_vars("$VAR_123"),
+            HashSet::from(["VAR_123".to_string()])
+        );
+        assert_eq!(
+            find_env_vars("$_PRIVATE"),
+            HashSet::from(["_PRIVATE".to_string()])
+        );
+        assert_eq!(
+            find_env_vars("${VAR_123}"),
+            HashSet::from(["VAR_123".to_string()])
+        );
+        assert_eq!(
+            find_env_vars("${_PRIVATE}"),
+            HashSet::from(["_PRIVATE".to_string()])
+        );
+    }
+
+    #[test]
+    fn test_find_env_vars_duplicates() {
+        // Duplicate variables should now be deduplicated automatically
+        assert_eq!(
+            find_env_vars("$HOME and $HOME"),
+            HashSet::from(["HOME".to_string()])
+        );
+        assert_eq!(
+            find_env_vars("${PATH}:$PATH"),
+            HashSet::from(["PATH".to_string()])
+        );
+    }
+
+    #[test]
+    fn test_find_env_vars_complex_expressions() {
+        // More complex real-world examples
+        assert_eq!(
+            find_env_vars("export PATH=$HOME/bin:$PATH"),
+            HashSet::from(["HOME".to_string(), "PATH".to_string()])
+        );
+        assert_eq!(
+            find_env_vars("${PREFIX}/bin:${HOME}/.local/bin:$PATH"),
+            HashSet::from(["PREFIX".to_string(), "HOME".to_string(), "PATH".to_string()])
+        );
+        assert_eq!(
+            find_env_vars("echo \"User: $USER, Home: ${HOME}, Shell: $SHELL\""),
+            HashSet::from(["USER".to_string(), "HOME".to_string(), "SHELL".to_string()])
+        );
+    }
+
+    #[test]
+    fn test_find_env_vars_escaped() {
+        // Basic escaping
+        assert_eq!(find_env_vars("\\$VAR"), HashSet::new());
+        assert_eq!(
+            find_env_vars("$VAR\\$NOT_VAR"),
+            HashSet::from(["VAR".to_string()])
+        );
+
+        // Multiple escaped variables
+        assert_eq!(find_env_vars("\\$A \\$B \\$C"), HashSet::new());
+
+        // Mix of escaped and unescaped
+        assert_eq!(
+            find_env_vars("$REAL \\$FAKE $ANOTHER"),
+            HashSet::from(["REAL".to_string(), "ANOTHER".to_string()])
+        );
+
+        // Escaped braced variables should also work
+        assert_eq!(find_env_vars("\\${VAR}"), HashSet::new());
+        assert_eq!(
+            find_env_vars("${REAL} \\${FAKE}"),
+            HashSet::from(["REAL".to_string()])
+        );
+    }
 }

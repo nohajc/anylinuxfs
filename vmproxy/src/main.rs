@@ -1,9 +1,13 @@
 use anyhow::{Context, anyhow};
 use clap::Parser;
-use common_utils::Deferred;
+use common_utils::{CustomActionConfig, Deferred};
 use libc::VMADDR_CID_ANY;
 use serde::Serialize;
-use std::io::{BufRead, Write};
+use std::collections::HashMap;
+use std::ffi::CString;
+use std::io::{self, BufRead, Write};
+use std::os::unix::ffi::OsStrExt;
+use std::path::Path;
 use std::process::{Child, Command, ExitCode, Stdio};
 use std::time::Duration;
 use std::{fs, io::BufReader};
@@ -23,6 +27,8 @@ struct Cli {
     mount_options: Option<String>,
     #[arg(short, long)]
     decrypt: Option<String>,
+    #[arg(short, long)]
+    action: Option<String>,
     #[arg(short, long, default_value = LOCALHOST)]
     bind_addr: String,
     #[arg(short, long)]
@@ -135,6 +141,74 @@ fn terminate_child(child: &mut Child, child_name: &str) -> anyhow::Result<()> {
     common_utils::terminate_child(child, child_name, None)
 }
 
+struct CustomActionRunner {
+    config: Option<CustomActionConfig>,
+    env: HashMap<String, String>,
+}
+
+impl CustomActionRunner {
+    pub fn new(config: Option<CustomActionConfig>) -> Self {
+        Self {
+            config,
+            env: HashMap::new(),
+        }
+    }
+
+    pub fn set_env(&mut self, key: impl Into<String>, value: String) {
+        self.env.insert(key.into(), value);
+    }
+
+    fn execute_action(&self, command: &str) -> anyhow::Result<()> {
+        let status = Command::new("/bin/sh")
+            .arg("-c")
+            .arg(&command)
+            .envs(self.env.iter())
+            .status()?;
+        if !status.success() {
+            return Err(anyhow!(
+                "command failed with status: {}",
+                status
+                    .code()
+                    .map(|c| c.to_string())
+                    .unwrap_or("unknown".to_owned())
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn after_mount(&self) -> anyhow::Result<()> {
+        if let Some(action) = &self.config {
+            if !action.after_mount.is_empty() {
+                println!("Executing after_mount action: `{}`", action.after_mount);
+                self.execute_action(&action.after_mount)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn before_unmount(&self) -> anyhow::Result<()> {
+        if let Some(action) = &self.config {
+            if !action.before_unmount.is_empty() {
+                println!(
+                    "Executing before_unmount action: `{}`",
+                    action.before_unmount
+                );
+                self.execute_action(&action.before_unmount)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+fn statfs(path: impl AsRef<Path>) -> io::Result<libc::statfs> {
+    let c_path = CString::new(path.as_ref().as_os_str().as_bytes()).unwrap();
+    let mut buf: libc::statfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statfs(c_path.as_ptr(), &mut buf) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(buf)
+}
+
 fn main() -> ExitCode {
     if let Err(e) = run() {
         eprintln!("Error: {:#}", e);
@@ -176,6 +250,16 @@ fn run() -> anyhow::Result<()> {
     });
 
     let cli = Cli::parse();
+
+    let custom_action_cfg = if let Some(action) = cli.action.as_deref() {
+        Some(CustomActionConfig::percent_decode(action)?)
+    } else {
+        None
+    };
+    let nfs_export_override = custom_action_cfg
+        .as_ref()
+        .map(|cfg| cfg.override_nfs_export.clone());
+    let mut custom_action = CustomActionRunner::new(custom_action_cfg);
 
     let mut disk_path = cli.disk_path;
     let mut fs_type = cli.fs_type;
@@ -297,6 +381,7 @@ fn run() -> anyhow::Result<()> {
     }
 
     let mount_point = format!("/mnt/{}", mount_name);
+    custom_action.set_env("ALFS_VM_MOUNT_POINT", mount_point.clone());
 
     fs::create_dir_all(&mount_point)
         .context(format!("Failed to create directory '{}'", &mount_point))?;
@@ -365,9 +450,17 @@ fn run() -> anyhow::Result<()> {
         fs_type.unwrap_or("unknown".to_owned())
     );
 
+    custom_action
+        .after_mount()
+        .context("Error during after_mount action")?;
+
     deferred.add({
         let mount_point = mount_point.clone();
         move || {
+            if let Err(e) = custom_action.before_unmount() {
+                eprintln!("Error during before_unmount action: {:#}", e);
+            };
+
             let mut backoff = Duration::from_secs(1);
             while let Err(e) = unmount(&mount_point, UnmountFlags::empty()) {
                 eprintln!("Failed to unmount '{}': {}", &mount_point, e);
@@ -413,11 +506,18 @@ fn run() -> anyhow::Result<()> {
         println!("<anylinuxfs-mount:changed-to-ro>");
     }
 
+    let export_path = match nfs_export_override {
+        Some(path) if !path.is_empty() => path,
+        _ => mount_point,
+    };
+
     let export_mode = if effective_read_only { "ro" } else { "rw" };
-    let exports_content = format!(
-        "\"{}\"      *({},no_subtree_check,no_root_squash,insecure)\n",
-        &mount_point, export_mode,
-    );
+    let mut export_args = format!("{export_mode},no_subtree_check,no_root_squash,insecure");
+    if statfs(&export_path)?.f_type == 0x65735546 {
+        // exporting FUSE requires fsid
+        export_args += ",fsid=728"
+    }
+    let exports_content = format!("\"{}\"      *({})\n", &export_path, export_args);
 
     fs::write("/etc/exports", exports_content).context("Failed to write to /etc/exports")?;
     println!("Successfully initialized /etc/exports.");
