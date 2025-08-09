@@ -1621,6 +1621,11 @@ impl AppRunner {
     }
 
     fn run_mount(&mut self, cmd: MountCmd) -> anyhow::Result<()> {
+        utils::check_port_availability([0, 0, 0, 0], 111)?;
+        for port in [2049, 32765, 32767] {
+            utils::check_port_availability([127, 0, 0, 1], port)?;
+        }
+
         let _lock_file = LockFile::new(LOCK_FILE)?.acquire_lock(FlockKind::Exclusive)?;
         let config = load_mount_config(cmd)?;
         let log_file_path = &config.common.log_file_path;

@@ -3,6 +3,7 @@ use std::{
     fs::{File, Permissions},
     io::{self, Write},
     mem::ManuallyDrop,
+    net::IpAddr,
     os::{
         fd::{AsRawFd, FromRawFd},
         unix::{fs::PermissionsExt, process::CommandExt},
@@ -11,7 +12,7 @@ use std::{
     process::Command,
 };
 
-use anyhow::Context;
+use anyhow::{Context, anyhow};
 
 use crate::MountConfig;
 
@@ -538,4 +539,16 @@ impl AcquireLock for File {
         acquire_lock(&self, lock_kind, "file already locked")?;
         Ok(self)
     }
+}
+
+pub fn check_port_availability(ip: impl Into<IpAddr>, port: u16) -> anyhow::Result<()> {
+    std::net::TcpListener::bind((ip.into(), port))
+        .map(|_| ())
+        .map_err(|e| {
+            if e.kind() == io::ErrorKind::AddrInUse {
+                anyhow!("port {port} already in use")
+            } else {
+                anyhow!("unexpected error checking port {port}: {e}")
+            }
+        })
 }
