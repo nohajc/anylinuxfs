@@ -1,15 +1,16 @@
 use anyhow::{Context, anyhow};
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use common_utils::{
-    Deferred, guest_println, host_eprintln, host_println, log, prefix_eprintln, prefix_println,
-    safe_println,
+    CustomActionConfig, Deferred, guest_println, host_eprintln, host_println, log, prefix_eprintln,
+    prefix_println, safe_println,
 };
 use devinfo::DevInfo;
 use nanoid::nanoid;
 use nix::unistd::{Uid, User};
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::env::VarError;
 use std::fmt::Display;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -37,6 +38,8 @@ use utils::{
     AcquireLock, CommFd, FlockKind, HasCommFd, HasPipeInFd, HasPipeOutFds, HasPtyFd, LockFile,
     OutputAction, StatusError, write_to_pipe,
 };
+
+use crate::utils::{ToCStringVec, ToPtrVec};
 
 mod api;
 #[allow(unused)]
@@ -119,6 +122,8 @@ struct Preferences {
     #[serde(default)]
     alpine: AlpineConfig,
     #[serde(default)]
+    custom_actions: HashMap<String, CustomActionConfig>,
+    #[serde(default)]
     gvproxy: GvproxyConfig,
     #[serde(default)]
     krun: KrunConfig,
@@ -132,6 +137,50 @@ struct Preferences {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 struct AlpineConfig {
     custom_packages: Vec<String>,
+}
+
+trait CustomActionEnvironment {
+    fn prepare_environment(&self) -> anyhow::Result<Vec<String>>;
+}
+
+impl CustomActionEnvironment for CustomActionConfig {
+    fn prepare_environment(&self) -> anyhow::Result<Vec<String>> {
+        let mut referenced_variables = HashSet::new();
+        for script in self.all_scripts() {
+            referenced_variables.extend(utils::find_env_vars(script));
+        }
+
+        let mut undefined_vars = Vec::new();
+        let mut env_vars = Vec::new();
+        for var_name in referenced_variables.iter().chain(&self.capture_environment) {
+            match env::var(&var_name) {
+                Ok(var_value) => {
+                    env_vars.push(format!("{}={}", var_name, var_value));
+                }
+                Err(VarError::NotPresent) => {
+                    if !Self::VM_EXPORTED_VARS.contains(&var_name.as_str()) {
+                        undefined_vars.push(var_name.clone());
+                    }
+                }
+                Err(VarError::NotUnicode(value)) => {
+                    return Err(anyhow::anyhow!(
+                        "environment variable '{}' contains non-UTF-8 characters: {}",
+                        var_name,
+                        value.display()
+                    ));
+                }
+            }
+        }
+
+        if !undefined_vars.is_empty() {
+            let var_list = undefined_vars.join(", ");
+            return Err(anyhow::anyhow!(
+                "required environment variables not defined: {}",
+                var_list
+            ));
+        }
+        Ok(env_vars)
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -246,6 +295,16 @@ struct MountConfig {
     verbose: bool,
     open_finder: bool,
     common: Config,
+    custom_action: Option<String>,
+}
+
+impl MountConfig {
+    fn get_action(&self) -> Option<&CustomActionConfig> {
+        match &self.custom_action {
+            Some(action_name) => self.common.preferences.custom_actions.get(action_name),
+            None => None,
+        }
+    }
 }
 
 fn rand_string(len: usize) -> String {
@@ -325,6 +384,9 @@ struct MountCmd {
     /// Allow remount: proceed even if the disk is already mounted by macOS (NTFS, exFAT)
     #[arg(short, long)]
     remount: bool,
+    /// Name of a custom action to perform after mounting (defined in config.toml)
+    #[arg(short, long)]
+    action: Option<String>,
     /// Filesystem driver override (e.g. for using ntfs3 instead of ntfs-3g)
     #[arg(short = 't', long = "type")]
     fs_driver: Option<String>,
@@ -517,6 +579,7 @@ fn load_config() -> anyhow::Result<Config> {
     let vfkit_sock_path = format!("/tmp/vfkit-{}.sock", rand_string(8));
 
     let preferences = load_preferences(&config_file_path)?;
+    // println!("Loaded preferences: {:#?}", &preferences);
 
     Ok(Config {
         root_path,
@@ -622,6 +685,17 @@ fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
 
     let common = load_config()?;
 
+    let custom_action = if let Some(action_name) = cmd.action {
+        match common.preferences.custom_actions.get(&action_name) {
+            Some(_) => Some(action_name),
+            None => {
+                return Err(anyhow::anyhow!("unknown custom action: {}", action_name));
+            }
+        }
+    } else {
+        None
+    };
+
     Ok(MountConfig {
         disk_path,
         read_only,
@@ -633,6 +707,7 @@ fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
         verbose,
         open_finder,
         common,
+        custom_action,
     })
 }
 
@@ -754,6 +829,7 @@ fn setup_vm(
 fn start_vmproxy(
     ctx: u32,
     config: &MountConfig,
+    env: &[String],
     dev_info: &DevInfo,
     to_decrypt: Vec<String>,
     before_start: impl FnOnce() -> anyhow::Result<()>,
@@ -804,6 +880,12 @@ fn start_vmproxy(
             .into_iter()
             .flat_map(|d| vec![CString::new("-d").unwrap(), CString::new(d).unwrap()]),
     )
+    .chain(config.get_action().into_iter().flat_map(|action| {
+        vec![
+            CString::new("-a").unwrap(),
+            CString::new(action.percent_encode().expect("failed to serialize action")).unwrap(),
+        ]
+    }))
     .chain(
         config
             .verbose
@@ -815,12 +897,10 @@ fn start_vmproxy(
     host_println!("vmproxy args: {:?}", &args);
 
     // let args = vec![CString::new("/bin/bash").unwrap()];
-    let argv = args
-        .iter()
-        .map(|s| s.as_ptr())
-        .chain([std::ptr::null()])
-        .collect::<Vec<_>>();
-    let envp = vec![std::ptr::null()];
+    let argv = args.to_ptr_vec();
+
+    let cenv = env.to_cstring_vec();
+    let envp = cenv.to_ptr_vec();
 
     unsafe { bindings::krun_set_exec(ctx, argv[0], argv[1..].as_ptr(), envp.as_ptr()) }
         .context("Failed to set exec")?;
@@ -831,13 +911,13 @@ fn start_vmproxy(
     Ok(())
 }
 
-fn start_vmshell_forked(ctx: u32, command: Option<String>) -> anyhow::Result<i32> {
+fn start_vmshell_forked(ctx: u32, command: Option<String>, env: &[String]) -> anyhow::Result<i32> {
     let pid = unsafe { libc::fork() };
     if pid < 0 {
         return Err(io::Error::last_os_error()).context("Failed to fork process");
     } else if pid == 0 {
         // Child process
-        start_vmshell(ctx, command)?;
+        start_vmshell(ctx, command, env)?;
         unreachable!();
     } else {
         // Parent process
@@ -849,18 +929,16 @@ fn start_vmshell_forked(ctx: u32, command: Option<String>) -> anyhow::Result<i32
     }
 }
 
-fn start_vmshell(ctx: u32, command: Option<String>) -> anyhow::Result<()> {
+fn start_vmshell(ctx: u32, command: Option<String>, env: &[String]) -> anyhow::Result<()> {
     let mut args = vec![CString::new("/bin/bash").unwrap()];
     if let Some(cmd) = command {
         args.extend_from_slice(&[CString::new("-c").unwrap(), CString::new(cmd).unwrap()]);
     }
 
-    let argv = args
-        .iter()
-        .map(|s| s.as_ptr())
-        .chain([std::ptr::null()])
-        .collect::<Vec<_>>();
-    let envp = vec![std::ptr::null()];
+    let argv = args.to_ptr_vec();
+
+    let cenv = env.to_cstring_vec();
+    let envp = cenv.to_ptr_vec();
 
     unsafe { bindings::krun_set_exec(ctx, argv[0], argv[1..].as_ptr(), envp.as_ptr()) }
         .context("Failed to set exec")?;
@@ -908,11 +986,7 @@ fn run_vmcommand(
         // child process
         let ctx = setup_vm(config, dev_info, use_gvproxy, false, add_disks_ro)?;
 
-        let argv = args
-            .iter()
-            .map(|s| s.as_ptr())
-            .chain([std::ptr::null()])
-            .collect::<Vec<_>>();
+        let argv = args.to_ptr_vec();
         let envp = vec![std::ptr::null()];
 
         unsafe { bindings::krun_set_exec(ctx, argv[0], argv[1..].as_ptr(), envp.as_ptr()) }
@@ -1043,9 +1117,7 @@ fn wait_for_nfs_server(
     Ok(nfs_ready)
 }
 
-fn mount_nfs(share_name: &str, config: &MountConfig) -> anyhow::Result<()> {
-    let share_path = format!("/mnt/{share_name}");
-
+fn mount_nfs(share_path: &str, config: &MountConfig) -> anyhow::Result<()> {
     let status = if let Some(mount_point) = config.custom_mount_point.as_deref() {
         let mut shell_script = format!(
             "mount -t nfs \"localhost:{}\" \"{}\"",
@@ -1316,10 +1388,13 @@ fn validated_mount_point(rt_info: &api::RuntimeInfo) -> MountStatus {
         return MountStatus::NotYet;
     };
 
-    let expected_mount_dev = PathBuf::from(format!(
-        "localhost:/mnt/{}",
-        rt_info.dev_info.auto_mount_name()
-    ));
+    let expected_mount_point = match rt_info.mount_config.get_action() {
+        Some(action) if !action.override_nfs_export.is_empty() => {
+            action.override_nfs_export.clone()
+        }
+        _ => format!("/mnt/{}", rt_info.dev_info.auto_mount_name()),
+    };
+    let expected_mount_dev = PathBuf::from(format!("localhost:{}", expected_mount_point));
     match fsutil::mounted_from(&mount_point) {
         Ok(mount_dev) if mount_dev == expected_mount_dev => MountStatus::Mounted(mount_point),
         _ => MountStatus::NoLonger,
@@ -1505,6 +1580,12 @@ impl AppRunner {
             init_rootfs(&config.common, false)?;
         }
 
+        let vm_env = if let Some(action) = config.get_action() {
+            action.prepare_environment()?
+        } else {
+            vec![]
+        };
+
         // host_println!("disk_path: {}", config.disk_path);
         host_println!("root_path: {}", config.common.root_path.display());
         host_println!("num_vcpus: {}", config.common.preferences.krun.num_vcpus);
@@ -1523,7 +1604,7 @@ impl AppRunner {
             config.read_only,
         )
         .context("Failed to setup microVM")?;
-        start_vmshell(ctx, cmd.command).context("Failed to start microVM shell")?;
+        start_vmshell(ctx, cmd.command, &vm_env).context("Failed to start microVM shell")?;
 
         Ok(())
     }
@@ -1605,8 +1686,8 @@ impl AppRunner {
         let vm_command = format!("{vm_prelude} && {apk_command}");
 
         let ctx = setup_vm(&config, &[], false, false, true).context("Failed to setup microVM")?;
-        let status =
-            start_vmshell_forked(ctx, Some(vm_command)).context("Failed to start microVM shell")?;
+        let status = start_vmshell_forked(ctx, Some(vm_command), &[])
+            .context("Failed to start microVM shell")?;
 
         if status != 0 {
             return Err(anyhow::anyhow!(
@@ -1673,6 +1754,12 @@ impl AppRunner {
         if !config.verbose {
             log::disable_console_log();
         }
+
+        let vm_env = if let Some(action) = config.get_action() {
+            action.prepare_environment()?
+        } else {
+            vec![]
+        };
 
         // host_println!("disk_path: {}", config.disk_path);
         host_println!("root_path: {}", config.common.root_path.display());
@@ -1772,7 +1859,7 @@ impl AppRunner {
                 })
                 .collect();
 
-            start_vmproxy(ctx, &config, &mnt_dev_info, to_decrypt, || {
+            start_vmproxy(ctx, &config, &vm_env, &mnt_dev_info, to_decrypt, || {
                 forked.redirect()
             })
             .context("Failed to start microVM")?;
@@ -1915,7 +2002,13 @@ impl AppRunner {
                 }
 
                 let share_name = mnt_dev_info.auto_mount_name();
-                let mount_result = mount_nfs(&share_name, &config);
+                let share_path = match config.get_action() {
+                    Some(action) if !action.override_nfs_export.is_empty() => {
+                        action.override_nfs_export.clone()
+                    }
+                    _ => format!("/mnt/{share_name}"),
+                };
+                let mount_result = mount_nfs(&share_path, &config);
                 match &mount_result {
                     Ok(_) => host_println!("Requested NFS share mount"),
                     Err(e) => host_eprintln!("Failed to request NFS mount: {:#}", e),
@@ -1925,7 +2018,7 @@ impl AppRunner {
                 drop_privileges(config.common.sudo_uid, config.common.sudo_gid)?;
 
                 let mount_point_opt = if mount_result.is_ok() {
-                    let nfs_path = PathBuf::from(format!("localhost:/mnt/{}", share_name));
+                    let nfs_path = PathBuf::from(format!("localhost:{}", share_path));
                     event_session.wait_for_mount(&nfs_path)
                 } else {
                     None

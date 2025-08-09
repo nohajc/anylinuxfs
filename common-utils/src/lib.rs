@@ -1,4 +1,6 @@
 use anyhow::Context;
+use percent_encoding::{AsciiSet, CONTROLS, percent_decode_str, utf8_percent_encode};
+use serde::{Deserialize, Serialize};
 use std::{io, process::Child, time::Duration};
 use wait_timeout::ChildExt;
 
@@ -100,5 +102,37 @@ impl<'a> Drop for Deferred<'a> {
         for (_id, action) in self.actions.drain(..).rev() {
             action();
         }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct CustomActionConfig {
+    #[serde(default)]
+    pub after_mount: String,
+    #[serde(default)]
+    pub before_unmount: String,
+    #[serde(default)]
+    pub capture_environment: Vec<String>,
+    #[serde(default)]
+    pub override_nfs_export: String,
+}
+
+impl CustomActionConfig {
+    pub const VM_EXPORTED_VARS: &[&str] = &["ALFS_VM_MOUNT_POINT"];
+
+    pub fn all_scripts(&self) -> [&str; 2] {
+        [&self.after_mount, &self.before_unmount]
+    }
+
+    const PERCENT_ENCODE_SET: &AsciiSet = &CONTROLS.add(b' ');
+
+    pub fn percent_encode(&self) -> anyhow::Result<String> {
+        let json_encoded = serde_json::to_string(&self)?;
+        Ok(utf8_percent_encode(&json_encoded, Self::PERCENT_ENCODE_SET).to_string())
+    }
+
+    pub fn percent_decode(encoded: &str) -> anyhow::Result<Self> {
+        let decoded = percent_decode_str(encoded).decode_utf8()?;
+        Ok(serde_json::from_str(&decoded)?)
     }
 }
