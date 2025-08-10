@@ -164,6 +164,9 @@ impl CustomActionRunner {
             .arg(&command)
             .envs(self.env.iter())
             .status()?;
+        // print \n to make sure any control sequence starts on a new line
+        // (in case there was an interactive prompt at the end of command)
+        println!("");
         if !status.success() {
             return Err(anyhow!(
                 "command failed with status: {}",
@@ -179,7 +182,7 @@ impl CustomActionRunner {
     pub fn after_mount(&self) -> anyhow::Result<()> {
         if let Some(action) = &self.config {
             if !action.after_mount.is_empty() {
-                println!("Executing after_mount action: `{}`", action.after_mount);
+                println!("Running after_mount action: `{}`", action.after_mount);
                 self.execute_action(&action.after_mount)?;
             }
         }
@@ -189,10 +192,7 @@ impl CustomActionRunner {
     pub fn before_unmount(&self) -> anyhow::Result<()> {
         if let Some(action) = &self.config {
             if !action.before_unmount.is_empty() {
-                println!(
-                    "Executing before_unmount action: `{}`",
-                    action.before_unmount
-                );
+                println!("Running before_unmount action: `{}`", action.before_unmount);
                 self.execute_action(&action.before_unmount)?;
             }
         }
@@ -426,6 +426,9 @@ fn run() -> anyhow::Result<()> {
     let mnt_args: Vec<&str> = mnt_args.collect();
     println!("mount args: {:?}", &mnt_args);
 
+    // we must show any output of mount command
+    // in case there's a warning (e.g. NTFS cannot be accessed rw)
+    println!("<anylinuxfs-force-output:on>");
     let mnt_result = Command::new("/bin/mount")
         .args(mnt_args)
         .status()
@@ -442,6 +445,7 @@ fn run() -> anyhow::Result<()> {
                 .unwrap_or("unknown".to_owned())
         ));
     }
+    println!("<anylinuxfs-force-output:off>");
 
     println!(
         "'{}' mounted successfully on '{}', filesystem {}.",
@@ -450,9 +454,11 @@ fn run() -> anyhow::Result<()> {
         fs_type.unwrap_or("unknown".to_owned())
     );
 
+    println!("<anylinuxfs-force-output:on>");
     custom_action
         .after_mount()
         .context("Error during after_mount action")?;
+    println!("<anylinuxfs-force-output:off>");
 
     deferred.add({
         let mount_point = mount_point.clone();
