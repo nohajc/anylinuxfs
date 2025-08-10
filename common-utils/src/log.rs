@@ -63,7 +63,7 @@ macro_rules! println_impl {
     ($print_macro:ident, $prefix:ident, $fmt:expr, $($args:tt)*) => {{
         let res1: anyhow::Result<()> = if $crate::log::CONSOLE_LOG_ENABLED.load(std::sync::atomic::Ordering::Relaxed) {
             $crate::log::PRINTED_LINES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            $crate::$print_macro!(concat!("{}", $fmt), $crate::log::$prefix, $($args)*)
+            $crate::$print_macro!(concat!("{}", $fmt, "\r\n"), $crate::log::$prefix, $($args)*)
         } else {
             Ok(())
         }.map_err(|e| e.into());
@@ -106,21 +106,21 @@ macro_rules! print_impl {
 #[macro_export]
 macro_rules! host_println {
     ($($arg:tt)*) => {
-        _ = $crate::println_impl!(safe_println, HOST_PREFIX, $($arg)*)
+        _ = $crate::println_impl!(safe_print, HOST_PREFIX, $($arg)*)
     };
 }
 
 #[macro_export]
 macro_rules! host_eprintln {
     ($($arg:tt)*) => {
-        _ = $crate::println_impl!(safe_eprintln, HOST_PREFIX, $($arg)*)
+        _ = $crate::println_impl!(safe_eprint, HOST_PREFIX, $($arg)*)
     };
 }
 
 #[macro_export]
 macro_rules! guest_println {
     ($($arg:tt)*) => {
-        _ = $crate::println_impl!(safe_println, GUEST_PREFIX, $($arg)*)
+        _ = $crate::println_impl!(safe_print, GUEST_PREFIX, $($arg)*)
     };
 }
 
@@ -136,13 +136,13 @@ macro_rules! prefix_println {
     ($prefix:ident, $($arg:tt)*) => {
         _ = match $prefix {
             Some($crate::log::Prefix::Host) => {
-                $crate::println_impl!(safe_println, HOST_PREFIX, $($arg)*)
+                $crate::println_impl!(safe_print, HOST_PREFIX, $($arg)*)
             }
             Some($crate::log::Prefix::Guest) => {
-                $crate::println_impl!(safe_println, GUEST_PREFIX, $($arg)*)
+                $crate::println_impl!(safe_print, GUEST_PREFIX, $($arg)*)
             }
             None => {
-                $crate::println_impl!(safe_println, EMPTY_PREFIX, $($arg)*)
+                $crate::println_impl!(safe_print, EMPTY_PREFIX, $($arg)*)
             }
         }
     };
@@ -170,13 +170,13 @@ macro_rules! prefix_eprintln {
     ($prefix:ident, $($arg:tt)*) => {
         _ = match $prefix {
             Some($crate::log::Prefix::Host) => {
-                $crate::println_impl!(safe_eprintln, HOST_PREFIX, $($arg)*)
+                $crate::println_impl!(safe_eprint, HOST_PREFIX, $($arg)*)
             }
             Some($crate::log::Prefix::Guest) => {
-                $crate::println_impl!(safe_eprintln, GUEST_PREFIX, $($arg)*)
+                $crate::println_impl!(safe_eprint, GUEST_PREFIX, $($arg)*)
             }
             None => {
-                $crate::println_impl!(safe_eprintln, EMPTY_PREFIX, $($arg)*)
+                $crate::println_impl!(safe_eprint, EMPTY_PREFIX, $($arg)*)
             }
         }
     };
@@ -220,5 +220,13 @@ macro_rules! safe_eprintln {
     ($($arg:tt)*) => {{
         use std::io::Write;
         writeln!(std::io::stderr(), $($arg)*).map_err($crate::log::PrintError)
+    }};
+}
+
+#[macro_export]
+macro_rules! safe_eprint {
+    ($($arg:tt)*) => {{
+        use std::io::Write;
+        write!(std::io::stderr(), $($arg)*).map_err($crate::log::PrintError)
     }};
 }

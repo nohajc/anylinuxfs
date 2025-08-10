@@ -4,6 +4,7 @@ use common_utils::{
     CustomActionConfig, Deferred, host_eprintln, host_println, log, prefix_eprintln,
     prefix_println, safe_println,
 };
+
 use devinfo::DevInfo;
 use nanoid::nanoid;
 use nix::unistd::{Uid, User};
@@ -1947,9 +1948,9 @@ impl AppRunner {
                         })
                     } else if line.starts_with("<anylinuxfs-mount:changed-to-ro>") {
                         changed_to_ro = true;
-                    } else if !config.verbose && line.contains("mounted successfully on") {
+                    } else if !config.verbose && line.starts_with("<anylinuxfs-force-output:off>") {
                         log::disable_console_log();
-                    } else if !config.verbose && line.starts_with("mount args: [") {
+                    } else if !config.verbose && line.starts_with("<anylinuxfs-force-output:on>") {
                         log::enable_console_log();
                     }
 
@@ -1963,6 +1964,19 @@ impl AppRunner {
             for passphrase_fn in passphrase_callbacks {
                 passphrase_fn(forked.in_fd()).unwrap();
             }
+
+            let disable_stdin_fwd_action = match config.get_action() {
+                Some(_) => {
+                    let mut stdin_forwarder = utils::StdinForwarder::new(forked.in_fd())?;
+
+                    Some(deferred.add(move || {
+                        if let Err(e) = stdin_forwarder.stop() {
+                            host_eprintln!("{:#}", e);
+                        }
+                    }))
+                }
+                None => None,
+            };
 
             let nfs_status =
                 wait_for_nfs_server(111, nfs_ready_rx).unwrap_or(NfsStatus::Failed(None));
@@ -2032,6 +2046,8 @@ impl AppRunner {
 
                     // stop printing to the console
                     log::disable_console_log();
+
+                    disable_stdin_fwd_action.map(|action| deferred.call_now(action));
                 } else {
                     // tell the parent to wait for the child to exit
                     unsafe { write_to_pipe(comm_write_fd, b"join\n") }

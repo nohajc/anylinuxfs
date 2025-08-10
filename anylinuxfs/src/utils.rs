@@ -12,10 +12,17 @@ use std::{
     },
     path::Path,
     process::Command,
+    sync::mpsc,
+    thread::JoinHandle,
+    time::Duration,
 };
 
 use anyhow::{Context, anyhow};
-use common_utils::{log::Prefix, prefix_print};
+use common_utils::{host_println, log::Prefix, prefix_print, safe_print};
+use crossterm::{
+    event::{self, Event},
+    terminal,
+};
 
 use crate::MountConfig;
 
@@ -780,11 +787,88 @@ impl<R: Read> PassthroughBufReader<R> {
                 self.suppress_current_line = false;
                 self.pending_output.clear();
                 self.first_chunk = true;
+
+                // move cursor to the beginning of new line (in case of raw mode)
+                _ = safe_print!("\r");
+
                 return Ok(total_read);
             }
 
             // If buffer is exhausted but no newline found, continue reading
         }
+    }
+}
+
+pub struct StdinForwarder {
+    thread_hnd: Option<JoinHandle<anyhow::Result<()>>>,
+    close_tx: mpsc::Sender<()>,
+}
+
+impl StdinForwarder {
+    pub fn new(pipe_fd: libc::c_int) -> anyhow::Result<Self> {
+        terminal::enable_raw_mode()?;
+        host_println!("Enabled terminal raw mode");
+
+        let (close_tx, close_rx) = mpsc::channel();
+        let thread_hnd = Some(std::thread::spawn(move || -> anyhow::Result<()> {
+            loop {
+                // `poll()` waits for an `Event` for a given time period
+                if event::poll(Duration::from_millis(200))? {
+                    // It's guaranteed that the `read()` won't block when the `poll()`
+                    // function returns `true`
+                    match event::read()? {
+                        Event::Key(event) => {
+                            // _ = safe_print!("DEBUG: {:?}\r\n", event);
+                            // io::stdout().flush()?;
+
+                            if event.is_press()
+                                && (event.modifiers == event::KeyModifiers::empty()
+                                    || event.modifiers == event::KeyModifiers::SHIFT)
+                            {
+                                match event.code {
+                                    event::KeyCode::Enter => {
+                                        _ = safe_print!("\r\n");
+                                        unsafe { write_to_pipe(pipe_fd, b"\n")? };
+                                    }
+                                    event::KeyCode::Char(c) => {
+                                        _ = safe_print!("{}", c);
+                                        io::stdout().flush()?;
+                                        unsafe {
+                                            write_to_pipe(pipe_fd, c.to_string().as_bytes())?
+                                        };
+                                    }
+                                    _ => (),
+                                }
+                            }
+                        }
+                        _ => (),
+                    };
+                } else {
+                    // Timeout expired and no `Event` is available
+                    if let Ok(()) = close_rx.try_recv() {
+                        break;
+                    }
+                }
+            }
+            Ok(())
+        }));
+
+        Ok(Self {
+            thread_hnd,
+            close_tx,
+        })
+    }
+
+    pub fn stop(&mut self) -> anyhow::Result<()> {
+        // looks like this has to be done on the main thread
+        terminal::disable_raw_mode()?;
+        host_println!("Disabled terminal raw mode");
+
+        self.close_tx.send(())?;
+        if let Some(hnd) = self.thread_hnd.take() {
+            hnd.join().unwrap()?;
+        }
+        Ok(())
     }
 }
 
