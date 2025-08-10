@@ -3,7 +3,7 @@ use std::{
     error::Error,
     ffi::CString,
     fs::{File, Permissions},
-    io::{self, Write},
+    io::{self, Read, Write},
     mem::ManuallyDrop,
     net::IpAddr,
     os::{
@@ -15,6 +15,7 @@ use std::{
 };
 
 use anyhow::{Context, anyhow};
+use common_utils::{log::Prefix, prefix_print};
 
 use crate::MountConfig;
 
@@ -655,6 +656,136 @@ pub fn find_env_vars(expression: &str) -> HashSet<String> {
     }
 
     vars
+}
+
+/// A buffered reader that immediately outputs characters as they arrive
+/// while also providing line-based reading for pattern matching
+pub struct PassthroughBufReader<R> {
+    inner: R,
+    buffer: Vec<u8>,
+    pos: usize,
+    cap: usize,
+    suppress_current_line: bool,
+    pending_output: String, // Buffer for chunks we haven't output yet
+    first_chunk: bool,      // Track if this is the first chunk on a new line
+}
+
+fn select_prefix(first_chunk: bool) -> Option<Prefix> {
+    if first_chunk {
+        Some(Prefix::Guest)
+    } else {
+        None
+    }
+}
+
+impl<R: Read> PassthroughBufReader<R> {
+    pub fn new(inner: R) -> Self {
+        Self {
+            inner,
+            buffer: vec![0; 8192],
+            pos: 0,
+            cap: 0,
+            suppress_current_line: false,
+            pending_output: String::new(),
+            first_chunk: true,
+        }
+    }
+
+    pub fn read_line(&mut self, line: &mut String) -> io::Result<usize> {
+        let mut total_read = 0;
+        line.clear();
+
+        loop {
+            // If we need more data, read it
+            if self.pos >= self.cap {
+                self.pos = 0;
+                self.cap = self.inner.read(&mut self.buffer)?;
+                if self.cap == 0 {
+                    // EOF - output any pending content
+                    if !self.pending_output.is_empty() {
+                        let prefix = select_prefix(self.first_chunk);
+                        prefix_print!(prefix, "{}", self.pending_output);
+                        self.first_chunk = false;
+                        io::stdout().flush().unwrap_or(());
+                        self.pending_output.clear();
+                    }
+                    return Ok(total_read);
+                }
+            }
+
+            // Process characters in the buffer
+            let start_pos = self.pos;
+            let mut found_newline = false;
+            let mut newline_pos = self.pos;
+
+            // Look for newline in current buffer
+            for i in self.pos..self.cap {
+                if self.buffer[i] == b'\n' {
+                    found_newline = true;
+                    newline_pos = i;
+                    break;
+                }
+            }
+
+            let end_pos = if found_newline {
+                newline_pos + 1 // Include the newline
+            } else {
+                self.cap
+            };
+
+            // Convert to string and add to line
+            let chunk = std::str::from_utf8(&self.buffer[start_pos..end_pos])
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+            line.push_str(chunk);
+            total_read += end_pos - start_pos;
+
+            // Check if we should suppress this line
+            if !self.suppress_current_line {
+                if line.starts_with("<anylinuxfs-") {
+                    // This is a control message - suppress everything we've seen so far
+                    self.suppress_current_line = true;
+                    self.pending_output.clear(); // Discard any pending output
+                } else if "<anylinuxfs-".starts_with(line.as_str()) {
+                    // Still a potential prefix - buffer this chunk
+                    self.pending_output.push_str(chunk);
+                } else {
+                    // This line can never be a control message - output everything
+                    if !self.pending_output.is_empty() {
+                        let prefix = select_prefix(self.first_chunk);
+                        prefix_print!(prefix, "{}", self.pending_output);
+                        self.first_chunk = false;
+                        self.pending_output.clear();
+                    }
+
+                    let prefix = select_prefix(self.first_chunk);
+                    prefix_print!(prefix, "{}", chunk);
+                    self.first_chunk = false;
+                    io::stdout().flush().unwrap_or(());
+                }
+            }
+
+            self.pos = end_pos;
+
+            if found_newline {
+                // End of line - output any remaining pending content if not suppressed
+                if !self.suppress_current_line && !self.pending_output.is_empty() {
+                    let prefix = select_prefix(self.first_chunk);
+                    prefix_print!(prefix, "{}", self.pending_output);
+                    self.first_chunk = false;
+                    io::stdout().flush().unwrap_or(());
+                }
+
+                // Reset for the next line
+                self.suppress_current_line = false;
+                self.pending_output.clear();
+                self.first_chunk = true;
+                return Ok(total_read);
+            }
+
+            // If buffer is exhausted but no newline found, continue reading
+        }
+    }
 }
 
 #[cfg(test)]

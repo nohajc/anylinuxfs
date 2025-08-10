@@ -1,7 +1,7 @@
 use anyhow::{Context, anyhow};
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use common_utils::{
-    CustomActionConfig, Deferred, guest_println, host_eprintln, host_println, log, prefix_eprintln,
+    CustomActionConfig, Deferred, host_eprintln, host_println, log, prefix_eprintln,
     prefix_println, safe_println,
 };
 use devinfo::DevInfo;
@@ -36,7 +36,7 @@ use notify::{RecursiveMode, Watcher};
 use std::sync::{Arc, Mutex, mpsc};
 use utils::{
     AcquireLock, CommFd, FlockKind, HasCommFd, HasPipeInFd, HasPipeOutFds, HasPtyFd, LockFile,
-    OutputAction, StatusError, write_to_pipe,
+    OutputAction, PassthroughBufReader, StatusError, write_to_pipe,
 };
 
 use crate::utils::{ToCStringVec, ToPtrVec};
@@ -1891,7 +1891,8 @@ impl AppRunner {
                 let mut fstype: Option<String> = None;
                 let mut changed_to_ro = false;
                 let mut exit_code = None;
-                let mut buf_reader = BufReader::new(unsafe { File::from_raw_fd(pty_fd) });
+                let mut buf_reader =
+                    PassthroughBufReader::new(unsafe { File::from_raw_fd(pty_fd) });
                 let mut line = String::new();
 
                 loop {
@@ -1902,7 +1903,6 @@ impl AppRunner {
                             break;
                         }
                     };
-                    let mut skip_line = false;
                     if bytes == 0 {
                         break; // EOF
                     }
@@ -1917,7 +1917,6 @@ impl AppRunner {
                             .unwrap();
                         nfs_ready = true;
                     } else if line.starts_with("<anylinuxfs-exit-code") {
-                        skip_line = true;
                         exit_code = line
                             .split(':')
                             .nth(1)
@@ -1931,7 +1930,6 @@ impl AppRunner {
                             })
                             .flatten();
                     } else if line.starts_with("<anylinuxfs-label") {
-                        skip_line = true;
                         fslabel = line.split(':').nth(1).map(|pattern| {
                             pattern
                                 .trim()
@@ -1940,7 +1938,6 @@ impl AppRunner {
                                 .to_string()
                         })
                     } else if line.starts_with("<anylinuxfs-type") {
-                        skip_line = true;
                         fstype = line.split(':').nth(1).map(|pattern| {
                             pattern
                                 .trim()
@@ -1949,19 +1946,13 @@ impl AppRunner {
                                 .to_string()
                         })
                     } else if line.starts_with("<anylinuxfs-mount:changed-to-ro>") {
-                        skip_line = true;
                         changed_to_ro = true;
                     } else if !config.verbose && line.contains("mounted successfully on") {
                         log::disable_console_log();
-                    }
-
-                    if !skip_line {
-                        guest_println!("{}", line.trim_end());
-                    }
-
-                    if !config.verbose && line.starts_with("mount args: [") {
+                    } else if !config.verbose && line.starts_with("mount args: [") {
                         log::enable_console_log();
                     }
+
                     line.clear();
                 }
                 if !nfs_ready {

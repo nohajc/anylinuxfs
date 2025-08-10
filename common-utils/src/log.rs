@@ -82,6 +82,28 @@ macro_rules! println_impl {
 }
 
 #[macro_export]
+macro_rules! print_impl {
+    ($print_macro:ident, $prefix:ident, $fmt:expr, $($args:tt)*) => {{
+        let res1: anyhow::Result<()> = if $crate::log::CONSOLE_LOG_ENABLED.load(std::sync::atomic::Ordering::Relaxed) {
+            $crate::$print_macro!(concat!("{}", $fmt), $crate::log::$prefix, $($args)*)
+        } else {
+            Ok(())
+        }.map_err(|e| e.into());
+        let res2: anyhow::Result<()> = if let Some(log_file) = $crate::log::LOG_FILE.get() {
+            use std::io::Write;
+            let mut log_file = log_file.lock().unwrap();
+            write!(&mut log_file, concat!("{}", $fmt), $crate::log::$prefix, $($args)*)
+        } else {
+            Ok(())
+        }.map_err(|e| e.into());
+        res1.and(res2)
+    }};
+    ($print_macro:ident, $prefix:ident, $fmt:expr) => {
+        $crate::print_impl!($print_macro, $prefix, $fmt, )
+    };
+}
+
+#[macro_export]
 macro_rules! host_println {
     ($($arg:tt)*) => {
         _ = $crate::println_impl!(safe_println, HOST_PREFIX, $($arg)*)
@@ -103,6 +125,13 @@ macro_rules! guest_println {
 }
 
 #[macro_export]
+macro_rules! guest_print {
+    ($($arg:tt)*) => {
+        _ = $crate::print_impl!(safe_print, GUEST_PREFIX, $($arg)*)
+    };
+}
+
+#[macro_export]
 macro_rules! prefix_println {
     ($prefix:ident, $($arg:tt)*) => {
         _ = match $prefix {
@@ -114,6 +143,23 @@ macro_rules! prefix_println {
             }
             None => {
                 $crate::println_impl!(safe_println, EMPTY_PREFIX, $($arg)*)
+            }
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! prefix_print {
+    ($prefix:ident, $($arg:tt)*) => {
+        _ = match $prefix {
+            Some($crate::log::Prefix::Host) => {
+                $crate::print_impl!(safe_print, HOST_PREFIX, $($arg)*)
+            }
+            Some($crate::log::Prefix::Guest) => {
+                $crate::print_impl!(safe_print, GUEST_PREFIX, $($arg)*)
+            }
+            None => {
+                $crate::print_impl!(safe_print, EMPTY_PREFIX, $($arg)*)
             }
         }
     };
@@ -158,6 +204,14 @@ macro_rules! safe_println {
     ($($arg:tt)*) => {{
         use std::io::Write;
         writeln!(std::io::stdout(), $($arg)*).map_err($crate::log::PrintError)
+    }};
+}
+
+#[macro_export]
+macro_rules! safe_print {
+    ($($arg:tt)*) => {{
+        use std::io::Write;
+        write!(std::io::stdout(), $($arg)*).map_err($crate::log::PrintError)
     }};
 }
 
