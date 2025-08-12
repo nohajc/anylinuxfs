@@ -1884,7 +1884,7 @@ impl AppRunner {
 
             let (nfs_ready_tx, nfs_ready_rx) = mpsc::channel();
 
-            let pty_fd = forked.pty_fd();
+            let pty_fd = forked.master_fd();
             // Spawn a thread to read from the pipe
             _ = thread::spawn(move || {
                 let mut nfs_ready = false;
@@ -1967,7 +1967,8 @@ impl AppRunner {
 
             let disable_stdin_fwd_action = match config.get_action() {
                 Some(_) => {
-                    let mut stdin_forwarder = utils::StdinForwarder::new(forked.in_fd())?;
+                    let mut stdin_forwarder =
+                        utils::StdinForwarder::new(forked.in_fd(), forked.slave_fd())?;
 
                     Some(deferred.add(move || {
                         if let Err(e) = stdin_forwarder.stop() {
