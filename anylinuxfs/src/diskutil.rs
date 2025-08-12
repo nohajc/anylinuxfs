@@ -1,5 +1,5 @@
 use anyhow::{Context, anyhow};
-use common_utils::host_println;
+use common_utils::{host_println, safe_print};
 use derive_more::{AddAssign, Deref};
 use indexmap::IndexMap;
 use libc::{SIGINT, SIGTERM};
@@ -722,14 +722,13 @@ fn passphrase_prompt_lazy(partition: &str) -> impl FnOnce(libc::c_int) -> anyhow
     }
 }
 
-pub fn passphrase_prompt(
-    partition: &str,
-) -> anyhow::Result<impl FnOnce(libc::c_int) -> anyhow::Result<()>> {
+pub fn passphrase_prompt(partition: &str) -> anyhow::Result<impl FnOnce() -> anyhow::Result<()>> {
     // prompt user for passphrase
-    let passphrase = read_passphrase(&partition)?;
-    Ok(move |in_fd| {
+    // let passphrase = read_passphrase(&partition)?;
+    Ok(move || {
         // write passphrase to pipe
-        write_passphrase_to_pipe(in_fd, &passphrase)?;
+        // write_passphrase_to_pipe(in_fd, &passphrase)?;
+        _ = safe_print!("Enter passphrase for {}: ", partition);
 
         Ok(())
     })

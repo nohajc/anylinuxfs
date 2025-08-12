@@ -2,7 +2,7 @@ use anyhow::{Context, anyhow};
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use common_utils::{
     CustomActionConfig, Deferred, host_eprintln, host_println, log, prefix_eprintln,
-    prefix_println, safe_println,
+    prefix_println, safe_print, safe_println,
 };
 
 use devinfo::DevInfo;
@@ -1703,12 +1703,13 @@ impl AppRunner {
     }
 
     fn run_mount(&mut self, cmd: MountCmd) -> anyhow::Result<()> {
+        let _lock_file = LockFile::new(LOCK_FILE)?.acquire_lock(FlockKind::Exclusive)?;
+
         utils::check_port_availability([0, 0, 0, 0], 111)?;
         for port in [2049, 32765, 32767] {
             utils::check_port_availability([127, 0, 0, 1], port)?;
         }
 
-        let _lock_file = LockFile::new(LOCK_FILE)?.acquire_lock(FlockKind::Exclusive)?;
         let config = load_mount_config(cmd)?;
         let log_file_path = &config.common.log_file_path;
 
@@ -1883,6 +1884,7 @@ impl AppRunner {
             api::serve_info(rt_info.clone());
 
             let (nfs_ready_tx, nfs_ready_rx) = mpsc::channel();
+            let (vm_pwd_prompt_tx, vm_pwd_prompt_rx) = mpsc::channel();
 
             let pty_fd = forked.master_fd();
             // Spawn a thread to read from the pipe
@@ -1948,6 +1950,10 @@ impl AppRunner {
                         })
                     } else if line.starts_with("<anylinuxfs-mount:changed-to-ro>") {
                         changed_to_ro = true;
+                    } else if line.starts_with("<anylinuxfs-passphrase-prompt:start>") {
+                        vm_pwd_prompt_tx.send(true).unwrap();
+                    } else if line.starts_with("<anylinuxfs-passphrase-prompt:end>") {
+                        vm_pwd_prompt_tx.send(false).unwrap();
                     } else if !config.verbose && line.starts_with("<anylinuxfs-force-output:off>") {
                         log::disable_console_log();
                     } else if !config.verbose && line.starts_with("<anylinuxfs-force-output:on>") {
@@ -1961,23 +1967,21 @@ impl AppRunner {
                 }
             });
 
-            for passphrase_fn in passphrase_callbacks {
-                passphrase_fn(forked.in_fd()).unwrap();
-            }
-
-            let disable_stdin_fwd_action = match config.get_action() {
-                Some(_) => {
-                    let mut stdin_forwarder =
-                        utils::StdinForwarder::new(forked.in_fd(), forked.slave_fd())?;
-
-                    Some(deferred.add(move || {
-                        if let Err(e) = stdin_forwarder.stop() {
-                            host_eprintln!("{:#}", e);
-                        }
-                    }))
+            let mut stdin_forwarder = utils::StdinForwarder::new(forked.master_fd())?;
+            let disable_stdin_fwd_action = deferred.add(move || {
+                if let Err(e) = stdin_forwarder.stop() {
+                    host_eprintln!("{:#}", e);
                 }
-                None => None,
-            };
+            });
+
+            for passphrase_fn in passphrase_callbacks {
+                // wait for the VM to prompt for passphrase
+                vm_pwd_prompt_rx.recv().unwrap();
+                passphrase_fn().unwrap();
+                // wait for the passphrase to be entered
+                vm_pwd_prompt_rx.recv().unwrap();
+                safe_print!("\r\n")?;
+            }
 
             let nfs_status =
                 wait_for_nfs_server(111, nfs_ready_rx).unwrap_or(NfsStatus::Failed(None));
@@ -2048,7 +2052,7 @@ impl AppRunner {
                     // stop printing to the console
                     log::disable_console_log();
 
-                    disable_stdin_fwd_action.map(|action| deferred.call_now(action));
+                    deferred.call_now(disable_stdin_fwd_action);
                 } else {
                     // tell the parent to wait for the child to exit
                     unsafe { write_to_pipe(comm_write_fd, b"join\n") }
@@ -2088,7 +2092,10 @@ impl AppRunner {
         Ok(())
     }
 
-    fn run_mount_parent(&mut self, forked: utils::ForkOutput<CommFd>) -> anyhow::Result<()> {
+    fn run_mount_parent(
+        &mut self,
+        forked: utils::ForkOutput<(), (), CommFd>,
+    ) -> anyhow::Result<()> {
         let comm_read_fd = forked.comm_fd();
         let mut buf_reader = BufReader::new(unsafe { File::from_raw_fd(comm_read_fd) });
         let mut line = String::new();
