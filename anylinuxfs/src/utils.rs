@@ -53,7 +53,8 @@ pub struct CommFd {
     fd: libc::c_int,
 }
 pub struct PtyFd {
-    fd: libc::c_int,
+    master_fd: libc::c_int,
+    slave_fd: libc::c_int,
 }
 pub struct PipeOutFds {
     out_fd: libc::c_int,
@@ -75,12 +76,17 @@ impl HasCommFd for CommFd {
 }
 
 pub trait HasPtyFd {
-    fn pty_fd(&self) -> libc::c_int;
+    fn master_fd(&self) -> libc::c_int;
+    fn slave_fd(&self) -> libc::c_int;
 }
 
 impl HasPtyFd for PtyFd {
-    fn pty_fd(&self) -> libc::c_int {
-        self.fd
+    fn master_fd(&self) -> libc::c_int {
+        self.master_fd
+    }
+
+    fn slave_fd(&self) -> libc::c_int {
+        self.slave_fd
     }
 }
 
@@ -131,8 +137,12 @@ impl<I> HasCommFd for ForkOutput<CommFd, I> {
 }
 
 impl<I> HasPtyFd for ForkOutput<PtyFd, I> {
-    fn pty_fd(&self) -> libc::c_int {
-        self.out_fds.pty_fd()
+    fn master_fd(&self) -> libc::c_int {
+        self.out_fds.master_fd()
+    }
+
+    fn slave_fd(&self) -> libc::c_int {
+        self.out_fds.slave_fd()
     }
 }
 
@@ -253,7 +263,10 @@ pub fn fork_with_pty_output(
 
         Ok(ForkOutput {
             pid,
-            out_fds: PtyFd { fd: slave_fd },
+            out_fds: PtyFd {
+                slave_fd: -1,
+                master_fd,
+            },
             in_fds: PipeInFd {
                 in_fd: child_in_write_fd,
             },
@@ -269,14 +282,17 @@ pub fn fork_with_pty_output(
         }
 
         // Close the slave end of the pty
-        let res = unsafe { libc::close(slave_fd) };
-        if res < 0 {
-            return Err(io::Error::last_os_error()).context("Failed to close slave end of pty");
-        }
+        // let res = unsafe { libc::close(slave_fd) };
+        // if res < 0 {
+        //     return Err(io::Error::last_os_error()).context("Failed to close slave end of pty");
+        // }
 
         Ok(ForkOutput {
             pid,
-            out_fds: PtyFd { fd: master_fd },
+            out_fds: PtyFd {
+                master_fd,
+                slave_fd,
+            },
             in_fds: PipeInFd {
                 in_fd: child_in_write_fd,
             },
@@ -805,7 +821,7 @@ pub struct StdinForwarder {
 }
 
 impl StdinForwarder {
-    pub fn new(pipe_fd: libc::c_int) -> anyhow::Result<Self> {
+    pub fn new(pipe_fd: libc::c_int, pty_slave_fd: libc::c_int) -> anyhow::Result<Self> {
         terminal::enable_raw_mode()?;
         host_println!("Enabled terminal raw mode");
 
@@ -827,15 +843,19 @@ impl StdinForwarder {
                             {
                                 match event.code {
                                     event::KeyCode::Enter => {
-                                        _ = safe_print!("\r\n");
-                                        unsafe { write_to_pipe(pipe_fd, b"\n")? };
+                                        // _ = prefix_print!(None, "\r\n");
+                                        unsafe {
+                                            write_to_pipe(pty_slave_fd, b"\r\n")?;
+                                            write_to_pipe(pipe_fd, b"\n")?;
+                                        }
                                     }
                                     event::KeyCode::Char(c) => {
-                                        _ = safe_print!("{}", c);
-                                        io::stdout().flush()?;
+                                        // _ = prefix_print!(None, "{}", c);
+                                        // io::stdout().flush()?;
                                         unsafe {
-                                            write_to_pipe(pipe_fd, c.to_string().as_bytes())?
-                                        };
+                                            write_to_pipe(pty_slave_fd, c.to_string().as_bytes())?;
+                                            write_to_pipe(pipe_fd, c.to_string().as_bytes())?;
+                                        }
                                     }
                                     _ => (),
                                 }

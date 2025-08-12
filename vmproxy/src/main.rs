@@ -164,9 +164,7 @@ impl CustomActionRunner {
             .arg(&command)
             .envs(self.env.iter())
             .status()?;
-        // print \n to make sure any control sequence starts on a new line
-        // (in case there was an interactive prompt at the end of command)
-        println!("");
+
         if !status.success() {
             return Err(anyhow!(
                 "command failed with status: {}",
