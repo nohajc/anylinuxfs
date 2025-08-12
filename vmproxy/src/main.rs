@@ -8,7 +8,7 @@ use std::ffi::CString;
 use std::io::{self, BufRead, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
-use std::process::{Child, Command, ExitCode, Stdio};
+use std::process::{Child, Command, ExitCode};
 use std::time::Duration;
 use std::{fs, io::BufReader};
 use sys_mount::{UnmountFlags, unmount};
@@ -274,13 +274,16 @@ fn run() -> anyhow::Result<()> {
     // decrypt LUKS/BitLocker volumes if any
     if let Some(decrypt) = &cli.decrypt {
         for (i, dev) in decrypt.split(",").enumerate() {
-            let cryptsetup_result = Command::new("/sbin/cryptsetup")
+            let mut cryptsetup = Command::new("/sbin/cryptsetup")
                 .arg(cryptsetup_op)
                 .arg(&dev)
                 .arg(format!("{mapper_ident_prefix}{i}"))
-                .stdout(Stdio::null())
-                .status()
-                .context(format!("Failed to run cryptsetup command for '{}'", dev))?;
+                // .stdout(Stdio::null())
+                .spawn()?;
+
+            println!("<anylinuxfs-passphrase-prompt:start>");
+            let cryptsetup_result = cryptsetup.wait()?;
+            println!("<anylinuxfs-passphrase-prompt:end>");
 
             if !cryptsetup_result.success() {
                 return Err(anyhow!(

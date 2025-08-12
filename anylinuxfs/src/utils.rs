@@ -114,14 +114,15 @@ impl HasPipeInFd for PipeInFd {
     }
 }
 
-pub struct ForkOutput<O, I = ()> {
+pub struct ForkOutput<O, I = (), C = ()> {
     pub pid: libc::pid_t,
     pub out_fds: O,
     pub in_fds: I,
+    pub ctrl_fds: C,
     redirect_action: Option<Box<dyn FnOnce() -> anyhow::Result<()>>>,
 }
 
-impl<O, I> ForkOutput<O, I> {
+impl<O, I, C> ForkOutput<O, I, C> {
     pub fn redirect(&mut self) -> anyhow::Result<()> {
         if let Some(redirect_fn) = self.redirect_action.take() {
             redirect_fn()?;
@@ -130,13 +131,13 @@ impl<O, I> ForkOutput<O, I> {
     }
 }
 
-impl<I> HasCommFd for ForkOutput<CommFd, I> {
+impl<O, I> HasCommFd for ForkOutput<O, I, CommFd> {
     fn comm_fd(&self) -> libc::c_int {
-        self.out_fds.comm_fd()
+        self.ctrl_fds.comm_fd()
     }
 }
 
-impl<I> HasPtyFd for ForkOutput<PtyFd, I> {
+impl<I, C> HasPtyFd for ForkOutput<PtyFd, I, C> {
     fn master_fd(&self) -> libc::c_int {
         self.out_fds.master_fd()
     }
@@ -146,7 +147,7 @@ impl<I> HasPtyFd for ForkOutput<PtyFd, I> {
     }
 }
 
-impl<I> HasPipeOutFds for ForkOutput<PipeOutFds, I> {
+impl<I, C> HasPipeOutFds for ForkOutput<PipeOutFds, I, C> {
     fn out_fd(&self) -> libc::c_int {
         self.out_fds.out_fd()
     }
@@ -155,7 +156,7 @@ impl<I> HasPipeOutFds for ForkOutput<PipeOutFds, I> {
     }
 }
 
-impl<O> HasPipeInFd for ForkOutput<O, PipeInFd> {
+impl<O, C> HasPipeInFd for ForkOutput<O, PipeInFd, C> {
     fn in_fd(&self) -> libc::c_int {
         self.in_fds.in_fd()
     }
@@ -167,13 +168,9 @@ pub enum OutputAction {
     RedirectLater,
 }
 
-pub fn fork_with_pty_output(
-    out_action: OutputAction,
-) -> anyhow::Result<ForkOutput<PtyFd, PipeInFd>> {
+pub fn fork_with_pty_output(out_action: OutputAction) -> anyhow::Result<ForkOutput<PtyFd>> {
     let mut master_fd: libc::c_int = 0;
     let mut slave_fd: libc::c_int = 0;
-
-    let (child_in_read_fd, child_in_write_fd) = new_pipe()?;
 
     // Create a new pseudo-terminal
     let mut winp: libc::winsize = libc::winsize {
@@ -201,12 +198,6 @@ pub fn fork_with_pty_output(
     } else if pid == 0 {
         // Child process
 
-        // Close the write end of the pipe
-        let res = unsafe { libc::close(child_in_write_fd) };
-        if res < 0 {
-            return Err(io::Error::last_os_error()).context("Failed to close write end of pipe");
-        }
-
         // Close the master end of the pty
         let res = unsafe { libc::close(master_fd) };
         if res < 0 {
@@ -225,28 +216,23 @@ pub fn fork_with_pty_output(
             }
 
             // Redirect stdin to the slave end of the pty
-            // let res = unsafe { libc::dup2(slave_fd, libc::STDIN_FILENO) };
-            // if res < 0 {
-            //     return Err(io::Error::last_os_error()).context("Failed to redirect stdin to pty");
-            // }
+            let res = unsafe { libc::dup2(slave_fd, libc::STDIN_FILENO) };
+            if res < 0 {
+                return Err(io::Error::last_os_error()).context("Failed to redirect stdin to pty");
+            }
 
             // Redirect stdin to the read end of the pipe
-            let res = unsafe { libc::dup2(child_in_read_fd, libc::STDIN_FILENO) };
-            if res < 0 {
-                return Err(io::Error::last_os_error()).context("Failed to redirect stdin");
-            }
+            // (we need this initially for interacting with cryptsetup while augmenting the prompts)
+            // let res = unsafe { libc::dup2(child_in_read_fd, libc::STDIN_FILENO) };
+            // if res < 0 {
+            //     return Err(io::Error::last_os_error()).context("Failed to redirect stdin");
+            // }
 
-            // Close the read end of the pipe
-            let res = unsafe { libc::close(child_in_read_fd) };
-            if res < 0 {
-                return Err(io::Error::last_os_error()).context("Failed to close read end of pipe");
-            }
-
-            // Close the slave end of the pty
-            let res = unsafe { libc::close(slave_fd) };
-            if res < 0 {
-                return Err(io::Error::last_os_error()).context("Failed to close slave end of pty");
-            }
+            // // Close the read end of the pipe
+            // let res = unsafe { libc::close(child_in_read_fd) };
+            // if res < 0 {
+            //     return Err(io::Error::last_os_error()).context("Failed to close read end of pipe");
+            // }
 
             Ok(())
         };
@@ -264,28 +250,15 @@ pub fn fork_with_pty_output(
         Ok(ForkOutput {
             pid,
             out_fds: PtyFd {
-                slave_fd: -1,
-                master_fd,
+                slave_fd,
+                master_fd: -1,
             },
-            in_fds: PipeInFd {
-                in_fd: child_in_write_fd,
-            },
+            in_fds: (),
+            ctrl_fds: (),
             redirect_action,
         })
     } else {
         // Parent process
-
-        // Close the read end of the pipe
-        let res = unsafe { libc::close(child_in_read_fd) };
-        if res < 0 {
-            return Err(io::Error::last_os_error()).context("Failed to close read end of pipe");
-        }
-
-        // Close the slave end of the pty
-        // let res = unsafe { libc::close(slave_fd) };
-        // if res < 0 {
-        //     return Err(io::Error::last_os_error()).context("Failed to close slave end of pty");
-        // }
 
         Ok(ForkOutput {
             pid,
@@ -293,9 +266,8 @@ pub fn fork_with_pty_output(
                 master_fd,
                 slave_fd,
             },
-            in_fds: PipeInFd {
-                in_fd: child_in_write_fd,
-            },
+            in_fds: (),
+            ctrl_fds: (),
             redirect_action: None,
         })
     }
@@ -397,13 +369,14 @@ pub fn fork_with_piped_output() -> anyhow::Result<ForkOutput<PipeOutFds, PipeInF
         in_fds: PipeInFd {
             in_fd: child_in_write_fd,
         },
+        ctrl_fds: (),
         redirect_action: None,
     })
 }
 
 // pipe_fd contains the read end of the pipe in the parent
 // and the write end of the pipe in the child process
-pub fn fork_with_comm_pipe() -> anyhow::Result<ForkOutput<CommFd>> {
+pub fn fork_with_comm_pipe() -> anyhow::Result<ForkOutput<(), (), CommFd>> {
     let (parent_read_fd, child_write_fd) = new_pipe()?;
 
     let pid = unsafe { libc::fork() };
@@ -420,8 +393,9 @@ pub fn fork_with_comm_pipe() -> anyhow::Result<ForkOutput<CommFd>> {
 
         Ok(ForkOutput {
             pid,
-            out_fds: CommFd { fd: child_write_fd },
+            out_fds: (),
             in_fds: (),
+            ctrl_fds: CommFd { fd: child_write_fd },
             redirect_action: None,
         })
     } else {
@@ -435,8 +409,9 @@ pub fn fork_with_comm_pipe() -> anyhow::Result<ForkOutput<CommFd>> {
 
         Ok(ForkOutput {
             pid,
-            out_fds: CommFd { fd: parent_read_fd },
+            out_fds: (),
             in_fds: (),
+            ctrl_fds: CommFd { fd: parent_read_fd },
             redirect_action: None,
         })
     }
@@ -821,7 +796,7 @@ pub struct StdinForwarder {
 }
 
 impl StdinForwarder {
-    pub fn new(pipe_fd: libc::c_int, pty_slave_fd: libc::c_int) -> anyhow::Result<Self> {
+    pub fn new(in_fd: libc::c_int) -> anyhow::Result<Self> {
         terminal::enable_raw_mode()?;
         host_println!("Enabled terminal raw mode");
 
@@ -835,28 +810,18 @@ impl StdinForwarder {
                     match event::read()? {
                         Event::Key(event) => {
                             // _ = safe_print!("DEBUG: {:?}\r\n", event);
-                            // io::stdout().flush()?;
 
                             if event.is_press()
                                 && (event.modifiers == event::KeyModifiers::empty()
                                     || event.modifiers == event::KeyModifiers::SHIFT)
                             {
                                 match event.code {
-                                    event::KeyCode::Enter => {
-                                        // _ = prefix_print!(None, "\r\n");
-                                        unsafe {
-                                            write_to_pipe(pty_slave_fd, b"\r\n")?;
-                                            write_to_pipe(pipe_fd, b"\n")?;
-                                        }
-                                    }
-                                    event::KeyCode::Char(c) => {
-                                        // _ = prefix_print!(None, "{}", c);
-                                        // io::stdout().flush()?;
-                                        unsafe {
-                                            write_to_pipe(pty_slave_fd, c.to_string().as_bytes())?;
-                                            write_to_pipe(pipe_fd, c.to_string().as_bytes())?;
-                                        }
-                                    }
+                                    event::KeyCode::Enter => unsafe {
+                                        write_to_pipe(in_fd, b"\n")?;
+                                    },
+                                    event::KeyCode::Char(c) => unsafe {
+                                        write_to_pipe(in_fd, c.to_string().as_bytes())?;
+                                    },
                                     _ => (),
                                 }
                             }
