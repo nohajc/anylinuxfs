@@ -77,7 +77,6 @@ pub struct CommFd {
 }
 pub struct PtyFd {
     master_fd: libc::c_int,
-    slave_fd: libc::c_int,
 }
 pub struct PipeOutFds {
     out_fd: libc::c_int,
@@ -100,16 +99,11 @@ impl HasCommFd for CommFd {
 
 pub trait HasPtyFd {
     fn master_fd(&self) -> libc::c_int;
-    fn slave_fd(&self) -> libc::c_int;
 }
 
 impl HasPtyFd for PtyFd {
     fn master_fd(&self) -> libc::c_int {
         self.master_fd
-    }
-
-    fn slave_fd(&self) -> libc::c_int {
-        self.slave_fd
     }
 }
 
@@ -164,10 +158,6 @@ impl<I, C> HasPtyFd for ForkOutput<PtyFd, I, C> {
     fn master_fd(&self) -> libc::c_int {
         self.out_fds.master_fd()
     }
-
-    fn slave_fd(&self) -> libc::c_int {
-        self.out_fds.slave_fd()
-    }
 }
 
 impl<I, C> HasPipeOutFds for ForkOutput<PipeOutFds, I, C> {
@@ -195,6 +185,8 @@ pub fn fork_with_pty_output(out_action: OutputAction) -> anyhow::Result<ForkOutp
     let mut master_fd: libc::c_int = 0;
     let mut slave_fd: libc::c_int = 0;
 
+    // let (child_in_read_fd, child_in_write_fd) = new_pipe()?;
+
     // Create a new pseudo-terminal
     let mut winp: libc::winsize = libc::winsize {
         ws_row: 24,
@@ -221,6 +213,12 @@ pub fn fork_with_pty_output(out_action: OutputAction) -> anyhow::Result<ForkOutp
     } else if pid == 0 {
         // Child process
 
+        // Close the write end of the pipe
+        // let res = unsafe { libc::close(child_in_write_fd) };
+        // if res < 0 {
+        //     return Err(io::Error::last_os_error()).context("Failed to close write end of pipe");
+        // }
+
         // Close the master end of the pty
         let res = unsafe { libc::close(master_fd) };
         if res < 0 {
@@ -244,8 +242,14 @@ pub fn fork_with_pty_output(out_action: OutputAction) -> anyhow::Result<ForkOutp
                 return Err(io::Error::last_os_error()).context("Failed to redirect stdin to pty");
             }
 
-            // Redirect stdin to the read end of the pipe
-            // (we need this initially for interacting with cryptsetup while augmenting the prompts)
+            // Close the slave end of the pty
+            let res = unsafe { libc::close(slave_fd) };
+            if res < 0 {
+                return Err(io::Error::last_os_error()).context("Failed to close slave end of pty");
+            }
+
+            // // Redirect stdin to the read end of the pipe
+            // // (we need this initially for interacting with cryptsetup while augmenting the prompts)
             // let res = unsafe { libc::dup2(child_in_read_fd, libc::STDIN_FILENO) };
             // if res < 0 {
             //     return Err(io::Error::last_os_error()).context("Failed to redirect stdin");
@@ -272,10 +276,10 @@ pub fn fork_with_pty_output(out_action: OutputAction) -> anyhow::Result<ForkOutp
 
         Ok(ForkOutput {
             pid,
-            out_fds: PtyFd {
-                slave_fd,
-                master_fd: -1,
-            },
+            out_fds: PtyFd { master_fd: -1 },
+            // in_fds: PipeInFd {
+            //     in_fd: child_in_write_fd,
+            // },
             in_fds: (),
             ctrl_fds: (),
             redirect_action,
@@ -283,12 +287,18 @@ pub fn fork_with_pty_output(out_action: OutputAction) -> anyhow::Result<ForkOutp
     } else {
         // Parent process
 
+        // Close the slave end of the pty
+        let res = unsafe { libc::close(slave_fd) };
+        if res < 0 {
+            return Err(io::Error::last_os_error()).context("Failed to close slave end of pty");
+        }
+
         Ok(ForkOutput {
             pid,
-            out_fds: PtyFd {
-                master_fd,
-                slave_fd,
-            },
+            out_fds: PtyFd { master_fd },
+            // in_fds: PipeInFd {
+            //     in_fd: child_in_read_fd,
+            // },
             in_fds: (),
             ctrl_fds: (),
             redirect_action: None,
@@ -819,9 +829,20 @@ pub struct StdinForwarder {
 }
 
 impl StdinForwarder {
-    pub fn new(in_fd: libc::c_int) -> anyhow::Result<Self> {
+    pub fn new(in_fd: libc::c_int, signal_hub: PubSub<libc::c_int>) -> anyhow::Result<Self> {
         terminal::enable_raw_mode()?;
         host_println!("Enabled terminal raw mode");
+
+        let signals = signal_hub.subscribe();
+        _ = thread::spawn(move || {
+            for _ in signals {
+                host_println!("Termination requested, sending ^C to microVM");
+                unsafe {
+                    _ = write_to_pipe(in_fd, b"\x03");
+                }
+                break;
+            }
+        });
 
         let (close_tx, close_rx) = mpsc::channel();
         let thread_hnd = Some(std::thread::spawn(move || -> anyhow::Result<()> {
@@ -834,18 +855,35 @@ impl StdinForwarder {
                         Event::Key(event) => {
                             // _ = safe_print!("DEBUG: {:?}\r\n", event);
 
-                            if event.is_press()
-                                && (event.modifiers == event::KeyModifiers::empty()
-                                    || event.modifiers == event::KeyModifiers::SHIFT)
-                            {
-                                match event.code {
-                                    event::KeyCode::Enter => unsafe {
-                                        write_to_pipe(in_fd, b"\n")?;
-                                    },
-                                    event::KeyCode::Char(c) => unsafe {
-                                        write_to_pipe(in_fd, c.to_string().as_bytes())?;
-                                    },
-                                    _ => (),
+                            if event.is_press() {
+                                if event.modifiers == event::KeyModifiers::empty()
+                                    || event.modifiers == event::KeyModifiers::SHIFT
+                                {
+                                    match event.code {
+                                        event::KeyCode::Enter => unsafe {
+                                            write_to_pipe(in_fd, b"\n")?;
+                                        },
+                                        event::KeyCode::Char(c) => unsafe {
+                                            write_to_pipe(in_fd, c.to_string().as_bytes())?;
+                                        },
+                                        _ => (),
+                                    }
+                                } else if event.modifiers == event::KeyModifiers::CONTROL {
+                                    match event.code {
+                                        event::KeyCode::Char('c') => {
+                                            // Send SIGINT (Ctrl+C)
+                                            unsafe {
+                                                write_to_pipe(in_fd, b"\x03")?;
+                                            }
+                                        }
+                                        event::KeyCode::Char('d') => {
+                                            // Send EOF (Ctrl+D)
+                                            unsafe {
+                                                write_to_pipe(in_fd, b"\x04")?;
+                                            }
+                                        }
+                                        _ => (),
+                                    }
                                 }
                             }
                         }

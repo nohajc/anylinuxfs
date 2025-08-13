@@ -2,7 +2,6 @@ use anyhow::{Context, anyhow};
 use common_utils::{host_println, safe_print};
 use derive_more::{AddAssign, Deref};
 use indexmap::IndexMap;
-use nix::sys::signal::Signal;
 use objc2_core_foundation::{
     CFDictionary, CFRetained, CFRunLoop, CFString, CFURL, kCFRunLoopDefaultMode,
 };
@@ -977,13 +976,8 @@ struct UnmountContext<'a> {
 fn stop_run_loop_on_signal(signal_hub: PubSub<libc::c_int>) -> anyhow::Result<()> {
     let signals = signal_hub.subscribe();
     _ = thread::spawn(move || {
-        for signal in signals {
-            host_println!(
-                "Received signal {}",
-                Signal::try_from(signal)
-                    .map(|s| s.to_string())
-                    .unwrap_or("<unknown>".to_owned())
-            );
+        for _ in signals {
+            host_println!("Termination requested, give up waiting for mount");
             CFRunLoop::stop(&CFRunLoop::main().unwrap());
             break;
         }
