@@ -13,7 +13,7 @@ use std::{
     path::Path,
     process::Command,
     sync::mpsc,
-    thread::JoinHandle,
+    thread::{self, JoinHandle},
     time::Duration,
 };
 
@@ -23,8 +23,10 @@ use crossterm::{
     event::{self, Event},
     terminal,
 };
+use nix::sys::signal::Signal;
+use signal_hook::{consts::TERM_SIGNALS, iterator::Signals};
 
-use crate::MountConfig;
+use crate::{MountConfig, pubsub::PubSub};
 
 #[derive(Debug)]
 pub struct StatusError {
@@ -47,6 +49,27 @@ impl std::fmt::Display for StatusError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}: {}", self.msg, self.status)
     }
+}
+
+pub fn start_signal_publisher() -> anyhow::Result<PubSub<libc::c_int>> {
+    let hub = PubSub::new();
+    let mut signals = Signals::new(TERM_SIGNALS).context("failed to register signals")?;
+    _ = thread::spawn({
+        let hub = hub.clone();
+        move || {
+            for signal in signals.forever() {
+                host_println!(
+                    "Received signal {}",
+                    Signal::try_from(signal)
+                        .map(|s| s.to_string())
+                        .unwrap_or("<unknown>".to_owned())
+                );
+                hub.publish(signal);
+            }
+        }
+    });
+
+    Ok(hub)
 }
 
 pub struct CommFd {
