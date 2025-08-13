@@ -180,8 +180,11 @@ impl CustomActionRunner {
     pub fn after_mount(&self) -> anyhow::Result<()> {
         if let Some(action) = &self.config {
             if !action.after_mount.is_empty() {
+                println!("<anylinuxfs-force-output:on>");
                 println!("Running after_mount action: `{}`", action.after_mount);
-                self.execute_action(&action.after_mount)?;
+                let result = self.execute_action(&action.after_mount);
+                println!("<anylinuxfs-force-output:off>");
+                result?;
             }
         }
         Ok(())
@@ -430,6 +433,9 @@ fn run() -> anyhow::Result<()> {
     // we must show any output of mount command
     // in case there's a warning (e.g. NTFS cannot be accessed rw)
     println!("<anylinuxfs-force-output:on>");
+    let force_output_off = deferred.add(|| {
+        println!("<anylinuxfs-force-output:off>");
+    });
     let mnt_result = Command::new("/bin/mount")
         .args(mnt_args)
         .status()
@@ -446,7 +452,7 @@ fn run() -> anyhow::Result<()> {
                 .unwrap_or("unknown".to_owned())
         ));
     }
-    println!("<anylinuxfs-force-output:off>");
+    deferred.call_now(force_output_off);
 
     println!(
         "'{}' mounted successfully on '{}', filesystem {}.",
@@ -455,19 +461,9 @@ fn run() -> anyhow::Result<()> {
         fs_type.unwrap_or("unknown".to_owned())
     );
 
-    println!("<anylinuxfs-force-output:on>");
-    custom_action
-        .after_mount()
-        .context("Error during after_mount action")?;
-    println!("<anylinuxfs-force-output:off>");
-
     deferred.add({
         let mount_point = mount_point.clone();
         move || {
-            if let Err(e) = custom_action.before_unmount() {
-                eprintln!("Error during before_unmount action: {:#}", e);
-            };
-
             let mut backoff = Duration::from_secs(1);
             while let Err(e) = unmount(&mount_point, UnmountFlags::empty()) {
                 eprintln!("Failed to unmount '{}': {}", &mount_point, e);
@@ -478,6 +474,14 @@ fn run() -> anyhow::Result<()> {
 
             _ = fs::remove_dir_all(&mount_point);
         }
+    });
+
+    custom_action.after_mount().context("after_mount action")?;
+
+    deferred.add(move || {
+        if let Err(e) = custom_action.before_unmount() {
+            eprintln!("before_unmount action: {:#}", e);
+        };
     });
 
     let effective_mount_options = {

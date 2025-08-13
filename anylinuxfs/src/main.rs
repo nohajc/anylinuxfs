@@ -10,8 +10,6 @@ use nanoid::nanoid;
 use nix::unistd::{Uid, User};
 
 use serde::{Deserialize, Serialize};
-use signal_hook::consts::TERM_SIGNALS;
-use signal_hook::flag;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::env::VarError;
 use std::fmt::Display;
@@ -24,7 +22,6 @@ use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 use std::ptr::null;
-use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 use std::{
     env,
@@ -1199,12 +1196,12 @@ fn unmount_fs(volume_path: &Path) -> anyhow::Result<()> {
 fn send_quit_cmd(config: &Config) -> anyhow::Result<()> {
     let mut stream = UnixStream::connect(&config.vsock_path)?;
 
-    stream.set_write_timeout(Some(Duration::from_secs(10)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
     stream.write_all(b"quit\n")?;
     stream.flush()?;
 
     // we don't care about the response contents
-    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     let mut buf = [0; 1024];
     _ = stream.read(&mut buf)?;
 
@@ -1342,7 +1339,7 @@ fn wait_for_vm_status(pid: libc::pid_t) -> anyhow::Result<Option<i32>> {
         host_eprintln!("Failed to wait for child process: {}", last_error);
         return Err(last_error.into());
     }
-    host_println!("libkrun VM exited with status: {}", status);
+    host_println!("libkrun VM exited with status: {}", to_exit_code(status));
     Ok(Some(status))
 }
 
@@ -1714,18 +1711,6 @@ impl AppRunner {
             utils::check_port_availability([127, 0, 0, 1], port)?;
         }
 
-        // Make sure double CTRL+C and similar kills
-        let term_now = Arc::new(AtomicBool::new(false));
-        for sig in TERM_SIGNALS {
-            // When terminated by a second term signal, exit with exit code 1.
-            // This will do nothing the first time (because term_now is false).
-            flag::register_conditional_shutdown(*sig, 1, Arc::clone(&term_now))?;
-            // But this will "arm" the above for the second time, by setting it to true.
-            // The order of registering these is important, if you put this one first, it will
-            // first arm and then terminate ‒ all in the first round.
-            flag::register(*sig, Arc::clone(&term_now))?;
-        }
-
         let config = load_mount_config(cmd)?;
         let log_file_path = &config.common.log_file_path;
 
@@ -1768,8 +1753,6 @@ impl AppRunner {
         let mut deferred = Deferred::new();
 
         init_rootfs(&config.common, false)?;
-
-        let signal_hub = utils::start_signal_publisher()?;
 
         if !config.verbose {
             log::disable_console_log();
@@ -1890,6 +1873,8 @@ impl AppRunner {
                 _ = wait_for_vm_status(child_pid);
             });
 
+            let signal_hub = utils::start_signal_publisher()?;
+
             let rt_info = Arc::new(Mutex::new(api::RuntimeInfo {
                 mount_config: config.clone(),
                 dev_info: mnt_dev_info.clone(),
@@ -1985,7 +1970,8 @@ impl AppRunner {
                 }
             });
 
-            let mut stdin_forwarder = utils::StdinForwarder::new(forked.master_fd())?;
+            let mut stdin_forwarder =
+                utils::StdinForwarder::new(forked.master_fd(), signal_hub.clone())?;
             let disable_stdin_fwd_action = deferred.add(move || {
                 if let Err(e) = stdin_forwarder.stop() {
                     host_eprintln!("{:#}", e);
@@ -2333,12 +2319,21 @@ impl AppRunner {
                             return Ok(());
                         }
                         MountStatus::NotYet => {
+                            let mut vm_exited_gracefully = false;
                             println!("Trying to shutdown anylinuxfs VM directly...");
-                            send_quit_cmd(&rt_info.mount_config.common)
-                                .context("could not send quit command to VM")?;
-                            // wait for vmm process to exit or become zombie
-                            wait_for_proc_exit(rt_info.vmm_pid)
-                                .context("error waiting for process to exit")?;
+                            if send_quit_cmd(&rt_info.mount_config.common).is_ok() {
+                                // wait for vmm process to exit or become zombie
+                                vm_exited_gracefully = wait_for_proc_exit(rt_info.vmm_pid).is_ok();
+                            }
+                            if !vm_exited_gracefully {
+                                println!("Sending quit command didn't work, try SIGTERM...");
+                                // not killing the whole process group, just the session leader;
+                                // this should trigger graceful shutdown of the VMM and its parent
+                                if unsafe { libc::kill(rt_info.session_pgid, libc::SIGTERM) } < 0 {
+                                    return Err(io::Error::last_os_error())
+                                        .context(format!("Failed to send SIGTERM to anylinuxfs"));
+                                }
+                            }
                             println!("VM exited gracefully");
                         }
                         MountStatus::NoLonger => {
