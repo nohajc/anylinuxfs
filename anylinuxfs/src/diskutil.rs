@@ -2,7 +2,6 @@ use anyhow::{Context, anyhow};
 use common_utils::{host_println, safe_print};
 use derive_more::{AddAssign, Deref};
 use indexmap::IndexMap;
-use libc::{SIGINT, SIGTERM};
 use nix::sys::signal::Signal;
 use objc2_core_foundation::{
     CFDictionary, CFRetained, CFRunLoop, CFString, CFURL, kCFRunLoopDefaultMode,
@@ -13,7 +12,6 @@ use objc2_disk_arbitration::{
 };
 use regex::Regex;
 use serde::Deserialize;
-use signal_hook::iterator::Signals;
 use std::{
     ffi::{CString, c_void},
     fmt::Display,
@@ -28,7 +26,7 @@ use std::{
 };
 use url::Url;
 
-use crate::{devinfo::DevInfo, fsutil};
+use crate::{devinfo::DevInfo, fsutil, pubsub::PubSub};
 
 pub struct Entry(String, String, String, Vec<String>);
 
@@ -976,23 +974,18 @@ struct UnmountContext<'a> {
     mount_point: &'a str,
 }
 
-fn stop_run_loop_on_signal() -> anyhow::Result<()> {
-    let mut signals = Signals::new(&[SIGINT, SIGTERM]).context("failed to register signals")?;
+fn stop_run_loop_on_signal(signal_hub: PubSub<libc::c_int>) -> anyhow::Result<()> {
+    let signals = signal_hub.subscribe();
     _ = thread::spawn(move || {
-        for signal in signals.forever() {
-            match signal {
-                SIGINT | SIGTERM => {
-                    host_println!(
-                        "Received signal {}",
-                        Signal::try_from(signal)
-                            .map(|s| s.to_string())
-                            .unwrap_or("<unknown>".to_owned())
-                    );
-                    CFRunLoop::stop(&CFRunLoop::main().unwrap());
-                    break;
-                }
-                _ => {}
-            }
+        for signal in signals {
+            host_println!(
+                "Received signal {}",
+                Signal::try_from(signal)
+                    .map(|s| s.to_string())
+                    .unwrap_or("<unknown>".to_owned())
+            );
+            CFRunLoop::stop(&CFRunLoop::main().unwrap());
+            break;
         }
     });
 
@@ -1018,9 +1011,9 @@ pub struct EventSession {
 }
 
 impl EventSession {
-    pub fn new() -> anyhow::Result<Self> {
+    pub fn new(signal_hub: PubSub<libc::c_int>) -> anyhow::Result<Self> {
         let session = unsafe { DASession::new(None).unwrap() };
-        stop_run_loop_on_signal()?;
+        stop_run_loop_on_signal(signal_hub)?;
         Ok(Self { session })
     }
 

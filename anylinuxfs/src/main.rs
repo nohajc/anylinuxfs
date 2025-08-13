@@ -10,6 +10,8 @@ use nanoid::nanoid;
 use nix::unistd::{Uid, User};
 
 use serde::{Deserialize, Serialize};
+use signal_hook::consts::TERM_SIGNALS;
+use signal_hook::flag;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::env::VarError;
 use std::fmt::Display;
@@ -22,6 +24,7 @@ use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 use std::ptr::null;
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 use std::{
     env,
@@ -48,6 +51,7 @@ mod bindings;
 mod devinfo;
 mod diskutil;
 mod fsutil;
+mod pubsub;
 mod utils;
 
 const LOCK_FILE: &str = "/tmp/anylinuxfs.lock";
@@ -1710,6 +1714,18 @@ impl AppRunner {
             utils::check_port_availability([127, 0, 0, 1], port)?;
         }
 
+        // Make sure double CTRL+C and similar kills
+        let term_now = Arc::new(AtomicBool::new(false));
+        for sig in TERM_SIGNALS {
+            // When terminated by a second term signal, exit with exit code 1.
+            // This will do nothing the first time (because term_now is false).
+            flag::register_conditional_shutdown(*sig, 1, Arc::clone(&term_now))?;
+            // But this will "arm" the above for the second time, by setting it to true.
+            // The order of registering these is important, if you put this one first, it will
+            // first arm and then terminate ‒ all in the first round.
+            flag::register(*sig, Arc::clone(&term_now))?;
+        }
+
         let config = load_mount_config(cmd)?;
         let log_file_path = &config.common.log_file_path;
 
@@ -1752,6 +1768,8 @@ impl AppRunner {
         let mut deferred = Deferred::new();
 
         init_rootfs(&config.common, false)?;
+
+        let signal_hub = utils::start_signal_publisher()?;
 
         if !config.verbose {
             log::disable_console_log();
@@ -1988,7 +2006,7 @@ impl AppRunner {
             if nfs_status.ok() {
                 host_println!("Port 111 open, NFS server ready");
 
-                let event_session = diskutil::EventSession::new()?;
+                let event_session = diskutil::EventSession::new(signal_hub)?;
 
                 if let NfsStatus::Ready(Some(label), _, _) = &nfs_status {
                     mnt_dev_info.set_label(label);
