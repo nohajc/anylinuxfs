@@ -26,7 +26,10 @@ use crossterm::{
 use nix::sys::signal::Signal;
 use signal_hook::{consts::TERM_SIGNALS, iterator::Signals};
 
-use crate::{MountConfig, pubsub::PubSub};
+use crate::{
+    MountConfig,
+    pubsub::{PubSub, Subscription},
+};
 
 #[derive(Debug)]
 pub struct StatusError {
@@ -829,11 +832,10 @@ pub struct StdinForwarder {
 }
 
 impl StdinForwarder {
-    pub fn new(in_fd: libc::c_int, signal_hub: PubSub<libc::c_int>) -> anyhow::Result<Self> {
+    pub fn new(in_fd: libc::c_int, signals: Subscription<libc::c_int>) -> anyhow::Result<Self> {
         terminal::enable_raw_mode()?;
         host_println!("Enabled terminal raw mode");
 
-        let signals = signal_hub.subscribe();
         _ = thread::spawn(move || {
             for _ in signals {
                 host_println!("Termination requested, sending ^C to microVM");

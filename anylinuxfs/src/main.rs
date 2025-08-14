@@ -1970,8 +1970,9 @@ impl AppRunner {
                 }
             });
 
-            let mut stdin_forwarder =
-                utils::StdinForwarder::new(forked.master_fd(), signal_hub.clone())?;
+            let signals = signal_hub.subscribe();
+            let signal_subscr_id = signals.id().expect("just subscribed, ID should be set");
+            let mut stdin_forwarder = utils::StdinForwarder::new(forked.master_fd(), signals)?;
             let disable_stdin_fwd_action = deferred.add(move || {
                 if let Err(e) = stdin_forwarder.stop() {
                     host_eprintln!("{:#}", e);
@@ -1992,7 +1993,11 @@ impl AppRunner {
             if nfs_status.ok() {
                 host_println!("Port 111 open, NFS server ready");
 
-                let event_session = diskutil::EventSession::new(signal_hub)?;
+                // once the NFS server is ready, we need to change how termination signals are handled
+                // EventSession is going to subscribe to signals, so we unsubscribe the previous handler first
+                signal_hub.unsubscribe(signal_subscr_id);
+                let signals = signal_hub.subscribe();
+                let event_session = diskutil::EventSession::new(signals)?;
 
                 if let NfsStatus::Ready(Some(label), _, _) = &nfs_status {
                     mnt_dev_info.set_label(label);
