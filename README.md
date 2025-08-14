@@ -15,6 +15,7 @@ With full write support, based on the libkrun microVM hypervisor and NFS. Doesn'
 - works with disk images
 - supports disks with **GPT**, **MBR** or no partition table (single filesystem or LVM/LUKS container)
 - NFS share by default only reachable from localhost but can be shared across network too
+- define your own [custom actions](#custom-actions) (e.g. mount **borg backup** located on a Linux drive)
 
 > [!CAUTION]
 > Before using anylinuxfs with **NTFS**, please read [the notes](#ntfs)
@@ -171,7 +172,7 @@ anylinuxfs stop
 
 ### Examples
 
-#### Mount borg backup on a Linux drive
+#### Mount borg backup located on a Linux drive
 
 For this, we will first need to install additional alpine packages:
 ```
