@@ -12,17 +12,17 @@ use std::{
     },
     path::Path,
     process::Command,
-    sync::mpsc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
     thread::{self, JoinHandle},
     time::Duration,
 };
 
 use anyhow::{Context, anyhow};
 use common_utils::{host_println, log::Prefix, prefix_print, safe_print};
-use crossterm::{
-    event::{self, Event},
-    terminal,
-};
+use crossterm::event::{self, Event};
 use nix::sys::signal::Signal;
 use signal_hook::{consts::TERM_SIGNALS, iterator::Signals};
 
@@ -826,6 +826,60 @@ impl<R: Read> PassthroughBufReader<R> {
     }
 }
 
+use std::sync::OnceLock;
+
+static ORIGINAL_TERMIOS: OnceLock<libc::termios> = OnceLock::new();
+static RAW_MODE_ENABLED: AtomicBool = AtomicBool::new(false);
+
+pub fn enable_raw_mode() -> anyhow::Result<()> {
+    if RAW_MODE_ENABLED.load(Ordering::Relaxed) {
+        return Ok(()); // already enabled
+    }
+
+    let fd = libc::STDIN_FILENO;
+    // Fetch current attributes
+    let mut termios = unsafe {
+        let mut t: libc::termios = std::mem::zeroed();
+        if libc::tcgetattr(fd, &mut t) != 0 {
+            return Err(io::Error::last_os_error()).context("tcgetattr failed");
+        }
+        t
+    };
+
+    // Store original once (first call)
+    let _ = ORIGINAL_TERMIOS.set(termios); // ignore error if already set
+
+    unsafe { libc::cfmakeraw(&mut termios) };
+    // Set new attributes
+    if unsafe { libc::tcsetattr(fd, libc::TCSADRAIN, &termios) } != 0 {
+        return Err(io::Error::last_os_error()).context("tcsetattr failed");
+    }
+
+    RAW_MODE_ENABLED.store(true, Ordering::Relaxed);
+    host_println!("Enabled terminal raw mode");
+    Ok(())
+}
+
+pub fn disable_raw_mode() -> anyhow::Result<()> {
+    if !RAW_MODE_ENABLED.load(Ordering::Relaxed) {
+        return Ok(()); // already disabled
+    }
+
+    let fd = libc::STDIN_FILENO;
+    // Restore original attributes
+    if let Some(original) = ORIGINAL_TERMIOS.get() {
+        if unsafe { libc::tcsetattr(fd, libc::TCSADRAIN, original) } != 0 {
+            return Err(io::Error::last_os_error()).context("tcsetattr failed");
+        }
+    } else {
+        return Err(anyhow!("Original terminal attributes not set"));
+    }
+
+    RAW_MODE_ENABLED.store(false, Ordering::Relaxed);
+    host_println!("Disabled terminal raw mode");
+    Ok(())
+}
+
 pub struct StdinForwarder {
     thread_hnd: Option<JoinHandle<anyhow::Result<()>>>,
     close_tx: mpsc::Sender<()>,
@@ -833,8 +887,7 @@ pub struct StdinForwarder {
 
 impl StdinForwarder {
     pub fn new(in_fd: libc::c_int, signals: Subscription<libc::c_int>) -> anyhow::Result<Self> {
-        terminal::enable_raw_mode()?;
-        host_println!("Enabled terminal raw mode");
+        enable_raw_mode()?;
 
         _ = thread::spawn(move || {
             for _ in signals {
@@ -850,7 +903,7 @@ impl StdinForwarder {
         let thread_hnd = Some(std::thread::spawn(move || -> anyhow::Result<()> {
             loop {
                 // `poll()` waits for an `Event` for a given time period
-                if event::poll(Duration::from_millis(200))? {
+                if event::poll(Duration::from_millis(50))? {
                     // It's guaranteed that the `read()` won't block when the `poll()`
                     // function returns `true`
                     match event::read()? {
@@ -908,11 +961,8 @@ impl StdinForwarder {
     }
 
     pub fn stop(&mut self) -> anyhow::Result<()> {
-        // looks like this has to be done on the main thread
-        terminal::disable_raw_mode()?;
-        host_println!("Disabled terminal raw mode");
-
         self.close_tx.send(())?;
+        disable_raw_mode()?;
         if let Some(hnd) = self.thread_hnd.take() {
             hnd.join().unwrap()?;
         }
