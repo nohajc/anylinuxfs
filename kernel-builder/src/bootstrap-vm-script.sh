@@ -39,11 +39,11 @@ rm -r $UMOCI_DST
 echo "$RESOLV_CONF" > $MOUNT_POINT/etc/resolv.conf
 
 # To avoid filesystem corruption
-START_SHELL='trap "mount -o remount,ro /" EXIT; mount -t virtiofs shared /mnt; bash -l'
+START_SHELL='trap "mount -o remount,ro /" EXIT; mount -t virtiofs shared /mnt; chronyd -q "server pool.ntp.org iburst"; bash -l'
 echo "$START_SHELL" > $MOUNT_POINT/start-shell.sh
 chmod +x $MOUNT_POINT/start-shell.sh
 
-INSTALL_KERNEL_DEPS='trap "mount -o remount,ro /" EXIT; apt-get update && apt-get install -y curl build-essential python3-pyelftools bc kmod cpio flex libncurses5-dev libelf-dev libssl-dev dwarves bison'
+INSTALL_KERNEL_DEPS='trap "mount -o remount,ro /" EXIT; apt-get update && apt-get install -y curl build-essential python3-pyelftools bc kmod cpio flex libncurses5-dev libelf-dev libssl-dev dwarves bison chrony'
 echo "$INSTALL_KERNEL_DEPS" > $MOUNT_POINT/install-kernel-deps.sh
 chmod +x $MOUNT_POINT/install-kernel-deps.sh
 

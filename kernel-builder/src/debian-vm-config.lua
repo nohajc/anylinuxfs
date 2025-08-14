@@ -19,7 +19,7 @@ return {
         args = { "-c", "/start-shell.sh" },
     },
     env = {
-        "KRUN_ROOT=/dev/vda",
+        -- "KRUN_ROOT=/dev/vda",
     },
-    log_level = 1,
+    log_level = 0,
 }
