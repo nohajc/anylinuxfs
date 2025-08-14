@@ -167,6 +167,43 @@ anylinuxfs status
 anylinuxfs stop
 ```
 
+## Custom actions
+
+### Examples
+
+#### Mount borg backup on a Linux drive
+
+For this, we will first need to install additional alpine packages:
+```
+anylinuxfs apk add borgbackup fuse py3-llfuse
+```
+
+Then we define a custom action by editing (or creating) `~/.anylinuxfs/config.toml`:
+```
+[custom_actions.borg]
+after_mount = "mkdir -p /mnt/borg && borg mount $ALFS_VM_MOUNT_POINT/$BORG_REPO /mnt/borg"
+before_unmount = "borg umount /mnt/borg && rmdir /mnt/borg"
+override_nfs_export = "/mnt/borg"
+```
+
+You can refer to environment variables from custom actions. Those starting with `$ALFS_` are set by anylinuxfs. Any other variables must be set by the user.
+If you want your custom action to use any other environment variable which is not explicitly used in the script (e.g. borg might use `$BORG_PASSPHRASE`), you can list them like this:
+```
+[custom_actions.borg]
+after_mount = "..."
+before_unmount = "..."
+capture_environment = ["BORG_PASSPHRASE"]
+override_nfs_export = "/mnt/borg"
+```
+
+To invoke your action when mounting a drive, use the `-a` flag:
+```
+export BORG_REPO=<path to borg repo relative to mount point>
+anylinuxfs mount /dev/disk4s2 -a borg
+```
+
+You will be asked for your passphrase (if you haven't set `capture_environment` and exported `BORG_PASSPHRASE`) and your borg backup will be mounted instead of the whole Linux drive.
+
 ## Notes
 
 ### VM initialization
