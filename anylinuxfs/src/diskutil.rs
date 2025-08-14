@@ -25,7 +25,7 @@ use std::{
 };
 use url::Url;
 
-use crate::{devinfo::DevInfo, fsutil, pubsub::PubSub};
+use crate::{devinfo::DevInfo, fsutil, pubsub::Subscription};
 
 pub struct Entry(String, String, String, Vec<String>);
 
@@ -973,8 +973,7 @@ struct UnmountContext<'a> {
     mount_point: &'a str,
 }
 
-fn stop_run_loop_on_signal(signal_hub: PubSub<libc::c_int>) -> anyhow::Result<()> {
-    let signals = signal_hub.subscribe();
+fn stop_run_loop_on_signal(signals: Subscription<libc::c_int>) -> anyhow::Result<()> {
     _ = thread::spawn(move || {
         for _ in signals {
             host_println!("Termination requested, give up waiting for mount");
@@ -1005,9 +1004,9 @@ pub struct EventSession {
 }
 
 impl EventSession {
-    pub fn new(signal_hub: PubSub<libc::c_int>) -> anyhow::Result<Self> {
+    pub fn new(signals: Subscription<libc::c_int>) -> anyhow::Result<Self> {
         let session = unsafe { DASession::new(None).unwrap() };
-        stop_run_loop_on_signal(signal_hub)?;
+        stop_run_loop_on_signal(signals)?;
         Ok(Self { session })
     }
 
