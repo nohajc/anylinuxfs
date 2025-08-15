@@ -1,4 +1,5 @@
 use std::{
+    cell::Cell,
     collections::HashSet,
     error::Error,
     ffi::CString,
@@ -13,6 +14,7 @@ use std::{
     path::Path,
     process::Command,
     sync::{
+        Arc,
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
@@ -856,7 +858,7 @@ pub fn enable_raw_mode() -> anyhow::Result<()> {
     }
 
     RAW_MODE_ENABLED.store(true, Ordering::Relaxed);
-    host_println!("Enabled terminal raw mode");
+    // host_println!("Enabled terminal raw mode");
     Ok(())
 }
 
@@ -876,13 +878,14 @@ pub fn disable_raw_mode() -> anyhow::Result<()> {
     }
 
     RAW_MODE_ENABLED.store(false, Ordering::Relaxed);
-    host_println!("Disabled terminal raw mode");
+    // host_println!("Disabled terminal raw mode");
     Ok(())
 }
 
 pub struct StdinForwarder {
-    thread_hnd: Option<JoinHandle<anyhow::Result<()>>>,
+    thread_hnd: Cell<Option<JoinHandle<anyhow::Result<()>>>>,
     close_tx: mpsc::Sender<()>,
+    echo_newline: Arc<AtomicBool>,
 }
 
 impl StdinForwarder {
@@ -899,74 +902,87 @@ impl StdinForwarder {
             }
         });
 
-        let (close_tx, close_rx) = mpsc::channel();
-        let thread_hnd = Some(std::thread::spawn(move || -> anyhow::Result<()> {
-            loop {
-                // `poll()` waits for an `Event` for a given time period
-                if event::poll(Duration::from_millis(50))? {
-                    // It's guaranteed that the `read()` won't block when the `poll()`
-                    // function returns `true`
-                    match event::read()? {
-                        Event::Key(event) => {
-                            // _ = safe_print!("DEBUG: {:?}\r\n", event);
+        let echo_newline = Arc::new(AtomicBool::new(false));
 
-                            if event.is_press() {
-                                if event.modifiers == event::KeyModifiers::empty()
-                                    || event.modifiers == event::KeyModifiers::SHIFT
-                                {
-                                    match event.code {
-                                        event::KeyCode::Enter => unsafe {
-                                            write_to_pipe(in_fd, b"\n")?;
-                                        },
-                                        event::KeyCode::Char(c) => unsafe {
-                                            write_to_pipe(in_fd, c.to_string().as_bytes())?;
-                                        },
-                                        _ => (),
-                                    }
-                                } else if event.modifiers == event::KeyModifiers::CONTROL {
-                                    match event.code {
-                                        event::KeyCode::Char('c') => {
-                                            // Send SIGINT (Ctrl+C)
-                                            unsafe {
-                                                write_to_pipe(in_fd, b"\x03")?;
-                                            }
+        let (close_tx, close_rx) = mpsc::channel();
+        let thread_hnd = Cell::new(Some(std::thread::spawn({
+            let echo_newline = Arc::clone(&echo_newline);
+            move || -> anyhow::Result<()> {
+                loop {
+                    // `poll()` waits for an `Event` for a given time period
+                    if event::poll(Duration::from_millis(50))? {
+                        // It's guaranteed that the `read()` won't block when the `poll()`
+                        // function returns `true`
+                        match event::read()? {
+                            Event::Key(event) => {
+                                // _ = safe_print!("DEBUG: {:?}\r\n", event);
+
+                                if event.is_press() {
+                                    if event.modifiers == event::KeyModifiers::empty()
+                                        || event.modifiers == event::KeyModifiers::SHIFT
+                                    {
+                                        match event.code {
+                                            event::KeyCode::Enter => unsafe {
+                                                write_to_pipe(in_fd, b"\n")?;
+                                                if echo_newline.load(Ordering::Relaxed) {
+                                                    _ = safe_print!("\r\n");
+                                                }
+                                            },
+                                            event::KeyCode::Char(c) => unsafe {
+                                                write_to_pipe(in_fd, c.to_string().as_bytes())?;
+                                            },
+                                            _ => (),
                                         }
-                                        event::KeyCode::Char('d') => {
-                                            // Send EOF (Ctrl+D)
-                                            unsafe {
-                                                write_to_pipe(in_fd, b"\x04")?;
+                                    } else if event.modifiers == event::KeyModifiers::CONTROL {
+                                        match event.code {
+                                            event::KeyCode::Char('c') => {
+                                                // Send SIGINT (Ctrl+C)
+                                                unsafe {
+                                                    write_to_pipe(in_fd, b"\x03")?;
+                                                }
                                             }
+                                            event::KeyCode::Char('d') => {
+                                                // Send EOF (Ctrl+D)
+                                                unsafe {
+                                                    write_to_pipe(in_fd, b"\x04")?;
+                                                }
+                                            }
+                                            _ => (),
                                         }
-                                        _ => (),
                                     }
                                 }
                             }
+                            _ => (),
+                        };
+                    } else {
+                        // Timeout expired and no `Event` is available
+                        if let Ok(()) = close_rx.try_recv() {
+                            break;
                         }
-                        _ => (),
-                    };
-                } else {
-                    // Timeout expired and no `Event` is available
-                    if let Ok(()) = close_rx.try_recv() {
-                        break;
                     }
                 }
+                Ok(())
             }
-            Ok(())
-        }));
+        })));
 
         Ok(Self {
             thread_hnd,
             close_tx,
+            echo_newline,
         })
     }
 
-    pub fn stop(&mut self) -> anyhow::Result<()> {
+    pub fn stop(&self) -> anyhow::Result<()> {
         self.close_tx.send(())?;
         disable_raw_mode()?;
         if let Some(hnd) = self.thread_hnd.take() {
             hnd.join().unwrap()?;
         }
         Ok(())
+    }
+
+    pub fn echo_newline(&self, enable: bool) {
+        self.echo_newline.store(enable, Ordering::Relaxed);
     }
 }
 

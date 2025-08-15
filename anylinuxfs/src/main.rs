@@ -2,7 +2,7 @@ use anyhow::{Context, anyhow};
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use common_utils::{
     CustomActionConfig, Deferred, host_eprintln, host_println, log, prefix_eprintln,
-    prefix_println, safe_print, safe_println,
+    prefix_println, safe_println,
 };
 
 use devinfo::DevInfo;
@@ -1750,6 +1750,8 @@ impl AppRunner {
         mut config: MountConfig,
         comm_write_fd: libc::c_int,
     ) -> anyhow::Result<()> {
+        // pre-declare so it can be referenced in a deferred action
+        let stdin_forwarder;
         let mut deferred = Deferred::new();
 
         init_rootfs(&config.common, false)?;
@@ -1972,21 +1974,22 @@ impl AppRunner {
 
             let signals = signal_hub.subscribe();
             let signal_subscr_id = signals.id().expect("just subscribed, ID should be set");
-            let mut stdin_forwarder = utils::StdinForwarder::new(forked.master_fd(), signals)?;
-            let disable_stdin_fwd_action = deferred.add(move || {
+            stdin_forwarder = utils::StdinForwarder::new(forked.master_fd(), signals)?;
+            let disable_stdin_fwd_action = deferred.add(|| {
                 if let Err(e) = stdin_forwarder.stop() {
                     host_eprintln!("{:#}", e);
                 }
             });
 
+            stdin_forwarder.echo_newline(true);
             for passphrase_fn in passphrase_callbacks {
                 // wait for the VM to prompt for passphrase
                 vm_pwd_prompt_rx.recv().unwrap();
                 passphrase_fn().unwrap();
                 // wait for the passphrase to be entered
                 vm_pwd_prompt_rx.recv().unwrap();
-                safe_print!("\r\n")?;
             }
+            stdin_forwarder.echo_newline(false);
 
             let nfs_status =
                 wait_for_nfs_server(111, nfs_ready_rx).unwrap_or(NfsStatus::Failed(None));
