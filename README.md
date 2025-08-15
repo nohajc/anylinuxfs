@@ -170,6 +170,12 @@ anylinuxfs stop
 
 ## Custom actions
 
+With custom actions, you're able to define sets of scripts which will run inside the virtual machine at specific points.
+Currently, you can run an action after a filesystem was mounted and also before it is unmounted (typically to do cleanup).
+You can also override the path inside the virtual machine which gets shared with macOS via NFS. This is useful for mounting nested filesystems (from disk images, etc.).
+
+Your custom actions can also depend on additional packages not included in the base Linux installation by default. `anylinuxfs` exposes the Alpine package manager for that purpose. That means it can maintain a list of extra packages installed by the user and reinstall them again when you reinit your Linux image (or when reinit is forced by `anylinuxfs` upgrade).
+
 ### Examples
 
 #### Mount borg backup located on a Linux drive
