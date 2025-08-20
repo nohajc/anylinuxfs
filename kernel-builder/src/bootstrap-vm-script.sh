@@ -39,7 +39,7 @@ rm -r $UMOCI_DST
 echo "$RESOLV_CONF" > $MOUNT_POINT/etc/resolv.conf
 
 # To avoid filesystem corruption
-START_SHELL='trap "mount -o remount,ro /" EXIT; mount -t virtiofs shared /mnt; chronyd -q "server pool.ntp.org iburst"; bash -l'
+START_SHELL='trap "mount -o remount,ro /" EXIT; mount -t virtiofs shared /mnt; bash -l'
 echo "$START_SHELL" > $MOUNT_POINT/start-shell.sh
 chmod +x $MOUNT_POINT/start-shell.sh
 
