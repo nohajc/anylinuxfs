@@ -61,8 +61,17 @@ impl DevInfo {
             ]))
             .context("Cannot configure device superblock probe")?;
         probe
+            .enable_partitions(true)
+            .context("Cannot enable device partition probe")?;
+        probe
             .do_safeprobe()
             .context(format!("Cannot probe device {}", &path))?;
+
+        if probe.get_partitions().is_ok() {
+            return Err(anyhow!(
+                "Device must be a single partition or filesystem image"
+            ));
+        }
 
         let label = probe.lookup_value("LABEL").ok();
         let fs_type = probe.lookup_value("TYPE").ok();
