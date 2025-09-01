@@ -167,7 +167,7 @@ pub const LINUX_LABELS: Labels = Labels {
 // GPT - Microsoft Basic Data (any Windows filesystem)
 // MBR - Windows_NTFS         (both NTFS and exFAT)
 pub const WINDOWS_LABELS: Labels = Labels {
-    part_types: PartTypes(&["Microsoft Basic Data", "Windows_NTFS"]),
+    part_types: PartTypes(&["Microsoft Basic Data", "Windows_NTFS", "Windows_FAT_32"]),
     fs_types: FsTypes(&["ntfs", "exfat", "BitLocker"]),
 };
 
