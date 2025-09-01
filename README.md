@@ -7,7 +7,7 @@ With full write support, based on the libkrun microVM hypervisor and NFS. Doesn'
 ## Features
 - mounts any filesystem supported by Linux (**ext4**, **btrfs**, **xfs**, ... but also **NTFS** and **exFAT**)
 - supports **LUKS**-encrypted drives
-- supports **BitLocker**-encrypted drives (using your recovery key as passphrase)
+- supports **BitLocker**-encrypted drives – **NTFS** or **FAT32** (using your recovery key as passphrase)
 - supports **LVM** (even volume groups spanning multiple drives)
 - supports **LVM on LUKS** (i.e. encrypted LVM)
 - supports **Linux RAID**
