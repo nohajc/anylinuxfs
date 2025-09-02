@@ -811,8 +811,9 @@ fn setup_vm(
         .context("Failed to add vsock port")?;
     }
 
-    unsafe { bindings::krun_set_workdir(ctx, CString::new("/").unwrap().as_ptr()) }
-        .context("Failed to set workdir")?;
+    unsafe { bindings::krun_set_workdir(ctx, c"/".as_ptr()) }.context("Failed to set workdir")?;
+
+    let cmdline = c"reboot=k panic=-1 panic_print=0 console=hvc0 rootfstype=virtiofs rw quiet no-kvmapf init=/init.krun";
 
     unsafe {
         bindings::krun_set_kernel(
@@ -820,7 +821,7 @@ fn setup_vm(
             CString::from_path(&config.kernel_path).as_ptr(),
             0, // KRUN_KERNEL_FORMAT_RAW
             null(),
-            null(),
+            cmdline.as_ptr(),
         )
     }
     .context("Failed to set kernel")?;
@@ -843,18 +844,15 @@ fn start_vmproxy(
     };
 
     let args: Vec<_> = [
-        // CString::new("/bin/bash").unwrap(),
-        // CString::new("-c").unwrap(),
-        // CString::new("false").unwrap(),
-        CString::new("/vmproxy").unwrap(),
+        c"/vmproxy".to_owned(),
         CString::new(dev_info.vm_path()).unwrap(),
         CString::new(dev_info.auto_mount_name()).unwrap(),
-        CString::new("-b").unwrap(),
+        c"-b".to_owned(),
         CString::new(config.bind_addr.to_string()).unwrap(),
     ]
     .into_iter()
     .chain([
-        CString::new("-t").unwrap(),
+        c"-t".to_owned(),
         CString::new(dev_info.fs_type().unwrap_or("auto")).unwrap(),
     ])
     .chain(
@@ -862,43 +860,32 @@ fn start_vmproxy(
             .fs_driver
             .as_deref()
             .into_iter()
-            .flat_map(|fs_driver| {
-                [
-                    CString::new("--fs-driver").unwrap(),
-                    CString::new(fs_driver).unwrap(),
-                ]
-            }),
+            .flat_map(|fs_driver| [c"--fs-driver".to_owned(), CString::new(fs_driver).unwrap()]),
     )
     .chain(
         config
             .mount_options
             .as_deref()
             .into_iter()
-            .flat_map(|opts| [CString::new("-o").unwrap(), CString::new(opts).unwrap()]),
+            .flat_map(|opts| [c"-o".to_owned(), CString::new(opts).unwrap()]),
     )
     .chain(
         to_decrypt_arg
             .as_deref()
             .into_iter()
-            .flat_map(|d| vec![CString::new("-d").unwrap(), CString::new(d).unwrap()]),
+            .flat_map(|d| vec![c"-d".to_owned(), CString::new(d).unwrap()]),
     )
     .chain(config.get_action().into_iter().flat_map(|action| {
         vec![
-            CString::new("-a").unwrap(),
+            c"-a".to_owned(),
             CString::new(action.percent_encode().expect("failed to serialize action")).unwrap(),
         ]
     }))
-    .chain(
-        config
-            .verbose
-            .then_some(CString::new("-v").unwrap())
-            .into_iter(),
-    )
+    .chain(config.verbose.then_some(c"-v".to_owned()).into_iter())
     .collect();
 
     host_println!("vmproxy args: {:?}", &args);
 
-    // let args = vec![CString::new("/bin/bash").unwrap()];
     let argv = args.to_ptr_vec();
 
     let cenv = env.to_cstring_vec();
@@ -932,9 +919,9 @@ fn start_vmshell_forked(ctx: u32, command: Option<String>, env: &[String]) -> an
 }
 
 fn start_vmshell(ctx: u32, command: Option<String>, env: &[String]) -> anyhow::Result<()> {
-    let mut args = vec![CString::new("/bin/bash").unwrap()];
+    let mut args = vec![c"/bin/bash".to_owned()];
     if let Some(cmd) = command {
-        args.extend_from_slice(&[CString::new("-c").unwrap(), CString::new(cmd).unwrap()]);
+        args.extend_from_slice(&[c"-c".to_owned(), CString::new(cmd).unwrap()]);
     }
 
     let argv = args.to_ptr_vec();

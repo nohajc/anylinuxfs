@@ -786,9 +786,9 @@ fn get_lsblk_info(
     );
     // println!("lsblk script: {}", &script);
     let lsblk_args = vec![
-        CString::new("/bin/busybox").unwrap(),
-        CString::new("sh").unwrap(),
-        CString::new("-c").unwrap(),
+        c"/bin/busybox".to_owned(),
+        c"sh".to_owned(),
+        c"-c".to_owned(),
         CString::new(script.as_str()).unwrap(),
     ];
     let prompt_fn = enc_partitions.map(|partitions| {
