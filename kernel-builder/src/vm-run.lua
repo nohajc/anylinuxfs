@@ -12,6 +12,7 @@ ffi.cdef [[
     int32_t krun_set_root(uint32_t ctx_id, const char *root_path);
     int32_t krun_add_disk(uint32_t ctx_id, const char *block_id, const char *disk_path, bool read_only);
     int32_t krun_add_virtiofs(uint32_t ctx_id, const char *c_tag, const char *c_path);
+    int32_t krun_set_root_disk_remount(uint32_t ctx_id, const char *device, const char *fstype, const char *options);
     int32_t krun_set_workdir(uint32_t ctx_id, const char *workdir_path);
     int32_t krun_set_exec(uint32_t ctx_id, const char *exec_path, const char *const argv[], const char *const envp[]);
     int32_t krun_set_kernel(uint32_t ctx_id, const char *kernel_path, uint32_t kernel_format, const char *initramfs, const char *cmdline);
@@ -76,6 +77,7 @@ local function launch_vm(config)
         print("Setting root disk: " .. root.path)
         local read_only = root.read_only or false
         check_error(libkrun.krun_add_disk(ctx, "/dev/vda", root.path, read_only), "krun_add_disk")
+        check_error(libkrun.krun_set_root_disk_remount(ctx, "/dev/vda", "auto", nil), "krun_set_root_disk_remount")
     else
         error("Root type must be 'path' or 'disk'")
     end

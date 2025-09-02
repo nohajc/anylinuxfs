@@ -1,8 +1,7 @@
 return {
     kernel = {
         path = "/opt/homebrew/opt/anylinuxfs/libexec/Image",
-        -- cmdline =
-        -- "reboot=k panic=-1 panic_print=0 nomodule console=hvc0 root=/dev/vda rw quiet no-kvmapf init=/init.krun",
+        -- cmdline = "reboot=k panic=-1 panic_print=0 console=hvc0 rootfstype=virtiofs rw quiet no-kvmapf init=/init.krun",
     },
     vm = {
         vcpus = 4,
