@@ -2,17 +2,17 @@ use std::{
     cell::Cell,
     collections::HashSet,
     error::Error,
-    ffi::CString,
+    ffi::{CString, c_void},
     fs::{File, Permissions},
     io::{self, Read, Write},
     mem::ManuallyDrop,
     net::IpAddr,
     os::{
         fd::{AsRawFd, FromRawFd},
-        unix::{fs::PermissionsExt, process::CommandExt},
+        unix::fs::PermissionsExt,
     },
     path::Path,
-    process::Command,
+    ptr::null,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -26,12 +26,12 @@ use anyhow::{Context, anyhow};
 use common_utils::{host_println, log::Prefix, prefix_print, safe_print};
 use crossterm::event::{self, Event};
 use nix::sys::signal::Signal;
+use objc2_core_foundation::{
+    CFCopyTypeIDDescription, CFDictionary, CFGetTypeID, CFRetained, CFString, CFType,
+};
 use signal_hook::{consts::TERM_SIGNALS, iterator::Signals};
 
-use crate::{
-    MountConfig,
-    pubsub::{PubSub, Subscription},
-};
+use crate::pubsub::{PubSub, Subscription};
 
 #[derive(Debug)]
 pub struct StatusError {
@@ -479,48 +479,6 @@ pub unsafe fn write_to_pipe(pipe_fd: libc::c_int, data: &[u8]) -> anyhow::Result
     Ok(())
 }
 
-#[allow(unused)]
-pub fn redirect_all_to_file_and_tail_it(
-    config: &MountConfig,
-) -> anyhow::Result<Option<std::process::Child>> {
-    let mut touch_cmd = Command::new("/usr/bin/touch");
-    touch_cmd.arg(&config.common.log_file_path);
-
-    let mut tail_cmd = Command::new("/usr/bin/tail");
-    tail_cmd.arg("-f").arg(&config.common.log_file_path);
-
-    if let (Some(uid), Some(gid)) = (config.common.sudo_uid, config.common.sudo_gid) {
-        // run touch with dropped privileges
-        touch_cmd.uid(uid).gid(gid);
-
-        // run tail with dropped privileges
-        tail_cmd.uid(uid).gid(gid);
-    }
-
-    touch_cmd.status().context("Failed to touch log file")?;
-    let tail_process = match config.verbose {
-        false => None,
-        true => Some(tail_cmd.spawn()?),
-    };
-
-    // Redirect stdout and stderr to the log file
-    let log_file =
-        File::create(&config.common.log_file_path).context("Failed to create log file")?;
-    let log_file_fd = log_file.as_raw_fd();
-
-    let res = unsafe { libc::dup2(log_file_fd, libc::STDOUT_FILENO) };
-    if res < 0 {
-        return Err(io::Error::last_os_error()).context("Failed to redirect stdout to log file");
-    }
-    let res = unsafe { libc::dup2(log_file_fd, libc::STDERR_FILENO) };
-    if res < 0 {
-        return Err(io::Error::last_os_error()).context("Failed to redirect stderr to log file");
-    }
-
-    // Return the `tail` process handle so the caller can manage it
-    Ok(tail_process)
-}
-
 pub enum FlockKind {
     Shared,
     Exclusive,
@@ -590,6 +548,40 @@ pub fn check_port_availability(ip: impl Into<IpAddr>, port: u16) -> anyhow::Resu
                 anyhow!("unexpected error checking port {port}: {e}")
             }
         })
+}
+
+pub unsafe fn cfdict_get_value<'a, T>(dict: &'a CFDictionary, key: &str) -> Option<&'a T> {
+    let key = CFString::from_str(key);
+    let key_ptr: *const CFString = unsafe { CFRetained::as_ptr(&key).as_ref() };
+    let mut value_ptr: *const c_void = null();
+    let key_found = unsafe { dict.value_if_present(key_ptr as *const c_void, &mut value_ptr) };
+
+    if !key_found {
+        return None;
+    }
+    unsafe { (value_ptr as *const T).as_ref() }
+}
+
+#[allow(unused)]
+pub fn inspect_cf_dictionary_values(dict: &CFDictionary) {
+    let count = dict.count() as usize;
+    let mut keys: Vec<*const c_void> = vec![null(); count];
+    let mut values: Vec<*const c_void> = vec![null(); count];
+
+    unsafe { dict.keys_and_values(keys.as_mut_ptr(), values.as_mut_ptr()) };
+
+    for i in 0..count {
+        let value = values[i] as *const CFType;
+        let type_id = unsafe { CFGetTypeID(value.as_ref()) };
+        let type_name = CFCopyTypeIDDescription(type_id).unwrap();
+        let key_str = keys[i] as *const CFString;
+
+        host_println!(
+            "Key: {}, Type: {}",
+            unsafe { key_str.as_ref().unwrap() },
+            &type_name,
+        );
+    }
 }
 
 pub trait ToPtrVec {

@@ -28,6 +28,7 @@ derive_more = { version = "2.0.1", features = ["add_assign", "deref"] }
 rpassword = "7.4.0"
 if-addrs = "0.13.4"
 crossterm = "0.29.0"
+objc2-system-configuration = "0.3.1"
 
 [patch.crates-io]
 libblkid-rs = { git = 'https://github.com/stratis-storage/libblkid-rs.git', rev = "5c08342" }

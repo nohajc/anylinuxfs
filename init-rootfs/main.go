@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	_ "embed"
+	"flag"
 	"fmt"
 	"io"
 	"net/http"
@@ -28,6 +29,8 @@ import (
 	"github.com/opencontainers/umoci/oci/layer"
 	"github.com/opencontainers/umoci/pkg/idtools"
 )
+
+const DEFAULT_DNS_SERVER = "1.1.1.1"
 
 type Config struct {
 	ImageName         string
@@ -169,10 +172,15 @@ func unpackImage(cfg *Config) error {
 	return nil
 }
 
-func configureDNS(rootfsPath string) error {
+func configureDNS(rootfsPath, nameserver string) error {
 	resolvConfPath := fmt.Sprintf("%s/etc/resolv.conf", rootfsPath)
 
-	resolvConfContent := "nameserver 1.1.1.1\n"
+	if nameserver == "" {
+		// Fallback default if somehow empty
+		nameserver = DEFAULT_DNS_SERVER
+	}
+
+	resolvConfContent := fmt.Sprintf("nameserver %s\n", nameserver)
 	err := os.WriteFile(resolvConfPath, []byte(resolvConfContent), 0644)
 	if err != nil {
 		fmt.Printf("Error writing to resolv.conf: %v\n", err)
@@ -322,7 +330,7 @@ func copyVmproxyBinary(prefixDir, rootfsPath string) error {
 	return nil
 }
 
-func initRootfs(cfg *Config) error {
+func initRootfs(cfg *Config, nameserver string) error {
 	if _, err := os.Stat(cfg.ImageBasePath); err == nil {
 		err = os.RemoveAll(cfg.ImageBasePath)
 		if err != nil {
@@ -339,7 +347,7 @@ func initRootfs(cfg *Config) error {
 		return err
 	}
 
-	if err := configureDNS(cfg.RootfsPath); err != nil {
+	if err := configureDNS(cfg.RootfsPath, nameserver); err != nil {
 		return err
 	}
 
@@ -373,6 +381,10 @@ func resolveExecDir() (string, error) {
 }
 
 func main() {
+	var nameserver string
+	flag.StringVar(&nameserver, "n", DEFAULT_DNS_SERVER, "Nameserver IP to write into /etc/resolv.conf")
+	flag.Parse()
+
 	execDir, err := resolveExecDir()
 	if err != nil {
 		fmt.Printf("Error resolving exec dir: %v\n", err)
@@ -389,7 +401,7 @@ func main() {
 	}
 	cfg := defaultConfig(currentUser.HomeDir, execDir)
 
-	err = initRootfs(&cfg)
+	err = initRootfs(&cfg, nameserver)
 	if err != nil {
 		os.Exit(1)
 	}

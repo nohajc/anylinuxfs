@@ -2,7 +2,8 @@
 
 set -e
 
-RESOLV_CONF="nameserver 1.1.1.1"
+DNS_SERVER=$(scutil --dns | grep nameserver | awk -F: '{print $2}' | head -n1 | xargs)
+RESOLV_CONF="nameserver $DNS_SERVER"
 
 echo "$RESOLV_CONF" > /etc/resolv.conf
 

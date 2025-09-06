@@ -19,13 +19,13 @@ use std::{
     marker::PhantomData,
     path::Path,
     process::Command,
-    ptr::{NonNull, null, null_mut},
+    ptr::{NonNull, null_mut},
     str::FromStr,
     thread,
 };
 use url::Url;
 
-use crate::{devinfo::DevInfo, fsutil, pubsub::Subscription};
+use crate::{devinfo::DevInfo, fsutil, pubsub::Subscription, utils::cfdict_get_value};
 
 pub struct Entry(String, String, String, Vec<String>);
 
@@ -822,18 +822,6 @@ fn get_lsblk_info(
     Ok(lsblk)
 }
 
-unsafe fn cfdict_get_value<'a, T>(dict: &'a CFDictionary, key: &str) -> Option<&'a T> {
-    let key = CFString::from_str(key);
-    let key_ptr: *const CFString = unsafe { CFRetained::as_ptr(&key).as_ref() };
-    let mut value_ptr: *const c_void = null();
-    let key_found = unsafe { dict.value_if_present(key_ptr as *const c_void, &mut value_ptr) };
-
-    if !key_found {
-        return None;
-    }
-    unsafe { (value_ptr as *const T).as_ref() }
-}
-
 struct DaDiskArgs<ContextType> {
     context: *mut c_void,
     descr: Option<CFRetained<CFDictionary>>,
@@ -931,27 +919,6 @@ unsafe extern "C-unwind" fn disk_unmount_event(disk: NonNull<DADisk>, context: *
 //     msg.retain();
 //     result.retain();
 //     result.deref()
-// }
-
-// fn inspect_cf_dictionary_values(dict: &CFDictionary) {
-//     let count = unsafe { CFDictionaryGetCount(dict) } as usize;
-//     let mut keys: Vec<*const c_void> = vec![null(); count];
-//     let mut values: Vec<*const c_void> = vec![null(); count];
-
-//     unsafe { CFDictionaryGetKeysAndValues(dict, keys.as_mut_ptr(), values.as_mut_ptr()) };
-
-//     for i in 0..count {
-//         let value = values[i] as *const CFType;
-//         let type_id = unsafe { CFGetTypeID(value.as_ref()) };
-//         let type_name = CFCopyTypeIDDescription(type_id).unwrap();
-//         let key_str = keys[i] as *const CFString;
-
-//         host_println!(
-//             "Key: {}, Type: {}",
-//             unsafe { key_str.as_ref().unwrap() },
-//             &type_name,
-//         );
-//     }
 // }
 
 struct MountContext<'a> {

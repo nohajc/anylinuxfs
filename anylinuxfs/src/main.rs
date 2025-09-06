@@ -47,6 +47,7 @@ mod api;
 mod bindings;
 mod devinfo;
 mod diskutil;
+mod dnsutil;
 mod fsutil;
 mod pubsub;
 mod utils;
@@ -1270,10 +1271,13 @@ fn init_rootfs(config: &Config, force: bool) -> anyhow::Result<()> {
         init_rootfs_cmd.uid(uid).gid(gid);
     }
 
+    let dns_server = dnsutil::get_dns_server_with_fallback();
+
     let mut hnd = init_rootfs_cmd
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .args(&["-n", &dns_server])
         .spawn()
         .context("Failed to execute init-rootfs")?;
 
@@ -1629,7 +1633,8 @@ impl AppRunner {
         let alpine_config = &mut config.preferences.alpine;
         let default_packages = get_default_packages();
 
-        let vm_prelude = "echo nameserver 1.1.1.1 > /etc/resolv.conf";
+        let dns_server = dnsutil::get_dns_server_with_fallback();
+        let vm_prelude = format!("echo nameserver {} > /etc/resolv.conf", dns_server);
         let apk_command = match cmd {
             ApkCmd::Info => {
                 // Show information about custom packages
