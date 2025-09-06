@@ -48,4 +48,8 @@ INSTALL_KERNEL_DEPS='trap "mount -o remount,ro /" EXIT; apt-get update && apt-ge
 echo "$INSTALL_KERNEL_DEPS" > $MOUNT_POINT/install-kernel-deps.sh
 chmod +x $MOUNT_POINT/install-kernel-deps.sh
 
+SYNC_TIME_SCRIPT='chronyd -q "server pool.ntp.org iburst"'
+echo "$SYNC_TIME_SCRIPT" > $MOUNT_POINT/sync-time.sh
+chmod +x $MOUNT_POINT/sync-time.sh
+
 umount /mnt
