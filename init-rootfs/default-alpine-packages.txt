@@ -1,5 +1,6 @@
 bash
 blkid
+btrfs-progs
 cryptsetup
 lsblk
 lvm2

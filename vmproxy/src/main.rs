@@ -32,6 +32,8 @@ struct Cli {
     #[arg(short, long, default_value = LOCALHOST)]
     bind_addr: String,
     #[arg(short, long)]
+    multi_device: bool,
+    #[arg(short, long)]
     verbose: bool,
 }
 
@@ -382,6 +384,14 @@ fn run() -> anyhow::Result<()> {
             fs_type = if !fs.is_empty() { Some(fs) } else { None };
         }
         _ => (),
+    }
+
+    // scan multidisk volumes
+    if cli.multi_device && fs_type.as_deref() == Some("btrfs") {
+        Command::new("/sbin/btrfs")
+            .args(["device", "scan"])
+            .status()
+            .context("Failed to run btrfs command")?;
     }
 
     let mount_point = format!("/mnt/{}", mount_name);
