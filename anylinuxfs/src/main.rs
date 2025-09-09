@@ -372,10 +372,10 @@ Supported partition schemes:
 
 #[derive(Args)]
 struct MountCmd {
-    /// File path, LVM identifier or RAID identifier, e.g.:
-    /// /dev/diskXsY
-    /// lvm:<vg-name>:diskXsY[,diskYsZ,...]:<lv-name>
-    /// raid:diskXsY[,diskYsZ,...]
+    /// File path(s), LVM identifier or RAID identifier, e.g.:
+    /// /dev/diskXsY[:/dev/diskXsZ:...]
+    /// lvm:<vg-name>:diskXsY[:diskYsZ:...]:<lv-name>
+    /// raid:diskXsY[:diskYsZ:...]
     /// (see `list` command output for available volumes)
     #[clap(verbatim_doc_comment)]
     disk_ident: String,
@@ -835,6 +835,7 @@ fn start_vmproxy(
     config: &MountConfig,
     env: &[String],
     dev_info: &DevInfo,
+    multi_device: bool,
     to_decrypt: Vec<String>,
     before_start: impl FnOnce() -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
@@ -882,6 +883,7 @@ fn start_vmproxy(
             CString::new(action.percent_encode().expect("failed to serialize action")).unwrap(),
         ]
     }))
+    .chain(multi_device.then_some(c"-m".to_owned()).into_iter())
     .chain(config.verbose.then_some(c"-v".to_owned()).into_iter())
     .collect();
 
@@ -1214,7 +1216,7 @@ fn wait_for_file(file: impl AsRef<Path>) -> anyhow::Result<()> {
     Ok(())
 }
 
-const ROOTFS_CURRENT_VERSION: &str = "1.1.1";
+const ROOTFS_CURRENT_VERSION: &str = "1.1.2";
 
 fn rootfs_version_matches(config: &Config) -> bool {
     let root_ver_file_path = config.root_ver_file_path.as_path();
@@ -1494,30 +1496,34 @@ fn claim_devices(config: &MountConfig) -> anyhow::Result<(Vec<DevInfo>, DevInfo,
         print_dev_info(&lv_info, DevType::LV);
         lv_info
     } else {
-        if !Path::new(disk_path).exists() {
-            return Err(anyhow!("disk {} not found", disk_path));
-        }
+        let disk_paths: Vec<_> = disk_path.split(":").collect();
 
-        if mount_table.is_mounted(disk_path) {
-            if config.allow_remount {
-                unmount_fs(Path::new(disk_path))?;
-                println!("Remounting with anylinuxfs...");
-            } else {
-                return Err(anyhow!("{} is already mounted", disk_path));
+        for disk_path in disk_paths {
+            if !Path::new(disk_path).exists() {
+                return Err(anyhow!("disk {} not found", disk_path));
             }
+
+            if mount_table.is_mounted(disk_path) {
+                if config.allow_remount {
+                    unmount_fs(Path::new(disk_path))?;
+                    println!("Remounting with anylinuxfs...");
+                } else {
+                    return Err(anyhow!("{} is already mounted", disk_path));
+                }
+            }
+            let di = DevInfo::pv(&disk_path)?;
+
+            let disk = File::open(di.rdisk())?.acquire_lock(if config.read_only {
+                FlockKind::Shared
+            } else {
+                FlockKind::Exclusive
+            })?;
+
+            print_dev_info(&di, DevType::Direct);
+
+            dev_infos.push(di);
+            disks.push(disk);
         }
-        let di = DevInfo::pv(&disk_path)?;
-
-        let disk = File::open(di.rdisk())?.acquire_lock(if config.read_only {
-            FlockKind::Shared
-        } else {
-            FlockKind::Exclusive
-        })?;
-
-        print_dev_info(&di, DevType::Direct);
-
-        dev_infos.push(di);
-        disks.push(disk);
 
         dev_infos[0].clone()
     };
@@ -1856,9 +1862,15 @@ impl AppRunner {
                 })
                 .collect();
 
-            start_vmproxy(ctx, &config, &vm_env, &mnt_dev_info, to_decrypt, || {
-                forked.redirect()
-            })
+            start_vmproxy(
+                ctx,
+                &config,
+                &vm_env,
+                &mnt_dev_info,
+                dev_info.len() > 1,
+                to_decrypt,
+                || forked.redirect(),
+            )
             .context("Failed to start microVM")?;
         } else {
             // Parent process
