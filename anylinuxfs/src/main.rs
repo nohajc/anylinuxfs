@@ -1556,6 +1556,12 @@ fn get_default_packages() -> BTreeSet<String> {
         .collect()
 }
 
+enum PromptMarker {
+    Start,
+    End,
+    Skip,
+}
+
 struct AppRunner {
     is_child: bool,
     print_log: bool,
@@ -1960,9 +1966,11 @@ impl AppRunner {
                     } else if line.starts_with("<anylinuxfs-mount:changed-to-ro>") {
                         changed_to_ro = true;
                     } else if line.starts_with("<anylinuxfs-passphrase-prompt:start>") {
-                        vm_pwd_prompt_tx.send(true).unwrap();
+                        vm_pwd_prompt_tx.send(PromptMarker::Start).unwrap();
                     } else if line.starts_with("<anylinuxfs-passphrase-prompt:end>") {
-                        vm_pwd_prompt_tx.send(false).unwrap();
+                        vm_pwd_prompt_tx.send(PromptMarker::End).unwrap();
+                    } else if line.starts_with("<anylinuxfs-passphrase-prompt:skip>") {
+                        vm_pwd_prompt_tx.send(PromptMarker::Skip).unwrap();
                     } else if !config.verbose && line.starts_with("<anylinuxfs-force-output:off>") {
                         log::disable_console_log();
                     } else if !config.verbose && line.starts_with("<anylinuxfs-force-output:on>") {
@@ -1988,10 +1996,17 @@ impl AppRunner {
             stdin_forwarder.echo_newline(true);
             for passphrase_fn in passphrase_callbacks {
                 // wait for the VM to prompt for passphrase
-                vm_pwd_prompt_rx.recv().unwrap();
-                passphrase_fn().unwrap();
-                // wait for the passphrase to be entered
-                vm_pwd_prompt_rx.recv().unwrap();
+                match vm_pwd_prompt_rx.recv().unwrap_or(PromptMarker::End) {
+                    PromptMarker::Start => {
+                        passphrase_fn(true).unwrap();
+                        // wait for the passphrase to be entered
+                        vm_pwd_prompt_rx.recv().unwrap();
+                    }
+                    PromptMarker::Skip => {
+                        passphrase_fn(false).unwrap();
+                    }
+                    PromptMarker::End => {}
+                }
             }
             stdin_forwarder.echo_newline(false);
 
