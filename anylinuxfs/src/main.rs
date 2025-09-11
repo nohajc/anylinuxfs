@@ -1988,10 +1988,10 @@ impl AppRunner {
             stdin_forwarder.echo_newline(true);
             for passphrase_fn in passphrase_callbacks {
                 // wait for the VM to prompt for passphrase
-                vm_pwd_prompt_rx.recv().unwrap();
+                vm_pwd_prompt_rx.recv().unwrap_or(false);
                 passphrase_fn().unwrap();
                 // wait for the passphrase to be entered
-                vm_pwd_prompt_rx.recv().unwrap();
+                vm_pwd_prompt_rx.recv().unwrap_or(false);
             }
             stdin_forwarder.echo_newline(false);
 

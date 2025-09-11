@@ -280,6 +280,7 @@ fn run() -> anyhow::Result<()> {
     if let Some(decrypt) = &cli.decrypt {
         for (i, dev) in decrypt.split(",").enumerate() {
             let mut cryptsetup = Command::new("/sbin/cryptsetup")
+                .arg("-T1")
                 .arg(cryptsetup_op)
                 .arg(&dev)
                 .arg(format!("{mapper_ident_prefix}{i}"))
@@ -287,8 +288,9 @@ fn run() -> anyhow::Result<()> {
                 .spawn()?;
 
             println!("<anylinuxfs-passphrase-prompt:start>");
+            let prompt_end = deferred.add(|| println!("<anylinuxfs-passphrase-prompt:end>"));
             let cryptsetup_result = cryptsetup.wait()?;
-            println!("<anylinuxfs-passphrase-prompt:end>");
+            deferred.call_now(prompt_end);
 
             if !cryptsetup_result.success() {
                 return Err(anyhow!(
