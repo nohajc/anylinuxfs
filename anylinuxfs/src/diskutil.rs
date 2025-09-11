@@ -1,5 +1,5 @@
 use anyhow::{Context, anyhow};
-use common_utils::{host_println, safe_print, safe_println};
+use common_utils::{host_println, safe_print};
 use derive_more::{AddAssign, Deref};
 use indexmap::IndexMap;
 use objc2_core_foundation::{
@@ -15,7 +15,6 @@ use std::{
     ffi::{CString, c_void},
     fmt::Display,
     hash::{Hash, Hasher},
-    io::{self, Write},
     iter,
     marker::PhantomData,
     path::Path,
@@ -720,16 +719,13 @@ fn passphrase_prompt_lazy(partition: &str) -> impl FnOnce(libc::c_int) -> anyhow
     }
 }
 
-pub fn passphrase_prompt(
-    partition: &str,
-) -> anyhow::Result<impl FnOnce(bool) -> anyhow::Result<()>> {
-    Ok(move |needed| {
-        if needed {
-            _ = safe_print!("Enter passphrase for {}: ", partition);
-            io::stdout().flush().unwrap_or(());
-        } else {
-            _ = safe_println!("Reused passphrase for {}.", partition);
-        }
+pub fn passphrase_prompt(partition: &str) -> anyhow::Result<impl FnOnce() -> anyhow::Result<()>> {
+    // prompt user for passphrase
+    // let passphrase = read_passphrase(&partition)?;
+    Ok(move || {
+        // write passphrase to pipe
+        // write_passphrase_to_pipe(in_fd, &passphrase)?;
+        _ = safe_print!("Enter passphrase for {}: ", partition);
 
         Ok(())
     })
