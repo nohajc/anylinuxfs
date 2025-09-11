@@ -7,9 +7,8 @@ use std::collections::HashMap;
 use std::ffi::CString;
 use std::io::{self, BufRead, Write};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
-use std::process::{Child, Command, ExitCode, ExitStatus, Stdio};
+use std::process::{Child, Command, ExitCode};
 use std::time::Duration;
 use std::{fs, io::BufReader};
 use sys_mount::{UnmountFlags, unmount};
@@ -279,42 +278,17 @@ fn run() -> anyhow::Result<()> {
 
     // decrypt LUKS/BitLocker volumes if any
     if let Some(decrypt) = &cli.decrypt {
-        let mut cryptsetup_passphrase = String::new();
-
         for (i, dev) in decrypt.split(",").enumerate() {
-            let try_cryptsetup_op = |passphrase: &str| -> io::Result<ExitStatus> {
-                let mut cryptsetup = Command::new("/sbin/cryptsetup")
-                    .arg(cryptsetup_op)
-                    .arg(&dev)
-                    .arg(format!("{mapper_ident_prefix}{i}"))
-                    .stdin(Stdio::piped())
-                    .spawn()?;
+            let mut cryptsetup = Command::new("/sbin/cryptsetup")
+                .arg(cryptsetup_op)
+                .arg(&dev)
+                .arg(format!("{mapper_ident_prefix}{i}"))
+                // .stdout(Stdio::null())
+                .spawn()?;
 
-                {
-                    let mut stdin = cryptsetup.stdin.take().unwrap();
-                    stdin.write_all(passphrase.as_bytes())?;
-                }
-
-                let cryptsetup_result = cryptsetup.wait()?;
-                Ok(cryptsetup_result)
-            };
-
-            let mut cryptsetup_result = ExitStatus::from_raw(1);
-
-            // try to reuse previous passphrase first
-            if !cryptsetup_passphrase.is_empty() {
-                cryptsetup_result = try_cryptsetup_op(&cryptsetup_passphrase)?
-            }
-
-            if cryptsetup_result.success() {
-                println!("<anylinuxfs-passphrase-prompt:skip>");
-            } else {
-                println!("<anylinuxfs-passphrase-prompt:start>");
-                let prompt_end = deferred.add(|| println!("<anylinuxfs-passphrase-prompt:end>"));
-                cryptsetup_passphrase = rpassword::read_password()?;
-                cryptsetup_result = try_cryptsetup_op(&cryptsetup_passphrase)?;
-                deferred.call_now(prompt_end);
-            }
+            println!("<anylinuxfs-passphrase-prompt:start>");
+            let cryptsetup_result = cryptsetup.wait()?;
+            println!("<anylinuxfs-passphrase-prompt:end>");
 
             if !cryptsetup_result.success() {
                 return Err(anyhow!(
