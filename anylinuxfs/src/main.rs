@@ -131,11 +131,21 @@ struct Preferences {
     gvproxy: GvproxyConfig,
     #[serde(default)]
     krun: KrunConfig,
+    #[serde(default)]
+    misc: MiscConfig,
     // legacy config
     #[serde(rename = "log_level")]
     log_level_numeric: Option<u32>,
     num_vcpus: Option<u8>,
     ram_size_mib: Option<u32>,
+}
+
+impl Display for Preferences {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[krun]\n{}", self.krun)?;
+        write!(f, "\n\n[misc]\n{}", self.misc)?;
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -287,6 +297,17 @@ impl KrunConfig {
     }
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+struct MiscConfig {
+    passphrase_config: PassphrasePromptConfig,
+}
+
+impl Display for MiscConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "passphrase_config = {}", self.passphrase_config)
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct MountConfig {
     disk_path: String,
@@ -326,9 +347,27 @@ fn rand_string(len: usize) -> String {
 #[derive(Debug, Clone, Copy, ValueEnum, Deserialize, Serialize, PartialEq, Eq)]
 enum PassphrasePromptConfig {
     #[clap(name = "a")]
+    #[serde(rename = "ask_for_each")]
     AskForEach,
     #[clap(name = "1")]
+    #[serde(rename = "one_for_all")]
     OneForAll,
+}
+
+impl Default for PassphrasePromptConfig {
+    fn default() -> Self {
+        PassphrasePromptConfig::AskForEach
+    }
+}
+
+impl Display for PassphrasePromptConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let val = match self {
+            PassphrasePromptConfig::AskForEach => "ask_for_each",
+            PassphrasePromptConfig::OneForAll => "one_for_all",
+        };
+        write!(f, "{}", val)
+    }
 }
 
 #[derive(Parser)]
@@ -379,8 +418,8 @@ Supported partition schemes:
     Apk(ApkCmd),
 }
 
-#[derive(Args, Default)]
-struct PwdArgs {
+#[derive(Args, Default, PartialEq, Eq)]
+struct CommonArgs {
     /// Passphrase configuration (ask for each drive / use one for all)
     #[arg(short, long)]
     passphrase_config: Option<PassphrasePromptConfig>,
@@ -410,7 +449,7 @@ struct MountCmd {
     #[arg(short = 't', long = "type")]
     fs_driver: Option<String>,
     #[command(flatten)]
-    common: PwdArgs,
+    common: CommonArgs,
     /// Open Finder window with the mounted drive
     #[arg(short, long, default_value = "true")]
     window: std::primitive::bool,
@@ -439,6 +478,8 @@ struct ConfigCmd {
     /// Set RAM size in MiB
     #[arg(short, long)]
     ram_size_mib: Option<u32>,
+    #[command(flatten)]
+    common: CommonArgs,
 }
 
 #[derive(Args)]
@@ -450,7 +491,7 @@ struct ListCmd {
     #[arg(short, long)]
     microsoft: bool,
     #[command(flatten)]
-    common: PwdArgs,
+    common: CommonArgs,
 }
 
 #[derive(Args)]
@@ -536,7 +577,7 @@ fn is_read_only_set(mount_options: Option<&str>) -> bool {
     }
 }
 
-fn load_config(pwd_args: PwdArgs) -> anyhow::Result<Config> {
+fn load_config(common_args: &CommonArgs) -> anyhow::Result<Config> {
     let sudo_uid = env::var("SUDO_UID")
         .map_err(anyhow::Error::from)
         .and_then(|s| Ok(s.parse::<libc::uid_t>()?))
@@ -604,10 +645,9 @@ fn load_config(pwd_args: PwdArgs) -> anyhow::Result<Config> {
     let preferences = load_preferences(&config_file_path)?;
     // println!("Loaded preferences: {:#?}", &preferences);
 
-    // TODO: set default according to loaded preferences
-    let passphrase_config = pwd_args
+    let passphrase_config = common_args
         .passphrase_config
-        .unwrap_or(PassphrasePromptConfig::AskForEach);
+        .unwrap_or(preferences.misc.passphrase_config);
 
     Ok(Config {
         root_path,
@@ -664,7 +704,7 @@ fn save_preferences(preferences: &Preferences, config_file_path: &Path) -> anyho
 }
 
 fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
-    let common = load_config(cmd.common)?;
+    let common = load_config(&cmd.common)?;
 
     let (disk_path, mount_options) = if !cmd.disk_ident.is_empty() {
         (cmd.disk_ident, cmd.options)
@@ -1638,7 +1678,7 @@ impl AppRunner {
     }
 
     fn run_dmesg(&mut self) -> anyhow::Result<()> {
-        let config = load_config(PwdArgs::default())?;
+        let config = load_config(&CommonArgs::default())?;
         let kernel_log_path = config.root_path.join("kernel.log");
 
         if !kernel_log_path.exists() {
@@ -1662,7 +1702,7 @@ impl AppRunner {
     }
 
     fn run_apk(&mut self, cmd: ApkCmd) -> anyhow::Result<()> {
-        let mut config = load_config(PwdArgs::default())?;
+        let mut config = load_config(&CommonArgs::default())?;
         let config_file_path = &config.config_file_path;
 
         let alpine_config = &mut config.preferences.alpine;
@@ -2179,20 +2219,20 @@ impl AppRunner {
 
     fn run_init(&mut self) -> anyhow::Result<()> {
         let _lock_file = LockFile::new(LOCK_FILE)?.acquire_lock(FlockKind::Exclusive)?;
-        let config = load_config(PwdArgs::default())?;
+        let config = load_config(&CommonArgs::default())?;
         init_rootfs(&config, true)?;
 
         Ok(())
     }
 
     fn run_config(&mut self, cmd: ConfigCmd) -> anyhow::Result<()> {
-        let mut config = load_config(PwdArgs::default())?;
+        let mut config = load_config(&cmd.common)?;
         let config_file_path = &config.config_file_path;
 
         let krun_config = &mut config.preferences.krun;
 
         if cmd == ConfigCmd::default() {
-            println!("{}", &krun_config);
+            println!("{}", &config.preferences);
             return Ok(());
         }
 
@@ -2206,14 +2246,21 @@ impl AppRunner {
             krun_config.ram_size_mib = ram_size_mib;
         }
 
-        println!("{}", &krun_config);
+        let misc_config = &mut config.preferences.misc;
+
+        if let Some(pwd_cfg) = cmd.common.passphrase_config {
+            misc_config.passphrase_config = pwd_cfg;
+        }
+
+        println!("{}", &config.preferences);
+
         save_preferences(&config.preferences, config_file_path)?;
 
         Ok(())
     }
 
     fn run_list(&mut self, cmd: ListCmd) -> anyhow::Result<()> {
-        let mut config = load_config(cmd.common)?;
+        let mut config = load_config(&cmd.common)?;
         init_rootfs(&config, false)?;
 
         if cmd.decrypt.is_some() && !cmd.microsoft {
@@ -2232,7 +2279,7 @@ impl AppRunner {
     }
 
     fn run_log(&mut self, cmd: LogCmd) -> anyhow::Result<()> {
-        let config = load_config(PwdArgs::default())?;
+        let config = load_config(&CommonArgs::default())?;
         let log_file_path = &config.log_file_path;
 
         if !log_file_path.exists() {
