@@ -23,3 +23,5 @@ tmp/
 
 init-rootfs/alpine/
 init-rootfs/init-rootfs
+
+.DS_Store
