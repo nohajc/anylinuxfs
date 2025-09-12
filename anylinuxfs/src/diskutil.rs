@@ -804,7 +804,7 @@ fn get_lsblk_info(
     let prompt_fn = enc_partitions.map(|partitions| {
         let mut passphrase_prompts = Vec::new();
         let pwd_reps = match config.passphrase_config {
-            PassphrasePromptConfig::DiffForEach => {
+            PassphrasePromptConfig::AskForEach => {
                 for part in partitions {
                     passphrase_prompts.push(passphrase_prompt_lazy(Some(part)));
                 }

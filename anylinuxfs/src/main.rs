@@ -325,8 +325,8 @@ fn rand_string(len: usize) -> String {
 
 #[derive(Debug, Clone, Copy, ValueEnum, Deserialize, Serialize, PartialEq, Eq)]
 enum PassphrasePromptConfig {
-    #[clap(name = "d")]
-    DiffForEach,
+    #[clap(name = "a")]
+    AskForEach,
     #[clap(name = "1")]
     OneForAll,
 }
@@ -381,7 +381,7 @@ Supported partition schemes:
 
 #[derive(Args, Default)]
 struct PwdArgs {
-    /// Passphrase configuration (different for each drive / one for all)
+    /// Passphrase configuration (ask for each drive / use one for all)
     #[arg(short, long)]
     passphrase_config: Option<PassphrasePromptConfig>,
 }
@@ -607,7 +607,7 @@ fn load_config(pwd_args: PwdArgs) -> anyhow::Result<Config> {
     // TODO: set default according to loaded preferences
     let passphrase_config = pwd_args
         .passphrase_config
-        .unwrap_or(PassphrasePromptConfig::DiffForEach);
+        .unwrap_or(PassphrasePromptConfig::AskForEach);
 
     Ok(Config {
         root_path,
@@ -1829,7 +1829,7 @@ impl AppRunner {
                 if is_luks {
                     ensure_enough_ram_for_luks(&mut config.common);
                 }
-                if config.common.passphrase_config == PassphrasePromptConfig::DiffForEach {
+                if config.common.passphrase_config == PassphrasePromptConfig::AskForEach {
                     let prompt_fn = diskutil::passphrase_prompt(Some(di.disk()));
                     passphrase_callbacks.push(prompt_fn);
                 }
