@@ -15,6 +15,7 @@ use std::{
     ffi::{CString, c_void},
     fmt::Display,
     hash::{Hash, Hasher},
+    io::{self, Write},
     iter,
     marker::PhantomData,
     path::Path,
@@ -719,16 +720,18 @@ fn passphrase_prompt_lazy(partition: &str) -> impl FnOnce(libc::c_int) -> anyhow
     }
 }
 
-pub fn passphrase_prompt(partition: &str) -> anyhow::Result<impl FnOnce() -> anyhow::Result<()>> {
-    // prompt user for passphrase
-    // let passphrase = read_passphrase(&partition)?;
-    Ok(move || {
-        // write passphrase to pipe
-        // write_passphrase_to_pipe(in_fd, &passphrase)?;
-        _ = safe_print!("Enter passphrase for {}: ", partition);
-
-        Ok(())
-    })
+pub fn passphrase_prompt(partition: Option<&str>) -> impl FnOnce() {
+    move || {
+        match partition {
+            Some(part) => {
+                _ = safe_print!("Enter passphrase for {}: ", part);
+            }
+            None => {
+                _ = safe_print!("Enter passphrase: ");
+            }
+        }
+        io::stdout().flush().unwrap_or(());
+    }
 }
 
 fn virt_disk_to_decrypt(dev_info: &[DevInfo], partition: &str) -> anyhow::Result<(String, String)> {

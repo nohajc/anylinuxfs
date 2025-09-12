@@ -8,7 +8,7 @@ use std::ffi::CString;
 use std::io::{self, BufRead, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
-use std::process::{Child, Command, ExitCode};
+use std::process::{Child, Command, ExitCode, Stdio};
 use std::time::Duration;
 use std::{fs, io::BufReader};
 use sys_mount::{UnmountFlags, unmount};
@@ -33,6 +33,8 @@ struct Cli {
     bind_addr: String,
     #[arg(short, long)]
     multi_device: bool,
+    #[arg(short, long)]
+    reuse_passphrase: bool,
     #[arg(short, long)]
     verbose: bool,
 }
@@ -276,6 +278,16 @@ fn run() -> anyhow::Result<()> {
         _ => ("luks", "open"),
     };
 
+    let (pwd_for_all, input_mode_fn): (_, fn() -> _) = if cli.reuse_passphrase {
+        println!("<anylinuxfs-passphrase-prompt:start>");
+        let prompt_end = deferred.add(|| println!("<anylinuxfs-passphrase-prompt:end>"));
+        let pwd = rpassword::read_password()?;
+        deferred.call_now(prompt_end);
+        (Some(pwd), || Stdio::piped())
+    } else {
+        (None, || Stdio::inherit())
+    };
+
     // decrypt LUKS/BitLocker volumes if any
     if let Some(decrypt) = &cli.decrypt {
         for (i, dev) in decrypt.split(",").enumerate() {
@@ -284,13 +296,22 @@ fn run() -> anyhow::Result<()> {
                 .arg(cryptsetup_op)
                 .arg(&dev)
                 .arg(format!("{mapper_ident_prefix}{i}"))
-                // .stdout(Stdio::null())
+                .stdin(input_mode_fn())
                 .spawn()?;
 
-            println!("<anylinuxfs-passphrase-prompt:start>");
-            let prompt_end = deferred.add(|| println!("<anylinuxfs-passphrase-prompt:end>"));
-            let cryptsetup_result = cryptsetup.wait()?;
-            deferred.call_now(prompt_end);
+            let cryptsetup_result = if let Some(pwd) = &pwd_for_all {
+                {
+                    let mut stdin = cryptsetup.stdin.take().unwrap();
+                    stdin.write_all(pwd.as_bytes())?;
+                } // must close stdin before waiting for child
+                cryptsetup.wait()?
+            } else {
+                println!("<anylinuxfs-passphrase-prompt:start>");
+                let prompt_end = deferred.add(|| println!("<anylinuxfs-passphrase-prompt:end>"));
+                let res = cryptsetup.wait()?;
+                deferred.call_now(prompt_end);
+                res
+            };
 
             if !cryptsetup_result.success() {
                 return Err(anyhow!(

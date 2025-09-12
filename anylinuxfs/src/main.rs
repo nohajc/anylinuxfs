@@ -117,6 +117,7 @@ struct Config {
     invoker_gid: libc::gid_t,
     sudo_uid: Option<libc::uid_t>,
     sudo_gid: Option<libc::gid_t>,
+    passphrase_config: PassphrasePromptConfig,
     preferences: Preferences,
 }
 
@@ -322,6 +323,14 @@ fn rand_string(len: usize) -> String {
     )
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum, Deserialize, Serialize, PartialEq, Eq)]
+enum PassphrasePromptConfig {
+    #[clap(name = "d")]
+    DiffForEach,
+    #[clap(name = "1")]
+    OneForAll,
+}
+
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 #[command(propagate_version = true)]
@@ -352,7 +361,7 @@ Supported partition schemes:
     Status,
     /// Show log of current or previous run
     Log(LogCmd),
-    /// Show or change microVM parameters
+    /// Configure microVM parameters and other miscellaneous settings
     Config(ConfigCmd),
     /// List all available disks with compatible filesystems (run with sudo to get more detailed info)
     #[command(
@@ -368,6 +377,13 @@ Supported partition schemes:
     /// Manage custom alpine packages
     #[command(subcommand)]
     Apk(ApkCmd),
+}
+
+#[derive(Args, Default)]
+struct PwdArgs {
+    /// Passphrase configuration (different for each drive / one for all)
+    #[arg(short, long)]
+    passphrase_config: Option<PassphrasePromptConfig>,
 }
 
 #[derive(Args)]
@@ -393,6 +409,8 @@ struct MountCmd {
     /// Filesystem driver override (e.g. for using ntfs3 instead of ntfs-3g)
     #[arg(short = 't', long = "type")]
     fs_driver: Option<String>,
+    #[command(flatten)]
+    common: PwdArgs,
     /// Open Finder window with the mounted drive
     #[arg(short, long, default_value = "true")]
     window: std::primitive::bool,
@@ -431,6 +449,8 @@ struct ListCmd {
     /// Show Microsoft filesystems (NTFS, exFAT) instead of Linux filesystems
     #[arg(short, long)]
     microsoft: bool,
+    #[command(flatten)]
+    common: PwdArgs,
 }
 
 #[derive(Args)]
@@ -516,7 +536,7 @@ fn is_read_only_set(mount_options: Option<&str>) -> bool {
     }
 }
 
-fn load_config() -> anyhow::Result<Config> {
+fn load_config(pwd_args: PwdArgs) -> anyhow::Result<Config> {
     let sudo_uid = env::var("SUDO_UID")
         .map_err(anyhow::Error::from)
         .and_then(|s| Ok(s.parse::<libc::uid_t>()?))
@@ -584,6 +604,11 @@ fn load_config() -> anyhow::Result<Config> {
     let preferences = load_preferences(&config_file_path)?;
     // println!("Loaded preferences: {:#?}", &preferences);
 
+    // TODO: set default according to loaded preferences
+    let passphrase_config = pwd_args
+        .passphrase_config
+        .unwrap_or(PassphrasePromptConfig::DiffForEach);
+
     Ok(Config {
         root_path,
         root_ver_file_path,
@@ -599,6 +624,7 @@ fn load_config() -> anyhow::Result<Config> {
         invoker_gid,
         sudo_uid,
         sudo_gid,
+        passphrase_config,
         preferences,
     })
 }
@@ -638,6 +664,8 @@ fn save_preferences(preferences: &Preferences, config_file_path: &Path) -> anyho
 }
 
 fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
+    let common = load_config(cmd.common)?;
+
     let (disk_path, mount_options) = if !cmd.disk_ident.is_empty() {
         (cmd.disk_ident, cmd.options)
     } else {
@@ -685,8 +713,6 @@ fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
     }
 
     let open_finder = cmd.window;
-
-    let common = load_config()?;
 
     let custom_action = if let Some(action_name) = cmd.action {
         match common.preferences.custom_actions.get(&action_name) {
@@ -845,6 +871,8 @@ fn start_vmproxy(
         Some(to_decrypt.join(","))
     };
 
+    let reuse_passphrase = config.common.passphrase_config == PassphrasePromptConfig::OneForAll;
+
     let args: Vec<_> = [
         c"/vmproxy".to_owned(),
         CString::new(dev_info.vm_path()).unwrap(),
@@ -884,6 +912,7 @@ fn start_vmproxy(
         ]
     }))
     .chain(multi_device.then_some(c"-m".to_owned()).into_iter())
+    .chain(reuse_passphrase.then_some(c"-r".to_owned()).into_iter())
     .chain(config.verbose.then_some(c"-v".to_owned()).into_iter())
     .collect();
 
@@ -1609,7 +1638,7 @@ impl AppRunner {
     }
 
     fn run_dmesg(&mut self) -> anyhow::Result<()> {
-        let config = load_config()?;
+        let config = load_config(PwdArgs::default())?;
         let kernel_log_path = config.root_path.join("kernel.log");
 
         if !kernel_log_path.exists() {
@@ -1633,7 +1662,7 @@ impl AppRunner {
     }
 
     fn run_apk(&mut self, cmd: ApkCmd) -> anyhow::Result<()> {
-        let mut config = load_config()?;
+        let mut config = load_config(PwdArgs::default())?;
         let config_file_path = &config.config_file_path;
 
         let alpine_config = &mut config.preferences.alpine;
@@ -1800,9 +1829,15 @@ impl AppRunner {
                 if is_luks {
                     ensure_enough_ram_for_luks(&mut config.common);
                 }
-                let prompt_fn = diskutil::passphrase_prompt(di.disk())?;
-                passphrase_callbacks.push(prompt_fn);
+                if config.common.passphrase_config == PassphrasePromptConfig::DiffForEach {
+                    let prompt_fn = diskutil::passphrase_prompt(Some(di.disk()));
+                    passphrase_callbacks.push(prompt_fn);
+                }
             }
+        }
+        if config.common.passphrase_config == PassphrasePromptConfig::OneForAll {
+            let prompt_fn = diskutil::passphrase_prompt(None);
+            passphrase_callbacks.push(prompt_fn);
         }
 
         let mut can_detach = true;
@@ -1989,7 +2024,7 @@ impl AppRunner {
             for passphrase_fn in passphrase_callbacks {
                 // wait for the VM to prompt for passphrase
                 vm_pwd_prompt_rx.recv().unwrap_or(false);
-                passphrase_fn().unwrap();
+                passphrase_fn();
                 // wait for the passphrase to be entered
                 vm_pwd_prompt_rx.recv().unwrap_or(false);
             }
@@ -2144,14 +2179,14 @@ impl AppRunner {
 
     fn run_init(&mut self) -> anyhow::Result<()> {
         let _lock_file = LockFile::new(LOCK_FILE)?.acquire_lock(FlockKind::Exclusive)?;
-        let config = load_config()?;
+        let config = load_config(PwdArgs::default())?;
         init_rootfs(&config, true)?;
 
         Ok(())
     }
 
     fn run_config(&mut self, cmd: ConfigCmd) -> anyhow::Result<()> {
-        let mut config = load_config()?;
+        let mut config = load_config(PwdArgs::default())?;
         let config_file_path = &config.config_file_path;
 
         let krun_config = &mut config.preferences.krun;
@@ -2178,7 +2213,7 @@ impl AppRunner {
     }
 
     fn run_list(&mut self, cmd: ListCmd) -> anyhow::Result<()> {
-        let mut config = load_config()?;
+        let mut config = load_config(cmd.common)?;
         init_rootfs(&config, false)?;
 
         if cmd.decrypt.is_some() && !cmd.microsoft {
@@ -2197,7 +2232,7 @@ impl AppRunner {
     }
 
     fn run_log(&mut self, cmd: LogCmd) -> anyhow::Result<()> {
-        let config = load_config()?;
+        let config = load_config(PwdArgs::default())?;
         let log_file_path = &config.log_file_path;
 
         if !log_file_path.exists() {
