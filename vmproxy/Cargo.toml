@@ -16,3 +16,4 @@ sys-mount = { version = "3.0.1", default-features = false }
 vsock = "0.5.1"
 common_utils = { path = "../common-utils" }
 clap = { version = "4.5.35", features = ["derive"] }
+rpassword = "7.4.0"
