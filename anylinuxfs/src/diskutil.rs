@@ -26,7 +26,9 @@ use std::{
 };
 use url::Url;
 
-use crate::{devinfo::DevInfo, fsutil, pubsub::Subscription, utils::cfdict_get_value};
+use crate::{
+    PassphrasePromptConfig, devinfo::DevInfo, fsutil, pubsub::Subscription, utils::cfdict_get_value,
+};
 
 pub struct Entry(String, String, String, Vec<String>);
 
@@ -696,11 +698,12 @@ fn create_volume_map(lsblk: &LsBlk, pv_dev_idents: &[String]) -> VolumeMap {
     vol_map
 }
 
-fn read_passphrase(partition: &str) -> anyhow::Result<String> {
-    Ok(
-        rpassword::prompt_password(format!("Enter passphrase for {}: ", partition))
-            .context("Failed to read passphrase")?,
-    )
+fn read_passphrase(partition: Option<&str>) -> anyhow::Result<String> {
+    let text = match partition {
+        Some(part) => format!("Enter passphrase for {}: ", part),
+        None => "Enter passphrase: ".to_string(),
+    };
+    Ok(rpassword::prompt_password(text).context("Failed to read passphrase")?)
 }
 
 fn write_passphrase_to_pipe(in_fd: libc::c_int, passphrase: &str) -> anyhow::Result<()> {
@@ -710,11 +713,15 @@ fn write_passphrase_to_pipe(in_fd: libc::c_int, passphrase: &str) -> anyhow::Res
     )
 }
 
-fn passphrase_prompt_lazy(partition: &str) -> impl FnOnce(libc::c_int) -> anyhow::Result<()> {
-    move |in_fd| {
+fn passphrase_prompt_lazy(
+    partition: Option<&str>,
+) -> impl Fn(libc::c_int, usize) -> anyhow::Result<()> {
+    move |in_fd, pwd_reps| {
         // prompt user for passphrase
         let passphrase = read_passphrase(partition)?;
-        write_passphrase_to_pipe(in_fd, &passphrase)?;
+        for _ in 0..pwd_reps {
+            write_passphrase_to_pipe(in_fd, &passphrase)?;
+        }
 
         Ok(())
     }
@@ -796,12 +803,21 @@ fn get_lsblk_info(
     ];
     let prompt_fn = enc_partitions.map(|partitions| {
         let mut passphrase_prompts = Vec::new();
-        for part in partitions {
-            passphrase_prompts.push(passphrase_prompt_lazy(part));
-        }
+        let pwd_reps = match config.passphrase_config {
+            PassphrasePromptConfig::DiffForEach => {
+                for part in partitions {
+                    passphrase_prompts.push(passphrase_prompt_lazy(Some(part)));
+                }
+                1
+            }
+            PassphrasePromptConfig::OneForAll => {
+                passphrase_prompts.push(passphrase_prompt_lazy(None));
+                partitions.len()
+            }
+        };
         move |in_fd: libc::c_int| -> anyhow::Result<()> {
             for passphrase_fn in passphrase_prompts {
-                passphrase_fn(in_fd)?;
+                passphrase_fn(in_fd, pwd_reps)?;
             }
             Ok(())
         }
