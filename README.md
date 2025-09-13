@@ -75,11 +75,11 @@ Arguments:
 
 ## Examples
 
-### List available drives with Linux filesystems
+**List available drives with Linux filesystems**
 ```
 sudo anylinuxfs list
 ```
-**Possible output**
+
 ```
 /dev/disk0 (internal, physical):
    #:                       TYPE NAME                    SIZE       IDENTIFIER
@@ -125,41 +125,42 @@ lvm:vg1 (volume group):
    3:                      btrfs lvol2                   11.9 GB    vg1:disk7s1:disk8s1:lvol2
 ```
 
-### List available drives with Microsoft filesystems (exFAT, NTFS)
+**List available drives with Microsoft filesystems (NTFS, exFAT, FAT32)**
 ```
 sudo anylinuxfs list -m
 ```
 
-### Mount partition read/write
+**Mount partition read/write**
 ```
 sudo anylinuxfs /dev/disk0s6
 ```
 
-### Mount partition read-only
+**Mount partition read-only**
 ```
 sudo anylinuxfs /dev/disk0s6 -o ro
 ```
 
-### Mount logical volume from group vg1 backed by disk7s1
+**Mount logical volume from group vg1 backed by disk7s1**
 ```
 sudo anylinuxfs lvm:vg1:disk7s1:lvol0
 ```
 
-### Mount logical volume from group vg1 backed by disk7s1 and disk8s1
+**Mount logical volume from group vg1 backed by disk7s1 and disk8s1**
 ```
 sudo anylinuxfs lvm:vg1:disk7s1:disk8s1:lvol2
 ```
 
-### Mount RAID volume backed by disk10s1 and disk11s1
+**Mount RAID volume backed by disk10s1 and disk11s1**
 ```
 sudo anylinuxfs raid:disk10s1:disk11s1
 ```
 
-### List available drives and decrypt LUKS or BitLocker metadata of disk9
+**List available drives and decrypt LUKS or BitLocker metadata of disk9**
 ```
 sudo anylinuxfs list -d /dev/disk9
 ```
-**Output will show the encrypted partition filesystem and label**
+
+Output will show the encrypted partition filesystem and label
 ```
 ...
 /dev/disk9 (external, physical):
@@ -168,33 +169,33 @@ sudo anylinuxfs list -d /dev/disk9
 ...
 ```
 
-### List available drives and decrypt all LUKS or BitLocker metadata
+**List available drives and decrypt all LUKS or BitLocker metadata**
 ```
 sudo anylinuxfs list -d all
 ```
 
-### Mount LUKS-encrypted or BitLocker-encrypted partition
+**Mount LUKS-encrypted or BitLocker-encrypted partition**
 ```
 sudo anylinuxfs /dev/disk9
 ```
 
-### Mount partition and share it via NFS to other devices in any subnet
+**Mount partition and share it via NFS to other devices in any subnet**
 ```
 sudo anylinuxfs /dev/disk0s6 -b 0.0.0.0
 ```
 
-### Mount partition and share it via NFS to devices within your subnet (more secure)
+**Mount partition and share it via NFS to devices within your subnet (more secure)**
 ```
 # by server, we mean the device which is sharing the mounted filesystem
 sudo anylinuxfs /dev/disk0s6 -b <YOUR_SERVER_IP>
 ```
 
-### Show current mount status
+**Show current mount status**
 ```
 anylinuxfs status
 ```
 
-### Try to stop anylinuxfs in case umount or eject didn't completely terminate the VM
+**Try to stop anylinuxfs in case umount or eject didn't completely terminate the VM**
 ```
 anylinuxfs stop
 ```
