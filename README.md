@@ -10,7 +10,7 @@ With full write support, based on the libkrun microVM hypervisor and NFS. Doesn'
 - supports **BitLocker**-encrypted drives – **NTFS** or **FAT32** (using your recovery key as passphrase)
 - supports **LVM** (even volume groups spanning multiple drives)
 - supports **LVM on LUKS** (i.e. encrypted LVM)
-- supports **Linux RAID**
+- supports **Linux RAID** (mdadm) and **multi-disk btrfs**
 - works with both external and internal drives
 - works with disk images
 - supports disks with **GPT**, **MBR** or no partition table (single filesystem or LVM/LUKS container)
