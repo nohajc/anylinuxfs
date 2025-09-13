@@ -42,6 +42,37 @@ You pick a drive, mount it with `anylinuxfs` and it appears as a NFS share on lo
 This all sounds like a lot of work but it's actually very fast. Not like a traditional virtual machine which takes a while to boot.
 This one is just a stripped down version of Linux, there's not even a UEFI firmware. Practically, it takes only a couple of seconds before the drive is mounted and ready to use.
 
+## Basic usage
+
+Most often, you will probably use the following commands:
+* `anylinuxfs mount` - mount a filesystem; this is the default command, so the `mount` keyword can be omitted
+* `anylinuxfs list` - show available Linux filesystems (alternatively, `anylinuxfs list -m` shows Microsoft filesystems)
+* `anylinuxfs status` - show what is currently mounted
+* `anylinuxfs log` - show details about the current (or last) run, useful for troubleshooting
+
+### Mounting filesystems
+
+From `anylinuxfs mount --help`:
+```
+Usage: anylinuxfs [mount] [OPTIONS] <DISK_IDENT> [MOUNT_POINT]
+
+Arguments:
+  <DISK_IDENT>   File path(s), LVM identifier or RAID identifier, e.g.:
+                 /dev/diskXsY[:/dev/diskXsZ:...]
+                 lvm:<vg-name>:diskXsY[:diskYsZ:...]:<lv-name>
+                 raid:diskXsY[:diskYsZ:...]
+                 (see `list` command output for available volumes)
+  [MOUNT_POINT]  Custom mount path to override the default under /Volumes
+```
+
+* The only required parameter is the disk identifier.
+* It must always refer to one or more partitions or logical volumes (not whole disks).
+* Basic syntax of an identifier is `/dev/diskXsY` - based on how `anylinuxfs list` or `diskutil list` identifies your drives.
+* If your filesystem is on a logical volume, you will usually need a special prefixed identifier starting with `lvm` or `raid` (for mdadm Linux RAID).
+  These can be deduced from `anylinuxfs list` output where any logical volumes will be shown as synthesized disks (similar to how `diskutil` does it for APFS containers)
+* In case of btrfs filesystems spanning multiple disks (like RAID1 or JBOD), these will not be grouped in the `anylinuxfs list` output.
+* In order to mount a filesystem like this, you use the `/dev/diskXsY:/dev/diskXsZ` syntax. Basically, you need to specify all partitions that need to be attached to our microVM so that they can be scanned for any multi-disk btrfs filesystems.
+
 ## Examples
 
 ### List available drives with Linux filesystems
