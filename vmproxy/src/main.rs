@@ -1,6 +1,6 @@
 use anyhow::{Context, anyhow};
 use clap::Parser;
-use common_utils::{CustomActionConfig, Deferred};
+use common_utils::{CustomActionConfig, Deferred, path_safe_label_name};
 use libc::VMADDR_CID_ANY;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -278,15 +278,16 @@ fn run() -> anyhow::Result<()> {
         _ => ("luks", "open"),
     };
 
-    let (pwd_for_all, input_mode_fn): (_, fn() -> _) = if cli.reuse_passphrase {
-        println!("<anylinuxfs-passphrase-prompt:start>");
-        let prompt_end = deferred.add(|| println!("<anylinuxfs-passphrase-prompt:end>"));
-        let pwd = rpassword::read_password()?;
-        deferred.call_now(prompt_end);
-        (Some(pwd), || Stdio::piped())
-    } else {
-        (None, || Stdio::inherit())
-    };
+    let (pwd_for_all, input_mode_fn): (_, fn() -> _) =
+        if cli.reuse_passphrase && cli.decrypt.is_some() {
+            println!("<anylinuxfs-passphrase-prompt:start>");
+            let prompt_end = deferred.add(|| println!("<anylinuxfs-passphrase-prompt:end>"));
+            let pwd = rpassword::read_password()?;
+            deferred.call_now(prompt_end);
+            (Some(pwd), || Stdio::piped())
+        } else {
+            (None, || Stdio::inherit())
+        };
 
     // decrypt LUKS/BitLocker volumes if any
     if let Some(decrypt) = &cli.decrypt {
@@ -382,10 +383,8 @@ fn run() -> anyhow::Result<()> {
             .context("Failed to run blkid command")?
             .stdout;
 
-        let mut label = String::from_utf8_lossy(&label).trim().to_owned();
-        if label.is_empty() {
-            label = name.to_owned();
-        }
+        let label = path_safe_label_name(&String::from_utf8_lossy(&label).trim().to_owned())
+            .unwrap_or(name.to_owned());
         println!("<anylinuxfs-label:{}>", &label);
         label
     };

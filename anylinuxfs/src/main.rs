@@ -1863,6 +1863,7 @@ impl AppRunner {
         }
 
         let mut passphrase_callbacks = Vec::new();
+        let mut passphrase_needed = false;
         for di in &dev_info {
             let is_luks = di.fs_type() == Some("crypto_LUKS");
             if is_luks || di.fs_type() == Some("BitLocker") {
@@ -1873,9 +1874,11 @@ impl AppRunner {
                     let prompt_fn = diskutil::passphrase_prompt(Some(di.disk()));
                     passphrase_callbacks.push(prompt_fn);
                 }
+                passphrase_needed = true;
             }
         }
-        if config.common.passphrase_config == PassphrasePromptConfig::OneForAll {
+        if passphrase_needed && config.common.passphrase_config == PassphrasePromptConfig::OneForAll
+        {
             let prompt_fn = diskutil::passphrase_prompt(None);
             passphrase_callbacks.push(prompt_fn);
         }
