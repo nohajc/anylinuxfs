@@ -71,7 +71,7 @@ Arguments:
 * If your filesystem is on a logical volume, you will usually need a special prefixed identifier starting with `lvm` or `raid` (for mdadm Linux RAID).
   These can be deduced from `anylinuxfs list` output where any logical volumes will be shown as synthesized disks (similar to how `diskutil` does it for APFS containers)
 * In case of btrfs filesystems spanning multiple disks (like RAID1 or JBOD), these will not be grouped in the `anylinuxfs list` output.
-* In order to mount a filesystem like this, you use the `/dev/diskXsY:/dev/diskXsZ` syntax. Basically, you need to specify all partitions that need to be attached to our microVM so that they can be scanned for any multi-disk btrfs filesystems.
+* In order to mount a filesystem like this, you use the `/dev/diskXsY:/dev/diskXsZ` syntax. Basically, you must specify all partitions that need to be attached to our microVM so that they can be scanned for any multi-disk btrfs filesystems.
 
 ## Examples
 
