@@ -6,6 +6,14 @@ use wait_timeout::ChildExt;
 
 pub mod log;
 
+pub fn path_safe_label_name(name: &str) -> Option<String> {
+    let name_subst = name.replace("/", "-").replace(" ", "_").replace(":", "_");
+    name_subst
+        .chars()
+        .position(|c| c != '-')
+        .map(|idx| name_subst[idx..].to_string())
+}
+
 pub fn wait_for_child(
     child: &mut Child,
     child_name: &str,

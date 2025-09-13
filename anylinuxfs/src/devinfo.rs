@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use anyhow::{Context, anyhow};
+use common_utils::path_safe_label_name;
 use libblkid_rs::{BlkidProbe, BlkidSublks, BlkidSublksFlags};
 use serde::{Deserialize, Serialize};
 
@@ -130,7 +131,7 @@ impl DevInfo {
 
     pub fn auto_mount_name(&self) -> String {
         self.label()
-            .map(|l| l.replace("/", "-").replace(" ", "_").replace(":", "_"))
+            .and_then(path_safe_label_name)
             // .or(self.uuid())
             // .unwrap_or("lvol0")
             .unwrap_or(
