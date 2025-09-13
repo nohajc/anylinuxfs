@@ -273,7 +273,7 @@ You can also run `anylinuxfs init` to download a fresh copy of `alpine:latest` a
   - there are permission issues reported when using **ntfs3** with Windows system drives
   - specifically, `/Program Files` some folders within `/Users` are read-only (see this [reddit](https://www.reddit.com/r/archlinux/comments/r325t3/permissions_problems_with_the_new_ntfs3_driver/) post for details)
 
-#### To summarize
+**To summarize**
 * There are stories online about data corruption (or system freezes) caused by the **ntfs3** driver.
 * They might or might not be caused by improper use of `ntfsfix`.
 * **ntfs3** is included in the mainline Linux kernel so it is considered stable. It was contributed by Paragon Software in [2021](https://www.paragon-software.com/paragon-software-announces-the-inclusion-of-its-ntfs3-driver-into-linux-kernel-5-15/).
