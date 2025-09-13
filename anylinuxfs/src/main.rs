@@ -388,6 +388,7 @@ enum Commands {
 - LUKS-encrypted partitions
 - BitLocker-encrypted partitions
 - LVM/RAID on LUKS
+- multi-disk btrfs filesystems
 
 Supported partition schemes:
 - GPT
@@ -428,7 +429,7 @@ struct CommonArgs {
 #[derive(Args)]
 struct MountCmd {
     /// File path(s), LVM identifier or RAID identifier, e.g.:
-    /// /dev/diskXsY[:/dev/diskXsZ:...]
+    /// /dev/diskXsY[:/dev/diskYsZ:...]
     /// lvm:<vg-name>:diskXsY[:diskYsZ:...]:<lv-name>
     /// raid:diskXsY[:diskYsZ:...]
     /// (see `list` command output for available volumes)
