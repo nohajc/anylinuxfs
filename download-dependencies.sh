@@ -5,6 +5,7 @@ set -e
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 
 IMAGE_ARCHIVE_NAME="linux-aarch64-Image-v6.12.34-anylinuxfs.tar.gz"
+# TODO: update
 IMAGE_ARCHIVE_URL="https://github.com/nohajc/libkrunfw/releases/download/v6.12.34-rev3/${IMAGE_ARCHIVE_NAME}"
 
 GVPROXY_VERSION="0.8.7"
