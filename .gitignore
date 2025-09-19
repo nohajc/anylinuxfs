@@ -17,6 +17,7 @@ target/
 #.idea/
 
 bin/
+lib/
 libexec/
 vmroot/
 tmp/

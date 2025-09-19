@@ -19,6 +19,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 cp $SCRIPT_DIR/src/bootstrap-vm-script.sh ${BOOTSTRAP_IMAGE}-${BOOTSTRAP_TAG}/rootfs/
 
+DNS_SERVER=$(scutil --dns | grep nameserver | awk -F: '{print $2}' | head -n1 | xargs)
+RESOLV_CONF="nameserver $DNS_SERVER"
+echo "$RESOLV_CONF" > ${BOOTSTRAP_IMAGE}-${BOOTSTRAP_TAG}/rootfs/etc/resolv.conf
+
 IMAGE=debian
 TAG=bookworm-slim
 
