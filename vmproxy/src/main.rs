@@ -439,6 +439,10 @@ fn run() -> anyhow::Result<()> {
             println!("<anylinuxfs-type:{}>", &fs);
             fs_type = if !fs.is_empty() { Some(fs) } else { None };
         }
+        Some("zfs_member") => {
+            fs_type = Some("zfs".to_owned());
+            println!("<anylinuxfs-type:{}>", fs_type.as_deref().unwrap());
+        }
         _ => (),
     }
 

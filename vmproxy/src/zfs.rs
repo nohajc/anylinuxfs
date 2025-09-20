@@ -131,17 +131,17 @@ pub fn import_all_zpools_and_mount_in_correct_order(
         .context("Failed to run zpool import command")?;
 
     let zfs_mountpoints = mountpoints().context("Failed to get ZFS mountpoints after import")?;
-    println!("ZFS mountpoints");
+    // println!("ZFS mountpoints");
     let mut mounted_zpools = HashSet::new();
 
-    for mp in &zfs_mountpoints {
-        println!("  {:?}", mp);
-    }
+    // for mp in &zfs_mountpoints {
+    //     println!("  {:?}", mp);
+    // }
 
     for mp in &zfs_mountpoints {
         if mounted_zpools.insert(mp.pool.clone()) {
             // first time seeing this pool
-            println!("Mounting pool {}", &mp.pool);
+            // println!("Mounting pool {}", &mp.pool);
             script(&format!("zfs mount -R {}", mp.pool))
                 .status()
                 .with_context(|| format!("Failed to mount ZFS pool {}", mp.pool))?;
