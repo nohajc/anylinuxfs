@@ -122,6 +122,8 @@ pub struct CustomActionConfig {
     #[serde(default)]
     pub before_unmount: String,
     #[serde(default)]
+    pub environment: Vec<String>, // KEY=value format
+    #[serde(default)]
     pub capture_environment: Vec<String>,
     #[serde(default)]
     pub override_nfs_export: String,

@@ -167,6 +167,10 @@ impl CustomActionEnvironment for CustomActionConfig {
 
         let mut undefined_vars = Vec::new();
         let mut env_vars = Vec::new();
+        for var_str in &self.environment {
+            // TODO: format could be validated here
+            env_vars.push(var_str.clone());
+        }
         for var_name in referenced_variables.iter().chain(&self.capture_environment) {
             match env::var(&var_name) {
                 Ok(var_value) => {
