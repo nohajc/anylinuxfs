@@ -124,9 +124,7 @@ fn mountpoints_from_json(text: &str) -> anyhow::Result<Vec<Mountpoint>> {
     Ok(res)
 }
 
-pub fn import_all_zpools_and_mount_in_correct_order(
-    mount_point_root: &str,
-) -> anyhow::Result<(ExitStatus, Vec<Mountpoint>)> {
+pub fn import_all_zpools(mount_point_root: &str) -> anyhow::Result<(ExitStatus, Vec<Mountpoint>)> {
     let res = script(&format!("zpool import -faNR {}", &mount_point_root))
         .status()
         .context("Failed to run zpool import command")?;
@@ -136,6 +134,10 @@ pub fn import_all_zpools_and_mount_in_correct_order(
     }
 
     let zfs_mountpoints = mountpoints().context("Failed to get ZFS mountpoints after import")?;
+    Ok((res, zfs_mountpoints))
+}
+
+pub fn mount_datasets(mountpoints: &[Mountpoint]) -> anyhow::Result<ExitStatus> {
     // println!("ZFS mountpoints");
     let mut mounted_zpools = HashSet::new();
 
@@ -143,21 +145,20 @@ pub fn import_all_zpools_and_mount_in_correct_order(
     //     println!("  {:?}", mp);
     // }
 
-    for mp in &zfs_mountpoints {
+    for mp in mountpoints {
         if mounted_zpools.insert(mp.pool.clone()) {
             // first time seeing this pool
             // println!("Mounting pool {}", &mp.pool);
-            let status = script(&format!("zfs mount -R {}", mp.pool))
+            let status = script(&format!("zfs mount -lR {}", mp.pool))
                 .status()
                 .with_context(|| format!("Failed to mount ZFS pool {}", mp.pool))?;
 
             if !status.success() {
-                return Ok((res, zfs_mountpoints));
+                return Ok(status);
             }
         }
     }
-
-    Ok((res, zfs_mountpoints))
+    Ok(ExitStatus::default())
 }
 
 #[cfg(test)]
