@@ -102,6 +102,8 @@ pub fn mountpoints() -> anyhow::Result<Vec<Mountpoint>> {
     mountpoints_from_json(&text)
 }
 
+const EXCLUDED_MOUNTPOINT_TYPES: &[&str] = &["-", "legacy", "none"];
+
 fn mountpoints_from_json(text: &str) -> anyhow::Result<Vec<Mountpoint>> {
     let parsed: ZfsList = serde_json::from_str(&text).context("failed to parse zfs json")?;
 
@@ -109,7 +111,7 @@ fn mountpoints_from_json(text: &str) -> anyhow::Result<Vec<Mountpoint>> {
     for (_key, ds) in parsed.datasets.into_iter() {
         if let Some(props) = ds.properties {
             if let Some(mount_prop) = props.get("mountpoint")
-                && mount_prop.value != "none"
+                && !EXCLUDED_MOUNTPOINT_TYPES.contains(&mount_prop.value.as_str())
             {
                 out.insert(Mountpoint {
                     path: mount_prop.value.clone(),
