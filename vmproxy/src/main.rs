@@ -392,8 +392,10 @@ fn run() -> anyhow::Result<()> {
                     .status()
                     .context("Failed to load zfs module")?;
                 let zpool_count = script_output("zpool import | grep 'pool:' | wc -l")
-                    .context("Failed to get ZFS member count")?
-                    .parse::<u32>()?;
+                    .context("Failed to get zpool count")?
+                    .trim()
+                    .parse::<u32>()
+                    .context("Failed to parse zpool count")?;
                 if zpool_count > 1 {
                     "zpool_root".to_owned()
                 } else {
