@@ -116,6 +116,8 @@ impl<'a> Drop for Deferred<'a> {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct CustomActionConfig {
     #[serde(default)]
+    pub before_mount: String,
+    #[serde(default)]
     pub after_mount: String,
     #[serde(default)]
     pub before_unmount: String,
@@ -128,8 +130,8 @@ pub struct CustomActionConfig {
 impl CustomActionConfig {
     pub const VM_EXPORTED_VARS: &[&str] = &["ALFS_VM_MOUNT_POINT"];
 
-    pub fn all_scripts(&self) -> [&str; 2] {
-        [&self.after_mount, &self.before_unmount]
+    pub fn all_scripts(&self) -> [&str; 3] {
+        [&self.before_mount, &self.after_mount, &self.before_unmount]
     }
 
     const PERCENT_ENCODE_SET: &AsciiSet = &CONTROLS.add(b' ');
