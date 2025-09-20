@@ -401,6 +401,8 @@ fn run() -> anyhow::Result<()> {
                 } else {
                     script_output("zpool import | grep 'pool:' | head -n1 | awk '{{ print $2 }}'")
                         .context("Failed to get ZFS pool name")?
+                        .trim()
+                        .to_owned()
                 }
             };
             println!("<anylinuxfs-label:{}>", &label);
