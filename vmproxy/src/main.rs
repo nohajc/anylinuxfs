@@ -242,7 +242,11 @@ fn statfs(path: impl AsRef<Path>) -> io::Result<libc::statfs> {
 
 fn export_args_for_path(path: &str, export_mode: &str) -> anyhow::Result<String> {
     let mut export_args = format!("{export_mode},no_subtree_check,no_root_squash,insecure");
-    if statfs(path)?.f_type == 0x65735546 {
+    if statfs(path)
+        .with_context(|| format!("statfs failed for {path}"))?
+        .f_type
+        == 0x65735546
+    {
         // exporting FUSE requires fsid
         export_args += ",fsid=728"
     }
