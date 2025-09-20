@@ -194,6 +194,19 @@ impl CustomActionRunner {
         Ok(())
     }
 
+    pub fn before_mount(&self) -> anyhow::Result<()> {
+        if let Some(action) = &self.config {
+            if !action.before_mount.is_empty() {
+                println!("<anylinuxfs-force-output:on>");
+                println!("Running before_mount action: `{}`", action.before_mount);
+                let result = self.execute_action(&action.before_mount);
+                println!("<anylinuxfs-force-output:off>");
+                result?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn after_mount(&self) -> anyhow::Result<()> {
         if let Some(action) = &self.config {
             if !action.after_mount.is_empty() {
@@ -494,6 +507,10 @@ fn run() -> anyhow::Result<()> {
     } else {
         vec![]
     };
+
+    custom_action
+        .before_mount()
+        .context("before_mount action")?;
 
     let mnt_args = if !is_zfs {
         let mnt_args = [
