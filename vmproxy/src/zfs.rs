@@ -3,6 +3,50 @@ use anyhow::Context;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 
+use crate::utils::script_output;
+
+#[derive(Debug, PartialEq, Eq, Hash)]
+pub struct Zpool {
+    name: String,
+    id: String,
+}
+
+pub fn get_importable_zpools() -> anyhow::Result<Vec<Zpool>> {
+    //   pool: rpool
+    //     id: 12902241841912726807
+    //   pool: bpool
+    //     id: 16435365342370519676
+    let text =
+        script_output("zpool import | grep -E '(pool|id):'").context("Failed to get zpools")?;
+
+    let mut zpool_names = HashMap::new();
+    let mut zpools = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("pool: ") {
+            let mut name = trimmed.strip_prefix("pool: ").unwrap().to_string();
+
+            let cnt = zpool_names.entry(name.clone()).or_insert(0);
+            if *cnt > 0 {
+                name = format!("{}-{}", name, cnt);
+            }
+            *cnt += 1;
+
+            zpools.push(Zpool {
+                name,
+                id: String::new(),
+            });
+        } else if trimmed.starts_with("id: ") {
+            let id = trimmed.strip_prefix("id: ").unwrap().to_string();
+            if let Some(last) = zpools.iter_mut().last() {
+                last.id = id;
+            }
+        }
+    }
+
+    Ok(zpools)
+}
+
 /// Top-level structure matching the `zfs list -j` JSON output
 #[derive(Debug, Deserialize)]
 pub struct ZfsList {
@@ -43,8 +87,13 @@ pub struct Source {
 
 /// Parse JSON text containing the ZFS output and return the mountpoint values for every
 /// dataset that defines a `mountpoint` property.
-pub fn mountpoints_from_json(text: &str) -> anyhow::Result<Vec<String>> {
-    let parsed: ZfsList = serde_json::from_str(text).context("failed to parse zfs json")?;
+pub fn mountpoints() -> anyhow::Result<Vec<String>> {
+    let text = script_output("zfs list -j").context("Failed to get ZFS mountpoints")?;
+    mountpoints_from_json(&text)
+}
+
+fn mountpoints_from_json(text: &str) -> anyhow::Result<Vec<String>> {
+    let parsed: ZfsList = serde_json::from_str(&text).context("failed to parse zfs json")?;
 
     let mut out = HashSet::new();
     for (_key, ds) in parsed.datasets.into_iter() {
