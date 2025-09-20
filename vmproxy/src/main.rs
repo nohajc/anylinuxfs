@@ -479,26 +479,31 @@ fn run() -> anyhow::Result<()> {
     //     .mount("/dev/vda", &mount_point)
     //     .context(format!("Failed to mount '/dev/vda' on '{}'", &mount_point))?;
 
-    let mnt_args = [
-        "-t",
-        fs_driver
-            .as_deref()
-            .or(fs_type.as_deref())
-            .unwrap_or("auto"),
-        &disk_path,
-        &mount_point,
-    ]
-    .into_iter()
-    .chain(
-        mount_options
-            .as_deref()
-            .into_iter()
-            .flat_map(|opts| ["-o", opts]),
-    )
-    .chain(verbose.then_some("-v").into_iter());
+    let mnt_args = if !is_zfs {
+        let mnt_args = [
+            "-t",
+            fs_driver
+                .as_deref()
+                .or(fs_type.as_deref())
+                .unwrap_or("auto"),
+            &disk_path,
+            &mount_point,
+        ]
+        .into_iter()
+        .chain(
+            mount_options
+                .as_deref()
+                .into_iter()
+                .flat_map(|opts| ["-o", opts]),
+        )
+        .chain(verbose.then_some("-v").into_iter());
 
-    let mnt_args: Vec<&str> = mnt_args.collect();
-    println!("mount args: {:?}", &mnt_args);
+        let mnt_args: Vec<&str> = mnt_args.collect();
+        println!("mount args: {:?}", &mnt_args);
+        mnt_args
+    } else {
+        vec![]
+    };
 
     // we must show any output of mount command
     // in case there's a warning (e.g. NTFS cannot be accessed rw)
