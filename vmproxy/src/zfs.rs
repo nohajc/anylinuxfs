@@ -1,7 +1,7 @@
 #![allow(unused)]
 use anyhow::Context;
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Top-level structure matching the `zfs list -j` JSON output
 #[derive(Debug, Deserialize)]
@@ -46,17 +46,17 @@ pub struct Source {
 pub fn mountpoints_from_json(text: &str) -> anyhow::Result<Vec<String>> {
     let parsed: ZfsList = serde_json::from_str(text).context("failed to parse zfs json")?;
 
-    let mut out = Vec::new();
+    let mut out = HashSet::new();
     for (_key, ds) in parsed.datasets.into_iter() {
         if let Some(props) = ds.properties {
             if let Some(mount_prop) = props.get("mountpoint")
                 && mount_prop.value != "none"
             {
-                out.push(mount_prop.value.clone());
+                out.insert(mount_prop.value.clone());
             }
         }
     }
-    Ok(out)
+    Ok(out.into_iter().collect())
 }
 
 #[cfg(test)]
