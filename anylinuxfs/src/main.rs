@@ -1204,7 +1204,7 @@ fn wait_for_nfs_server(
 fn mount_nfs(share_path: &str, config: &MountConfig) -> anyhow::Result<()> {
     let status = if let Some(mount_point) = config.custom_mount_point.as_deref() {
         let mut shell_script = format!(
-            "mount -t nfs \"localhost:{}\" \"{}\"",
+            "mount -t nfs -o vers=4 \"localhost:{}\" \"{}\"",
             share_path,
             mount_point.display()
         );
