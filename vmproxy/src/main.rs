@@ -15,7 +15,10 @@ use std::{fs, io::BufReader};
 use sys_mount::{UnmountFlags, unmount};
 use vsock::{VsockAddr, VsockListener};
 
+use crate::utils::{script, script_output};
+
 mod kernel_cfg;
+mod utils;
 mod zfs;
 
 #[derive(Parser)]
@@ -224,22 +227,6 @@ fn statfs(path: impl AsRef<Path>) -> io::Result<libc::statfs> {
     Ok(buf)
 }
 
-fn script(script: &str) -> Command {
-    let mut cmd = Command::new("/bin/busybox");
-    cmd.arg("sh").arg("-c").arg(script);
-    cmd
-}
-
-fn script_output(code: &str) -> anyhow::Result<String> {
-    Ok(String::from_utf8_lossy(
-        &script(code)
-            .output()
-            .context("Failed to run script command")?
-            .stdout,
-    )
-    .into())
-}
-
 fn export_args_for_path(path: &str, export_mode: &str) -> anyhow::Result<String> {
     let mut export_args = format!("{export_mode},no_subtree_check,no_root_squash,insecure");
     if statfs(path)?.f_type == 0x65735546 {
@@ -404,6 +391,10 @@ fn run() -> anyhow::Result<()> {
                 script("modprobe zfs")
                     .status()
                     .context("Failed to load zfs module")?;
+
+                let zpools = zfs::get_importable_zpools()?;
+                println!("Importable zpools: {:?}", &zpools);
+
                 let zpool_count = script_output("zpool import | grep 'pool:' | wc -l")
                     .context("Failed to get zpool count")?
                     .trim()
@@ -622,12 +613,7 @@ fn run() -> anyhow::Result<()> {
     let export_mode = if effective_read_only { "ro" } else { "rw" };
 
     let all_exports = if is_zfs {
-        let mut paths = zfs::mountpoints_from_json(
-            &script_output("zfs list -j").context("Failed to get ZFS mountpoints")?,
-        )
-        .context("Failed to parse ZFS mountpoints")?;
-
-        println!("ZFS mountpoints: {:?}", &paths);
+        let mut paths = zfs::mountpoints()?;
 
         if !paths.iter().any(|p| p == &export_path) {
             paths.push(export_path);
