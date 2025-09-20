@@ -6,7 +6,10 @@ use std::{
     process::ExitStatus,
 };
 
-use crate::utils::{script, script_output};
+use crate::{
+    utils::{script, script_output},
+    zfs,
+};
 
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub struct Zpool {
@@ -94,8 +97,6 @@ pub struct Mountpoint {
     pub pool: String,
 }
 
-/// Parse JSON text containing the ZFS output and return the mountpoint values for every
-/// dataset that defines a `mountpoint` property.
 pub fn mountpoints() -> anyhow::Result<Vec<Mountpoint>> {
     let text = script_output("zfs list -j").context("Failed to get ZFS mountpoints")?;
     mountpoints_from_json(&text)
@@ -130,6 +131,10 @@ pub fn import_all_zpools_and_mount_in_correct_order(
         .status()
         .context("Failed to run zpool import command")?;
 
+    if !res.success() {
+        return Ok((res, Vec::new()));
+    }
+
     let zfs_mountpoints = mountpoints().context("Failed to get ZFS mountpoints after import")?;
     // println!("ZFS mountpoints");
     let mut mounted_zpools = HashSet::new();
@@ -142,9 +147,13 @@ pub fn import_all_zpools_and_mount_in_correct_order(
         if mounted_zpools.insert(mp.pool.clone()) {
             // first time seeing this pool
             // println!("Mounting pool {}", &mp.pool);
-            script(&format!("zfs mount -R {}", mp.pool))
+            let status = script(&format!("zfs mount -R {}", mp.pool))
                 .status()
                 .with_context(|| format!("Failed to mount ZFS pool {}", mp.pool))?;
+
+            if !status.success() {
+                return Ok((res, zfs_mountpoints));
+            }
         }
     }
 
