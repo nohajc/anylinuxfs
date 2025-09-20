@@ -220,6 +220,22 @@ fn statfs(path: impl AsRef<Path>) -> io::Result<libc::statfs> {
     Ok(buf)
 }
 
+fn script(script: &str) -> Command {
+    let mut cmd = Command::new("/bin/busybox");
+    cmd.arg("sh").arg("-c").arg(script);
+    cmd
+}
+
+fn script_output(code: &str) -> anyhow::Result<String> {
+    Ok(String::from_utf8_lossy(
+        &script(code)
+            .output()
+            .context("Failed to run script command")?
+            .stdout,
+    )
+    .into())
+}
+
 fn main() -> ExitCode {
     if let Err(e) = run() {
         eprintln!("Error: {:#}", e);
@@ -244,12 +260,7 @@ fn run() -> anyhow::Result<()> {
 
     deferred.add(|| {
         let kernel_log_warning = "Warning: failed to dump dmesg output to /kernel.log";
-        match Command::new("/bin/busybox")
-            .arg("sh")
-            .arg("-c")
-            .arg("dmesg > /kernel.log")
-            .status()
-        {
+        match script("dmesg > /kernel.log").status() {
             Ok(status) if !status.success() => {
                 eprintln!("{}", kernel_log_warning);
             }
@@ -342,14 +353,11 @@ fn run() -> anyhow::Result<()> {
             .status()
             .context("Failed to run mdadm command")?;
 
-        let output = Command::new("/bin/busybox")
-            .arg("sh")
-            .arg("-c")
-            .arg("mdadm --detail --scan | cut -d' ' -f2")
-            .output()
-            .context("Failed to get RAID device path from mdadm")?;
+        let md_path = script_output("mdadm --detail --scan | cut -d' ' -f2")
+            .context("Failed to get RAID device path from mdadm")?
+            .trim()
+            .to_owned();
 
-        let md_path = String::from_utf8_lossy(&output.stdout).trim().to_owned();
         if !md_path.is_empty() {
             disk_path = md_path;
         }
@@ -374,10 +382,30 @@ fn run() -> anyhow::Result<()> {
         _ => {}
     }
     let is_logical = disk_path.starts_with("/dev/mapper") || is_raid;
+    let is_zfs = fs_type.as_deref() == Some("zfs_member");
 
     let name = &cli.mount_name;
     let mount_name = if !is_logical {
-        name.to_owned()
+        if is_zfs {
+            let label = {
+                script("modprobe zfs")
+                    .status()
+                    .context("Failed to load zfs module")?;
+                let zpool_count = script_output("zpool import | grep 'pool:' | wc -l")
+                    .context("Failed to get ZFS member count")?
+                    .parse::<u32>()?;
+                if zpool_count > 1 {
+                    "zpool_root".to_owned()
+                } else {
+                    script_output("zpool import | grep 'pool:' | head -n1 | awk '{{ print $2 }}'")
+                        .context("Failed to get ZFS pool name")?
+                }
+            };
+            println!("<anylinuxfs-label:{}>", &label);
+            label
+        } else {
+            name.to_owned()
+        }
     } else {
         let label = Command::new("/sbin/blkid")
             .arg(&disk_path)
@@ -474,10 +502,16 @@ fn run() -> anyhow::Result<()> {
     let force_output_off = deferred.add(|| {
         println!("<anylinuxfs-force-output:off>");
     });
-    let mnt_result = Command::new("/bin/mount")
-        .args(mnt_args)
-        .status()
-        .context("Failed to run mount command")?;
+    let mnt_result = if is_zfs {
+        script(&format!("zpool import -faR {}", &mount_point))
+            .status()
+            .context("Failed to run zpool import command")?
+    } else {
+        Command::new("/bin/mount")
+            .args(mnt_args)
+            .status()
+            .context("Failed to run mount command")?
+    };
 
     if !mnt_result.success() {
         return Err(anyhow!(
@@ -502,8 +536,13 @@ fn run() -> anyhow::Result<()> {
     deferred.add({
         let mount_point = mount_point.clone();
         move || {
-            let mut backoff = Duration::from_secs(1);
-            while let Err(e) = unmount(&mount_point, UnmountFlags::empty()) {
+            let mut backoff = Duration::from_millis(50);
+            let umount_action: &dyn Fn() -> _ = if is_zfs {
+                &|| script("zpool export -a").status().map(|_| ())
+            } else {
+                &|| unmount(&mount_point, UnmountFlags::empty())
+            };
+            while let Err(e) = umount_action() {
                 eprintln!("Failed to unmount '{}': {}", &mount_point, e);
                 std::thread::sleep(backoff);
                 backoff = std::cmp::min(backoff * 2, Duration::from_secs(32));
@@ -523,17 +562,13 @@ fn run() -> anyhow::Result<()> {
     });
 
     let effective_mount_options = {
-        let output = Command::new("/bin/busybox")
-            .arg("sh")
-            .arg("-c")
-            .arg(format!(
-                "mount | grep {} | awk -F'(' '{{ print $2 }}' | tr -d ')'",
-                &disk_path
-            ))
-            .output()
-            .context(format!("Failed to get mount options for {}", &disk_path))?;
-
-        let opts = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        let opts = script_output(&format!(
+            "mount | grep {} | awk -F'(' '{{ print $2 }}' | tr -d ')'",
+            &disk_path
+        ))
+        .with_context(|| format!("Failed to get mount options for {}", &disk_path))?
+        .trim()
+        .to_owned();
         println!("Effective mount options: {}", opts);
         opts
     }
