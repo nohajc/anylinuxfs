@@ -479,6 +479,22 @@ fn run() -> anyhow::Result<()> {
     //     .mount("/dev/vda", &mount_point)
     //     .context(format!("Failed to mount '/dev/vda' on '{}'", &mount_point))?;
 
+    let zfs_mountpoints = if is_zfs {
+        let (status, mountpoints) = zfs::import_all_zpools(&mount_point)?;
+        if !status.success() {
+            return Err(anyhow!(
+                "Importing zpools failed with error code {}",
+                status
+                    .code()
+                    .map(|c| c.to_string())
+                    .unwrap_or("unknown".to_owned())
+            ));
+        }
+        mountpoints
+    } else {
+        vec![]
+    };
+
     let mnt_args = if !is_zfs {
         let mnt_args = [
             "-t",
@@ -512,14 +528,13 @@ fn run() -> anyhow::Result<()> {
         println!("<anylinuxfs-force-output:off>");
     });
 
-    let (mnt_result, zfs_mountpoints) = if is_zfs {
-        zfs::import_all_zpools_and_mount_in_correct_order(&mount_point)?
+    let mnt_result = if is_zfs {
+        zfs::mount_datasets(&zfs_mountpoints)?
     } else {
-        let res = Command::new("/bin/mount")
+        Command::new("/bin/mount")
             .args(mnt_args)
             .status()
-            .context("Failed to run mount command")?;
-        (res, vec![])
+            .context("Failed to run mount command")?
     };
 
     if !mnt_result.success() {
