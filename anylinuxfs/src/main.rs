@@ -1470,7 +1470,7 @@ enum MountStatus<'a> {
     NoLonger,
 }
 
-fn validated_mount_point(rt_info: &api::RuntimeInfo) -> MountStatus {
+fn validated_mount_point(rt_info: &api::RuntimeInfo) -> MountStatus<'_> {
     let Some(mount_point) = rt_info.mount_point.as_ref().map(Path::new) else {
         return MountStatus::NotYet;
     };
