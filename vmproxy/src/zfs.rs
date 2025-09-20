@@ -1,14 +1,17 @@
 #![allow(unused)]
 use anyhow::Context;
 use serde::Deserialize;
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    process::ExitStatus,
+};
 
-use crate::utils::script_output;
+use crate::utils::{script, script_output};
 
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub struct Zpool {
-    name: String,
-    id: String,
+    pub name: String,
+    pub id: String,
 }
 
 pub fn get_importable_zpools() -> anyhow::Result<Vec<Zpool>> {
@@ -67,7 +70,7 @@ pub struct Dataset {
     pub name: String,
     #[serde(rename = "type")]
     pub ds_type: String,
-    pub pool: Option<String>,
+    pub pool: String,
     pub createtxg: Option<String>,
     pub properties: Option<HashMap<String, Property>>,
 }
@@ -85,14 +88,20 @@ pub struct Source {
     pub data: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Mountpoint {
+    pub path: String,
+    pub pool: String,
+}
+
 /// Parse JSON text containing the ZFS output and return the mountpoint values for every
 /// dataset that defines a `mountpoint` property.
-pub fn mountpoints() -> anyhow::Result<Vec<String>> {
+pub fn mountpoints() -> anyhow::Result<Vec<Mountpoint>> {
     let text = script_output("zfs list -j").context("Failed to get ZFS mountpoints")?;
     mountpoints_from_json(&text)
 }
 
-fn mountpoints_from_json(text: &str) -> anyhow::Result<Vec<String>> {
+fn mountpoints_from_json(text: &str) -> anyhow::Result<Vec<Mountpoint>> {
     let parsed: ZfsList = serde_json::from_str(&text).context("failed to parse zfs json")?;
 
     let mut out = HashSet::new();
@@ -101,11 +110,45 @@ fn mountpoints_from_json(text: &str) -> anyhow::Result<Vec<String>> {
             if let Some(mount_prop) = props.get("mountpoint")
                 && mount_prop.value != "none"
             {
-                out.insert(mount_prop.value.clone());
+                out.insert(Mountpoint {
+                    path: mount_prop.value.clone(),
+                    pool: ds.pool.clone(),
+                });
             }
         }
     }
-    Ok(out.into_iter().collect())
+    let mut res: Vec<_> = out.into_iter().collect();
+    // sort by path lexicographically
+    res.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(res)
+}
+
+pub fn import_all_zpools_and_mount_in_correct_order(
+    mount_point_root: &str,
+) -> anyhow::Result<(ExitStatus, Vec<Mountpoint>)> {
+    let res = script(&format!("zpool import -faNR {}", &mount_point_root))
+        .status()
+        .context("Failed to run zpool import command")?;
+
+    let zfs_mountpoints = mountpoints().context("Failed to get ZFS mountpoints after import")?;
+    println!("ZFS mountpoints");
+    let mut mounted_zpools = HashSet::new();
+
+    for mp in &zfs_mountpoints {
+        println!("  {:?}", mp);
+    }
+
+    for mp in &zfs_mountpoints {
+        if mounted_zpools.insert(mp.pool.clone()) {
+            // first time seeing this pool
+            println!("Mounting pool {}", &mp.pool);
+            script(&format!("zfs mount -R {}", mp.pool))
+                .status()
+                .with_context(|| format!("Failed to mount ZFS pool {}", mp.pool))?;
+        }
+    }
+
+    Ok((res, zfs_mountpoints))
 }
 
 #[cfg(test)]
@@ -142,8 +185,10 @@ mod tests {
         "#;
 
         let mps = mountpoints_from_json(json).expect("parse should succeed");
-        assert_eq!(mps.len(), 2);
-        assert!(mps.contains(&"/mnt/foo".to_string()));
-        assert!(mps.contains(&"none".to_string()));
+        assert_eq!(mps.len(), 1);
+        assert!(mps.contains(&Mountpoint {
+            path: "/mnt/foo".into(),
+            pool: "pool".into(),
+        }));
     }
 }
