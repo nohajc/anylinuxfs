@@ -627,6 +627,8 @@ fn run() -> anyhow::Result<()> {
         )
         .context("Failed to parse ZFS mountpoints")?;
 
+        println!("ZFS mountpoints: {:?}", &paths);
+
         if !paths.iter().any(|p| p == &export_path) {
             paths.push(export_path);
         }
