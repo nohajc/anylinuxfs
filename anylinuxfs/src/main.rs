@@ -165,10 +165,16 @@ impl CustomActionEnvironment for CustomActionConfig {
             referenced_variables.extend(utils::find_env_vars(script));
         }
 
+        let mut predefined_vars = HashSet::new();
         let mut undefined_vars = Vec::new();
         let mut env_vars = Vec::new();
         for var_str in &self.environment {
             // TODO: format could be validated here
+            let var_name = var_str
+                .split('=')
+                .next()
+                .ok_or_else(|| anyhow!("invalid environment variable format: {}", var_str))?;
+            predefined_vars.insert(var_name.to_owned());
             env_vars.push(var_str.clone());
         }
         for var_name in referenced_variables.iter().chain(&self.capture_environment) {
@@ -177,7 +183,9 @@ impl CustomActionEnvironment for CustomActionConfig {
                     env_vars.push(format!("{}={}", var_name, var_value));
                 }
                 Err(VarError::NotPresent) => {
-                    if !Self::VM_EXPORTED_VARS.contains(&var_name.as_str()) {
+                    if !Self::VM_EXPORTED_VARS.contains(&var_name.as_str())
+                        && !predefined_vars.contains(var_name)
+                    {
                         undefined_vars.push(var_name.clone());
                     }
                 }
