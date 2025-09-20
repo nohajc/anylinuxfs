@@ -393,20 +393,12 @@ fn run() -> anyhow::Result<()> {
                     .context("Failed to load zfs module")?;
 
                 let zpools = zfs::get_importable_zpools()?;
-                println!("Importable zpools: {:?}", &zpools);
+                // println!("Importable zpools: {:?}", &zpools);
 
-                let zpool_count = script_output("zpool import | grep 'pool:' | wc -l")
-                    .context("Failed to get zpool count")?
-                    .trim()
-                    .parse::<u32>()
-                    .context("Failed to parse zpool count")?;
-                if zpool_count > 1 {
+                if zpools.len() > 1 {
                     "zfs_root".to_owned()
                 } else {
-                    script_output("zpool import | grep 'pool:' | head -n1 | awk '{{ print $2 }}'")
-                        .context("Failed to get ZFS pool name")?
-                        .trim()
-                        .to_owned()
+                    zpools[0].name.clone()
                 }
             };
             println!("<anylinuxfs-label:{}>", &label);
@@ -510,15 +502,15 @@ fn run() -> anyhow::Result<()> {
     let force_output_off = deferred.add(|| {
         println!("<anylinuxfs-force-output:off>");
     });
-    let mnt_result = if is_zfs {
-        script(&format!("zpool import -faR {}", &mount_point))
-            .status()
-            .context("Failed to run zpool import command")?
+
+    let (mnt_result, zfs_mountpoints) = if is_zfs {
+        zfs::import_all_zpools_and_mount_in_correct_order(&mount_point)?
     } else {
-        Command::new("/bin/mount")
+        let res = Command::new("/bin/mount")
             .args(mnt_args)
             .status()
-            .context("Failed to run mount command")?
+            .context("Failed to run mount command")?;
+        (res, vec![])
     };
 
     if !mnt_result.success() {
@@ -613,7 +605,7 @@ fn run() -> anyhow::Result<()> {
     let export_mode = if effective_read_only { "ro" } else { "rw" };
 
     let all_exports = if is_zfs {
-        let mut paths = zfs::mountpoints()?;
+        let mut paths: Vec<_> = zfs_mountpoints.into_iter().map(|m| m.path).collect();
 
         if !paths.iter().any(|p| p == &export_path) {
             paths.push(export_path);
