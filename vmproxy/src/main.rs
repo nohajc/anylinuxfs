@@ -11,8 +11,12 @@ use std::path::Path;
 use std::process::{Child, Command, ExitCode, Stdio};
 use std::time::Duration;
 use std::{fs, io::BufReader};
+#[cfg(target_os = "linux")]
 use sys_mount::{UnmountFlags, unmount};
 use vsock::{VsockAddr, VsockListener};
+
+mod kernel_cfg;
+mod zfs;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -236,6 +240,15 @@ fn script_output(code: &str) -> anyhow::Result<String> {
     .into())
 }
 
+fn export_args_for_path(path: &str, export_mode: &str) -> anyhow::Result<String> {
+    let mut export_args = format!("{export_mode},no_subtree_check,no_root_squash,insecure");
+    if statfs(path)?.f_type == 0x65735546 {
+        // exporting FUSE requires fsid
+        export_args += ",fsid=728"
+    }
+    Ok(export_args)
+}
+
 fn main() -> ExitCode {
     if let Err(e) = run() {
         eprintln!("Error: {:#}", e);
@@ -397,7 +410,7 @@ fn run() -> anyhow::Result<()> {
                     .parse::<u32>()
                     .context("Failed to parse zpool count")?;
                 if zpool_count > 1 {
-                    "zpool_root".to_owned()
+                    "zfs_root".to_owned()
                 } else {
                     script_output("zpool import | grep 'pool:' | head -n1 | awk '{{ print $2 }}'")
                         .context("Failed to get ZFS pool name")?
@@ -544,7 +557,14 @@ fn run() -> anyhow::Result<()> {
             let umount_action: &dyn Fn() -> _ = if is_zfs {
                 &|| script("zpool export -a").status().map(|_| ())
             } else {
-                &|| unmount(&mount_point, UnmountFlags::empty())
+                #[cfg(target_os = "linux")]
+                {
+                    &|| unmount(&mount_point, UnmountFlags::empty())
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    &|| Ok(())
+                }
             };
             while let Err(e) = umount_action() {
                 eprintln!("Failed to unmount '{}': {}", &mount_point, e);
@@ -600,12 +620,33 @@ fn run() -> anyhow::Result<()> {
     };
 
     let export_mode = if effective_read_only { "ro" } else { "rw" };
-    let mut export_args = format!("{export_mode},no_subtree_check,no_root_squash,insecure");
-    if statfs(&export_path)?.f_type == 0x65735546 {
-        // exporting FUSE requires fsid
-        export_args += ",fsid=728"
+
+    let all_exports = if is_zfs {
+        let mut paths = zfs::mountpoints_from_json(
+            &script_output("zfs list -j").context("Failed to get ZFS mountpoints")?,
+        )
+        .context("Failed to parse ZFS mountpoints")?;
+
+        if !paths.iter().any(|p| p == &export_path) {
+            paths.push(export_path);
+        }
+
+        let mut exports = vec![];
+        for p in paths {
+            let a = export_args_for_path(&p, export_mode)?;
+            exports.push((p, a));
+        }
+        exports
+    } else {
+        // single export
+        let export_args = export_args_for_path(&export_path, export_mode)?;
+        vec![(export_path, export_args)]
+    };
+    let mut exports_content = String::new();
+
+    for (export_path, export_args) in &all_exports {
+        exports_content += &format!("\"{}\"      *({})\n", &export_path, export_args);
     }
-    let exports_content = format!("\"{}\"      *({})\n", &export_path, export_args);
 
     fs::write("/etc/exports", exports_content).context("Failed to write to /etc/exports")?;
     println!("Successfully initialized /etc/exports.");

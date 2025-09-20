@@ -1172,6 +1172,7 @@ dependencies = [
  "reqwest",
  "rpassword",
  "serde",
+ "serde_json",
  "sys-mount",
  "vsock",
 ]
