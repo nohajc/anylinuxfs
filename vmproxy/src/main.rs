@@ -248,7 +248,7 @@ fn export_args_for_path(path: &str, export_mode: &str) -> anyhow::Result<String>
         == 0x65735546
     {
         // exporting FUSE requires fsid
-        export_args += ",fsid=728"
+        export_args += ",fsid=728" // TODO: unique fsid
     }
     Ok(export_args)
 }

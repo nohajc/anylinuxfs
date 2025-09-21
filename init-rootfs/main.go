@@ -1,8 +1,6 @@
 package main
 
 import (
-	"archive/tar"
-	"compress/gzip"
 	"context"
 	_ "embed"
 	"flag"
@@ -268,7 +266,11 @@ func writeSetupScript(cfg *Config) error {
 	vmSetupScriptContent := fmt.Sprintf(`#!/bin/sh
 
 apk --update --no-cache add %s
-mv /lib/modules/unknown /lib/modules/$(uname -r)
+MOD_PATH="modules/$(uname -r)"
+cd /lib
+mkdir -p $MOD_PATH
+unsquashfs -d $MOD_PATH modules.squashfs
+rm modules.squashfs
 depmod -a
 rm -v /etc/idmapd.conf /etc/exports
 `, packagesStr)
@@ -317,15 +319,20 @@ func downloadEntrypointScript(rootfsPath string) error {
 	return nil
 }
 
-func copyVmproxyBinary(prefixDir, rootfsPath string) error {
-	vmproxySrcPath := filepath.Join(prefixDir, "libexec", "vmproxy")
-	vmproxyDstPath := filepath.Join(rootfsPath, "vmproxy")
-
-	copyCmd := exec.Command("cp", "-v", vmproxySrcPath, vmproxyDstPath)
+func copyFile(srcPath, dstPath string) error {
+	copyCmd := exec.Command("cp", "-v", srcPath, dstPath)
 	copyCmd.Stdout = os.Stdout
 	copyCmd.Stderr = os.Stderr
 
-	err := copyCmd.Run()
+	return copyCmd.Run()
+}
+
+func copyVmproxyBinary(prefixDir, rootfsPath string) error {
+	vmproxyBin := "vmproxy"
+	vmproxySrcPath := filepath.Join(prefixDir, "libexec", vmproxyBin)
+	vmproxyDstPath := filepath.Join(rootfsPath, vmproxyBin)
+
+	err := copyFile(vmproxySrcPath, vmproxyDstPath)
 	if err != nil {
 		fmt.Printf("Error copying vmproxy: %v\n", err)
 		return err
@@ -334,74 +341,15 @@ func copyVmproxyBinary(prefixDir, rootfsPath string) error {
 	return nil
 }
 
-func unpackLinuxModules(prefixDir, rootfsPath string) error {
-	modulesSrcPath := filepath.Join(prefixDir, "lib", "modules.tar.gz")
-	modulesDstPath := filepath.Join(rootfsPath, "lib", "modules", "unknown")
-	err := os.MkdirAll(modulesDstPath, 0755)
+func copyLinuxModules(prefixDir, rootfsPath string) error {
+	modulesSquashfs := "modules.squashfs"
+	modulesSrcPath := filepath.Join(prefixDir, "lib", modulesSquashfs)
+	modulesDstPath := filepath.Join(rootfsPath, "lib", modulesSquashfs)
+
+	err := copyFile(modulesSrcPath, modulesDstPath)
 	if err != nil {
-		fmt.Printf("Error creating modules directory: %v\n", err)
+		fmt.Printf("Error copying vmproxy: %v\n", err)
 		return err
-	}
-
-	modulesFile, err := os.Open(modulesSrcPath)
-	if err != nil {
-		fmt.Printf("Error opening modules archive: %v\n", err)
-		return err
-	}
-	defer modulesFile.Close()
-
-	gzReader, err := gzip.NewReader(modulesFile)
-	if err != nil {
-		fmt.Printf("Error creating gzip reader: %v\n", err)
-		return err
-	}
-	defer gzReader.Close()
-
-	tarReader := tar.NewReader(gzReader)
-
-	for {
-		header, err := tarReader.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			fmt.Printf("Error reading tar archive: %v\n", err)
-			return err
-		}
-
-		targetPath := filepath.Join(modulesDstPath, header.Name)
-		switch header.Typeflag {
-		case tar.TypeDir:
-			if err := os.MkdirAll(targetPath, os.FileMode(header.Mode)); err != nil {
-				fmt.Printf("Error creating directory %s: %v\n", targetPath, err)
-				return err
-			}
-		case tar.TypeReg:
-			if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
-				fmt.Printf("Error creating parent directory for %s: %v\n", targetPath, err)
-				return err
-			}
-			outFile, err := os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(header.Mode))
-			if err != nil {
-				fmt.Printf("Error creating file %s: %v\n", targetPath, err)
-				return err
-			}
-			if _, err := io.Copy(outFile, tarReader); err != nil {
-				outFile.Close()
-				fmt.Printf("Error writing file %s: %v\n", targetPath, err)
-				return err
-			}
-			outFile.Close()
-		case tar.TypeSymlink:
-			if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
-				fmt.Printf("Error creating parent directory for symlink %s: %v\n", targetPath, err)
-				return err
-			}
-			if err := os.Symlink(header.Linkname, targetPath); err != nil {
-				fmt.Printf("Error creating symlink %s -> %s: %v\n", targetPath, header.Linkname, err)
-				return err
-			}
-		}
 	}
 
 	return nil
@@ -440,7 +388,7 @@ func initRootfs(cfg *Config, nameserver string) error {
 		return err
 	}
 
-	if err := unpackLinuxModules(cfg.PrefixDir, cfg.RootfsPath); err != nil {
+	if err := copyLinuxModules(cfg.PrefixDir, cfg.RootfsPath); err != nil {
 		return err
 	}
 
