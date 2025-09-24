@@ -2256,6 +2256,16 @@ impl AppRunner {
                             mnt_point.display(),
                             e
                         );
+                    } else if let Err(e) = chown(
+                        &mnt_point,
+                        Some(config.common.invoker_uid),
+                        Some(config.common.invoker_gid),
+                    ) {
+                        host_eprintln!(
+                            "Failed to change owner of {}: {:#}",
+                            mnt_point.display(),
+                            e
+                        );
                     }
                     config.custom_mount_point = Some(mnt_point);
                 }
