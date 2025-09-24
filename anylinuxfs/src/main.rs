@@ -2250,7 +2250,13 @@ impl AppRunner {
                 let vers4 = mnt_dev_info.fs_type() == Some("zfs");
                 if vers4 {
                     let mnt_point = PathBuf::from(format!("/Volumes/{share_name}"));
-                    fs::create_dir_all(&mnt_point)?;
+                    if let Err(e) = fs::create_dir_all(&mnt_point) {
+                        host_eprintln!(
+                            "Failed to create mount point {}: {:#}",
+                            mnt_point.display(),
+                            e
+                        );
+                    }
                     config.custom_mount_point = Some(mnt_point);
                 }
                 let mount_result = mount_nfs(&share_path, &config, vers4);
