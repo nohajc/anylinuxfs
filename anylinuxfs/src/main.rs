@@ -2134,15 +2134,8 @@ impl AppRunner {
                 let vers4 = mnt_dev_info.fs_type() == Some("zfs");
                 if vers4 {
                     let mnt_point = PathBuf::from(format!("/Volumes/{share_name}"));
-                    fs::create_dir_all(&mnt_point).map_err(|e| {
-                        StatusError::new(
-                            &format!(
-                                "Failed to create mount point {}: {:#}",
-                                mnt_point.display(),
-                                e
-                            ),
-                            1,
-                        )
+                    fs::create_dir_all(&mnt_point).with_context(|| {
+                        format!("Failed to create mount point {}", mnt_point.display())
                     })?;
 
                     chown(
@@ -2150,11 +2143,8 @@ impl AppRunner {
                         Some(config.common.invoker_uid),
                         Some(config.common.invoker_gid),
                     )
-                    .map_err(|e| {
-                        StatusError::new(
-                            &format!("Failed to change owner of {}: {:#}", mnt_point.display(), e),
-                            1,
-                        )
+                    .with_context(|| {
+                        format!("Failed to change owner of {}", mnt_point.display())
                     })?;
 
                     config.custom_mount_point = Some(mnt_point);
