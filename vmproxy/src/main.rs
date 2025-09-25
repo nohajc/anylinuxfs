@@ -627,7 +627,13 @@ fn run() -> anyhow::Result<()> {
 
     // list_dir(mount_point);
 
-    let effective_read_only = is_read_only_set(effective_mount_options.iter().map(String::as_str));
+    let effective_read_only = if is_zfs {
+        // we don't check effective ro flag for ZFS
+        // (it's only useful for NTFS in hibernation anyway)
+        specified_read_only
+    } else {
+        is_read_only_set(effective_mount_options.iter().map(String::as_str))
+    };
 
     if specified_read_only != effective_read_only {
         println!("<anylinuxfs-mount:changed-to-ro>");
