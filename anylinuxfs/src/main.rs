@@ -2250,23 +2250,29 @@ impl AppRunner {
                 let vers4 = mnt_dev_info.fs_type() == Some("zfs");
                 if vers4 {
                     let mnt_point = PathBuf::from(format!("/Volumes/{share_name}"));
-                    if let Err(e) = fs::create_dir_all(&mnt_point) {
-                        host_eprintln!(
-                            "Failed to create mount point {}: {:#}",
-                            mnt_point.display(),
-                            e
-                        );
-                    } else if let Err(e) = chown(
+                    fs::create_dir_all(&mnt_point).map_err(|e| {
+                        StatusError::new(
+                            &format!(
+                                "Failed to create mount point {}: {:#}",
+                                mnt_point.display(),
+                                e
+                            ),
+                            1,
+                        )
+                    })?;
+
+                    chown(
                         &mnt_point,
                         Some(config.common.invoker_uid),
                         Some(config.common.invoker_gid),
-                    ) {
-                        host_eprintln!(
-                            "Failed to change owner of {}: {:#}",
-                            mnt_point.display(),
-                            e
-                        );
-                    }
+                    )
+                    .map_err(|e| {
+                        StatusError::new(
+                            &format!("Failed to change owner of {}: {:#}", mnt_point.display(), e),
+                            1,
+                        )
+                    })?;
+
                     config.custom_mount_point = Some(mnt_point);
                 }
                 let mount_result = mount_nfs(&share_path, &config, vers4);
