@@ -240,7 +240,7 @@ fn statfs(path: impl AsRef<Path>) -> io::Result<libc::statfs> {
     Ok(buf)
 }
 
-fn export_args_for_path(path: &str, export_mode: &str) -> anyhow::Result<String> {
+fn export_args_for_path(path: &str, export_mode: &str, fsid: usize) -> anyhow::Result<String> {
     let mut export_args = format!("{export_mode},no_subtree_check,no_root_squash,insecure");
     if statfs(path)
         .with_context(|| format!("statfs failed for {path}"))?
@@ -248,7 +248,7 @@ fn export_args_for_path(path: &str, export_mode: &str) -> anyhow::Result<String>
         == 0x65735546
     {
         // exporting FUSE requires fsid
-        export_args += ",fsid=728" // TODO: unique fsid
+        export_args += &format!(",fsid={}", fsid)
     }
     Ok(export_args)
 }
@@ -654,14 +654,14 @@ fn run() -> anyhow::Result<()> {
         }
 
         let mut exports = vec![];
-        for p in paths {
-            let a = export_args_for_path(&p, export_mode)?;
+        for (i, p) in paths.into_iter().enumerate() {
+            let a = export_args_for_path(&p, export_mode, i)?;
             exports.push((p, a));
         }
         exports
     } else {
         // single export
-        let export_args = export_args_for_path(&export_path, export_mode)?;
+        let export_args = export_args_for_path(&export_path, export_mode, 0)?;
         vec![(export_path, export_args)]
     };
     let mut exports_content = String::new();
