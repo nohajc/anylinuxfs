@@ -152,6 +152,7 @@ pub const LINUX_LABELS: Labels = Labels {
         "Linux_LVM",
         "Linux_RAID",
         "Linux",
+        "ZFS",
     ]),
     fs_types: FsTypes(&[
         "btrfs",
@@ -164,6 +165,7 @@ pub const LINUX_LABELS: Labels = Labels {
         "zfs",
         "crypto_LUKS",
         "LVM2_member",
+        "zfs_member",
     ]),
 };
 
