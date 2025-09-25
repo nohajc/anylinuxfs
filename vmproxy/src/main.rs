@@ -306,6 +306,11 @@ fn run() -> anyhow::Result<()> {
     let mount_options = cli.mount_options;
     let verbose = cli.verbose;
 
+    let specified_read_only = mount_options
+        .as_deref()
+        .map(|opts| is_read_only_set(opts.split(',')))
+        .unwrap_or(false);
+
     let (mapper_ident_prefix, cryptsetup_op) = match fs_type.as_deref() {
         Some("crypto_LUKS") => ("luks", "open"),
         Some("BitLocker") => ("btlk", "bitlkOpen"),
@@ -487,7 +492,7 @@ fn run() -> anyhow::Result<()> {
     //     .context(format!("Failed to mount '/dev/vda' on '{}'", &mount_point))?;
 
     let zfs_mountpoints = if is_zfs {
-        let (status, mountpoints) = zfs::import_all_zpools(&mount_point)?;
+        let (status, mountpoints) = zfs::import_all_zpools(&mount_point, specified_read_only)?;
         if !status.success() {
             return Err(anyhow!(
                 "Importing zpools failed with error code {}",
@@ -622,10 +627,6 @@ fn run() -> anyhow::Result<()> {
 
     // list_dir(mount_point);
 
-    let specified_read_only = mount_options
-        .as_deref()
-        .map(|opts| is_read_only_set(opts.split(',')))
-        .unwrap_or(false);
     let effective_read_only = is_read_only_set(effective_mount_options.iter().map(String::as_str));
 
     if specified_read_only != effective_read_only {
