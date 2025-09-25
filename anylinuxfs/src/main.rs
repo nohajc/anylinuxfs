@@ -169,7 +169,6 @@ impl CustomActionEnvironment for CustomActionConfig {
         let mut undefined_vars = Vec::new();
         let mut env_vars = Vec::new();
         for var_str in &self.environment {
-            // TODO: format could be validated here
             let var_name = var_str
                 .split('=')
                 .next()
