@@ -2078,6 +2078,10 @@ impl AppRunner {
                 wait_for_nfs_server(111, nfs_ready_rx).unwrap_or(NfsStatus::Failed(None));
             if nfs_status.ok() {
                 host_println!("Port 111 open, NFS server ready");
+                // from now on, if anything fails, we need to send quit command to the VM
+                let quit_action = deferred.add(|| {
+                    _ = send_quit_cmd(&config.common);
+                });
 
                 // once the NFS server is ready, we need to change how termination signals are handled
                 // EventSession is going to subscribe to signals, so we unsubscribe the previous handler first
@@ -2158,6 +2162,7 @@ impl AppRunner {
                     event_session.wait_for_unmount(mount_point.real());
                     host_println!("Share {} was unmounted", mount_point.display());
                 }
+                deferred.remove(quit_action);
                 send_quit_cmd(&config.common)?;
             } else {
                 host_println!("NFS server not ready");
