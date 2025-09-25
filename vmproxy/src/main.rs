@@ -404,20 +404,10 @@ fn run() -> anyhow::Result<()> {
     let name = &cli.mount_name;
     let mount_name = if !is_logical {
         if is_zfs {
-            let label = {
-                script("modprobe zfs")
-                    .status()
-                    .context("Failed to load zfs module")?;
-
-                let zpools = zfs::get_importable_zpools()?;
-                // println!("Importable zpools: {:?}", &zpools);
-
-                if zpools.len() > 1 {
-                    "zfs_root".to_owned()
-                } else {
-                    zpools[0].name.clone()
-                }
-            };
+            script("modprobe zfs")
+                .status()
+                .context("Failed to load zfs module")?;
+            let label = "zfs_root".to_owned();
             println!("<anylinuxfs-label:{}>", &label);
             label
         } else {
