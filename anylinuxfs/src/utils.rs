@@ -25,7 +25,10 @@ use std::{
 use anyhow::{Context, anyhow};
 use common_utils::{host_println, log::Prefix, prefix_print, safe_print};
 use crossterm::event::{self, Event};
-use nix::sys::signal::Signal;
+use nix::{
+    sys::signal::Signal,
+    unistd::{Uid, User},
+};
 use objc2_core_foundation::{
     CFCopyTypeIDDescription, CFDictionary, CFGetTypeID, CFRetained, CFString, CFType,
 };
@@ -538,16 +541,18 @@ impl AcquireLock for File {
     }
 }
 
+pub fn try_port(ip: impl Into<IpAddr>, port: u16) -> io::Result<()> {
+    std::net::TcpListener::bind((ip.into(), port)).map(|_| ())
+}
+
 pub fn check_port_availability(ip: impl Into<IpAddr>, port: u16) -> anyhow::Result<()> {
-    std::net::TcpListener::bind((ip.into(), port))
-        .map(|_| ())
-        .map_err(|e| {
-            if e.kind() == io::ErrorKind::AddrInUse {
-                anyhow!("port {port} already in use")
-            } else {
-                anyhow!("unexpected error checking port {port}: {e}")
-            }
-        })
+    try_port(ip.into(), port).map_err(|e| {
+        if e.kind() == io::ErrorKind::AddrInUse {
+            anyhow!("port {port} already in use")
+        } else {
+            anyhow!("unexpected error checking port {port}: {e}")
+        }
+    })
 }
 
 pub unsafe fn cfdict_get_value<'a, T>(dict: &'a CFDictionary, key: &str) -> Option<&'a T> {
@@ -684,6 +689,13 @@ pub fn find_env_vars(expression: &str) -> HashSet<String> {
     }
 
     vars
+}
+
+pub fn user_name_from_uid(uid: libc::uid_t) -> Option<String> {
+    User::from_uid(Uid::from_raw(uid))
+        .ok()
+        .flatten()
+        .map(|u| u.name)
 }
 
 /// A buffered reader that immediately outputs characters as they arrive
