@@ -22,8 +22,9 @@
 
 /*
  * register NFS and MOUNT services with portmap
+ * If statd_only is true, register RPCPROG_STAT v1 on UDP 710 and TCP 904
  */
-static void register_services(int unset_only) {
+static void register_services(int unset_only, int statd_only) {
   struct sockaddr_storage ss, ss6, ssun;
   struct sockaddr *sa = (struct sockaddr *)&ss;
   struct sockaddr *sa6 = (struct sockaddr *)&ss6;
@@ -43,15 +44,53 @@ static void register_services(int unset_only) {
   sun->sun_len = sizeof(*sun);
 
   /* nfsd */
-  rpcb_unset(NULL, RPCPROG_NFS, 2);
   rpcb_unset(NULL, RPCPROG_NFS, 3);
+  rpcb_unset(NULL, RPCPROG_NFS, 4);
 
   /* mountd */
   rpcb_unset(NULL, RPCPROG_MNT, 1);
+  rpcb_unset(NULL, RPCPROG_MNT, 2);
   rpcb_unset(NULL, RPCPROG_MNT, 3);
+
+  /* statd: if we're going to operate on statd only, unset it here too */
+  if (statd_only) {
+    rpcb_unset(NULL, RPCPROG_STAT, 1);
+  }
 
   /* If called with -u, only perform the rpcb_unset calls above and return. */
   if (unset_only) {
+    return;
+  }
+
+  /* If -s was specified, register statd on the fixed ports and skip other
+   * services */
+  if (statd_only) {
+    errcnt = 0;
+
+    /* UDP: port 710 */
+    sin->sin_port = htons(710);
+    if (!rpcb_set("udp", RPCPROG_STAT, 1, sa)) {
+      errcnt++;
+    }
+
+    if (!rpcb_set("udp6", RPCPROG_STAT, 1, sa)) {
+      errcnt++;
+    }
+
+    /* TCP: port 904 */
+    sin->sin_port = htons(904);
+    if (!rpcb_set("tcp", RPCPROG_STAT, 1, sa)) {
+      errcnt++;
+    }
+
+    if (!rpcb_set("tcp6", RPCPROG_STAT, 1, sa6)) {
+      errcnt++;
+    }
+
+    if (errcnt) {
+      fprintf(stderr, "couldn't register STAT service.\n");
+    }
+
     return;
   }
 
@@ -214,13 +253,16 @@ static void register_services(int unset_only) {
 
 int main(int argc, char **argv) {
   int unset_only = 0;
+  int statd_only = 0;
 
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "-u") == 0) {
       unset_only = 1;
+    } else if (strcmp(argv[i], "-s") == 0) {
+      statd_only = 1;
     }
   }
 
-  register_services(unset_only);
+  register_services(unset_only, statd_only);
   return 0;
 }

@@ -36,6 +36,8 @@ struct Cli {
     #[arg(short, long)]
     reuse_passphrase: bool,
     #[arg(short, long)]
+    host_rpcbind: bool,
+    #[arg(short, long)]
     verbose: bool,
 }
 
@@ -59,7 +61,7 @@ fn expose_port(client: &reqwest::blocking::Client, port_def: &PortDef) -> anyhow
     Ok(())
 }
 
-fn init_network(bind_addr: &str) -> anyhow::Result<()> {
+fn init_network(bind_addr: &str, host_rpcbind: bool) -> anyhow::Result<()> {
     fs::write("/etc/resolv.conf", "nameserver 192.168.127.1\n")
         .context("Failed to write /etc/resolv.conf")?;
 
@@ -79,13 +81,16 @@ fn init_network(bind_addr: &str) -> anyhow::Result<()> {
     }
 
     let client = reqwest::blocking::Client::new();
-    expose_port(
-        &client,
-        &PortDef {
-            local: ":111",
-            remote: "192.168.127.2:111",
-        },
-    )?;
+
+    if !host_rpcbind {
+        expose_port(
+            &client,
+            &PortDef {
+                local: ":111",
+                remote: "192.168.127.2:111",
+            },
+        )?;
+    }
 
     for addr in bind_addr_list {
         expose_port(
@@ -535,7 +540,7 @@ fn run() -> anyhow::Result<()> {
     .map(|s| s.to_owned())
     .collect::<Vec<String>>();
 
-    init_network(&cli.bind_addr).context("Failed to initialize network")?;
+    init_network(&cli.bind_addr, cli.host_rpcbind).context("Failed to initialize network")?;
 
     // list_dir(mount_point);
 

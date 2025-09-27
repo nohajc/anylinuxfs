@@ -7,7 +7,6 @@ use common_utils::{
 
 use devinfo::DevInfo;
 use nanoid::nanoid;
-use nix::unistd::{Uid, User};
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -50,6 +49,7 @@ mod diskutil;
 mod dnsutil;
 mod fsutil;
 mod pubsub;
+mod rpcbind;
 mod utils;
 
 const LOCK_FILE: &str = "/tmp/anylinuxfs.lock";
@@ -103,6 +103,7 @@ fn main() {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct Config {
+    exec_path: PathBuf,
     root_path: PathBuf,
     root_ver_file_path: PathBuf,
     config_file_path: PathBuf,
@@ -417,6 +418,8 @@ Supported partition schemes:
     /// Manage custom alpine packages
     #[command(subcommand)]
     Apk(ApkCmd),
+    #[command(subcommand, hide = true)]
+    Rpcbind(RpcBindCmd),
 }
 
 #[derive(Args, Default, PartialEq, Eq)]
@@ -530,6 +533,16 @@ enum ApkCmd {
     },
 }
 
+#[derive(Subcommand)]
+enum RpcBindCmd {
+    /// Register RPC services
+    Register,
+    /// Unregister RPC services
+    Unregister,
+    /// List registered RPC services
+    List,
+}
+
 #[derive(Parser)]
 #[command(version, about = "Mount a filesystem (the default if no command given)", long_about = None)]
 struct CliMount {
@@ -616,8 +629,9 @@ fn load_config(common_args: &CommonArgs) -> anyhow::Result<Config> {
         None => gid,
     };
 
-    let exec_dir = fs::canonicalize(env::current_exe().context("Failed to get executable path")?)
-        .context("Failed to get resolved exec path")?
+    let exec_path = fs::canonicalize(env::current_exe().context("Failed to get executable path")?)
+        .context("Failed to get resolved exec path")?;
+    let exec_dir = exec_path
         .parent()
         .context("Failed to get executable directory")?
         .to_owned();
@@ -651,6 +665,7 @@ fn load_config(common_args: &CommonArgs) -> anyhow::Result<Config> {
         .unwrap_or(preferences.misc.passphrase_config);
 
     Ok(Config {
+        exec_path,
         root_path,
         root_ver_file_path,
         config_file_path,
@@ -900,6 +915,7 @@ fn setup_vm(
 fn start_vmproxy(
     ctx: u32,
     config: &MountConfig,
+    service_status: &ServiceStatus,
     env: &[String],
     dev_info: &DevInfo,
     multi_device: bool,
@@ -954,6 +970,12 @@ fn start_vmproxy(
     }))
     .chain(multi_device.then_some(c"-m".to_owned()).into_iter())
     .chain(reuse_passphrase.then_some(c"-r".to_owned()).into_iter())
+    .chain(
+        service_status
+            .rpcbind_running
+            .then_some(c"-h".to_owned())
+            .into_iter(),
+    )
     .chain(config.verbose.then_some(c"-v".to_owned()).into_iter())
     .collect();
 
@@ -1626,6 +1648,11 @@ fn get_default_packages() -> BTreeSet<String> {
         .collect()
 }
 
+#[derive(Default)]
+struct ServiceStatus {
+    rpcbind_running: bool,
+}
+
 struct AppRunner {
     is_child: bool,
     print_log: bool,
@@ -1771,12 +1798,34 @@ impl AppRunner {
         Ok(())
     }
 
+    fn run_rpcbind(&mut self, cmd: RpcBindCmd) -> anyhow::Result<()> {
+        match cmd {
+            RpcBindCmd::Register => rpcbind::services::register(),
+            RpcBindCmd::Unregister => {
+                rpcbind::services::unregister();
+                Ok(())
+            }
+            RpcBindCmd::List => {
+                let out = rpcbind::services::list()?;
+                for entry in out {
+                    safe_println!("{:?}", entry)?;
+                }
+                Ok(())
+            }
+        }
+    }
+
     fn run_mount(&mut self, cmd: MountCmd) -> anyhow::Result<()> {
         let _lock_file = LockFile::new(LOCK_FILE)?.acquire_lock(FlockKind::Exclusive)?;
+        let mut service_status = ServiceStatus::default();
 
-        utils::check_port_availability([0, 0, 0, 0], 111)?;
         for port in [2049, 32765, 32767] {
             utils::check_port_availability([127, 0, 0, 1], port)?;
+        }
+        if let Err(e) = utils::try_port([0, 0, 0, 0], 111)
+            && e.kind() == io::ErrorKind::AddrInUse
+        {
+            service_status.rpcbind_running = true;
         }
 
         let config = load_mount_config(cmd)?;
@@ -1799,7 +1848,7 @@ impl AppRunner {
         if forked.pid == 0 {
             self.is_child = true;
             let verbose = config.verbose;
-            let res = self.run_mount_child(config, forked.comm_fd());
+            let res = self.run_mount_child(config, service_status, forked.comm_fd());
             if res.is_err() {
                 if !verbose {
                     self.print_log = true;
@@ -1816,6 +1865,7 @@ impl AppRunner {
     fn run_mount_child(
         &mut self,
         mut config: MountConfig,
+        service_status: ServiceStatus,
         comm_write_fd: libc::c_int,
     ) -> anyhow::Result<()> {
         // pre-declare so it can be referenced in a deferred action
@@ -1944,6 +1994,7 @@ impl AppRunner {
             start_vmproxy(
                 ctx,
                 &config,
+                &service_status,
                 &vm_env,
                 &mnt_dev_info,
                 dev_info.len() > 1,
@@ -1970,6 +2021,62 @@ impl AppRunner {
             }));
 
             api::serve_info(rt_info.clone());
+
+            if service_status.rpcbind_running {
+                _ = deferred.add(|| {
+                    rpcbind::services::unregister();
+                });
+                // if rpcbind is already running, we can use it to register our NFS server
+                // but we have to unregister any conflicting system services first
+                // (make sure to elevate if we need to unregister any services not owned by us)
+                let unregister_fn = || -> anyhow::Result<()> {
+                    let uid = config.common.invoker_uid;
+                    if config.common.sudo_uid.is_none() && uid != 0 {
+                        let any_root_svcs = rpcbind::services::list()?.into_iter().any(|entry| {
+                            (entry.prog == rpcbind::RPCPROG_MNT
+                                || entry.prog == rpcbind::RPCPROG_NFS
+                                || entry.prog == rpcbind::RPCPROG_STAT)
+                                && Some(entry.owner) != utils::user_name_from_uid(uid)
+                        });
+
+                        if any_root_svcs {
+                            safe_println!(
+                                "rpcbind already running, need to use sudo for NFS setup"
+                            )?;
+                            Command::new("sudo")
+                                .arg("-S")
+                                .arg(&config.common.exec_path)
+                                .arg("rpcbind")
+                                .arg("unregister")
+                                .status()?;
+
+                            return Ok(());
+                        }
+                    }
+
+                    rpcbind::services::unregister();
+                    Ok(())
+                };
+                unregister_fn()?;
+
+                // make sure to always run this as regular user
+                // because cleanup code runs after we've dropped privileges
+                // (regular user cannot unregister services registered by root)
+                if let (Some(uid), Some(gid)) = (config.common.sudo_uid, config.common.sudo_gid) {
+                    let status = Command::new(&config.common.exec_path)
+                        .arg("rpcbind")
+                        .arg("register")
+                        .uid(uid)
+                        .gid(gid)
+                        .status()?;
+                    if !status.success() {
+                        return Err(anyhow!("Failed to register NFS server to rpcbind"));
+                    }
+                } else {
+                    rpcbind::services::register()
+                        .context("Failed to register NFS server to rpcbind")?;
+                }
+            }
 
             let (nfs_ready_tx, nfs_ready_rx) = mpsc::channel();
             let (vm_pwd_prompt_tx, vm_pwd_prompt_rx) = mpsc::channel();
@@ -2075,9 +2182,10 @@ impl AppRunner {
             stdin_forwarder.echo_newline(false);
 
             let nfs_status =
-                wait_for_nfs_server(111, nfs_ready_rx).unwrap_or(NfsStatus::Failed(None));
+                wait_for_nfs_server(2049, nfs_ready_rx).unwrap_or(NfsStatus::Failed(None));
             if nfs_status.ok() {
-                host_println!("Port 111 open, NFS server ready");
+                host_println!("Port 2049 open, NFS server ready");
+
                 // from now on, if anything fails, we need to send quit command to the VM
                 let quit_action = deferred.add(|| {
                     _ = send_quit_cmd(&config.common);
@@ -2376,12 +2484,8 @@ impl AppRunner {
                     )
                     .collect();
 
-                let user_name =
-                    User::from_uid(Uid::from_raw(rt_info.mount_config.common.invoker_uid))
-                        .ok()
-                        .flatten()
-                        .map(|u| u.name)
-                        .unwrap_or("<unknown>".into());
+                let user_name = utils::user_name_from_uid(rt_info.mount_config.common.invoker_uid)
+                    .unwrap_or("<unknown>".into());
 
                 println!(
                     "{} on {} ({}, mounted by {}) VM[cpus: {}, ram: {} MiB]",
@@ -2521,6 +2625,7 @@ impl AppRunner {
             Commands::Shell(cmd) => self.run_shell(cmd),
             Commands::Dmesg => self.run_dmesg(),
             Commands::Apk(cmd) => self.run_apk(cmd),
+            Commands::Rpcbind(cmd) => self.run_rpcbind(cmd),
         }
     }
 }
