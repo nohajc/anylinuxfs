@@ -920,6 +920,9 @@ impl StdinForwarder {
                                                     _ = safe_print!("\r\n");
                                                 }
                                             },
+                                            event::KeyCode::Backspace => unsafe {
+                                                write_to_pipe(in_fd, b"\x7f")?;
+                                            },
                                             event::KeyCode::Char(c) => unsafe {
                                                 write_to_pipe(in_fd, c.to_string().as_bytes())?;
                                             },

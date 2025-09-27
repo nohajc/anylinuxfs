@@ -266,6 +266,12 @@ func writeSetupScript(cfg *Config) error {
 	vmSetupScriptContent := fmt.Sprintf(`#!/bin/sh
 
 apk --update --no-cache add %s
+MOD_PATH="modules/$(uname -r)"
+cd /lib
+mkdir -p $MOD_PATH
+unsquashfs -d $MOD_PATH modules.squashfs
+rm modules.squashfs
+depmod -a
 rm -v /etc/idmapd.conf /etc/exports
 `, packagesStr)
 
@@ -313,15 +319,34 @@ func downloadEntrypointScript(rootfsPath string) error {
 	return nil
 }
 
-func copyVmproxyBinary(prefixDir, rootfsPath string) error {
-	vmproxySrcPath := filepath.Join(prefixDir, "libexec", "vmproxy")
-	vmproxyDstPath := filepath.Join(rootfsPath, "vmproxy")
-
-	copyCmd := exec.Command("cp", "-v", vmproxySrcPath, vmproxyDstPath)
+func copyFile(srcPath, dstPath string) error {
+	copyCmd := exec.Command("cp", "-v", srcPath, dstPath)
 	copyCmd.Stdout = os.Stdout
 	copyCmd.Stderr = os.Stderr
 
-	err := copyCmd.Run()
+	return copyCmd.Run()
+}
+
+func copyVmproxyBinary(prefixDir, rootfsPath string) error {
+	vmproxyBin := "vmproxy"
+	vmproxySrcPath := filepath.Join(prefixDir, "libexec", vmproxyBin)
+	vmproxyDstPath := filepath.Join(rootfsPath, vmproxyBin)
+
+	err := copyFile(vmproxySrcPath, vmproxyDstPath)
+	if err != nil {
+		fmt.Printf("Error copying vmproxy: %v\n", err)
+		return err
+	}
+
+	return nil
+}
+
+func copyLinuxModules(prefixDir, rootfsPath string) error {
+	modulesSquashfs := "modules.squashfs"
+	modulesSrcPath := filepath.Join(prefixDir, "lib", modulesSquashfs)
+	modulesDstPath := filepath.Join(rootfsPath, "lib", modulesSquashfs)
+
+	err := copyFile(modulesSrcPath, modulesDstPath)
 	if err != nil {
 		fmt.Printf("Error copying vmproxy: %v\n", err)
 		return err
@@ -360,6 +385,10 @@ func initRootfs(cfg *Config, nameserver string) error {
 	}
 
 	if err := downloadEntrypointScript(cfg.RootfsPath); err != nil {
+		return err
+	}
+
+	if err := copyLinuxModules(cfg.PrefixDir, cfg.RootfsPath); err != nil {
 		return err
 	}
 

@@ -164,15 +164,26 @@ impl CustomActionEnvironment for CustomActionConfig {
             referenced_variables.extend(utils::find_env_vars(script));
         }
 
+        let mut predefined_vars = HashSet::new();
         let mut undefined_vars = Vec::new();
         let mut env_vars = Vec::new();
+        for var_str in &self.environment {
+            let var_name = var_str
+                .split('=')
+                .next()
+                .ok_or_else(|| anyhow!("invalid environment variable format: {}", var_str))?;
+            predefined_vars.insert(var_name.to_owned());
+            env_vars.push(var_str.clone());
+        }
         for var_name in referenced_variables.iter().chain(&self.capture_environment) {
             match env::var(&var_name) {
                 Ok(var_value) => {
                     env_vars.push(format!("{}={}", var_name, var_value));
                 }
                 Err(VarError::NotPresent) => {
-                    if !Self::VM_EXPORTED_VARS.contains(&var_name.as_str()) {
+                    if !Self::VM_EXPORTED_VARS.contains(&var_name.as_str())
+                        && !predefined_vars.contains(var_name)
+                    {
                         undefined_vars.push(var_name.clone());
                     }
                 }
@@ -1179,10 +1190,12 @@ fn wait_for_nfs_server(
     Ok(nfs_ready)
 }
 
-fn mount_nfs(share_path: &str, config: &MountConfig) -> anyhow::Result<()> {
+fn mount_nfs(share_path: &str, config: &MountConfig, vers4: bool) -> anyhow::Result<()> {
     let status = if let Some(mount_point) = config.custom_mount_point.as_deref() {
+        let opts = if vers4 { "-o vers=4" } else { "" };
         let mut shell_script = format!(
-            "mount -t nfs \"localhost:{}\" \"{}\"",
+            "mount -t nfs {} \"localhost:{}\" \"{}\"",
+            opts,
             share_path,
             mount_point.display()
         );
@@ -1286,7 +1299,7 @@ fn wait_for_file(file: impl AsRef<Path>) -> anyhow::Result<()> {
     Ok(())
 }
 
-const ROOTFS_CURRENT_VERSION: &str = "1.1.2";
+const ROOTFS_CURRENT_VERSION: &str = "1.2.0";
 
 fn rootfs_version_matches(config: &Config) -> bool {
     let root_ver_file_path = config.root_ver_file_path.as_path();
@@ -1448,7 +1461,7 @@ enum MountStatus<'a> {
     NoLonger,
 }
 
-fn validated_mount_point(rt_info: &api::RuntimeInfo) -> MountStatus {
+fn validated_mount_point(rt_info: &api::RuntimeInfo) -> MountStatus<'_> {
     let Some(mount_point) = rt_info.mount_point.as_ref().map(Path::new) else {
         return MountStatus::NotYet;
     };
@@ -2078,6 +2091,10 @@ impl AppRunner {
                 wait_for_nfs_server(111, nfs_ready_rx).unwrap_or(NfsStatus::Failed(None));
             if nfs_status.ok() {
                 host_println!("Port 111 open, NFS server ready");
+                // from now on, if anything fails, we need to send quit command to the VM
+                let quit_action = deferred.add(|| {
+                    _ = send_quit_cmd(&config.common);
+                });
 
                 // once the NFS server is ready, we need to change how termination signals are handled
                 // EventSession is going to subscribe to signals, so we unsubscribe the previous handler first
@@ -2113,7 +2130,25 @@ impl AppRunner {
                     }
                     _ => format!("/mnt/{share_name}"),
                 };
-                let mount_result = mount_nfs(&share_path, &config);
+                let vers4 = mnt_dev_info.fs_type() == Some("zfs");
+                if vers4 {
+                    let mnt_point = PathBuf::from(format!("/Volumes/{share_name}"));
+                    fs::create_dir_all(&mnt_point).with_context(|| {
+                        format!("Failed to create mount point {}", mnt_point.display())
+                    })?;
+
+                    chown(
+                        &mnt_point,
+                        Some(config.common.invoker_uid),
+                        Some(config.common.invoker_gid),
+                    )
+                    .with_context(|| {
+                        format!("Failed to change owner of {}", mnt_point.display())
+                    })?;
+
+                    config.custom_mount_point = Some(mnt_point);
+                }
+                let mount_result = mount_nfs(&share_path, &config, vers4);
                 match &mount_result {
                     Ok(_) => host_println!("Requested NFS share mount"),
                     Err(e) => host_eprintln!("Failed to request NFS mount: {:#}", e),
@@ -2158,6 +2193,7 @@ impl AppRunner {
                     event_session.wait_for_unmount(mount_point.real());
                     host_println!("Share {} was unmounted", mount_point.display());
                 }
+                deferred.remove(quit_action);
                 send_quit_cmd(&config.common)?;
             } else {
                 host_println!("NFS server not ready");

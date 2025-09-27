@@ -11,8 +11,15 @@ use std::path::Path;
 use std::process::{Child, Command, ExitCode, Stdio};
 use std::time::Duration;
 use std::{fs, io::BufReader};
+#[cfg(target_os = "linux")]
 use sys_mount::{UnmountFlags, unmount};
 use vsock::{VsockAddr, VsockListener};
+
+use crate::utils::{script, script_output};
+
+mod kernel_cfg;
+mod utils;
+mod zfs;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -181,6 +188,19 @@ impl CustomActionRunner {
         Ok(())
     }
 
+    pub fn before_mount(&self) -> anyhow::Result<()> {
+        if let Some(action) = &self.config {
+            if !action.before_mount.is_empty() {
+                println!("<anylinuxfs-force-output:on>");
+                println!("Running before_mount action: `{}`", action.before_mount);
+                let result = self.execute_action(&action.before_mount);
+                println!("<anylinuxfs-force-output:off>");
+                result?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn after_mount(&self) -> anyhow::Result<()> {
         if let Some(action) = &self.config {
             if !action.after_mount.is_empty() {
@@ -214,6 +234,19 @@ fn statfs(path: impl AsRef<Path>) -> io::Result<libc::statfs> {
     Ok(buf)
 }
 
+fn export_args_for_path(path: &str, export_mode: &str, fsid: usize) -> anyhow::Result<String> {
+    let mut export_args = format!("{export_mode},no_subtree_check,no_root_squash,insecure");
+    if statfs(path)
+        .with_context(|| format!("statfs failed for {path}"))?
+        .f_type
+        == 0x65735546
+    {
+        // exporting FUSE requires fsid
+        export_args += &format!(",fsid={}", fsid)
+    }
+    Ok(export_args)
+}
+
 fn main() -> ExitCode {
     if let Err(e) = run() {
         eprintln!("Error: {:#}", e);
@@ -238,12 +271,7 @@ fn run() -> anyhow::Result<()> {
 
     deferred.add(|| {
         let kernel_log_warning = "Warning: failed to dump dmesg output to /kernel.log";
-        match Command::new("/bin/busybox")
-            .arg("sh")
-            .arg("-c")
-            .arg("dmesg > /kernel.log")
-            .status()
-        {
+        match script("dmesg > /kernel.log").status() {
             Ok(status) if !status.success() => {
                 eprintln!("{}", kernel_log_warning);
             }
@@ -271,6 +299,11 @@ fn run() -> anyhow::Result<()> {
     let fs_driver = cli.fs_driver;
     let mount_options = cli.mount_options;
     let verbose = cli.verbose;
+
+    let specified_read_only = mount_options
+        .as_deref()
+        .map(|opts| is_read_only_set(opts.split(',')))
+        .unwrap_or(false);
 
     let (mapper_ident_prefix, cryptsetup_op) = match fs_type.as_deref() {
         Some("crypto_LUKS") => ("luks", "open"),
@@ -336,14 +369,11 @@ fn run() -> anyhow::Result<()> {
             .status()
             .context("Failed to run mdadm command")?;
 
-        let output = Command::new("/bin/busybox")
-            .arg("sh")
-            .arg("-c")
-            .arg("mdadm --detail --scan | cut -d' ' -f2")
-            .output()
-            .context("Failed to get RAID device path from mdadm")?;
+        let md_path = script_output("mdadm --detail --scan | cut -d' ' -f2")
+            .context("Failed to get RAID device path from mdadm")?
+            .trim()
+            .to_owned();
 
-        let md_path = String::from_utf8_lossy(&output.stdout).trim().to_owned();
         if !md_path.is_empty() {
             disk_path = md_path;
         }
@@ -368,10 +398,20 @@ fn run() -> anyhow::Result<()> {
         _ => {}
     }
     let is_logical = disk_path.starts_with("/dev/mapper") || is_raid;
+    let is_zfs = fs_type.as_deref() == Some("zfs_member");
 
     let name = &cli.mount_name;
     let mount_name = if !is_logical {
-        name.to_owned()
+        if is_zfs {
+            script("modprobe zfs")
+                .status()
+                .context("Failed to load zfs module")?;
+            let label = "zfs_root".to_owned();
+            println!("<anylinuxfs-label:{}>", &label);
+            label
+        } else {
+            name.to_owned()
+        }
     } else {
         let label = Command::new("/sbin/blkid")
             .arg(&disk_path)
@@ -404,6 +444,10 @@ fn run() -> anyhow::Result<()> {
             let fs = String::from_utf8_lossy(&fs).trim().to_owned();
             println!("<anylinuxfs-type:{}>", &fs);
             fs_type = if !fs.is_empty() { Some(fs) } else { None };
+        }
+        Some("zfs_member") => {
+            fs_type = Some("zfs".to_owned());
+            println!("<anylinuxfs-type:{}>", fs_type.as_deref().unwrap());
         }
         _ => (),
     }
@@ -441,26 +485,51 @@ fn run() -> anyhow::Result<()> {
     //     .mount("/dev/vda", &mount_point)
     //     .context(format!("Failed to mount '/dev/vda' on '{}'", &mount_point))?;
 
-    let mnt_args = [
-        "-t",
-        fs_driver
-            .as_deref()
-            .or(fs_type.as_deref())
-            .unwrap_or("auto"),
-        &disk_path,
-        &mount_point,
-    ]
-    .into_iter()
-    .chain(
-        mount_options
-            .as_deref()
-            .into_iter()
-            .flat_map(|opts| ["-o", opts]),
-    )
-    .chain(verbose.then_some("-v").into_iter());
+    let zfs_mountpoints = if is_zfs {
+        let (status, mountpoints) = zfs::import_all_zpools(&mount_point, specified_read_only)?;
+        if !status.success() {
+            return Err(anyhow!(
+                "Importing zpools failed with error code {}",
+                status
+                    .code()
+                    .map(|c| c.to_string())
+                    .unwrap_or("unknown".to_owned())
+            ));
+        }
+        mountpoints
+    } else {
+        vec![]
+    };
 
-    let mnt_args: Vec<&str> = mnt_args.collect();
-    println!("mount args: {:?}", &mnt_args);
+    custom_action
+        .before_mount()
+        .context("before_mount action")?;
+
+    let mnt_args = if !is_zfs {
+        let mnt_args = [
+            "-t",
+            fs_driver
+                .as_deref()
+                .or(fs_type.as_deref())
+                .unwrap_or("auto"),
+            &disk_path,
+            &mount_point,
+        ]
+        .into_iter()
+        .chain(
+            mount_options
+                .as_deref()
+                .into_iter()
+                .flat_map(|opts| ["-o", opts]),
+        )
+        .chain(verbose.then_some("-v").into_iter());
+
+        let mnt_args: Vec<&str> = mnt_args.collect();
+        println!("mount args: {:?}", &mnt_args);
+        mnt_args
+    } else {
+        vec![]
+    };
 
     // we must show any output of mount command
     // in case there's a warning (e.g. NTFS cannot be accessed rw)
@@ -468,10 +537,15 @@ fn run() -> anyhow::Result<()> {
     let force_output_off = deferred.add(|| {
         println!("<anylinuxfs-force-output:off>");
     });
-    let mnt_result = Command::new("/bin/mount")
-        .args(mnt_args)
-        .status()
-        .context("Failed to run mount command")?;
+
+    let mnt_result = if is_zfs {
+        zfs::mount_datasets(&zfs_mountpoints)?
+    } else {
+        Command::new("/bin/mount")
+            .args(mnt_args)
+            .status()
+            .context("Failed to run mount command")?
+    };
 
     if !mnt_result.success() {
         return Err(anyhow!(
@@ -496,8 +570,20 @@ fn run() -> anyhow::Result<()> {
     deferred.add({
         let mount_point = mount_point.clone();
         move || {
-            let mut backoff = Duration::from_secs(1);
-            while let Err(e) = unmount(&mount_point, UnmountFlags::empty()) {
+            let mut backoff = Duration::from_millis(50);
+            let umount_action: &dyn Fn() -> _ = if is_zfs {
+                &|| script("zpool export -a").status().map(|_| ())
+            } else {
+                #[cfg(target_os = "linux")]
+                {
+                    &|| unmount(&mount_point, UnmountFlags::empty())
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    &|| Ok(())
+                }
+            };
+            while let Err(e) = umount_action() {
                 eprintln!("Failed to unmount '{}': {}", &mount_point, e);
                 std::thread::sleep(backoff);
                 backoff = std::cmp::min(backoff * 2, Duration::from_secs(32));
@@ -517,17 +603,13 @@ fn run() -> anyhow::Result<()> {
     });
 
     let effective_mount_options = {
-        let output = Command::new("/bin/busybox")
-            .arg("sh")
-            .arg("-c")
-            .arg(format!(
-                "mount | grep {} | awk -F'(' '{{ print $2 }}' | tr -d ')'",
-                &disk_path
-            ))
-            .output()
-            .context(format!("Failed to get mount options for {}", &disk_path))?;
-
-        let opts = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        let opts = script_output(&format!(
+            "mount | grep {} | awk -F'(' '{{ print $2 }}' | tr -d ')'",
+            &disk_path
+        ))
+        .with_context(|| format!("Failed to get mount options for {}", &disk_path))?
+        .trim()
+        .to_owned();
         println!("Effective mount options: {}", opts);
         opts
     }
@@ -539,11 +621,13 @@ fn run() -> anyhow::Result<()> {
 
     // list_dir(mount_point);
 
-    let specified_read_only = mount_options
-        .as_deref()
-        .map(|opts| is_read_only_set(opts.split(',')))
-        .unwrap_or(false);
-    let effective_read_only = is_read_only_set(effective_mount_options.iter().map(String::as_str));
+    let effective_read_only = if is_zfs {
+        // we don't check effective ro flag for ZFS
+        // (it's only useful for NTFS in hibernation anyway)
+        specified_read_only
+    } else {
+        is_read_only_set(effective_mount_options.iter().map(String::as_str))
+    };
 
     if specified_read_only != effective_read_only {
         println!("<anylinuxfs-mount:changed-to-ro>");
@@ -555,12 +639,30 @@ fn run() -> anyhow::Result<()> {
     };
 
     let export_mode = if effective_read_only { "ro" } else { "rw" };
-    let mut export_args = format!("{export_mode},no_subtree_check,no_root_squash,insecure");
-    if statfs(&export_path)?.f_type == 0x65735546 {
-        // exporting FUSE requires fsid
-        export_args += ",fsid=728"
+
+    let all_exports = if is_zfs {
+        let mut paths: Vec<_> = zfs_mountpoints.into_iter().map(|m| m.path).collect();
+
+        if !paths.iter().any(|p| p == &export_path) {
+            paths.push(export_path);
+        }
+
+        let mut exports = vec![];
+        for (i, p) in paths.into_iter().enumerate() {
+            let a = export_args_for_path(&p, export_mode, i)?;
+            exports.push((p, a));
+        }
+        exports
+    } else {
+        // single export
+        let export_args = export_args_for_path(&export_path, export_mode, 0)?;
+        vec![(export_path, export_args)]
+    };
+    let mut exports_content = String::new();
+
+    for (export_path, export_args) in &all_exports {
+        exports_content += &format!("\"{}\"      *({})\n", &export_path, export_args);
     }
-    let exports_content = format!("\"{}\"      *({})\n", &export_path, export_args);
 
     fs::write("/etc/exports", exports_content).context("Failed to write to /etc/exports")?;
     println!("Successfully initialized /etc/exports.");
