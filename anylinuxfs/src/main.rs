@@ -1870,6 +1870,7 @@ impl AppRunner {
     ) -> anyhow::Result<()> {
         // pre-declare so it can be referenced in a deferred action
         let stdin_forwarder;
+        let services_to_restore: Vec<_>;
         let mut deferred = Deferred::new();
 
         init_rootfs(&config.common, false)?;
@@ -2023,8 +2024,18 @@ impl AppRunner {
             api::serve_info(rt_info.clone());
 
             if service_status.rpcbind_running {
+                services_to_restore = rpcbind::services::list()?
+                    .into_iter()
+                    .filter(|entry| {
+                        entry.prog == rpcbind::RPCPROG_MNT
+                            || entry.prog == rpcbind::RPCPROG_NFS
+                            || entry.prog == rpcbind::RPCPROG_STAT
+                    })
+                    .collect();
+
                 _ = deferred.add(|| {
                     rpcbind::services::unregister();
+                    _ = rpcbind::services::rpcb_set_entries(&services_to_restore);
                 });
                 // if rpcbind is already running, we can use it to register our NFS server
                 // but we have to unregister any conflicting system services first
@@ -2032,11 +2043,8 @@ impl AppRunner {
                 let unregister_fn = || -> anyhow::Result<()> {
                     let uid = config.common.invoker_uid;
                     if config.common.sudo_uid.is_none() && uid != 0 {
-                        let any_root_svcs = rpcbind::services::list()?.into_iter().any(|entry| {
-                            (entry.prog == rpcbind::RPCPROG_MNT
-                                || entry.prog == rpcbind::RPCPROG_NFS
-                                || entry.prog == rpcbind::RPCPROG_STAT)
-                                && Some(entry.owner) != utils::user_name_from_uid(uid)
+                        let any_root_svcs = services_to_restore.iter().any(|entry| {
+                            Some(&entry.owner) != utils::user_name_from_uid(uid).as_ref()
                         });
 
                         if any_root_svcs {
