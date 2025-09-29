@@ -4,6 +4,7 @@ use libc::{
     AF_INET, AF_INET6, INADDR_ANY, c_char, c_int, c_uint, htons, in_addr, in6_addr, sa_family_t,
     sockaddr, sockaddr_in, sockaddr_in6, sockaddr_storage,
 };
+use os_socketaddr::OsSocketAddr;
 use std::ffi::CStr;
 use std::net::SocketAddr;
 use std::{ffi::CString, mem, ptr};
@@ -105,7 +106,7 @@ pub struct Entry {
     pub prog: c_uint,
     pub vers: c_uint,
     pub netid: String,
-    pub addr: SocketAddr,
+    pub addr: OsSocketAddr,
     pub owner: String,
 }
 
@@ -152,6 +153,29 @@ pub mod services {
             }
         }
         1
+    }
+
+    pub fn rpcb_set_entry(entry: &Entry) -> c_int {
+        let c_netid = CString::new(entry.netid.as_bytes()).unwrap();
+        unsafe {
+            rpcb_set(
+                c_netid.as_ptr(),
+                entry.prog,
+                entry.vers,
+                entry.addr.as_ptr(),
+            )
+        }
+    }
+
+    pub fn rpcb_set_entries(entries: &[Entry]) -> c_int {
+        let mut result = 1;
+        for entry in entries {
+            let res = rpcb_set_entry(entry);
+            if res == 0 {
+                result = 0;
+            }
+        }
+        result
     }
 
     /// Unregister the NFS and MOUNT program/version pairs.
@@ -460,7 +484,7 @@ pub mod services {
                 // };
 
                 if netid.starts_with("tcp") || netid.starts_with("udp") {
-                    let addr = parse_rpcb_addr(&addr_string);
+                    let addr = parse_rpcb_addr(&addr_string).into();
 
                     res.push(Entry {
                         prog,

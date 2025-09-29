@@ -87,6 +87,7 @@ dependencies = [
  "objc2-core-foundation",
  "objc2-disk-arbitration",
  "objc2-system-configuration",
+ "os_socketaddr",
  "plist",
  "regex",
  "rpassword",
@@ -908,6 +909,16 @@ name = "once_cell"
 version = "1.21.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "42f5e15c9953c5e4ccceeb2e7382a716482c34515315f7b03532b8b4e8393d2d"
+
+[[package]]
+name = "os_socketaddr"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fa149f3ec09cadeb41968390fcd71e6ea038a9a373d1d4eb070f4d9484d4b244"
+dependencies = [
+ "libc",
+ "winapi",
+]
 
 [[package]]
 name = "parking_lot"
