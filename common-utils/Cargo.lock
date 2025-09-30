@@ -10,7 +10,7 @@ checksum = "dcfed56ad506cb2c684a14971b8861fdc3baaaae314b9e5f9bb532cbe3ba7a4f"
 
 [[package]]
 name = "common_utils"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "anyhow",
  "libc",
