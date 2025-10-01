@@ -1,13 +1,8 @@
-#![allow(unused)]
-use libc::timeval;
-use libc::{
-    AF_INET, AF_INET6, INADDR_ANY, c_char, c_int, c_uint, htons, in_addr, in6_addr, sa_family_t,
-    sockaddr, sockaddr_in, sockaddr_in6, sockaddr_storage,
-};
+use libc::{c_char, c_int, c_uint, c_void, sockaddr, timeval};
 use os_socketaddr::OsSocketAddr;
 use std::ffi::CStr;
 use std::net::SocketAddr;
-use std::{ffi::CString, mem, ptr};
+use std::{ffi::CString, ptr};
 
 use anyhow::anyhow;
 
@@ -25,7 +20,7 @@ unsafe extern "C" {
         program: c_uint,
         version: c_uint,
         addr: *const sockaddr,
-    ) -> c_int;
+    ) -> bool;
 
     /* Additional declarations pulled from <rpc/rpc.h> and related headers */
     #[link_name = "_newrpclib_clnt_create_timeout"]
@@ -38,17 +33,16 @@ unsafe extern "C" {
     ) -> *mut CLIENT;
 
     #[link_name = "_newrpclib_xdr_rpcblist_ptr"]
-    pub fn xdr_rpcblist_ptr(xdrs: *mut libc::c_void, objp: *mut libc::c_void, len: c_uint)
-    -> c_int;
+    pub fn xdr_rpcblist_ptr(xdrs: *mut c_void, objp: *mut c_void, len: c_uint) -> c_int;
 
     pub fn xdr_void() -> c_int;
     pub fn clnt_sperrno(stat: c_int) -> *const c_char;
-    // pub fn getrpcbynumber(number: c_int) -> *mut Rpcent;
+    pub fn getrpcbynumber(number: c_int) -> *mut Rpcent;
 }
 
 #[allow(non_camel_case_types)]
 pub type xdrproc_t =
-    unsafe extern "C" fn(xdrs: *mut libc::c_void, addrp: *mut libc::c_void, len: c_uint) -> c_int;
+    unsafe extern "C" fn(xdrs: *mut c_void, addrp: *mut c_void, len: c_uint) -> c_int;
 
 #[allow(non_camel_case_types)]
 pub type xdrproc_void_t = unsafe extern "C" fn() -> c_int;
@@ -59,32 +53,32 @@ pub struct ClntOps {
         *mut CLIENT,
         c_uint,
         xdrproc_void_t,
-        *mut libc::c_void,
+        *mut c_void,
         xdrproc_t,
-        *mut libc::c_void,
+        *mut c_void,
         timeval,
     ) -> c_int,
 
     pub cl_abort: extern "C" fn(),
-    pub cl_geterr: extern "C" fn(*mut CLIENT, *mut libc::c_void),
-    pub cl_freeres: extern "C" fn(*mut CLIENT, *const libc::c_void, *mut libc::c_void) -> c_int,
+    pub cl_geterr: extern "C" fn(*mut CLIENT, *mut c_void),
+    pub cl_freeres: extern "C" fn(*mut CLIENT, *const c_void, *mut c_void) -> c_int,
     pub cl_destroy: extern "C" fn(*mut CLIENT),
     pub cl_control: extern "C" fn(*mut CLIENT, c_int, *mut c_char) -> c_int,
 }
 
 #[repr(C)]
 pub struct CLIENT {
-    pub cl_auth: *mut libc::c_void,
+    pub cl_auth: *mut c_void,
     pub cl_ops: *mut ClntOps,
-    pub cl_private: *mut libc::c_void,
+    pub cl_private: *mut c_void,
 }
 
-// #[repr(C)]
-// pub struct Rpcent {
-//     pub r_name: *mut c_char,
-//     pub r_aliases: *mut *mut c_char,
-//     pub r_number: c_int,
-// }
+#[repr(C)]
+pub struct Rpcent {
+    pub r_name: *mut c_char,
+    pub r_aliases: *mut *mut c_char,
+    pub r_number: c_int,
+}
 
 #[repr(C)]
 pub struct Rpcb {
@@ -122,63 +116,40 @@ pub mod services {
 
     use super::*;
 
-    const NFSUDPPORT: u16 = 2049;
-    const NFSUDP6PORT: u16 = NFSUDPPORT;
-    const NFSTCPPORT: u16 = NFSUDPPORT;
-    const NFSTCP6PORT: u16 = NFSTCPPORT;
-
-    const MOUNTUDPPORT: u16 = 32767;
-    const MOUNTUDP6PORT: u16 = MOUNTUDPPORT;
-    const MOUNTTCPPORT: u16 = MOUNTUDPPORT;
-    const MOUNTTCP6PORT: u16 = MOUNTTCPPORT;
-
-    const STATDUDPPPORT: u16 = 32765;
-    const STATDUDP6PORT: u16 = STATDUDPPPORT;
-    const STATDTCPPORT: u16 = STATDUDPPPORT;
-    const STATDTCP6PORT: u16 = STATDTCPPORT;
+    const NFS_PORT: u16 = 2049;
+    const MOUNT_PORT: u16 = 32767;
+    const STAT_PORT: u16 = 32765;
 
     const RPCBVERS4: c_uint = 4;
     const RPCBPROC_DUMP: c_uint = 4;
     const RPC_SUCCESS: c_int = 0;
 
-    fn rpcb_set_vers(
-        netid: *const c_char,
-        program: c_uint,
-        versions: &[c_uint],
-        addr: *const sockaddr,
-    ) -> c_int {
-        for &ver in versions {
-            if unsafe { rpcb_set(netid, program, ver, addr) } == 0 {
-                return 0;
-            }
-        }
-        1
-    }
-
-    pub fn rpcb_set_entry(entry: &Entry) -> c_int {
+    pub fn rpcb_set_entry(entry: &Entry) -> anyhow::Result<()> {
         let c_netid = CString::new(entry.netid.as_bytes()).unwrap();
-        unsafe {
+        let stat = unsafe {
             rpcb_set(
                 c_netid.as_ptr(),
                 entry.prog,
                 entry.vers,
                 entry.addr.as_ptr(),
             )
-        }
+        };
+        Ok(handle_rpc_error(
+            entry.prog,
+            entry.vers,
+            &entry.netid,
+            stat.into(),
+        )?)
     }
 
-    pub fn rpcb_set_entries(entries: &[Entry]) -> c_int {
-        let mut result = 1;
+    pub fn rpcb_set_entries(entries: &[Entry]) -> anyhow::Result<()> {
         for entry in entries {
-            let res = rpcb_set_entry(entry);
-            if res == 0 {
-                result = 0;
-            }
+            rpcb_set_entry(entry)?;
         }
-        result
+        Ok(())
     }
 
-    /// Unregister the NFS and MOUNT program/version pairs.
+    /// Unregister the NFS, MOUNT and STAT program/version pairs.
     pub fn unregister() {
         unsafe {
             rpcb_unset(ptr::null(), RPCPROG_NFS, 3);
@@ -190,210 +161,45 @@ pub mod services {
         }
     }
 
-    /// Register NFS and MOUNT services.
+    /// Register NFS, MOUNT and STAT services.
     pub fn register() -> anyhow::Result<()> {
-        let mut errors: Vec<String> = Vec::new();
+        let ip_props = [("", IpAddr::from([0; 4])), ("6", IpAddr::from([0; 16]))];
+        let progs = [
+            (RPCPROG_NFS, NFS_PORT, vec![3, 4]),
+            (RPCPROG_MNT, MOUNT_PORT, vec![1, 2, 3]),
+            (RPCPROG_STAT, STAT_PORT, vec![1]),
+        ];
 
-        // Prepare sockaddr_storage containers for IPv4 and IPv6
-        let mut ss: sockaddr_storage = unsafe { mem::zeroed() };
-        let mut ss6: sockaddr_storage = unsafe { mem::zeroed() };
-
-        // Populate IPv4 and IPv6 sockaddr structures inside the storages
-        unsafe {
-            let sin: *mut sockaddr_in = &mut ss as *mut _ as *mut sockaddr_in;
-            ptr::write_bytes(sin as *mut u8, 0, mem::size_of::<sockaddr_in>());
-            (*sin).sin_family = AF_INET as sa_family_t;
-            (*sin).sin_port = htons(NFSUDPPORT);
-            (*sin).sin_addr = in_addr { s_addr: INADDR_ANY };
-            // BSD/macOS have sin_len
-            #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))]
-            {
-                (*sin).sin_len = mem::size_of::<sockaddr_in>() as u8;
-            }
-
-            let sin6: *mut sockaddr_in6 = &mut ss6 as *mut _ as *mut sockaddr_in6;
-            ptr::write_bytes(sin6 as *mut u8, 0, mem::size_of::<sockaddr_in6>());
-            (*sin6).sin6_family = AF_INET6 as sa_family_t;
-            (*sin6).sin6_port = htons(NFSUDP6PORT);
-            (*sin6).sin6_addr = in6_addr { s6_addr: [0; 16] };
-            #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))]
-            {
-                (*sin6).sin6_len = mem::size_of::<sockaddr_in6>() as u8;
+        for (prog, port, versions) in progs {
+            for proto in ["udp", "tcp"] {
+                for (ip_suffix, ip_any_addr) in ip_props {
+                    for vers in versions.iter().cloned() {
+                        if prog == RPCPROG_NFS && vers == 4 && proto == "udp" {
+                            // NFSv4 doesn't support UDP
+                            continue;
+                        }
+                        let e = Entry {
+                            prog,
+                            vers,
+                            netid: format!("{}{}", proto, ip_suffix),
+                            addr: SocketAddr::new(ip_any_addr, port).into(),
+                            owner: "".into(),
+                        };
+                        rpcb_set_entry(&e)?;
+                    }
+                }
             }
         }
 
-        // Prepare CStrings for netids
-        let c_udp = CString::new("udp").unwrap();
-        let c_tcp = CString::new("tcp").unwrap();
-        let c_udp6 = CString::new("udp6").unwrap();
-        let c_tcp6 = CString::new("tcp6").unwrap();
-
-        // --- Register NFS ---
-        unsafe {
-            // NFS UDP
-            let sin: *mut sockaddr_in = &mut ss as *mut _ as *mut sockaddr_in;
-            (*sin).sin_port = htons(NFSUDPPORT);
-            if rpcb_set(
-                c_udp.as_ptr(),
-                RPCPROG_NFS,
-                3,
-                &ss as *const _ as *const sockaddr,
-            ) == 0
-            {
-                errors.push("couldn't register NFS/UDP".into());
-            }
-
-            // NFS UDP6
-            let sin6: *mut sockaddr_in6 = &mut ss6 as *mut _ as *mut sockaddr_in6;
-            (*sin6).sin6_port = htons(NFSUDP6PORT);
-            if rpcb_set(
-                c_udp6.as_ptr(),
-                RPCPROG_NFS,
-                3,
-                &ss6 as *const _ as *const sockaddr,
-            ) == 0
-            {
-                errors.push("couldn't register NFS/UDP6".into());
-            }
-        }
-
-        // NFS TCP
-        unsafe {
-            let sin: *mut sockaddr_in = &mut ss as *mut _ as *mut sockaddr_in;
-            (*sin).sin_port = htons(NFSTCPPORT);
-            if rpcb_set_vers(
-                c_tcp.as_ptr(),
-                RPCPROG_NFS,
-                &[3, 4],
-                &ss as *const _ as *const sockaddr,
-            ) == 0
-            {
-                errors.push("couldn't register NFS/TCP".into());
-            }
-
-            let sin6: *mut sockaddr_in6 = &mut ss6 as *mut _ as *mut sockaddr_in6;
-            (*sin6).sin6_port = htons(NFSTCP6PORT);
-            if rpcb_set_vers(
-                c_tcp6.as_ptr(),
-                RPCPROG_NFS,
-                &[3, 4],
-                &ss6 as *const _ as *const sockaddr,
-            ) == 0
-            {
-                errors.push("couldn't register NFS/TCP6".into());
-            }
-        }
-
-        // --- Register MOUNTD ---
-        unsafe {
-            let sin: *mut sockaddr_in = &mut ss as *mut _ as *mut sockaddr_in;
-            (*sin).sin_port = htons(MOUNTUDPPORT);
-            if rpcb_set_vers(
-                c_udp.as_ptr(),
-                RPCPROG_MNT,
-                &[1, 2, 3],
-                &ss as *const _ as *const sockaddr,
-            ) == 0
-            {
-                errors.push("couldn't register MOUNT/UDP".into());
-            }
-
-            let sin6: *mut sockaddr_in6 = &mut ss6 as *mut _ as *mut sockaddr_in6;
-            (*sin6).sin6_port = htons(MOUNTUDP6PORT);
-            if rpcb_set_vers(
-                c_udp6.as_ptr(),
-                RPCPROG_MNT,
-                &[1, 2, 3],
-                &ss6 as *const _ as *const sockaddr,
-            ) == 0
-            {
-                errors.push("couldn't register MOUNT/UDP6".into());
-            }
-
-            (*sin).sin_port = htons(MOUNTTCPPORT);
-            if rpcb_set_vers(
-                c_tcp.as_ptr(),
-                RPCPROG_MNT,
-                &[1, 2, 3],
-                &ss as *const _ as *const sockaddr,
-            ) == 0
-            {
-                errors.push("couldn't register MOUNT/TCP".into());
-            }
-
-            (*sin6).sin6_port = htons(MOUNTTCP6PORT);
-            if rpcb_set_vers(
-                c_tcp6.as_ptr(),
-                RPCPROG_MNT,
-                &[1, 2, 3],
-                &ss6 as *const _ as *const sockaddr,
-            ) == 0
-            {
-                errors.push("couldn't register MOUNT/TCP6".into());
-            }
-        }
-
-        // --- Register STATD ---
-        unsafe {
-            let sin: *mut sockaddr_in = &mut ss as *mut _ as *mut sockaddr_in;
-            (*sin).sin_port = htons(STATDUDPPPORT);
-            if rpcb_set(
-                c_udp.as_ptr(),
-                RPCPROG_STAT,
-                1,
-                &ss as *const _ as *const sockaddr,
-            ) == 0
-            {
-                errors.push("couldn't register STATD/UDP".into());
-            }
-
-            let sin6: *mut sockaddr_in6 = &mut ss6 as *mut _ as *mut sockaddr_in6;
-            (*sin6).sin6_port = htons(STATDUDP6PORT);
-            if rpcb_set(
-                c_udp6.as_ptr(),
-                RPCPROG_STAT,
-                1,
-                &ss6 as *const _ as *const sockaddr,
-            ) == 0
-            {
-                errors.push("couldn't register STATD/UDP6".into());
-            }
-
-            (*sin).sin_port = htons(STATDTCPPORT);
-            if rpcb_set(
-                c_tcp.as_ptr(),
-                RPCPROG_STAT,
-                1,
-                &ss as *const _ as *const sockaddr,
-            ) == 0
-            {
-                errors.push("couldn't register STATD/TCP".into());
-            }
-
-            (*sin6).sin6_port = htons(STATDTCP6PORT);
-            if rpcb_set(
-                c_tcp6.as_ptr(),
-                RPCPROG_STAT,
-                1,
-                &ss6 as *const _ as *const sockaddr,
-            ) == 0
-            {
-                errors.push("couldn't register STATD/TCP6".into());
-            }
-        }
-
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(anyhow!("{}", errors.join(", ")))
-        }
+        Ok(())
     }
 
     /// List registered RPC services by querying rpcbind.
     pub fn list() -> anyhow::Result<Vec<Entry>> {
         unsafe {
             let host = CString::new("localhost").unwrap();
-            let nettype = CString::new("udp").unwrap();
+            let nettype = "udp";
+            let c_nettype = CString::new(nettype).unwrap();
 
             let timeout_short = timeval {
                 tv_sec: 5,
@@ -403,7 +209,7 @@ pub mod services {
                 host.as_ptr(),
                 RPCPROG_RPCB,
                 RPCBVERS4,
-                nettype.as_ptr(),
+                c_nettype.as_ptr(),
                 &timeout_short,
             );
             if client.is_null() {
@@ -438,15 +244,7 @@ pub mod services {
                 timeout_long,
             );
 
-            if stat != RPC_SUCCESS {
-                let serr = clnt_sperrno(stat);
-                let msg = if !serr.is_null() {
-                    CStr::from_ptr(serr).to_string_lossy().into_owned()
-                } else {
-                    format!("clnt_call failed with status {}", stat)
-                };
-                return Err(anyhow!("RPC call failed: {}", msg));
-            }
+            handle_rpc_error(RPCPROG_RPCB, RPCBVERS4, nettype, stat.into())?;
 
             if head.is_null() {
                 return Ok(Vec::new());
@@ -476,13 +274,6 @@ pub mod services {
                     CStr::from_ptr(map.r_owner).to_string_lossy().into_owned()
                 };
 
-                // let rpc = getrpcbynumber(prog as c_int);
-                // let svc = if rpc.is_null() || (*rpc).r_name.is_null() {
-                //     "-".to_string()
-                // } else {
-                //     CStr::from_ptr((*rpc).r_name).to_string_lossy().into_owned()
-                // };
-
                 if netid.starts_with("tcp") || netid.starts_with("udp") {
                     let addr = parse_rpcb_addr(&addr_string).into();
 
@@ -500,6 +291,61 @@ pub mod services {
 
             Ok(res)
         }
+    }
+
+    #[derive(Debug, Clone)]
+    enum RpcStatus {
+        Success,
+        Failure(Option<String>),
+    }
+
+    impl From<c_int> for RpcStatus {
+        fn from(stat: c_int) -> Self {
+            match stat {
+                RPC_SUCCESS => RpcStatus::Success,
+                _ => {
+                    let serr = unsafe { clnt_sperrno(stat) };
+                    let msg = if !serr.is_null() {
+                        Some(unsafe { CStr::from_ptr(serr).to_string_lossy().into_owned() })
+                    } else {
+                        None
+                    };
+                    RpcStatus::Failure(msg)
+                }
+            }
+        }
+    }
+
+    impl From<bool> for RpcStatus {
+        fn from(success: bool) -> Self {
+            if success {
+                RpcStatus::Success
+            } else {
+                RpcStatus::Failure(None)
+            }
+        }
+    }
+
+    fn handle_rpc_error(
+        prog: c_uint,
+        vers: c_uint,
+        nettype: &str,
+        stat: RpcStatus,
+    ) -> anyhow::Result<()> {
+        if let RpcStatus::Failure(msg) = stat {
+            let rpc = unsafe { getrpcbynumber(prog as c_int) };
+            let svc = if rpc.is_null() || unsafe { (*rpc).r_name.is_null() } {
+                "-".to_string()
+            } else {
+                unsafe { CStr::from_ptr((*rpc).r_name).to_string_lossy().into_owned() }
+            };
+            let svc_str = format!("{}/v{}/{}", svc, vers, nettype);
+            match msg {
+                Some(m) => return Err(anyhow!("{} RPC call failed: {}", svc_str, m)),
+                None => return Err(anyhow!("{} RPC call failed", svc_str)),
+            }
+        }
+        Ok(())
     }
 
     fn parse_rpcb_addr(addr: &str) -> SocketAddr {
