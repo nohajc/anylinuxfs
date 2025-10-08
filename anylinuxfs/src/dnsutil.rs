@@ -1,4 +1,4 @@
-use std::{borrow::Cow, ptr::null_mut};
+use std::{borrow::Cow, net::IpAddr, ptr::null_mut};
 
 use anyhow::Context;
 use objc2_core_foundation::{CFArray, CFDictionary, CFString};
@@ -25,11 +25,17 @@ pub fn get_configured_dns_server() -> anyhow::Result<String> {
     let srv_addrs: &CFArray<CFString> = unsafe { cfdict_get_value(dict, "ServerAddresses") }
         .context("failed to retrieve DNS ServerAddresses")?;
 
-    srv_addrs
-        .get(0)
-        .map(|s| s.to_string())
+    let (ipv4_addrs, ipv6_addrs): (Vec<_>, Vec<_>) = srv_addrs
+        .iter()
+        .flat_map(|s| s.to_string().parse::<IpAddr>().ok().into_iter())
+        .partition(|ip| ip.is_ipv4());
+
+    ipv4_addrs
+        .into_iter()
+        .chain(ipv6_addrs)
+        .map(|ip| ip.to_string())
+        .next()
         .context("no DNS server addresses found")
-        .map_err(|e| e.into())
 }
 
 pub fn get_dns_server_with_fallback<'a>() -> Cow<'a, str> {
