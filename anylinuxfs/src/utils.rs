@@ -837,9 +837,19 @@ use std::sync::OnceLock;
 static ORIGINAL_TERMIOS: OnceLock<libc::termios> = OnceLock::new();
 static RAW_MODE_ENABLED: AtomicBool = AtomicBool::new(false);
 
+pub fn is_stdin_tty() -> bool {
+    unsafe { libc::isatty(libc::STDIN_FILENO) == 1 }
+}
+
 pub fn enable_raw_mode() -> anyhow::Result<()> {
     if RAW_MODE_ENABLED.load(Ordering::Relaxed) {
         return Ok(()); // already enabled
+    }
+
+    // Only enable raw mode if stdin is a TTY
+    if !is_stdin_tty() {
+        // host_println!("Stdin is not a TTY, skipping raw mode");
+        return Ok(());
     }
 
     let fd = libc::STDIN_FILENO;
@@ -871,6 +881,12 @@ pub fn disable_raw_mode() -> anyhow::Result<()> {
         return Ok(()); // already disabled
     }
 
+    // Only restore terminal if stdin is still a TTY
+    if !is_stdin_tty() {
+        RAW_MODE_ENABLED.store(false, Ordering::Relaxed);
+        return Ok(());
+    }
+
     let fd = libc::STDIN_FILENO;
     // Restore original attributes
     if let Some(original) = ORIGINAL_TERMIOS.get() {
@@ -894,7 +910,11 @@ pub struct StdinForwarder {
 
 impl StdinForwarder {
     pub fn new(in_fd: libc::c_int, signals: Subscription<libc::c_int>) -> anyhow::Result<Self> {
-        enable_raw_mode()?;
+        let is_tty = is_stdin_tty();
+
+        if is_tty {
+            enable_raw_mode()?;
+        }
 
         _ = thread::spawn(move || {
             for _ in signals {
@@ -912,59 +932,125 @@ impl StdinForwarder {
         let thread_hnd = Cell::new(Some(std::thread::spawn({
             let echo_newline = Arc::clone(&echo_newline);
             move || -> anyhow::Result<()> {
-                loop {
-                    // `poll()` waits for an `Event` for a given time period
-                    if event::poll(Duration::from_millis(50))? {
-                        // It's guaranteed that the `read()` won't block when the `poll()`
-                        // function returns `true`
-                        match event::read()? {
-                            Event::Key(event) => {
-                                // _ = safe_print!("DEBUG: {:?}\r\n", event);
+                if is_tty {
+                    // TTY mode: use crossterm events for interactive input
+                    loop {
+                        // `poll()` waits for an `Event` for a given time period
+                        if event::poll(Duration::from_millis(50))? {
+                            // It's guaranteed that the `read()` won't block when the `poll()`
+                            // function returns `true`
+                            match event::read()? {
+                                Event::Key(event) => {
+                                    // _ = safe_print!("DEBUG: {:?}\r\n", event);
 
-                                if event.is_press() {
-                                    if event.modifiers == event::KeyModifiers::empty()
-                                        || event.modifiers == event::KeyModifiers::SHIFT
-                                    {
-                                        match event.code {
-                                            event::KeyCode::Enter => unsafe {
-                                                write_to_pipe(in_fd, b"\n")?;
-                                                if echo_newline.load(Ordering::Relaxed) {
-                                                    _ = safe_print!("\r\n");
-                                                }
-                                            },
-                                            event::KeyCode::Backspace => unsafe {
-                                                write_to_pipe(in_fd, b"\x7f")?;
-                                            },
-                                            event::KeyCode::Char(c) => unsafe {
-                                                write_to_pipe(in_fd, c.to_string().as_bytes())?;
-                                            },
-                                            _ => (),
-                                        }
-                                    } else if event.modifiers == event::KeyModifiers::CONTROL {
-                                        match event.code {
-                                            event::KeyCode::Char('c') => {
-                                                // Send SIGINT (Ctrl+C)
-                                                unsafe {
-                                                    write_to_pipe(in_fd, b"\x03")?;
-                                                }
+                                    if event.is_press() {
+                                        if event.modifiers == event::KeyModifiers::empty()
+                                            || event.modifiers == event::KeyModifiers::SHIFT
+                                        {
+                                            match event.code {
+                                                event::KeyCode::Enter => unsafe {
+                                                    write_to_pipe(in_fd, b"\n")?;
+                                                    if echo_newline.load(Ordering::Relaxed) {
+                                                        _ = safe_print!("\r\n");
+                                                    }
+                                                },
+                                                event::KeyCode::Backspace => unsafe {
+                                                    write_to_pipe(in_fd, b"\x7f")?;
+                                                },
+                                                event::KeyCode::Char(c) => unsafe {
+                                                    write_to_pipe(in_fd, c.to_string().as_bytes())?;
+                                                },
+                                                _ => (),
                                             }
-                                            event::KeyCode::Char('d') => {
-                                                // Send EOF (Ctrl+D)
-                                                unsafe {
-                                                    write_to_pipe(in_fd, b"\x04")?;
+                                        } else if event.modifiers == event::KeyModifiers::CONTROL {
+                                            match event.code {
+                                                event::KeyCode::Char('c') => {
+                                                    // Send SIGINT (Ctrl+C)
+                                                    unsafe {
+                                                        write_to_pipe(in_fd, b"\x03")?;
+                                                    }
                                                 }
+                                                event::KeyCode::Char('d') => {
+                                                    // Send EOF (Ctrl+D)
+                                                    unsafe {
+                                                        write_to_pipe(in_fd, b"\x04")?;
+                                                    }
+                                                }
+                                                _ => (),
                                             }
-                                            _ => (),
                                         }
                                     }
                                 }
+                                _ => (),
+                            };
+                        } else {
+                            // Timeout expired and no `Event` is available
+                            if let Ok(()) = close_rx.try_recv() {
+                                break;
                             }
-                            _ => (),
-                        };
-                    } else {
-                        // Timeout expired and no `Event` is available
+                        }
+                    }
+                } else {
+                    // Pipe mode: read from stdin directly
+                    use std::io::{BufRead, BufReader, stdin};
+                    use std::sync::mpsc;
+
+                    // Create a channel for stdin data
+                    let (stdin_tx, stdin_rx) = mpsc::channel();
+
+                    // Spawn a thread to read from stdin
+                    thread::spawn(move || {
+                        let mut reader = BufReader::new(stdin());
+                        let mut line = String::new();
+
+                        loop {
+                            line.clear();
+                            match reader.read_line(&mut line) {
+                                Ok(0) => {
+                                    // EOF reached
+                                    let _ = stdin_tx.send(None);
+                                    break;
+                                }
+                                Ok(_) => {
+                                    if stdin_tx.send(Some(line.clone())).is_err() {
+                                        break; // Receiver dropped
+                                    }
+                                }
+                                Err(_) => {
+                                    let _ = stdin_tx.send(None);
+                                    break;
+                                }
+                            }
+                        }
+                    });
+
+                    // Main loop to handle both close signals and stdin data
+                    loop {
+                        // Check for close signal
                         if let Ok(()) = close_rx.try_recv() {
                             break;
+                        }
+
+                        // Check for stdin data with timeout
+                        match stdin_rx.recv_timeout(Duration::from_millis(50)) {
+                            Ok(Some(data)) => unsafe {
+                                write_to_pipe(in_fd, data.as_bytes())?;
+                            },
+                            Ok(None) => {
+                                // EOF from stdin
+                                unsafe {
+                                    write_to_pipe(in_fd, b"\x04")?; // Send EOF to VM
+                                }
+                                break;
+                            }
+                            Err(mpsc::RecvTimeoutError::Timeout) => {
+                                // No data available, continue loop
+                                continue;
+                            }
+                            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                                // Stdin thread terminated
+                                break;
+                            }
                         }
                     }
                 }

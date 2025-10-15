@@ -27,7 +27,11 @@ use std::{
 use url::Url;
 
 use crate::{
-    PassphrasePromptConfig, devinfo::DevInfo, fsutil, pubsub::Subscription, utils::cfdict_get_value,
+    PassphrasePromptConfig,
+    devinfo::DevInfo,
+    fsutil,
+    pubsub::Subscription,
+    utils::{cfdict_get_value, is_stdin_tty},
 };
 
 pub struct Entry(String, String, String, Vec<String>);
@@ -729,6 +733,9 @@ fn passphrase_prompt_lazy(
 
 pub fn passphrase_prompt(partition: Option<&str>) -> impl FnOnce() {
     move || {
+        if !is_stdin_tty() {
+            return;
+        }
         match partition {
             Some(part) => {
                 _ = safe_print!("Enter passphrase for {}: ", part);
