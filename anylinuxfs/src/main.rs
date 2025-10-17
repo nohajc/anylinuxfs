@@ -1220,6 +1220,36 @@ fn wait_for_nfs_server(
     Ok(nfs_ready)
 }
 
+fn mount_nfs_subdirs<'a>(
+    share_paths: impl Iterator<Item = &'a str>,
+    mnt_point_base: impl AsRef<Path>,
+) -> anyhow::Result<()> {
+    for path in share_paths {
+        let shell_script = format!(
+            "mount -t nfs \"localhost:{}\" \"{}\"",
+            path,
+            mnt_point_base.as_ref().display()
+        );
+        let status = Command::new("sh")
+            .arg("-c")
+            .arg(&shell_script)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()?;
+
+        if !status.success() {
+            return Err(anyhow!(
+                "mount failed with exit code {}",
+                status
+                    .code()
+                    .map(|c| c.to_string())
+                    .unwrap_or("unknown".to_owned())
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn mount_nfs(share_path: &str, config: &MountConfig, vers4: bool) -> anyhow::Result<()> {
     let status = if let Some(mount_point) = config.custom_mount_point.as_deref() {
         let opts = if vers4 { "-o vers=4" } else { "" };
@@ -2224,7 +2254,14 @@ impl AppRunner {
 
             let nfs_status =
                 wait_for_nfs_server(2049, nfs_ready_rx).unwrap_or(NfsStatus::Failed(None));
-            if nfs_status.ok() {
+
+            if let NfsStatus::Ready(NfsReadyState {
+                fslabel,
+                fstype,
+                changed_to_ro,
+                exports,
+            }) = &nfs_status
+            {
                 host_println!("Port 2049 open, NFS server ready");
 
                 // from now on, if anything fails, we need to send quit command to the VM
@@ -2238,38 +2275,23 @@ impl AppRunner {
                 let signals = signal_hub.subscribe();
                 let event_session = diskutil::EventSession::new(signals)?;
 
-                if let NfsStatus::Ready(NfsReadyState {
-                    fslabel,
-                    fstype,
-                    changed_to_ro,
-                    exports,
-                }) = &nfs_status
-                {
-                    if let Some(label) = fslabel {
-                        mnt_dev_info.set_label(label);
-                        rt_info.lock().unwrap().dev_info.set_label(label);
-                    }
+                if let Some(label) = fslabel {
+                    mnt_dev_info.set_label(label);
+                    rt_info.lock().unwrap().dev_info.set_label(label);
+                }
 
-                    if let Some(fstype) = fstype {
-                        mnt_dev_info.set_fs_type(fstype);
-                        rt_info.lock().unwrap().dev_info.set_fs_type(fstype);
-                    }
+                if let Some(fstype) = fstype {
+                    mnt_dev_info.set_fs_type(fstype);
+                    rt_info.lock().unwrap().dev_info.set_fs_type(fstype);
+                }
 
-                    if *changed_to_ro {
-                        rt_info.lock().unwrap().mount_config.read_only = true;
-                        let mount_opts = rt_info.lock().unwrap().mount_config.mount_options.clone();
-                        let new_mount_opts = mount_opts
-                            .map(|opts| format!("ro,{}", opts))
-                            .unwrap_or("ro".into());
-                        rt_info.lock().unwrap().mount_config.mount_options = Some(new_mount_opts);
-                    }
-
-                    if !exports.is_empty() {
-                        host_println!("NFS exports:");
-                        for export in exports {
-                            host_println!("  {}", export);
-                        }
-                    }
+                if *changed_to_ro {
+                    rt_info.lock().unwrap().mount_config.read_only = true;
+                    let mount_opts = rt_info.lock().unwrap().mount_config.mount_options.clone();
+                    let new_mount_opts = mount_opts
+                        .map(|opts| format!("ro,{}", opts))
+                        .unwrap_or("ro".into());
+                    rt_info.lock().unwrap().mount_config.mount_options = Some(new_mount_opts);
                 }
 
                 let share_name = mnt_dev_info.auto_mount_name();
@@ -2303,6 +2325,19 @@ impl AppRunner {
                     Ok(_) => host_println!("Requested NFS share mount"),
                     Err(e) => host_eprintln!("Failed to request NFS mount: {:#}", e),
                 };
+
+                let additional_exports = exports
+                    .iter()
+                    .map(|item| item.as_str())
+                    .filter(|&export_path| export_path != &share_path);
+
+                let mnt_point_base = config
+                    .custom_mount_point
+                    .unwrap_or(PathBuf::from(format!("/Volumes/{share_name}")));
+                match mount_nfs_subdirs(additional_exports, mnt_point_base) {
+                    Ok(_) => {}
+                    Err(e) => host_eprintln!("Failed to mount additional NFS exports: {:#}", e),
+                }
 
                 // drop privileges back to the original user if he used sudo
                 drop_privileges(config.common.sudo_uid, config.common.sudo_gid)?;
