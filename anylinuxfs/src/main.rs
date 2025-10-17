@@ -1221,21 +1221,23 @@ fn wait_for_nfs_server(
 }
 
 fn mount_nfs_subdirs<'a>(
-    share_paths: impl Iterator<Item = &'a str>,
+    share_path_base: &str,
+    subdirs: impl Iterator<Item = &'a str>,
     mnt_point_base: impl AsRef<Path>,
 ) -> anyhow::Result<()> {
-    for path in share_paths {
+    for subdir in subdirs {
+        let subdir_relative = subdir.trim_start_matches(share_path_base);
         let shell_script = format!(
             "mount -t nfs \"localhost:{}\" \"{}\"",
-            path,
-            mnt_point_base.as_ref().display()
+            subdir,
+            mnt_point_base.as_ref().join(subdir_relative).display()
         );
         let status = Command::new("sh")
             .arg("-c")
             .arg(&shell_script)
             // .stdout(Stdio::null())
             // .stderr(Stdio::null())
-            .status()?;
+            .status()?; // TODO: make sure any error is properly printed
 
         if !status.success() {
             return Err(anyhow!(
@@ -2350,7 +2352,7 @@ impl AppRunner {
                     let mnt_point_base = config
                         .custom_mount_point
                         .unwrap_or(PathBuf::from(format!("/Volumes/{share_name}")));
-                    match mount_nfs_subdirs(additional_exports, mnt_point_base) {
+                    match mount_nfs_subdirs(&share_path, additional_exports, mnt_point_base) {
                         Ok(_) => {}
                         Err(e) => host_eprintln!("Failed to mount additional NFS exports: {:#}", e),
                     }
