@@ -1226,7 +1226,9 @@ fn mount_nfs_subdirs<'a>(
     mnt_point_base: impl AsRef<Path>,
 ) -> anyhow::Result<()> {
     for subdir in subdirs {
-        let subdir_relative = subdir.trim_start_matches(share_path_base);
+        let subdir_relative = subdir
+            .trim_start_matches(share_path_base)
+            .trim_start_matches('/');
         let shell_script = format!(
             "mount -t nfs \"localhost:{}\" \"{}\"",
             subdir,
