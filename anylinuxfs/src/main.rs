@@ -1232,6 +1232,7 @@ fn mount_nfs_subdirs<'a>(
             subdir,
             mnt_point_base.as_ref().join(subdir_relative).display()
         );
+        host_println!("Running NFS mount command: `{}`", &shell_script);
         let status = Command::new("sh")
             .arg("-c")
             .arg(&shell_script)
