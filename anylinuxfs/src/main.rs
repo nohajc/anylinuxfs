@@ -2121,7 +2121,7 @@ impl AppRunner {
                 let mut buf_reader =
                     PassthroughBufReader::new(unsafe { File::from_raw_fd(pty_fd) });
                 let mut line = String::new();
-                let mut exports = Vec::new();
+                let mut exports = BTreeSet::new();
 
                 loop {
                     let bytes = match buf_reader.read_line(&mut line) {
@@ -2141,7 +2141,7 @@ impl AppRunner {
                                 fslabel: fslabel.take(),
                                 fstype: fstype.take(),
                                 changed_to_ro,
-                                exports: exports.clone(),
+                                exports: exports.iter().cloned().collect(),
                             }))
                             .unwrap();
                         nfs_ready = true;
@@ -2184,7 +2184,7 @@ impl AppRunner {
                                 .unwrap_or(pattern)
                                 .to_string()
                         }) {
-                            exports.push(export_path);
+                            exports.insert(export_path);
                         }
                     } else if line.starts_with("<anylinuxfs-passphrase-prompt:start>") {
                         vm_pwd_prompt_tx.send(true).unwrap();
