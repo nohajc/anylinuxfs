@@ -2246,7 +2246,8 @@ impl AppRunner {
                     }
                     _ => format!("/mnt/{share_name}"),
                 };
-                let vers4 = mnt_dev_info.fs_type() == Some("zfs");
+                // let vers4 = mnt_dev_info.fs_type() == Some("zfs");
+                let vers4 = false;
                 if vers4 {
                     let mnt_point = PathBuf::from(format!("/Volumes/{share_name}"));
                     fs::create_dir_all(&mnt_point).with_context(|| {
