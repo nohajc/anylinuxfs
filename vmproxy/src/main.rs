@@ -667,7 +667,8 @@ fn run() -> anyhow::Result<()> {
     let mut exports_content = String::new();
 
     for (export_path, export_args) in &all_exports {
-        exports_content += &format!("\"{}\"      *({})\n", &export_path, export_args);
+        println!("<anylinuxfs-nfs-export:{}>", export_path);
+        exports_content += &format!("\"{}\"      *({})\n", export_path, export_args);
     }
 
     fs::write("/etc/exports", exports_content).context("Failed to write to /etc/exports")?;

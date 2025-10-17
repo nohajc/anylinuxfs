@@ -1178,13 +1178,21 @@ fn start_gvproxy(config: &Config) -> anyhow::Result<Child> {
 
 #[derive(Debug)]
 enum NfsStatus {
-    Ready(Option<String>, Option<String>, bool),
+    Ready(NfsReadyState),
     Failed(Option<i32>),
+}
+
+#[derive(Debug)]
+struct NfsReadyState {
+    fslabel: Option<String>,
+    fstype: Option<String>,
+    changed_to_ro: bool,
+    exports: Vec<String>,
 }
 
 impl NfsStatus {
     fn ok(&self) -> bool {
-        matches!(self, NfsStatus::Ready(_, _, _))
+        matches!(self, NfsStatus::Ready(_))
     }
 }
 
@@ -2113,6 +2121,7 @@ impl AppRunner {
                 let mut buf_reader =
                     PassthroughBufReader::new(unsafe { File::from_raw_fd(pty_fd) });
                 let mut line = String::new();
+                let mut exports = Vec::new();
 
                 loop {
                     let bytes = match buf_reader.read_line(&mut line) {
@@ -2128,11 +2137,12 @@ impl AppRunner {
                     if line.contains("READY AND WAITING FOR NFS CLIENT CONNECTIONS") {
                         // Notify the main thread that NFS server is ready
                         nfs_ready_tx
-                            .send(NfsStatus::Ready(
-                                fslabel.take(),
-                                fstype.take(),
+                            .send(NfsStatus::Ready(NfsReadyState {
+                                fslabel: fslabel.take(),
+                                fstype: fstype.take(),
                                 changed_to_ro,
-                            ))
+                                exports: exports.clone(),
+                            }))
                             .unwrap();
                         nfs_ready = true;
                     } else if line.starts_with("<anylinuxfs-exit-code") {
@@ -2166,6 +2176,16 @@ impl AppRunner {
                         })
                     } else if line.starts_with("<anylinuxfs-mount:changed-to-ro>") {
                         changed_to_ro = true;
+                    } else if line.starts_with("<anylinuxfs-nfs-export") {
+                        if let Some(export_path) = line.split(':').nth(1).map(|pattern| {
+                            pattern
+                                .trim()
+                                .strip_suffix(">")
+                                .unwrap_or(pattern)
+                                .to_string()
+                        }) {
+                            exports.push(export_path);
+                        }
                     } else if line.starts_with("<anylinuxfs-passphrase-prompt:start>") {
                         vm_pwd_prompt_tx.send(true).unwrap();
                     } else if line.starts_with("<anylinuxfs-passphrase-prompt:end>") {
@@ -2218,24 +2238,37 @@ impl AppRunner {
                 let signals = signal_hub.subscribe();
                 let event_session = diskutil::EventSession::new(signals)?;
 
-                if let NfsStatus::Ready(Some(label), _, _) = &nfs_status {
-                    mnt_dev_info.set_label(label);
-                    rt_info.lock().unwrap().dev_info.set_label(label);
-                }
+                if let NfsStatus::Ready(NfsReadyState {
+                    fslabel,
+                    fstype,
+                    changed_to_ro,
+                    exports,
+                }) = &nfs_status
+                {
+                    if let Some(label) = fslabel {
+                        mnt_dev_info.set_label(label);
+                        rt_info.lock().unwrap().dev_info.set_label(label);
+                    }
 
-                if let NfsStatus::Ready(_, Some(fstype), _) = &nfs_status {
-                    mnt_dev_info.set_fs_type(fstype);
-                    rt_info.lock().unwrap().dev_info.set_fs_type(fstype);
-                }
+                    if let Some(fstype) = fstype {
+                        mnt_dev_info.set_fs_type(fstype);
+                        rt_info.lock().unwrap().dev_info.set_fs_type(fstype);
+                    }
 
-                if let NfsStatus::Ready(_, _, changed_to_ro) = nfs_status {
-                    if changed_to_ro {
+                    if *changed_to_ro {
                         rt_info.lock().unwrap().mount_config.read_only = true;
                         let mount_opts = rt_info.lock().unwrap().mount_config.mount_options.clone();
                         let new_mount_opts = mount_opts
                             .map(|opts| format!("ro,{}", opts))
                             .unwrap_or("ro".into());
                         rt_info.lock().unwrap().mount_config.mount_options = Some(new_mount_opts);
+                    }
+
+                    if !exports.is_empty() {
+                        host_println!("NFS exports:");
+                        for export in exports {
+                            host_println!("  {}", export);
+                        }
                     }
                 }
 
