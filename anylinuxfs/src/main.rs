@@ -1233,8 +1233,8 @@ fn mount_nfs_subdirs<'a>(
         let status = Command::new("sh")
             .arg("-c")
             .arg(&shell_script)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            // .stdout(Stdio::null())
+            // .stderr(Stdio::null())
             .status()?;
 
         if !status.success() {
@@ -2326,22 +2326,6 @@ impl AppRunner {
                     Err(e) => host_eprintln!("Failed to request NFS mount: {:#}", e),
                 };
 
-                let additional_exports = exports
-                    .iter()
-                    .map(|item| item.as_str())
-                    .filter(|&export_path| export_path != &share_path);
-
-                let mnt_point_base = config
-                    .custom_mount_point
-                    .unwrap_or(PathBuf::from(format!("/Volumes/{share_name}")));
-                match mount_nfs_subdirs(additional_exports, mnt_point_base) {
-                    Ok(_) => {}
-                    Err(e) => host_eprintln!("Failed to mount additional NFS exports: {:#}", e),
-                }
-
-                // drop privileges back to the original user if he used sudo
-                drop_privileges(config.common.sudo_uid, config.common.sudo_gid)?;
-
                 let mount_point_opt = if mount_result.is_ok() {
                     let nfs_path = PathBuf::from(format!("localhost:{}", share_path));
                     event_session.wait_for_mount(&nfs_path)
@@ -2357,7 +2341,23 @@ impl AppRunner {
                     );
 
                     rt_info.lock().unwrap().mount_point = Some(mount_point.display().into());
+
+                    let additional_exports = exports
+                        .iter()
+                        .map(|item| item.as_str())
+                        .filter(|&export_path| export_path != &share_path);
+
+                    let mnt_point_base = config
+                        .custom_mount_point
+                        .unwrap_or(PathBuf::from(format!("/Volumes/{share_name}")));
+                    match mount_nfs_subdirs(additional_exports, mnt_point_base) {
+                        Ok(_) => {}
+                        Err(e) => host_eprintln!("Failed to mount additional NFS exports: {:#}", e),
+                    }
                 }
+
+                // drop privileges back to the original user if he used sudo
+                drop_privileges(config.common.sudo_uid, config.common.sudo_gid)?;
 
                 if can_detach {
                     // tell the parent to detach from console (i.e. exit)
