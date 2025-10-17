@@ -16,6 +16,7 @@ use vsock::{VsockAddr, VsockListener};
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
+#[clap(disable_help_flag = true)]
 struct Cli {
     disk_path: String,
     mount_name: String,
