@@ -90,16 +90,18 @@ mod dirtrie {
 
     #[derive(Debug, Default)]
     pub struct Node {
+        pub mount_point: Option<String>,
         pub children: BTreeMap<OsString, Node>,
     }
 
     impl Node {
-        pub fn insert(&mut self, path: &Path) {
+        pub fn insert(&mut self, path: &Path, full_path: &str) {
             let mut current = self;
             for segment in path.components() {
                 let segment = segment.as_os_str().to_owned();
                 current = current.children.entry(segment).or_default();
             }
+            current.mount_point = Some(full_path.to_owned());
         }
     }
 
@@ -111,7 +113,13 @@ mod dirtrie {
                 prefix: &str,
             ) -> std::fmt::Result {
                 for (segment, child) in &node.children {
-                    write!(f, "{}{}\r\n", prefix, segment.to_string_lossy())?;
+                    write!(
+                        f,
+                        "{}{} ({})\r\n",
+                        prefix,
+                        segment.to_string_lossy(),
+                        child.mount_point.as_deref().unwrap_or("")
+                    )?;
                     fmt_node(child, f, &format!("{}--", prefix))?;
                 }
                 Ok(())
@@ -120,6 +128,13 @@ mod dirtrie {
         }
     }
 }
+
+// fn parallel_mount_recursive(
+//     mnt_point_base: impl AsRef<Path>,
+//     trie: &dirtrie::Node,
+// ) -> anyhow::Result<()> {
+//     Ok(())
+// }
 
 pub fn mount_nfs_subdirs<'a>(
     share_path_base: &str,
@@ -138,7 +153,7 @@ pub fn mount_nfs_subdirs<'a>(
             .trim_start_matches(share_path_base)
             .trim_start_matches('/');
 
-        trie.insert(Path::new(subdir_relative));
+        trie.insert(Path::new(subdir_relative), subdir);
 
         let shell_script = format!(
             "mount -t nfs \"localhost:{}\" \"{}\"",
