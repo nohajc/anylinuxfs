@@ -164,6 +164,6 @@ pub fn mount_nfs_subdirs<'a>(
             ));
         }
     }
-    host_println!("Mounted NFS subdirectories:\n{}", trie);
+    host_println!("Mounted NFS subdirectories:\r\n{}", trie);
     Ok(())
 }
