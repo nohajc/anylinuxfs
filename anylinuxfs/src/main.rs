@@ -408,6 +408,8 @@ Supported partition schemes:
 - MBR
 - disk without partitions (single filesystem or LVM/LUKS container).")]
     Mount(MountCmd),
+    /// Unmount a filesystem
+    Unmount(UnmountCmd),
     /// Init Linux rootfs (can be used to reinitialize virtual environment)
     Init,
     /// Show status information (mount parameters, vm resources, etc.)
@@ -474,6 +476,13 @@ struct MountCmd {
     bind_addr: String,
     #[arg(short, long)]
     verbose: bool,
+}
+
+#[derive(Args)]
+struct UnmountCmd {
+    /// Disk identifier or mount point (unmounts all if not specified)
+    #[arg(id = "DISK_IDENT|MOUNT_POINT")]
+    path: Option<String>,
 }
 
 #[derive(Args)]
@@ -2413,6 +2422,64 @@ impl AppRunner {
         Ok(())
     }
 
+    fn run_unmount(&mut self, cmd: UnmountCmd) -> anyhow::Result<()> {
+        let resp = api::Client::make_request(api::Request::GetConfig);
+
+        match resp {
+            Ok(api::Response::Config(rt_info)) => {
+                let mount_point = match validated_mount_point(&rt_info) {
+                    MountStatus::Mounted(mount_point) => mount_point,
+                    MountStatus::NoLonger => {
+                        eprintln!(
+                            "Drive {} no longer mounted but anylinuxfs is still running; try `anylinuxfs stop`.",
+                            &rt_info.mount_config.disk_path
+                        );
+                        return Err(StatusError::new("Mount point is not valid", 1).into());
+                    }
+                    MountStatus::NotYet => {
+                        eprintln!(
+                            "Drive {} not mounted yet, please wait",
+                            &rt_info.mount_config.disk_path
+                        );
+                        return Ok(());
+                    }
+                };
+
+                println!("specified path: {:?}", &cmd.path);
+                println!("mounted disk_path: {}", &rt_info.mount_config.disk_path);
+                println!("mount_point: {}", mount_point.display());
+
+                let mount_table = fsutil::MountTable::new()?;
+                let our_mount_points: Vec<_> = mount_table
+                    .mount_points()
+                    .filter(|&mpt| {
+                        mpt.to_string_lossy()
+                            .starts_with(&*mount_point.to_string_lossy())
+                    })
+                    .collect();
+
+                if !our_mount_points.is_empty() {
+                    for mpt in our_mount_points {
+                        host_println!("Unmounting {}", mpt.display());
+                        // unmount_fs(Path::new(mpt))?;
+                    }
+                }
+            }
+            Err(err) => {
+                if let Some(err) = err.downcast_ref::<io::Error>() {
+                    match err.kind() {
+                        io::ErrorKind::ConnectionRefused => return Ok(()),
+                        io::ErrorKind::NotFound => return Ok(()),
+                        _ => (),
+                    }
+                }
+                return Err(err);
+            }
+        }
+
+        Ok(())
+    }
+
     fn run_init(&mut self) -> anyhow::Result<()> {
         let _lock_file = LockFile::new(LOCK_FILE)?.acquire_lock(FlockKind::Exclusive)?;
         let config = load_config(&CommonArgs::default())?;
@@ -2695,6 +2762,7 @@ impl AppRunner {
         let cli = Cli::try_parse_with_default_cmd()?;
         match cli.commands {
             Commands::Mount(cmd) => self.run_mount(cmd),
+            Commands::Unmount(cmd) => self.run_unmount(cmd),
             Commands::Init => self.run_init(),
             Commands::Status => self.run_status(),
             Commands::Log(cmd) => self.run_log(cmd),

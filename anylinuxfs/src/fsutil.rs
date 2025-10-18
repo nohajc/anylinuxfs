@@ -14,6 +14,7 @@ use std::{
 #[derive(Debug, Clone)]
 pub struct MountTable {
     disks: HashSet<OsString>,
+    mount_points: HashSet<OsString>,
 }
 
 impl MountTable {
@@ -36,6 +37,7 @@ impl MountTable {
         }
 
         let mut disks = HashSet::new();
+        let mut mount_points = HashSet::new();
         for buf in mounts_raw {
             let mntfromname = os_str_from_c_chars(&buf.f_mntfromname).to_owned();
             let mntonname = os_str_from_c_chars(&buf.f_mntonname).to_owned();
@@ -44,14 +46,22 @@ impl MountTable {
 
             if !mntfromname.is_empty() && !mntonname.is_empty() {
                 disks.insert(mntfromname);
+                mount_points.insert(mntonname);
             }
         }
-        Ok(MountTable { disks })
+        Ok(MountTable {
+            disks,
+            mount_points,
+        })
     }
 
     pub fn is_mounted(&self, path: impl AsRef<Path>) -> bool {
         let path = path.as_ref();
         self.disks.contains(path.as_os_str())
+    }
+
+    pub fn mount_points(&self) -> impl Iterator<Item = &OsString> {
+        self.mount_points.iter()
     }
 }
 
