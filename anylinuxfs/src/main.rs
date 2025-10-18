@@ -39,6 +39,7 @@ use utils::{
     OutputAction, PassthroughBufReader, StatusError, write_to_pipe,
 };
 
+use crate::fsutil::mount_nfs_subdirs;
 use crate::utils::{ToCStringVec, ToPtrVec};
 
 mod api;
@@ -1218,41 +1219,6 @@ fn wait_for_nfs_server(
     }
 
     Ok(nfs_ready)
-}
-
-fn mount_nfs_subdirs<'a>(
-    share_path_base: &str,
-    subdirs: impl Iterator<Item = &'a str>,
-    mnt_point_base: impl AsRef<Path>,
-) -> anyhow::Result<()> {
-    for subdir in subdirs {
-        let subdir_relative = subdir
-            .trim_start_matches(share_path_base)
-            .trim_start_matches('/');
-        let shell_script = format!(
-            "mount -t nfs \"localhost:{}\" \"{}\"",
-            subdir,
-            mnt_point_base.as_ref().join(subdir_relative).display()
-        );
-        host_println!("Running NFS mount command: `{}`", &shell_script);
-        let status = Command::new("sh")
-            .arg("-c")
-            .arg(&shell_script)
-            // .stdout(Stdio::null())
-            // .stderr(Stdio::null())
-            .status()?; // TODO: make sure any error is properly printed
-
-        if !status.success() {
-            return Err(anyhow!(
-                "mount failed with exit code {}",
-                status
-                    .code()
-                    .map(|c| c.to_string())
-                    .unwrap_or("unknown".to_owned())
-            ));
-        }
-    }
-    Ok(())
 }
 
 fn mount_nfs(share_path: &str, config: &MountConfig, vers4: bool) -> anyhow::Result<()> {
