@@ -160,8 +160,18 @@ fn parallel_mount_recursive(
         // host_println!("Running NFS mount command: `{}`", &shell_script);
 
         // elevate if needed (e.g. mounting image under /Volumes)
-        let cmdline = ["sudo", "-S", "sh", "-c", &shell_script];
-        let cmdline = if elevate { &cmdline[..] } else { &cmdline[2..] };
+        let cmdline: &[&str] = if elevate {
+            &[
+                "osascript",
+                "-e",
+                &format!(
+                    "do shell script \"{}\" with administrator privileges",
+                    &shell_script
+                ),
+            ]
+        } else {
+            &["sh", "-c", &shell_script]
+        };
         let mut hnd = Command::new(cmdline[0])
             .args(&cmdline[1..])
             .stdout(Stdio::piped())
