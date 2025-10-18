@@ -2306,6 +2306,7 @@ impl AppRunner {
                         .map(|item| item.as_str())
                         .filter(|&export_path| export_path != &share_path);
 
+                    log::enable_console_log();
                     let mnt_point_base = config
                         .custom_mount_point
                         .unwrap_or(PathBuf::from(format!("/Volumes/{share_name}")));
@@ -2313,6 +2314,7 @@ impl AppRunner {
                         Ok(_) => {}
                         Err(e) => host_eprintln!("Failed to mount additional NFS exports: {:#}", e),
                     }
+                    log::disable_console_log();
                 }
 
                 // drop privileges back to the original user if he used sudo
