@@ -4,7 +4,7 @@ use std::{
     error::Error,
     ffi::{CString, c_void},
     fs::{File, Permissions},
-    io::{self, Read, Write},
+    io::{self, BufRead, BufReader, Read, Write},
     mem::ManuallyDrop,
     net::IpAddr,
     os::{
@@ -12,6 +12,7 @@ use std::{
         unix::fs::PermissionsExt,
     },
     path::Path,
+    process::Child,
     ptr::null,
     sync::{
         Arc,
@@ -23,7 +24,11 @@ use std::{
 };
 
 use anyhow::{Context, anyhow};
-use common_utils::{host_println, log::Prefix, prefix_print, safe_print};
+use common_utils::{
+    host_println,
+    log::{self, Prefix},
+    prefix_eprintln, prefix_print, prefix_println, safe_print,
+};
 use crossterm::event::{self, Event};
 use nix::{
     sys::signal::Signal,
@@ -900,6 +905,27 @@ pub fn disable_raw_mode() -> anyhow::Result<()> {
     RAW_MODE_ENABLED.store(false, Ordering::Relaxed);
     // host_println!("Disabled terminal raw mode");
     Ok(())
+}
+
+pub fn echo_child_output(hnd: &mut Child, log_prefix: Option<log::Prefix>) {
+    let out = BufReader::new(hnd.stdout.take().unwrap());
+    let err = BufReader::new(hnd.stderr.take().unwrap());
+
+    let thread = thread::spawn(move || {
+        for line in err.lines() {
+            if let Ok(line) = line {
+                prefix_println!(log_prefix, "{}", line);
+            }
+        }
+    });
+
+    for line in out.lines() {
+        if let Ok(line) = line {
+            prefix_eprintln!(log_prefix, "{}", line);
+        }
+    }
+
+    thread.join().unwrap();
 }
 
 pub struct StdinForwarder {

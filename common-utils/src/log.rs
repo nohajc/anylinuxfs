@@ -53,6 +53,7 @@ pub fn print_log_file() {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
 pub enum Prefix {
     Host,
     Guest,

@@ -1,9 +1,6 @@
 use anyhow::{Context, anyhow};
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
-use common_utils::{
-    CustomActionConfig, Deferred, host_eprintln, host_println, log, prefix_eprintln,
-    prefix_println, safe_println,
-};
+use common_utils::{CustomActionConfig, Deferred, host_eprintln, host_println, log, safe_println};
 
 use devinfo::DevInfo;
 use nanoid::nanoid;
@@ -1406,25 +1403,7 @@ fn init_rootfs(config: &Config, force: bool) -> anyhow::Result<()> {
         .spawn()
         .context("Failed to execute init-rootfs")?;
 
-    let out = BufReader::new(hnd.stdout.take().unwrap());
-    let err = BufReader::new(hnd.stderr.take().unwrap());
-
-    let thread = thread::spawn(move || {
-        for line in err.lines() {
-            if let Ok(line) = line {
-                prefix_println!(None, "{}", line);
-            }
-        }
-    });
-
-    for line in out.lines() {
-        if let Ok(line) = line {
-            prefix_eprintln!(None, "{}", line);
-        }
-    }
-
-    thread.join().unwrap();
-
+    utils::echo_child_output(&mut hnd, None);
     let status = hnd.wait().context("Failed to wait for init-rootfs")?;
 
     if !status.success() {
