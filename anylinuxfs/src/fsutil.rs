@@ -1,5 +1,5 @@
-use anyhow::anyhow;
-use common_utils::host_println;
+use anyhow::{Context, anyhow};
+use common_utils::{host_println, log};
 use rayon::prelude::*;
 use std::{
     collections::HashSet,
@@ -7,9 +7,11 @@ use std::{
     io, mem,
     os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
     ptr::null_mut,
 };
+
+use crate::utils;
 
 #[derive(Debug, Clone)]
 pub struct MountTable {
@@ -154,12 +156,15 @@ fn parallel_mount_recursive(mnt_point_base: PathBuf, trie: &dirtrie::Node) -> an
         // host_println!("Running NFS mount command: `{}`", &shell_script);
 
         // TODO: elevate if needed (e.g. mounting image under /Volumes)
-        let status = Command::new("sh")
+        let mut hnd = Command::new("sh")
             .arg("-c")
             .arg(&shell_script)
-            // .stdout(Stdio::null())
-            // .stderr(Stdio::null())
-            .status()?; // TODO: make sure any error is properly printed
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+
+        utils::echo_child_output(&mut hnd, Some(log::Prefix::Host));
+        let status = hnd.wait().context("Failed to wait for NFS mount command")?;
 
         if !status.success() {
             return Err(anyhow!(
