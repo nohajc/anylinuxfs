@@ -2445,12 +2445,24 @@ impl AppRunner {
                     }
                 };
 
-                println!("specified path: {:?}", &cmd.path);
-                println!("mounted disk_path: {}", &rt_info.mount_config.disk_path);
-                println!("mount_point: {}", mount_point.display());
+                if let Some(path) = &cmd.path {
+                    match fs::canonicalize(path) {
+                        Ok(abs_path) => {
+                            if abs_path != Path::new(&rt_info.mount_config.disk_path)
+                                && abs_path != mount_point
+                            {
+                                println!("The specified path was not mounted by anylinuxfs.");
+                                return Ok(());
+                            }
+                        }
+                        Err(err) => {
+                            return Err(err).with_context(|| format!("invalid path {}", path));
+                        }
+                    }
+                }
 
                 let mount_table = fsutil::MountTable::new()?;
-                // TODO: check if cmd.path corresponds to one of our mount points
+
                 let our_mount_points = mount_table
                     .mount_points()
                     .map(|item| item.as_os_str())
