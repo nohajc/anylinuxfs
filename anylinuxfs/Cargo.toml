@@ -30,6 +30,7 @@ if-addrs = "0.13.4"
 crossterm = "0.29.0"
 objc2-system-configuration = "0.3.1"
 os_socketaddr = "0.2.5"
+rayon = "1.11.0"
 
 [patch.crates-io]
 libblkid-rs = { git = 'https://github.com/stratis-storage/libblkid-rs.git', rev = "5c08342" }
