@@ -117,11 +117,28 @@ struct Config {
     sudo_uid: Option<libc::uid_t>,
     sudo_gid: Option<libc::gid_t>,
     passphrase_config: PassphrasePromptConfig,
-    preferences: Preferences,
+    preferences: [PrefsObject; 2],
+}
+
+trait Preferences {
+    fn alpine_custom_packages<'a>(&'a self) -> BTreeSet<&'a str>;
+    fn custom_actions<'a>(&'a self) -> HashMap<&'a str, &'a CustomActionConfig>;
+    fn gvproxy_debug(&self) -> bool;
+    fn krun_log_level_numeric(&self) -> u32;
+    fn krun_num_vcpus(&self) -> u8;
+    fn krun_ram_size_mib(&self) -> u32;
+    fn passphrase_prompt_config(&self) -> PassphrasePromptConfig;
+
+    fn user<'a>(&'a self) -> &'a PrefsObject;
+    fn user_mut<'a>(&'a mut self) -> &'a mut PrefsObject;
+    // fn global<'a>(&'a self) -> &'a PrefsObject;
+    // fn global_mut<'a>(&'a mut self) -> &'a mut PrefsObject;
+
+    fn merged(&self) -> PrefsObject;
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
-struct Preferences {
+struct PrefsObject {
     #[serde(default)]
     alpine: AlpineConfig,
     #[serde(default)]
@@ -139,7 +156,99 @@ struct Preferences {
     ram_size_mib: Option<u32>,
 }
 
-impl Display for Preferences {
+impl Preferences for [PrefsObject; 2] {
+    fn alpine_custom_packages<'a>(&'a self) -> BTreeSet<&'a str> {
+        let mut result =
+            BTreeSet::from_iter(self[0].alpine.custom_packages.iter().map(|s| s.as_str()));
+        result.extend(self[1].alpine.custom_packages.iter().map(|s| s.as_str()));
+        result
+    }
+
+    fn custom_actions<'a>(&'a self) -> HashMap<&'a str, &'a CustomActionConfig> {
+        let mut result: HashMap<_, _> = self[0]
+            .custom_actions
+            .iter()
+            .map(|(k, v)| (k.as_str(), v))
+            .collect();
+        result.extend(self[1].custom_actions.iter().map(|(k, v)| (k.as_str(), v)));
+        result
+    }
+
+    fn gvproxy_debug(&self) -> bool {
+        self[1]
+            .gvproxy
+            .debug
+            .or(self[0].gvproxy.debug)
+            .unwrap_or(false)
+    }
+
+    fn krun_log_level_numeric(&self) -> u32 {
+        self[1]
+            .krun
+            .log_level_numeric
+            .or(self[0].krun.log_level_numeric)
+            .unwrap_or(KrunConfig::default_log_level())
+    }
+
+    fn krun_num_vcpus(&self) -> u8 {
+        self[1]
+            .krun
+            .num_vcpus
+            .or(self[0].krun.num_vcpus)
+            .unwrap_or(KrunConfig::default_num_vcpus())
+    }
+
+    fn krun_ram_size_mib(&self) -> u32 {
+        self[1]
+            .krun
+            .ram_size_mib
+            .or(self[0].krun.ram_size_mib)
+            .unwrap_or(KrunConfig::default_ram_size())
+    }
+
+    fn passphrase_prompt_config(&self) -> PassphrasePromptConfig {
+        self[1].misc.passphrase_config
+    }
+
+    fn user<'a>(&'a self) -> &'a PrefsObject {
+        &self[1]
+    }
+
+    fn user_mut<'a>(&'a mut self) -> &'a mut PrefsObject {
+        &mut self[1]
+    }
+
+    // fn global<'a>(&'a self) -> &'a PrefsObject {
+    //     &self[0]
+    // }
+
+    // fn global_mut<'a>(&'a mut self) -> &'a mut PrefsObject {
+    //     &mut self[0]
+    // }
+
+    fn merged(&self) -> PrefsObject {
+        let result = self[0].clone();
+        result.merge_with(&self[1])
+    }
+}
+
+impl PrefsObject {
+    fn merge_with(&self, other: &PrefsObject) -> PrefsObject {
+        let mut custom_actions = self.custom_actions.clone();
+        custom_actions.extend(other.custom_actions.clone());
+
+        PrefsObject {
+            alpine: self.alpine.merge_with(&other.alpine),
+            custom_actions,
+            gvproxy: self.gvproxy.merge_with(&other.gvproxy),
+            krun: self.krun.merge_with(&other.krun),
+            misc: self.misc.merge_with(&other.misc),
+            ..Default::default()
+        }
+    }
+}
+
+impl Display for PrefsObject {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "[krun]\n{}", self.krun)?;
         write!(f, "\n\n[misc]\n{}", self.misc)?;
@@ -150,6 +259,16 @@ impl Display for Preferences {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 struct AlpineConfig {
     custom_packages: Vec<String>,
+}
+
+impl AlpineConfig {
+    fn merge_with(&self, other: &AlpineConfig) -> AlpineConfig {
+        let mut custom_packages = BTreeSet::from_iter(self.custom_packages.clone());
+        custom_packages.extend(other.custom_packages.clone());
+        AlpineConfig {
+            custom_packages: custom_packages.into_iter().collect(),
+        }
+    }
 }
 
 trait CustomActionEnvironment {
@@ -209,17 +328,23 @@ impl CustomActionEnvironment for CustomActionConfig {
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 struct GvproxyConfig {
-    debug: bool,
+    debug: Option<bool>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+impl GvproxyConfig {
+    fn merge_with(&self, other: &GvproxyConfig) -> GvproxyConfig {
+        GvproxyConfig {
+            debug: other.debug.or(self.debug),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 struct KrunConfig {
-    #[serde(default = "KrunConfig::default_log_level", rename = "log_level")]
-    log_level_numeric: u32,
-    #[serde(default = "KrunConfig::default_num_vcpus")]
-    num_vcpus: u8,
-    #[serde(default = "KrunConfig::default_ram_size")]
-    ram_size_mib: u32,
+    #[serde(rename = "log_level")]
+    log_level_numeric: Option<u32>,
+    num_vcpus: Option<u8>,
+    ram_size_mib: Option<u32>,
 }
 
 impl KrunConfig {
@@ -234,14 +359,12 @@ impl KrunConfig {
     fn default_ram_size() -> u32 {
         512
     }
-}
 
-impl Default for KrunConfig {
-    fn default() -> Self {
+    fn merge_with(&self, other: &KrunConfig) -> KrunConfig {
         KrunConfig {
-            log_level_numeric: 0,
-            num_vcpus: 1,
-            ram_size_mib: 512,
+            log_level_numeric: other.log_level_numeric.or(self.log_level_numeric),
+            num_vcpus: other.num_vcpus.or(self.num_vcpus),
+            ram_size_mib: other.ram_size_mib.or(self.ram_size_mib),
         }
     }
 }
@@ -252,8 +375,8 @@ impl Display for KrunConfig {
             f,
             "log_level = {}\nnum_vcpus = {}\nram_size_mib = {}",
             self.log_level(),
-            self.num_vcpus,
-            self.ram_size_mib
+            self.num_vcpus.unwrap_or(KrunConfig::default_num_vcpus()),
+            self.ram_size_mib.unwrap_or(KrunConfig::default_ram_size())
         )
     }
 }
@@ -299,17 +422,25 @@ impl From<u32> for KrunLogLevel {
 #[allow(unused)]
 impl KrunConfig {
     fn log_level(&self) -> KrunLogLevel {
-        self.log_level_numeric.into()
+        self.log_level_numeric
+            .unwrap_or(KrunConfig::default_log_level())
+            .into()
     }
 
     fn set_log_level(&mut self, level: KrunLogLevel) {
-        self.log_level_numeric = level as u32;
+        self.log_level_numeric = Some(level as u32);
     }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 struct MiscConfig {
     passphrase_config: PassphrasePromptConfig,
+}
+
+impl MiscConfig {
+    fn merge_with(&self, other: &MiscConfig) -> MiscConfig {
+        other.clone()
+    }
 }
 
 impl Display for MiscConfig {
@@ -335,8 +466,13 @@ struct MountConfig {
 
 impl MountConfig {
     fn get_action(&self) -> Option<&CustomActionConfig> {
-        match &self.custom_action {
-            Some(action_name) => self.common.preferences.custom_actions.get(action_name),
+        match self.custom_action.as_deref() {
+            Some(action_name) => self
+                .common
+                .preferences
+                .custom_actions()
+                .get(action_name)
+                .map(|a| *a),
             None => None,
         }
     }
@@ -420,6 +556,8 @@ Supported partition schemes:
         after_help = "Lists all physical partitions and LVM/RAID volumes. Can decrypt LUKS partition metadata too."
     )]
     List(ListCmd),
+    /// List available custom actions
+    Actions,
     /// Stop anylinuxfs (can be used if unresponsive)
     Stop(StopCmd),
     /// microVM shell for debugging (configures the VM according to mount options but only starts a shell)
@@ -675,12 +813,17 @@ fn load_config(common_args: &CommonArgs) -> anyhow::Result<Config> {
     let vsock_path = format!("/tmp/anylinuxfs-{}-vsock", rand_string(8));
     let vfkit_sock_path = format!("/tmp/vfkit-{}.sock", rand_string(8));
 
-    let preferences = load_preferences(&config_file_path)?;
+    let global_cfg_path = prefix_dir
+        .join("etc")
+        .join("anylinuxfs")
+        .join("config.toml");
+    let all_cfg_paths = [global_cfg_path.as_path(), config_file_path.as_path()];
+    let preferences = load_preferences(all_cfg_paths.iter().cloned())?;
     // println!("Loaded preferences: {:#?}", &preferences);
 
     let passphrase_config = common_args
         .passphrase_config
-        .unwrap_or(preferences.misc.passphrase_config);
+        .unwrap_or(preferences.passphrase_prompt_config());
 
     Ok(Config {
         exec_path,
@@ -703,33 +846,44 @@ fn load_config(common_args: &CommonArgs) -> anyhow::Result<Config> {
     })
 }
 
-fn convert_legacy_config(config: &mut Preferences) {
+fn convert_legacy_config(config: &mut PrefsObject) {
     if let Some(log_level_numeric) = config.log_level_numeric.take() {
-        config.krun.log_level_numeric = log_level_numeric;
+        config.krun.log_level_numeric = Some(log_level_numeric);
     }
     if let Some(num_vcpus) = config.num_vcpus.take() {
-        config.krun.num_vcpus = num_vcpus;
+        config.krun.num_vcpus = Some(num_vcpus);
     }
     if let Some(ram_size_mib) = config.ram_size_mib.take() {
-        config.krun.ram_size_mib = ram_size_mib;
+        config.krun.ram_size_mib = Some(ram_size_mib);
     }
 }
 
-fn load_preferences(path: &Path) -> anyhow::Result<Preferences> {
-    match fs::read_to_string(path) {
-        Ok(config_str) => {
-            let mut config: Preferences = toml::from_str(&config_str)
-                .context(format!("Failed to parse config file {}", path.display()))?;
-            convert_legacy_config(&mut config);
-            Ok(config)
-        }
-        Err(_) => Ok(Preferences::default()),
+fn load_preferences<'a>(paths: impl Iterator<Item = &'a Path>) -> anyhow::Result<[PrefsObject; 2]> {
+    let mut result_config = [PrefsObject::default(), PrefsObject::default()];
+    let mut cfg_idx = 0;
+    for path in paths {
+        match fs::read_to_string(path) {
+            Ok(config_str) => {
+                let mut config = toml::from_str(&config_str)
+                    .context(format!("Failed to parse config file {}", path.display()))?;
+                convert_legacy_config(&mut config);
+                result_config[cfg_idx] = config;
+            }
+            Err(_) => (),
+        };
+        cfg_idx += 1;
     }
+    Ok(result_config)
 }
 
-fn save_preferences(preferences: &Preferences, config_file_path: &Path) -> anyhow::Result<()> {
+fn save_preferences(preferences: &PrefsObject, config_file_path: &Path) -> anyhow::Result<()> {
     let config_str =
         toml::to_string(preferences).context("Failed to serialize Preferences to TOML")?;
+    // println!(
+    //     "Saving config to {}:\n{}",
+    //     config_file_path.display(),
+    //     config_str
+    // );
     fs::write(config_file_path, config_str).context(format!(
         "Failed to write config file {}",
         config_file_path.display()
@@ -788,9 +942,9 @@ fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
 
     let open_finder = cmd.window;
 
-    let custom_action = if let Some(action_name) = cmd.action {
-        match common.preferences.custom_actions.get(&action_name) {
-            Some(_) => Some(action_name),
+    let custom_action = if let Some(action_name) = cmd.action.as_deref() {
+        match common.preferences.custom_actions().get(&action_name) {
+            Some(_) => Some(action_name.to_owned()),
             None => {
                 return Err(anyhow::anyhow!("unknown custom action: {}", action_name));
             }
@@ -838,11 +992,11 @@ fn setup_vm(
 ) -> anyhow::Result<u32> {
     let ctx = unsafe { bindings::krun_create_ctx() }.context("Failed to create context")?;
 
-    let level = config.preferences.krun.log_level_numeric;
+    let level = config.preferences.krun_log_level_numeric();
     unsafe { bindings::krun_set_log_level(level) }.context("Failed to set log level")?;
 
-    let num_vcpus = config.preferences.krun.num_vcpus;
-    let ram_mib = config.preferences.krun.ram_size_mib;
+    let num_vcpus = config.preferences.krun_num_vcpus();
+    let ram_mib = config.preferences.krun_ram_size_mib();
     unsafe { bindings::krun_set_vm_config(ctx, num_vcpus, ram_mib) }
         .context("Failed to set VM config")?;
 
@@ -1155,7 +1309,7 @@ fn start_gvproxy(config: &Config) -> anyhow::Result<Child> {
         "-1",
     ];
 
-    if config.preferences.gvproxy.debug {
+    if config.preferences.gvproxy_debug() {
         gvproxy_args.push("--debug");
     }
 
@@ -1636,11 +1790,11 @@ fn claim_devices(config: &MountConfig) -> anyhow::Result<(Vec<DevInfo>, DevInfo,
 }
 
 fn ensure_enough_ram_for_luks(config: &mut Config) {
-    if config.preferences.krun.ram_size_mib < 2560 {
-        config.preferences.krun.ram_size_mib = 2560;
+    if config.preferences.krun_ram_size_mib() < 2560 {
+        config.preferences.user_mut().krun.ram_size_mib = Some(2560);
         println!(
             "Configured RAM size is lower than the minimum required for LUKS decryption, setting to {} MiB",
-            config.preferences.krun.ram_size_mib
+            config.preferences.krun_ram_size_mib()
         );
     }
 }
@@ -1692,10 +1846,10 @@ impl AppRunner {
 
         // host_println!("disk_path: {}", config.disk_path);
         host_println!("root_path: {}", config.common.root_path.display());
-        host_println!("num_vcpus: {}", config.common.preferences.krun.num_vcpus);
+        host_println!("num_vcpus: {}", config.common.preferences.krun_num_vcpus());
         host_println!(
             "ram_size_mib: {}",
-            config.common.preferences.krun.ram_size_mib
+            config.common.preferences.krun_ram_size_mib()
         );
 
         let (dev_info, _, _disks) = claim_devices(&config)?;
@@ -1741,7 +1895,7 @@ impl AppRunner {
         let mut config = load_config(&CommonArgs::default())?;
         let config_file_path = &config.config_file_path;
 
-        let alpine_config = &mut config.preferences.alpine;
+        let alpine_packages = config.preferences.alpine_custom_packages();
         let default_packages = get_default_packages();
 
         let dns_server = dnsutil::get_dns_server_with_fallback();
@@ -1749,7 +1903,7 @@ impl AppRunner {
         let apk_command = match cmd {
             ApkCmd::Info => {
                 // Show information about custom packages
-                for pkg in &alpine_config.custom_packages {
+                for pkg in alpine_packages {
                     safe_println!("{}", pkg)?;
                 }
                 return Ok(());
@@ -1759,10 +1913,10 @@ impl AppRunner {
                 packages.retain(|pkg| !default_packages.contains(pkg));
 
                 // Add custom packages
-                let mut package_set: BTreeSet<_> =
-                    BTreeSet::from_iter(alpine_config.custom_packages.iter().cloned());
-                package_set.extend(packages.iter().cloned());
-                alpine_config.custom_packages = package_set.into_iter().collect();
+                let mut package_set = alpine_packages.clone();
+                package_set.extend(packages.iter().map(|s| s.as_str()));
+                config.preferences.user_mut().alpine.custom_packages =
+                    package_set.into_iter().map(|s| s.to_owned()).collect();
 
                 if packages.is_empty() {
                     // no-op
@@ -1776,7 +1930,10 @@ impl AppRunner {
                 packages.retain(|pkg| !default_packages.contains(pkg));
 
                 // Remove custom packages
-                alpine_config
+                config
+                    .preferences
+                    .user_mut()
+                    .alpine
                     .custom_packages
                     .retain(|pkg| !packages.contains(pkg));
 
@@ -1801,7 +1958,7 @@ impl AppRunner {
             ));
         }
         // preferences are only saved if apk command was successful
-        save_preferences(&config.preferences, config_file_path)?;
+        save_preferences(config.preferences.user(), config_file_path)?;
 
         Ok(())
     }
@@ -1895,10 +2052,10 @@ impl AppRunner {
 
         // host_println!("disk_path: {}", config.disk_path);
         host_println!("root_path: {}", config.common.root_path.display());
-        host_println!("num_vcpus: {}", config.common.preferences.krun.num_vcpus);
+        host_println!("num_vcpus: {}", config.common.preferences.krun_num_vcpus());
         host_println!(
             "ram_size_mib: {}",
-            config.common.preferences.krun.ram_size_mib
+            config.common.preferences.krun_ram_size_mib()
         );
 
         let (dev_info, mut mnt_dev_info, _disks) = claim_devices(&config)?;
@@ -2473,32 +2630,28 @@ impl AppRunner {
         let mut config = load_config(&cmd.common)?;
         let config_file_path = &config.config_file_path;
 
-        let krun_config = &mut config.preferences.krun;
+        let krun_config = &mut config.preferences.user_mut().krun;
 
         if cmd == ConfigCmd::default() {
-            println!("{}", &config.preferences);
+            println!("{}", &config.preferences.merged());
             return Ok(());
         }
 
         if let Some(log_level) = cmd.log_level {
             krun_config.set_log_level(log_level);
         }
-        if let Some(num_vcpus) = cmd.num_vcpus {
-            krun_config.num_vcpus = num_vcpus;
-        }
-        if let Some(ram_size_mib) = cmd.ram_size_mib {
-            krun_config.ram_size_mib = ram_size_mib;
-        }
 
-        let misc_config = &mut config.preferences.misc;
+        krun_config.num_vcpus = cmd.num_vcpus;
+        krun_config.ram_size_mib = cmd.ram_size_mib;
 
-        if let Some(pwd_cfg) = cmd.common.passphrase_config {
-            misc_config.passphrase_config = pwd_cfg;
+        let misc_config = &mut config.preferences.user_mut().misc;
+        if let Some(passphrase_config) = cmd.common.passphrase_config {
+            misc_config.passphrase_config = passphrase_config;
         }
 
-        println!("{}", &config.preferences);
+        println!("{}", &config.preferences.merged());
 
-        save_preferences(&config.preferences, config_file_path)?;
+        save_preferences(config.preferences.user(), config_file_path)?;
 
         Ok(())
     }
@@ -2519,6 +2672,14 @@ impl AppRunner {
             "{}",
             diskutil::list_partitions(config, cmd.decrypt.as_deref(), labels)?
         );
+        Ok(())
+    }
+
+    fn run_actions(&mut self) -> anyhow::Result<()> {
+        let config = load_config(&CommonArgs::default())?;
+        for (action, config) in config.preferences.custom_actions() {
+            safe_println!("{}: {}", action, &config.description)?;
+        }
         Ok(())
     }
 
@@ -2620,8 +2781,8 @@ impl AppRunner {
                     mount_point.display(),
                     info.join(", "),
                     &user_name,
-                    rt_info.mount_config.common.preferences.krun.num_vcpus,
-                    rt_info.mount_config.common.preferences.krun.ram_size_mib,
+                    rt_info.mount_config.common.preferences.krun_num_vcpus(),
+                    rt_info.mount_config.common.preferences.krun_ram_size_mib(),
                 );
             }
             Err(err) => {
@@ -2749,6 +2910,7 @@ impl AppRunner {
             Commands::Log(cmd) => self.run_log(cmd),
             Commands::Config(cmd) => self.run_config(cmd),
             Commands::List(cmd) => self.run_list(cmd),
+            Commands::Actions => self.run_actions(),
             Commands::Stop(cmd) => self.run_stop(cmd),
             Commands::Shell(cmd) => self.run_shell(cmd),
             Commands::Dmesg => self.run_dmesg(),
