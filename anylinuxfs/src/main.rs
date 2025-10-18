@@ -1227,12 +1227,10 @@ fn wait_for_nfs_server(
     Ok(nfs_ready)
 }
 
-fn mount_nfs(share_path: &str, config: &MountConfig, vers4: bool) -> anyhow::Result<()> {
+fn mount_nfs(share_path: &str, config: &MountConfig) -> anyhow::Result<()> {
     let status = if let Some(mount_point) = config.custom_mount_point.as_deref() {
-        let opts = if vers4 { "-o vers=4" } else { "" };
         let mut shell_script = format!(
-            "mount -t nfs {} \"localhost:{}\" \"{}\"",
-            opts,
+            "mount -t nfs \"localhost:{}\" \"{}\"",
             share_path,
             mount_point.display()
         );
@@ -2260,26 +2258,8 @@ impl AppRunner {
                     }
                     _ => format!("/mnt/{share_name}"),
                 };
-                // let vers4 = mnt_dev_info.fs_type() == Some("zfs");
-                let vers4 = false;
-                if vers4 {
-                    let mnt_point = PathBuf::from(format!("/Volumes/{share_name}"));
-                    fs::create_dir_all(&mnt_point).with_context(|| {
-                        format!("Failed to create mount point {}", mnt_point.display())
-                    })?;
 
-                    chown(
-                        &mnt_point,
-                        Some(config.common.invoker_uid),
-                        Some(config.common.invoker_gid),
-                    )
-                    .with_context(|| {
-                        format!("Failed to change owner of {}", mnt_point.display())
-                    })?;
-
-                    config.custom_mount_point = Some(mnt_point);
-                }
-                let mount_result = mount_nfs(&share_path, &config, vers4);
+                let mount_result = mount_nfs(&share_path, &config);
                 match &mount_result {
                     Ok(_) => host_println!("Requested NFS share mount"),
                     Err(e) => host_eprintln!("Failed to request NFS mount: {:#}", e),
