@@ -141,7 +141,8 @@ fn parallel_mount_recursive(mnt_point_base: PathBuf, trie: &dirtrie::Node) -> an
             nfs_path,
             mnt_point_base.join(rel_path).display()
         );
-        host_println!("Running NFS mount command: `{}`", &shell_script);
+        // host_println!("Running NFS mount command: `{}`", &shell_script);
+
         // TODO: elevate if needed (e.g. mounting image under /Volumes)
         let status = Command::new("sh")
             .arg("-c")
@@ -159,6 +160,10 @@ fn parallel_mount_recursive(mnt_point_base: PathBuf, trie: &dirtrie::Node) -> an
                     .unwrap_or("unknown".to_owned())
             ));
         }
+        host_println!(
+            "Mounted subdirectory: {}",
+            mnt_point_base.join(rel_path).display()
+        );
     }
     trie.children
         .par_iter()
@@ -188,6 +193,6 @@ pub fn mount_nfs_subdirs<'a>(
     }
 
     parallel_mount_recursive(mnt_point_base.as_ref().into(), &trie)?;
-    host_println!("Mounted NFS subdirectories:\r\n{}", trie);
+    // host_println!("Mounted NFS subdirectories:\r\n{}", trie);
     Ok(())
 }
