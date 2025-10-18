@@ -178,12 +178,7 @@ pub fn mount_nfs_subdirs<'a>(
     mnt_point_base: impl AsRef<Path>,
 ) -> anyhow::Result<()> {
     let mut trie = dirtrie::Node::default();
-    // TODO: try if mounting in parallel is faster
-    // but make sure the order is correct:
-    // - we'd need to construct a trie of all subdirs
-    //   where each node corresponds to a path segment
-    // - each node mounts its own subdir prefix path
-    // - then repeats recursively for all children at once
+
     for subdir in subdirs {
         let subdir_relative = subdir
             .trim_start_matches(share_path_base)
