@@ -2283,11 +2283,11 @@ impl AppRunner {
 
                     rt_info.lock().unwrap().mount_point = Some(mount_point.display().into());
 
-                    let additional_exports: Vec<_> = exports
+                    let mut additional_exports = exports
                         .iter()
                         .map(|item| item.as_str())
                         .filter(|&export_path| export_path != &share_path)
-                        .collect();
+                        .peekable();
 
                     log::enable_console_log();
                     let mnt_point_base = config
@@ -2297,7 +2297,7 @@ impl AppRunner {
                     let elevate =
                         config.common.sudo_uid.is_none() && config.common.invoker_uid != 0;
 
-                    if elevate && !additional_exports.is_empty() {
+                    if elevate && additional_exports.peek().is_some() {
                         host_println!("need to use sudo to mount additional NFS exports");
                     }
                     match mount_nfs_subdirs(
