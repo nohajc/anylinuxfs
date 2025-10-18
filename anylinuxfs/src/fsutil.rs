@@ -1,9 +1,12 @@
+use anyhow::anyhow;
+use common_utils::host_println;
 use std::{
     collections::HashSet,
     ffi::{CStr, CString, OsStr, OsString},
     io, mem,
     os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
+    process::Command,
     ptr::null_mut,
 };
 
@@ -80,4 +83,87 @@ fn statfs(path: impl AsRef<Path>) -> io::Result<libc::statfs> {
 fn os_str_from_c_chars(chars: &[i8]) -> &OsStr {
     let cstr = unsafe { CStr::from_ptr(chars.as_ptr()) };
     OsStr::from_bytes(cstr.to_bytes())
+}
+
+mod dirtrie {
+    use std::{collections::BTreeMap, ffi::OsString, fmt::Display, path::Path};
+
+    #[derive(Debug, Default)]
+    pub struct Node {
+        pub children: BTreeMap<OsString, Node>,
+    }
+
+    impl Node {
+        pub fn insert(&mut self, path: &Path) {
+            let mut current = self;
+            for segment in path.components() {
+                let segment = segment.as_os_str().to_owned();
+                current = current.children.entry(segment).or_default();
+            }
+        }
+    }
+
+    impl Display for Node {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            fn fmt_node(
+                node: &Node,
+                f: &mut std::fmt::Formatter<'_>,
+                prefix: &str,
+            ) -> std::fmt::Result {
+                for (segment, child) in &node.children {
+                    write!(f, "{}{}\r\n", prefix, segment.to_string_lossy())?;
+                    fmt_node(child, f, &format!("{}--", prefix))?;
+                }
+                Ok(())
+            }
+            fmt_node(self, f, "")
+        }
+    }
+}
+
+pub fn mount_nfs_subdirs<'a>(
+    share_path_base: &str,
+    subdirs: impl Iterator<Item = &'a str>,
+    mnt_point_base: impl AsRef<Path>,
+) -> anyhow::Result<()> {
+    let mut trie = dirtrie::Node::default();
+    // TODO: try if mounting in parallel is faster
+    // but make sure the order is correct:
+    // - we'd need to construct a trie of all subdirs
+    //   where each node corresponds to a path segment
+    // - each node mounts its own subdir prefix path
+    // - then repeats recursively for all children at once
+    for subdir in subdirs {
+        let subdir_relative = subdir
+            .trim_start_matches(share_path_base)
+            .trim_start_matches('/');
+
+        trie.insert(Path::new(subdir_relative));
+
+        let shell_script = format!(
+            "mount -t nfs \"localhost:{}\" \"{}\"",
+            subdir,
+            mnt_point_base.as_ref().join(subdir_relative).display()
+        );
+        // host_println!("Running NFS mount command: `{}`", &shell_script);
+        // TODO: elevate if needed (e.g. mounting image under /Volumes)
+        let status = Command::new("sh")
+            .arg("-c")
+            .arg(&shell_script)
+            // .stdout(Stdio::null())
+            // .stderr(Stdio::null())
+            .status()?; // TODO: make sure any error is properly printed
+
+        if !status.success() {
+            return Err(anyhow!(
+                "mount failed with exit code {}",
+                status
+                    .code()
+                    .map(|c| c.to_string())
+                    .unwrap_or("unknown".to_owned())
+            ));
+        }
+    }
+    host_println!("Mounted NFS subdirectories:\n{}", trie);
+    Ok(())
 }
