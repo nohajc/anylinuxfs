@@ -210,22 +210,8 @@ fn parallel_unmount_recursive(trie: &dirtrie::Node) -> anyhow::Result<()> {
     if let Some((_, mount_path)) = &trie.paths {
         let shell_script = format!("diskutil unmount \"{}\"", mount_path);
         // host_println!("Running NFS unmount command: `{}`", &shell_script);
-        let status = Command::new("sh")
-            .arg("-c")
-            .arg(&shell_script)
-            // .stdout(Stdio::null())
-            // .stderr(Stdio::null())
-            .status()?; // TODO: make sure any error is properly printed
-        if !status.success() {
-            return Err(anyhow!(
-                "umount failed with exit code {}",
-                status
-                    .code()
-                    .map(|c| c.to_string())
-                    .unwrap_or("unknown".to_owned())
-            ));
-        }
-        host_println!("Unmounted subdirectory: {}", mount_path);
+        // exit status ignored, we don't want to exit early if one unmount fails
+        let _ = Command::new("sh").arg("-c").arg(&shell_script).status()?;
     }
     Ok(())
 }
