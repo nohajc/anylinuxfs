@@ -201,3 +201,50 @@ pub fn mount_nfs_subdirs<'a>(
     // host_println!("Mounted NFS subdirectories:\r\n{}", trie);
     Ok(())
 }
+
+fn parallel_unmount_recursive(trie: &dirtrie::Node) -> anyhow::Result<()> {
+    trie.children
+        .par_iter()
+        .try_for_each(|(_, child)| parallel_unmount_recursive(child))?;
+
+    if let Some((_, mount_path)) = &trie.paths {
+        let shell_script = format!("diskutil unmount \"{}\"", mount_path);
+        // host_println!("Running NFS unmount command: `{}`", &shell_script);
+        let status = Command::new("sh")
+            .arg("-c")
+            .arg(&shell_script)
+            // .stdout(Stdio::null())
+            // .stderr(Stdio::null())
+            .status()?; // TODO: make sure any error is properly printed
+        if !status.success() {
+            return Err(anyhow!(
+                "umount failed with exit code {}",
+                status
+                    .code()
+                    .map(|c| c.to_string())
+                    .unwrap_or("unknown".to_owned())
+            ));
+        }
+        host_println!("Unmounted subdirectory: {}", mount_path);
+    }
+    Ok(())
+}
+
+pub fn unmount_nfs_subdirs<'a>(
+    subdirs: impl Iterator<Item = &'a OsStr>,
+    mnt_point_base: impl AsRef<Path>,
+) -> anyhow::Result<()> {
+    let mut trie = dirtrie::Node::default();
+
+    for subdir in subdirs {
+        let subdir = subdir.to_string_lossy();
+        let subdir_relative = subdir
+            .trim_start_matches(&*mnt_point_base.as_ref().to_string_lossy())
+            .trim_start_matches('/');
+
+        trie.insert(Path::new(subdir_relative), &subdir);
+    }
+
+    parallel_unmount_recursive(&trie)?;
+    Ok(())
+}

@@ -39,7 +39,7 @@ use utils::{
     OutputAction, PassthroughBufReader, StatusError, write_to_pipe,
 };
 
-use crate::fsutil::mount_nfs_subdirs;
+use crate::fsutil::{mount_nfs_subdirs, unmount_nfs_subdirs};
 use crate::utils::{ToCStringVec, ToPtrVec};
 
 mod api;
@@ -2450,20 +2450,16 @@ impl AppRunner {
                 println!("mount_point: {}", mount_point.display());
 
                 let mount_table = fsutil::MountTable::new()?;
-                let our_mount_points: Vec<_> = mount_table
+                // TODO: check if cmd.path corresponds to one of our mount points
+                let our_mount_points = mount_table
                     .mount_points()
+                    .map(|item| item.as_os_str())
                     .filter(|&mpt| {
                         mpt.to_string_lossy()
                             .starts_with(&*mount_point.to_string_lossy())
-                    })
-                    .collect();
+                    });
 
-                if !our_mount_points.is_empty() {
-                    for mpt in our_mount_points {
-                        host_println!("Unmounting {}", mpt.display());
-                        // unmount_fs(Path::new(mpt))?;
-                    }
-                }
+                unmount_nfs_subdirs(our_mount_points, mount_point)?;
             }
             Err(err) => {
                 if let Some(err) = err.downcast_ref::<io::Error>() {
