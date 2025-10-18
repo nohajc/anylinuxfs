@@ -2310,7 +2310,15 @@ impl AppRunner {
                     let mnt_point_base = config
                         .custom_mount_point
                         .unwrap_or(PathBuf::from(format!("/Volumes/{share_name}")));
-                    match mount_nfs_subdirs(&share_path, additional_exports, mnt_point_base) {
+
+                    let elevate =
+                        config.common.sudo_uid.is_none() && config.common.invoker_uid != 0;
+                    match mount_nfs_subdirs(
+                        &share_path,
+                        additional_exports,
+                        mnt_point_base,
+                        elevate,
+                    ) {
                         Ok(_) => {}
                         Err(e) => host_eprintln!("Failed to mount additional NFS exports: {:#}", e),
                     }
