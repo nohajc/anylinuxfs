@@ -207,7 +207,11 @@ impl Preferences for [PrefsObject; 2] {
     }
 
     fn passphrase_prompt_config(&self) -> PassphrasePromptConfig {
-        self[1].misc.passphrase_config
+        self[1]
+            .misc
+            .passphrase_config
+            .or(self[0].misc.passphrase_config)
+            .unwrap_or_default()
     }
 
     fn user<'a>(&'a self) -> &'a PrefsObject {
@@ -434,18 +438,24 @@ impl KrunConfig {
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 struct MiscConfig {
-    passphrase_config: PassphrasePromptConfig,
+    passphrase_config: Option<PassphrasePromptConfig>,
 }
 
 impl MiscConfig {
     fn merge_with(&self, other: &MiscConfig) -> MiscConfig {
-        other.clone()
+        MiscConfig {
+            passphrase_config: other.passphrase_config.or(self.passphrase_config.clone()),
+        }
+    }
+
+    fn passphrase_config(&self) -> PassphrasePromptConfig {
+        self.passphrase_config.unwrap_or_default()
     }
 }
 
 impl Display for MiscConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "passphrase_config = {}", self.passphrase_config)
+        write!(f, "passphrase_config = {}", self.passphrase_config())
     }
 }
 
@@ -2641,12 +2651,16 @@ impl AppRunner {
             krun_config.set_log_level(log_level);
         }
 
-        krun_config.num_vcpus = cmd.num_vcpus;
-        krun_config.ram_size_mib = cmd.ram_size_mib;
+        if let Some(num_vcpus) = cmd.num_vcpus {
+            krun_config.num_vcpus = Some(num_vcpus);
+        }
+        if let Some(ram_size_mib) = cmd.ram_size_mib {
+            krun_config.ram_size_mib = Some(ram_size_mib);
+        }
 
         let misc_config = &mut config.preferences.user_mut().misc;
         if let Some(passphrase_config) = cmd.common.passphrase_config {
-            misc_config.passphrase_config = passphrase_config;
+            misc_config.passphrase_config = Some(passphrase_config);
         }
 
         println!("{}", &config.preferences.merged());
