@@ -2292,6 +2292,8 @@ impl AppRunner {
                     None
                 };
 
+                deferred.call_now(disable_stdin_fwd_action);
+
                 if let Some(mount_point) = &mount_point_opt {
                     host_println!(
                         "{} was mounted as {}",
@@ -2335,8 +2337,6 @@ impl AppRunner {
 
                     // stop printing to the console
                     log::disable_console_log();
-
-                    deferred.call_now(disable_stdin_fwd_action);
                 } else {
                     // tell the parent to wait for the child to exit
                     unsafe { write_to_pipe(comm_write_fd, b"join\n") }
