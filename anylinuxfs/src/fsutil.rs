@@ -153,7 +153,7 @@ fn parallel_mount_recursive(
 ) -> anyhow::Result<()> {
     if let Some((rel_path, nfs_path)) = &trie.paths {
         let shell_script = format!(
-            "mount -t nfs \"localhost:{}\" \"{}\"",
+            "mount -t nfs 'localhost:{}' '{}'",
             nfs_path,
             mnt_point_base.join(rel_path).display()
         );
