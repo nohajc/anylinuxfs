@@ -116,6 +116,8 @@ impl<'a> Drop for Deferred<'a> {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct CustomActionConfig {
     #[serde(default)]
+    pub description: String,
+    #[serde(default)]
     pub before_mount: String,
     #[serde(default)]
     pub after_mount: String,

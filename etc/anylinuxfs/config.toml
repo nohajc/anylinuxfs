@@ -1,0 +1,8 @@
+[custom_actions.ubuntu_zfs_unlock]
+description = "Mount ZFS keystore encrypted with LUKS to unlock Ubuntu system disk"
+before_mount = "cryptsetup open /dev/zd0 ks0 && mkdir -p $KS && mount /dev/mapper/ks0 $KS"
+after_mount = ""
+before_unmount = "umount /dev/mapper/ks0 && cryptsetup close ks0"
+environment = ["KS=/run/keystore/rpool"]
+capture_environment = []
+override_nfs_export = ""
