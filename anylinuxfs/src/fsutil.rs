@@ -153,25 +153,15 @@ fn parallel_mount_recursive(
 ) -> anyhow::Result<()> {
     if let Some((rel_path, nfs_path)) = &trie.paths {
         let shell_script = format!(
-            "mount -t nfs 'localhost:{}' '{}'",
+            "mount -t nfs \"localhost:{}\" \"{}\"",
             nfs_path,
             mnt_point_base.join(rel_path).display()
         );
         // host_println!("Running NFS mount command: `{}`", &shell_script);
 
         // elevate if needed (e.g. mounting image under /Volumes)
-        let cmdline: &[&str] = if elevate {
-            &[
-                "osascript",
-                "-e",
-                &format!(
-                    "do shell script \"{}\" with administrator privileges",
-                    &shell_script
-                ),
-            ]
-        } else {
-            &["sh", "-c", &shell_script]
-        };
+        let cmdline = ["sudo", "-S", "sh", "-c", &shell_script];
+        let cmdline = if elevate { &cmdline[..] } else { &cmdline[2..] };
         let mut hnd = Command::new(cmdline[0])
             .args(&cmdline[1..])
             .stdout(Stdio::piped())
