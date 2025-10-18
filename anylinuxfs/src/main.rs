@@ -2440,18 +2440,17 @@ impl AppRunner {
                 };
 
                 if let Some(path) = &cmd.path {
-                    match fs::canonicalize(path) {
-                        Ok(abs_path) => {
-                            if abs_path != Path::new(&rt_info.mount_config.disk_path)
-                                && abs_path != mount_point
-                            {
-                                println!("The specified path was not mounted by anylinuxfs.");
-                                return Ok(());
-                            }
-                        }
-                        Err(err) => {
-                            return Err(err).with_context(|| format!("invalid path {}", path));
-                        }
+                    let path = fs::canonicalize(path).unwrap_or(PathBuf::from(path));
+                    if path != Path::new(&rt_info.mount_config.disk_path)
+                        && path != mount_point
+                        && !rt_info
+                            .mount_config
+                            .disk_path
+                            .split(':')
+                            .any(|p| p == path.to_string_lossy())
+                    {
+                        println!("The specified path was not mounted by anylinuxfs.");
+                        return Ok(());
                     }
                 }
 
