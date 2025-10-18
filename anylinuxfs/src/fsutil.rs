@@ -1,5 +1,6 @@
 use anyhow::anyhow;
 use common_utils::host_println;
+use rayon::prelude::*;
 use std::{
     collections::HashSet,
     ffi::{CStr, CString, OsStr, OsString},
@@ -90,7 +91,7 @@ mod dirtrie {
 
     #[derive(Debug, Default)]
     pub struct Node {
-        pub mount_point: Option<String>,
+        pub paths: Option<(OsString, String)>,
         pub children: BTreeMap<OsString, Node>,
     }
 
@@ -101,7 +102,7 @@ mod dirtrie {
                 let segment = segment.as_os_str().to_owned();
                 current = current.children.entry(segment).or_default();
             }
-            current.mount_point = Some(full_path.to_owned());
+            current.paths = Some((path.as_os_str().to_owned(), full_path.to_owned()));
         }
     }
 
@@ -118,7 +119,11 @@ mod dirtrie {
                         "{}{} ({})\r\n",
                         prefix,
                         segment.to_string_lossy(),
-                        child.mount_point.as_deref().unwrap_or("")
+                        child
+                            .paths
+                            .as_ref()
+                            .map(|(_, p)| p.clone())
+                            .unwrap_or("".to_owned())
                     )?;
                     fmt_node(child, f, &format!("{}--", prefix))?;
                 }
@@ -129,12 +134,38 @@ mod dirtrie {
     }
 }
 
-// fn parallel_mount_recursive(
-//     mnt_point_base: impl AsRef<Path>,
-//     trie: &dirtrie::Node,
-// ) -> anyhow::Result<()> {
-//     Ok(())
-// }
+fn parallel_mount_recursive(mnt_point_base: PathBuf, trie: &dirtrie::Node) -> anyhow::Result<()> {
+    if let Some((rel_path, nfs_path)) = &trie.paths {
+        let shell_script = format!(
+            "mount -t nfs \"localhost:{}\" \"{}\"",
+            nfs_path,
+            mnt_point_base.join(rel_path).display()
+        );
+        host_println!("Running NFS mount command: `{}`", &shell_script);
+        // TODO: elevate if needed (e.g. mounting image under /Volumes)
+        let status = Command::new("sh")
+            .arg("-c")
+            .arg(&shell_script)
+            // .stdout(Stdio::null())
+            // .stderr(Stdio::null())
+            .status()?; // TODO: make sure any error is properly printed
+
+        if !status.success() {
+            return Err(anyhow!(
+                "mount failed with exit code {}",
+                status
+                    .code()
+                    .map(|c| c.to_string())
+                    .unwrap_or("unknown".to_owned())
+            ));
+        }
+    }
+    trie.children
+        .par_iter()
+        .try_for_each(|(_, child)| parallel_mount_recursive(mnt_point_base.clone(), child))?;
+
+    Ok(())
+}
 
 pub fn mount_nfs_subdirs<'a>(
     share_path_base: &str,
@@ -154,31 +185,9 @@ pub fn mount_nfs_subdirs<'a>(
             .trim_start_matches('/');
 
         trie.insert(Path::new(subdir_relative), subdir);
-
-        let shell_script = format!(
-            "mount -t nfs \"localhost:{}\" \"{}\"",
-            subdir,
-            mnt_point_base.as_ref().join(subdir_relative).display()
-        );
-        // host_println!("Running NFS mount command: `{}`", &shell_script);
-        // TODO: elevate if needed (e.g. mounting image under /Volumes)
-        let status = Command::new("sh")
-            .arg("-c")
-            .arg(&shell_script)
-            // .stdout(Stdio::null())
-            // .stderr(Stdio::null())
-            .status()?; // TODO: make sure any error is properly printed
-
-        if !status.success() {
-            return Err(anyhow!(
-                "mount failed with exit code {}",
-                status
-                    .code()
-                    .map(|c| c.to_string())
-                    .unwrap_or("unknown".to_owned())
-            ));
-        }
     }
+
+    parallel_mount_recursive(mnt_point_base.as_ref().into(), &trie)?;
     host_println!("Mounted NFS subdirectories:\r\n{}", trie);
     Ok(())
 }
