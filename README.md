@@ -13,6 +13,7 @@ If you like the project, you can support it on Ko-fi. Right now with the release
 - supports **LVM** (even volume groups spanning multiple drives)
 - supports **LVM on LUKS** (i.e. encrypted LVM)
 - supports **Linux RAID** (mdadm) and **multi-disk btrfs**
+- supports **ZFS** (including native ZFS encryption)
 - works with both external and internal drives
 - works with disk images
 - supports disks with **GPT**, **MBR** or no partition table (single filesystem or LVM/LUKS container)
@@ -39,7 +40,7 @@ We've got NTFS-3g which is a pretty mature driver but for Linux filesystems ther
 If you want a reliable solution with write access, you need to run a Linux virtual machine with physical disk access and take care of exposing the mounted filesystem to the host.
 This is exactly what `anylinuxfs` does and it streamlines it so that it's as easy as running one command in terminal.
 
-You pick a drive, mount it with `anylinuxfs` and it appears as a NFS share on localhost. This spins up a microVM in the background which uses the real linux drivers, so you can access anything from `ext*` to `btrfs`. Any mount options on the command-line will be forwarded to the linux mount command, so you can mount read-only, read-write, pick btrfs subvolumes, etc. Then you simply eject the drive in Finder or use `umount` in terminal and the virtual machine will be turned off.
+You pick a drive, mount it with `anylinuxfs` and it appears as a NFS share on localhost. This spins up a microVM in the background which uses the real linux drivers, so you can access anything from `ext*` to `btrfs`. Any mount options on the command-line will be forwarded to the linux mount command, so you can mount read-only, read-write, pick btrfs subvolumes, etc. Then you simply eject the drive in Finder or use `anylinuxfs unmount` in terminal and the virtual machine will be turned off.
 
 This all sounds like a lot of work but it's actually very fast. Not like a traditional virtual machine which takes a while to boot.
 This one is just a stripped down version of Linux, there's not even a UEFI firmware. Practically, it takes only a couple of seconds before the drive is mounted and ready to use.
@@ -48,6 +49,7 @@ This one is just a stripped down version of Linux, there's not even a UEFI firmw
 
 Most often, you will probably use the following commands:
 * `anylinuxfs mount` - mount a filesystem; this is the default command, so the `mount` keyword can be omitted
+* `anylinuxfs unmount` - safe unmount, useful in case of multiple mounts (typically ZFS datasets) which need to be ejected in a particular order
 * `anylinuxfs list` - show available Linux filesystems (alternatively, `anylinuxfs list -m` shows Microsoft filesystems)
 * `anylinuxfs status` - show what is currently mounted
 * `anylinuxfs log` - show details about the current (or last) run, useful for troubleshooting
