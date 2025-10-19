@@ -2457,10 +2457,6 @@ impl AppRunner {
                         .peekable();
 
                     log::enable_console_log();
-                    let mnt_point_base = config
-                        .custom_mount_point
-                        .unwrap_or(PathBuf::from(format!("/Volumes/{share_name}")));
-
                     let elevate =
                         config.common.sudo_uid.is_none() && config.common.invoker_uid != 0;
 
@@ -2470,7 +2466,7 @@ impl AppRunner {
                     match mount_nfs_subdirs(
                         &share_path,
                         additional_exports.into_iter(),
-                        mnt_point_base,
+                        mount_point.display(),
                         elevate,
                     ) {
                         Ok(_) => {}
