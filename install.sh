@@ -6,7 +6,6 @@ PREFIX=${1:-"/opt/anylinuxfs"}
 
 # sudo mkdir -p "$PREFIX"
 mkdir -p "$PREFIX/bin"
-mkdir -p "$PREFIX/etc/anylinuxfs"
 mkdir -p "$PREFIX/libexec"
 
 # sudo chown $(whoami):admin "$PREFIX"
@@ -22,7 +21,6 @@ function fix_libkrun_path() {
 # fix_libkrun_path "$PREFIX/bin/anylinuxfs"
 # codesign --entitlements "anylinuxfs.entitlements" --force -s - "$PREFIX/bin/anylinuxfs"
 
-cp -RL etc/* "$PREFIX/etc/"
 cp -RL libexec/* "$PREFIX/libexec/"
 
 # not needed when using libkrun from homebrew

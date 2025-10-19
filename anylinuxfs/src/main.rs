@@ -545,6 +545,7 @@ enum Commands {
 - BitLocker-encrypted partitions
 - LVM/RAID on LUKS
 - multi-disk btrfs filesystems
+- ZFS pools
 
 Supported partition schemes:
 - GPT
@@ -823,10 +824,12 @@ fn load_config(common_args: &CommonArgs) -> anyhow::Result<Config> {
     let vsock_path = format!("/tmp/anylinuxfs-{}-vsock", rand_string(8));
     let vfkit_sock_path = format!("/tmp/vfkit-{}.sock", rand_string(8));
 
-    let global_cfg_path = prefix_dir
-        .join("etc")
-        .join("anylinuxfs")
-        .join("config.toml");
+    let global_prefix_dir = if prefix_dir.starts_with("/opt/homebrew") {
+        PathBuf::from("/opt/homebrew")
+    } else {
+        prefix_dir.to_owned()
+    };
+    let global_cfg_path = global_prefix_dir.join("etc").join("anylinuxfs.toml");
     let all_cfg_paths = [global_cfg_path.as_path(), config_file_path.as_path()];
     let preferences = load_preferences(all_cfg_paths.iter().cloned())?;
     // println!("Loaded preferences: {:#?}", &preferences);
