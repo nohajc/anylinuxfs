@@ -1092,7 +1092,7 @@ impl StdinForwarder {
     }
 
     pub fn stop(&self) -> anyhow::Result<()> {
-        self.close_tx.send(())?;
+        _ = self.close_tx.send(());
         disable_raw_mode()?;
         if let Some(hnd) = self.thread_hnd.take() {
             hnd.join().unwrap()?;
