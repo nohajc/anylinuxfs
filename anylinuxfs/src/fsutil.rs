@@ -235,10 +235,7 @@ pub fn unmount_nfs_subdirs<'a>(
             .and_then(|s| s.strip_prefix(b"/"))
             .unwrap_or(b"");
 
-        trie.insert(
-            Path::new(&*subdir_relative.to_os_str_lossy()),
-            subdir.into(),
-        );
+        trie.insert(&*subdir_relative.to_path_lossy(), subdir.into());
     }
 
     parallel_unmount_recursive(&trie)?;
