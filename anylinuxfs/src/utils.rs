@@ -624,7 +624,7 @@ pub fn find_env_vars(expression: &BStr) -> HashSet<BString> {
     let mut vars = HashSet::new();
     let mut in_var = false;
     let mut in_braces = false;
-    let mut var_name = BString::new(vec![]);
+    let mut var_name = BString::default();
 
     let mut last_char = '^';
     for c in expression.chars() {

@@ -294,7 +294,7 @@ impl CustomActionEnvironment for CustomActionConfig {
                 .split(|&c| c == b'=')
                 .next()
                 .ok_or_else(|| anyhow!("invalid environment variable format: {}", var_str))?;
-            predefined_vars.insert(BString::new(var_name.to_owned()));
+            predefined_vars.insert(BString::from(var_name));
             env_vars.push(var_str.clone());
         }
         for var_name in referenced_variables.iter().chain(&self.capture_environment) {
@@ -1821,6 +1821,14 @@ fn get_default_packages() -> BTreeSet<String> {
 
 fn prepare_vm_environment(config: &MountConfig) -> anyhow::Result<Vec<BString>> {
     let mut env_vars = Vec::new();
+    for (name, value) in env::vars_os() {
+        let mut var_str = BString::from(name.as_bytes());
+        if var_str.starts_with(b"ALFS_PASSPHRASE") {
+            var_str.push_str(b"=");
+            var_str.push_str(value.as_bytes());
+            env_vars.push(var_str);
+        }
+    }
     if let Some(action) = config.get_action() {
         action.prepare_environment(&mut env_vars)?;
     }
