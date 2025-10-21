@@ -196,8 +196,9 @@ pub fn mount_nfs_subdirs<'a>(
 
     for subdir in subdirs {
         let subdir_relative = subdir
-            .trim_start_matches(share_path_base)
-            .trim_start_matches('/');
+            .strip_prefix(share_path_base)
+            .and_then(|s| s.strip_prefix('/'))
+            .unwrap_or("");
 
         trie.insert(Path::new(subdir_relative), subdir.into());
     }
