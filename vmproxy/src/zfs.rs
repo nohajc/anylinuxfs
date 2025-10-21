@@ -165,7 +165,7 @@ pub fn mount_datasets(
             // println!("Mounting pool {}", &mp.pool);
             let mut cmd = script(&format!("zfs mount -lR {}", mp.pool));
 
-            let status = if let Some(pwd) = env_pwds.get(&i) {
+            let status = if let Some(pwd) = env_pwds.get(&(i + 1)) {
                 let mut child = cmd.stdin(Stdio::piped()).spawn()?;
                 let mut stdin = child.stdin.take().unwrap();
                 stdin.write_all(pwd.as_bytes())?;
