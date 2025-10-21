@@ -8,6 +8,7 @@ use nanoid::nanoid;
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::ffi::OsStr;
 use std::fmt::Display;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -2603,7 +2604,7 @@ impl AppRunner {
                             .mount_config
                             .disk_path
                             .split(':')
-                            .any(|p| p == path.to_string_lossy())
+                            .any(|p| OsStr::new(p) == path.as_os_str())
                     {
                         println!("The specified path was not mounted by anylinuxfs.");
                         return Ok(());
@@ -2616,8 +2617,8 @@ impl AppRunner {
                     .mount_points()
                     .map(|item| item.as_os_str())
                     .filter(|&mpt| {
-                        mpt.to_string_lossy()
-                            .starts_with(&*mount_point.to_string_lossy())
+                        mpt.as_bytes()
+                            .starts_with(mount_point.as_os_str().as_bytes())
                     });
 
                 unmount_nfs_subdirs(our_mount_points, mount_point)?;
