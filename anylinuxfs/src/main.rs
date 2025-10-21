@@ -547,7 +547,11 @@ enum Commands {
 Supported partition schemes:
 - GPT
 - MBR
-- disk without partitions (single filesystem or LVM/LUKS container).")]
+- disk without partitions (single filesystem or LVM/LUKS container).
+
+Recognized environment variables:
+- ALFS_PASSPHRASE: passphrase for LUKS/BitLocker drive (optional)
+- ALFS_PASSPHRASE1, ALFS_PASSPHRASE2, ...: passphrases for multiple drives if needed")]
     Mount(MountCmd),
     /// Unmount a filesystem
     Unmount(UnmountCmd),
