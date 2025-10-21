@@ -319,7 +319,7 @@ impl CustomActionEnvironment for CustomActionConfig {
             let var_list = bstr::join(", ", undefined_vars);
             return Err(anyhow::anyhow!(
                 "required environment variables not defined: {}",
-                var_list.to_os_str_lossy().display()
+                var_list.as_bstr()
             ));
         }
         Ok(())
@@ -1819,20 +1819,22 @@ fn get_default_packages() -> BTreeSet<String> {
         .collect()
 }
 
-fn prepare_vm_environment(config: &MountConfig) -> anyhow::Result<Vec<BString>> {
+fn prepare_vm_environment(config: &MountConfig) -> anyhow::Result<(Vec<BString>, bool)> {
     let mut env_vars = Vec::new();
+    let mut env_has_passphrase = false;
     for (name, value) in env::vars_os() {
         let mut var_str = BString::from(name.as_bytes());
         if var_str.starts_with(b"ALFS_PASSPHRASE") {
             var_str.push_str(b"=");
             var_str.push_str(value.as_bytes());
             env_vars.push(var_str);
+            env_has_passphrase = true;
         }
     }
     if let Some(action) = config.get_action() {
         action.prepare_environment(&mut env_vars)?;
     }
-    Ok(env_vars)
+    Ok((env_vars, env_has_passphrase))
 }
 
 #[derive(Default)]
@@ -1863,7 +1865,7 @@ impl AppRunner {
             init_rootfs(&config.common, false)?;
         }
 
-        let vm_env = prepare_vm_environment(&config)?;
+        let (vm_env, _) = prepare_vm_environment(&config)?;
 
         // host_println!("disk_path: {}", config.disk_path);
         host_println!("root_path: {}", config.common.root_path.display());
@@ -2065,7 +2067,7 @@ impl AppRunner {
             log::disable_console_log();
         }
 
-        let vm_env = prepare_vm_environment(&config)?;
+        let (vm_env, env_has_passphrase) = prepare_vm_environment(&config)?;
 
         // host_println!("disk_path: {}", config.disk_path);
         host_println!("root_path: {}", config.common.root_path.display());
@@ -2098,23 +2100,27 @@ impl AppRunner {
 
         let mut passphrase_callbacks = Vec::new();
         let mut passphrase_needed = false;
-        for di in &dev_info {
-            let is_luks = di.fs_type() == Some("crypto_LUKS");
-            if is_luks || di.fs_type() == Some("BitLocker") {
-                if is_luks {
-                    ensure_enough_ram_for_luks(&mut config.common);
+
+        if !env_has_passphrase {
+            for di in &dev_info {
+                let is_luks = di.fs_type() == Some("crypto_LUKS");
+                if is_luks || di.fs_type() == Some("BitLocker") {
+                    if is_luks {
+                        ensure_enough_ram_for_luks(&mut config.common);
+                    }
+                    if config.common.passphrase_config == PassphrasePromptConfig::AskForEach {
+                        let prompt_fn = diskutil::passphrase_prompt(Some(di.disk()));
+                        passphrase_callbacks.push(prompt_fn);
+                    }
+                    passphrase_needed = true;
                 }
-                if config.common.passphrase_config == PassphrasePromptConfig::AskForEach {
-                    let prompt_fn = diskutil::passphrase_prompt(Some(di.disk()));
-                    passphrase_callbacks.push(prompt_fn);
-                }
-                passphrase_needed = true;
             }
-        }
-        if passphrase_needed && config.common.passphrase_config == PassphrasePromptConfig::OneForAll
-        {
-            let prompt_fn = diskutil::passphrase_prompt(None);
-            passphrase_callbacks.push(prompt_fn);
+            if passphrase_needed
+                && config.common.passphrase_config == PassphrasePromptConfig::OneForAll
+            {
+                let prompt_fn = diskutil::passphrase_prompt(None);
+                passphrase_callbacks.push(prompt_fn);
+            }
         }
 
         let mut can_detach = true;
