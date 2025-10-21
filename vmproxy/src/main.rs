@@ -1,10 +1,11 @@
 use anyhow::{Context, anyhow};
-use bstr::ByteSlice;
+use bstr::{BString, ByteSlice};
 use clap::Parser;
 use common_utils::{CustomActionConfig, Deferred, path_safe_label_name};
 use libc::VMADDR_CID_ANY;
 use serde::Serialize;
 use std::collections::HashMap;
+use std::env;
 use std::ffi::{CString, OsStr};
 use std::io::{self, BufRead, Write};
 use std::os::unix::ffi::OsStrExt;
@@ -254,6 +255,25 @@ fn export_args_for_path(path: &str, export_mode: &str, fsid: usize) -> anyhow::R
     Ok(export_args)
 }
 
+const ALFS_PASSPHRASE_PREFIX: &[u8] = b"ALFS_PASSPHRASE";
+
+fn get_pwds_from_env() -> HashMap<usize, BString> {
+    let mut pwds = HashMap::new();
+    for (key, value) in env::vars_os() {
+        let key_bstr = BString::from(key.as_bytes());
+        if key_bstr.starts_with(ALFS_PASSPHRASE_PREFIX) {
+            let idx = key_bstr
+                .strip_prefix(ALFS_PASSPHRASE_PREFIX)
+                .and_then(|s| str::from_utf8(s).ok())
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(1);
+            let pwd = BString::from(value.as_bytes());
+            pwds.insert(idx, pwd);
+        }
+    }
+    pwds
+}
+
 fn main() -> ExitCode {
     if let Err(e) = run() {
         eprintln!("Error: {:#}", e);
@@ -318,19 +338,33 @@ fn run() -> anyhow::Result<()> {
         _ => ("luks", "open"),
     };
 
-    let (pwd_for_all, input_mode_fn): (_, fn() -> _) =
-        if cli.reuse_passphrase && cli.decrypt.is_some() {
-            println!("<anylinuxfs-passphrase-prompt:start>");
-            let prompt_end = deferred.add(|| println!("<anylinuxfs-passphrase-prompt:end>"));
-            let pwd = rpassword::read_password()?;
-            deferred.call_now(prompt_end);
+    let env_pwds = get_pwds_from_env();
+    let env_has_passphrase = !env_pwds.is_empty();
+
+    // decrypt LUKS/BitLocker volumes if any
+    if let Some(decrypt) = &cli.decrypt {
+        let (pwd_for_all, input_mode_fn): (_, fn() -> _) = if cli.reuse_passphrase {
+            let pwd = if let Some(passphrase) = env_pwds.get(&1) {
+                BString::from(passphrase.as_bytes())
+            } else if env_has_passphrase {
+                return Err(anyhow!(
+                    "Missing environment variable {}",
+                    ALFS_PASSPHRASE_PREFIX.as_bstr()
+                ));
+            } else {
+                println!("<anylinuxfs-passphrase-prompt:start>");
+                let prompt_end = deferred.add(|| println!("<anylinuxfs-passphrase-prompt:end>"));
+                let pwd = BString::from(rpassword::read_password()?.as_bytes());
+                deferred.call_now(prompt_end);
+                pwd
+            };
             (Some(pwd), || Stdio::piped())
+        } else if env_has_passphrase {
+            (None, || Stdio::piped())
         } else {
             (None, || Stdio::inherit())
         };
 
-    // decrypt LUKS/BitLocker volumes if any
-    if let Some(decrypt) = &cli.decrypt {
         for (i, dev) in decrypt.split(",").enumerate() {
             let mut cryptsetup = Command::new("/sbin/cryptsetup")
                 .arg("-T1")
@@ -340,12 +374,20 @@ fn run() -> anyhow::Result<()> {
                 .stdin(input_mode_fn())
                 .spawn()?;
 
-            let cryptsetup_result = if let Some(pwd) = &pwd_for_all {
+            let pwd = pwd_for_all.as_ref().or(env_pwds.get(&(i + 1)));
+            let cryptsetup_result = if let Some(pwd) = pwd {
                 {
                     let mut stdin = cryptsetup.stdin.take().unwrap();
                     stdin.write_all(pwd.as_bytes())?;
                 } // must close stdin before waiting for child
                 cryptsetup.wait()?
+            } else if env_has_passphrase {
+                return Err(anyhow!(
+                    "Missing environment variable {}{} for device {}",
+                    ALFS_PASSPHRASE_PREFIX.as_bstr(),
+                    i + 1,
+                    dev
+                ));
             } else {
                 println!("<anylinuxfs-passphrase-prompt:start>");
                 let prompt_end = deferred.add(|| println!("<anylinuxfs-passphrase-prompt:end>"));
