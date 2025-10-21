@@ -247,10 +247,10 @@ capture_environment = ["BORG_PASSPHRASE"]
 override_nfs_export = "/mnt/borg"
 ```
 
-To invoke your action when mounting a drive, use the `-a` flag:
+To invoke your action when mounting a drive, use the `-a` flag (and make sure sudo preserves your environment):
 ```
 export BORG_REPO=<path to borg repo relative to mount point>
-anylinuxfs mount /dev/disk4s2 -a borg
+sudo -E anylinuxfs mount /dev/disk4s2 -a borg
 ```
 
 You will be asked for your passphrase (if you haven't set `capture_environment` and exported `BORG_PASSPHRASE`) and your borg backup will be mounted instead of the whole Linux drive.
