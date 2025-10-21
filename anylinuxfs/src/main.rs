@@ -1,4 +1,5 @@
 use anyhow::{Context, anyhow};
+use bstr::{BString, ByteSlice, ByteVec};
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use common_utils::{CustomActionConfig, Deferred, host_eprintln, host_println, log, safe_println};
 
@@ -7,7 +8,6 @@ use nanoid::nanoid;
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::env::VarError;
 use std::fmt::Display;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -276,11 +276,11 @@ impl AlpineConfig {
 }
 
 trait CustomActionEnvironment {
-    fn prepare_environment(&self) -> anyhow::Result<Vec<String>>;
+    fn prepare_environment(&self, env_vars: &mut Vec<BString>) -> anyhow::Result<()>;
 }
 
 impl CustomActionEnvironment for CustomActionConfig {
-    fn prepare_environment(&self) -> anyhow::Result<Vec<String>> {
+    fn prepare_environment(&self, env_vars: &mut Vec<BString>) -> anyhow::Result<()> {
         let mut referenced_variables = HashSet::new();
         for script in self.all_scripts() {
             referenced_variables.extend(utils::find_env_vars(script));
@@ -288,45 +288,41 @@ impl CustomActionEnvironment for CustomActionConfig {
 
         let mut predefined_vars = HashSet::new();
         let mut undefined_vars = Vec::new();
-        let mut env_vars = Vec::new();
+
         for var_str in &self.environment {
             let var_name = var_str
-                .split('=')
+                .split(|&c| c == b'=')
                 .next()
                 .ok_or_else(|| anyhow!("invalid environment variable format: {}", var_str))?;
-            predefined_vars.insert(var_name.to_owned());
+            predefined_vars.insert(BString::new(var_name.to_owned()));
             env_vars.push(var_str.clone());
         }
         for var_name in referenced_variables.iter().chain(&self.capture_environment) {
-            match env::var(&var_name) {
-                Ok(var_value) => {
-                    env_vars.push(format!("{}={}", var_name, var_value));
+            match env::var_os(var_name.to_os_str_lossy()) {
+                Some(var_value) => {
+                    let mut var_str = var_name.clone();
+                    var_str.push_str(b"=");
+                    var_str.push_str(var_value.as_bytes());
+                    env_vars.push(var_str);
                 }
-                Err(VarError::NotPresent) => {
-                    if !Self::VM_EXPORTED_VARS.contains(&var_name.as_str())
+                None => {
+                    if !Self::VM_EXPORTED_VARS.contains(&var_name.as_bytes())
                         && !predefined_vars.contains(var_name)
                     {
                         undefined_vars.push(var_name.clone());
                     }
                 }
-                Err(VarError::NotUnicode(value)) => {
-                    return Err(anyhow::anyhow!(
-                        "environment variable '{}' contains non-UTF-8 characters: {}",
-                        var_name,
-                        value.display()
-                    ));
-                }
             }
         }
 
         if !undefined_vars.is_empty() {
-            let var_list = undefined_vars.join(", ");
+            let var_list = bstr::join(", ", undefined_vars);
             return Err(anyhow::anyhow!(
                 "required environment variables not defined: {}",
-                var_list
+                var_list.to_os_str_lossy().display()
             ));
         }
-        Ok(env_vars)
+        Ok(())
     }
 }
 
@@ -1101,7 +1097,7 @@ fn start_vmproxy(
     ctx: u32,
     config: &MountConfig,
     service_status: &ServiceStatus,
-    env: &[String],
+    env: &[BString],
     dev_info: &DevInfo,
     multi_device: bool,
     to_decrypt: Vec<String>,
@@ -1180,7 +1176,7 @@ fn start_vmproxy(
     Ok(())
 }
 
-fn start_vmshell_forked(ctx: u32, command: Option<String>, env: &[String]) -> anyhow::Result<i32> {
+fn start_vmshell_forked(ctx: u32, command: Option<String>, env: &[BString]) -> anyhow::Result<i32> {
     let pid = unsafe { libc::fork() };
     if pid < 0 {
         return Err(io::Error::last_os_error()).context("Failed to fork process");
@@ -1198,7 +1194,7 @@ fn start_vmshell_forked(ctx: u32, command: Option<String>, env: &[String]) -> an
     }
 }
 
-fn start_vmshell(ctx: u32, command: Option<String>, env: &[String]) -> anyhow::Result<()> {
+fn start_vmshell(ctx: u32, command: Option<String>, env: &[BString]) -> anyhow::Result<()> {
     let mut args = vec![c"/bin/bash".to_owned()];
     if let Some(cmd) = command {
         args.extend_from_slice(&[c"-c".to_owned(), CString::new(cmd).unwrap()]);
@@ -1823,6 +1819,14 @@ fn get_default_packages() -> BTreeSet<String> {
         .collect()
 }
 
+fn prepare_vm_environment(config: &MountConfig) -> anyhow::Result<Vec<BString>> {
+    let mut env_vars = Vec::new();
+    if let Some(action) = config.get_action() {
+        action.prepare_environment(&mut env_vars)?;
+    }
+    Ok(env_vars)
+}
+
 #[derive(Default)]
 struct ServiceStatus {
     rpcbind_running: bool,
@@ -1851,11 +1855,7 @@ impl AppRunner {
             init_rootfs(&config.common, false)?;
         }
 
-        let vm_env = if let Some(action) = config.get_action() {
-            action.prepare_environment()?
-        } else {
-            vec![]
-        };
+        let vm_env = prepare_vm_environment(&config)?;
 
         // host_println!("disk_path: {}", config.disk_path);
         host_println!("root_path: {}", config.common.root_path.display());
@@ -2057,11 +2057,7 @@ impl AppRunner {
             log::disable_console_log();
         }
 
-        let vm_env = if let Some(action) = config.get_action() {
-            action.prepare_environment()?
-        } else {
-            vec![]
-        };
+        let vm_env = prepare_vm_environment(&config)?;
 
         // host_println!("disk_path: {}", config.disk_path);
         host_println!("root_path: {}", config.common.root_path.display());
