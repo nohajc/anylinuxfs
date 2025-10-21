@@ -1,4 +1,5 @@
 use anyhow::Context;
+use bstr::{BStr, BString, ByteSlice};
 use percent_encoding::{AsciiSet, CONTROLS, percent_decode_str, utf8_percent_encode};
 use serde::{Deserialize, Serialize};
 use std::{io, process::Child, time::Duration};
@@ -116,26 +117,30 @@ impl<'a> Drop for Deferred<'a> {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct CustomActionConfig {
     #[serde(default)]
-    pub description: String,
+    pub description: BString,
     #[serde(default)]
-    pub before_mount: String,
+    pub before_mount: BString,
     #[serde(default)]
-    pub after_mount: String,
+    pub after_mount: BString,
     #[serde(default)]
-    pub before_unmount: String,
+    pub before_unmount: BString,
     #[serde(default)]
-    pub environment: Vec<String>, // KEY=value format
+    pub environment: Vec<BString>, // KEY=value format
     #[serde(default)]
-    pub capture_environment: Vec<String>,
+    pub capture_environment: Vec<BString>,
     #[serde(default)]
     pub override_nfs_export: String,
 }
 
 impl CustomActionConfig {
-    pub const VM_EXPORTED_VARS: &[&str] = &["ALFS_VM_MOUNT_POINT"];
+    pub const VM_EXPORTED_VARS: &[&[u8]] = &[b"ALFS_VM_MOUNT_POINT"];
 
-    pub fn all_scripts(&self) -> [&str; 3] {
-        [&self.before_mount, &self.after_mount, &self.before_unmount]
+    pub fn all_scripts(&self) -> [&BStr; 3] {
+        [
+            self.before_mount.as_bstr(),
+            self.after_mount.as_bstr(),
+            self.before_unmount.as_bstr(),
+        ]
     }
 
     const PERCENT_ENCODE_SET: &AsciiSet = &CONTROLS.add(b' ');

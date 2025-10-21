@@ -1,10 +1,11 @@
 use anyhow::{Context, anyhow};
+use bstr::ByteSlice;
 use clap::Parser;
 use common_utils::{CustomActionConfig, Deferred, path_safe_label_name};
 use libc::VMADDR_CID_ANY;
 use serde::Serialize;
 use std::collections::HashMap;
-use std::ffi::CString;
+use std::ffi::{CString, OsStr};
 use std::io::{self, BufRead, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
@@ -175,10 +176,10 @@ impl CustomActionRunner {
         self.env.insert(key.into(), value);
     }
 
-    fn execute_action(&self, command: &str) -> anyhow::Result<()> {
+    fn execute_action(&self, command: impl AsRef<OsStr>) -> anyhow::Result<()> {
         let status = Command::new("/bin/sh")
             .arg("-c")
-            .arg(&command)
+            .arg(command)
             .envs(self.env.iter())
             .status()?;
 
@@ -199,7 +200,7 @@ impl CustomActionRunner {
             if !action.before_mount.is_empty() {
                 println!("<anylinuxfs-force-output:on>");
                 println!("Running before_mount action: `{}`", action.before_mount);
-                let result = self.execute_action(&action.before_mount);
+                let result = self.execute_action(action.before_mount.to_os_str_lossy());
                 println!("<anylinuxfs-force-output:off>");
                 result?;
             }
@@ -212,7 +213,7 @@ impl CustomActionRunner {
             if !action.after_mount.is_empty() {
                 println!("<anylinuxfs-force-output:on>");
                 println!("Running after_mount action: `{}`", action.after_mount);
-                let result = self.execute_action(&action.after_mount);
+                let result = self.execute_action(action.after_mount.to_os_str_lossy());
                 println!("<anylinuxfs-force-output:off>");
                 result?;
             }
@@ -224,7 +225,7 @@ impl CustomActionRunner {
         if let Some(action) = &self.config {
             if !action.before_unmount.is_empty() {
                 println!("Running before_unmount action: `{}`", action.before_unmount);
-                self.execute_action(&action.before_unmount)?;
+                self.execute_action(action.before_unmount.to_os_str_lossy())?;
             }
         }
         Ok(())

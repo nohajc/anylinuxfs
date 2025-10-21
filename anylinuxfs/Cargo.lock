@@ -72,6 +72,7 @@ name = "anylinuxfs"
 version = "0.8.0"
 dependencies = [
  "anyhow",
+ "bstr",
  "clap",
  "common_utils",
  "crossterm",
@@ -153,6 +154,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "bstr"
+version = "1.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "234113d19d0d7d613b40e86fb654acf958910802bcceab913a4f9e7cda03b1a4"
+dependencies = [
+ "memchr",
+ "regex-automata",
+ "serde",
+]
+
+[[package]]
 name = "cc"
 version = "1.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -229,9 +241,9 @@ dependencies = [
 
 [[package]]
 name = "clap_lex"
-version = "0.7.4"
+version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f46ad14479a25103f283c0f10005961cf086d8dc42205bb44c46ac563475dca6"
+checksum = "a1d728cc89cf3aee9ff92b05e62b19ee65a02b5702cff7d5a377e32c6ae29d8d"
 
 [[package]]
 name = "colorchoice"
@@ -244,6 +256,7 @@ name = "common_utils"
 version = "0.8.0"
 dependencies = [
  "anyhow",
+ "bstr",
  "libc",
  "percent-encoding",
  "serde",
