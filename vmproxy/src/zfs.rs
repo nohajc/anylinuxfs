@@ -1,9 +1,11 @@
 #![allow(unused)]
 use anyhow::Context;
+use bstr::{BString, ByteSlice};
 use serde::Deserialize;
 use std::{
     collections::{HashMap, HashSet},
-    process::ExitStatus,
+    io::Write,
+    process::{ExitStatus, Stdio},
 };
 
 use crate::{
@@ -146,7 +148,10 @@ pub fn import_all_zpools(
     Ok((res, zfs_mountpoints))
 }
 
-pub fn mount_datasets(mountpoints: &[Mountpoint]) -> anyhow::Result<ExitStatus> {
+pub fn mount_datasets(
+    mountpoints: &[Mountpoint],
+    env_pwds: &HashMap<usize, BString>,
+) -> anyhow::Result<ExitStatus> {
     // println!("ZFS mountpoints");
     let mut mounted_zpools = HashSet::new();
 
@@ -154,13 +159,21 @@ pub fn mount_datasets(mountpoints: &[Mountpoint]) -> anyhow::Result<ExitStatus> 
     //     println!("  {:?}", mp);
     // }
 
-    for mp in mountpoints {
+    for (i, mp) in mountpoints.iter().enumerate() {
         if mounted_zpools.insert(mp.pool.clone()) {
             // first time seeing this pool
             // println!("Mounting pool {}", &mp.pool);
-            let status = script(&format!("zfs mount -lR {}", mp.pool))
-                .status()
-                .with_context(|| format!("Failed to mount ZFS pool {}", mp.pool))?;
+            let mut cmd = script(&format!("zfs mount -lR {}", mp.pool));
+
+            let status = if let Some(pwd) = env_pwds.get(&i) {
+                let mut child = cmd.stdin(Stdio::piped()).spawn()?;
+                let mut stdin = child.stdin.take().unwrap();
+                stdin.write_all(pwd.as_bytes())?;
+                child.wait()
+            } else {
+                cmd.status()
+            }
+            .with_context(|| format!("Failed to mount ZFS pool {}", mp.pool))?;
 
             if !status.success() {
                 return Ok(status);

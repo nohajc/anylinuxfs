@@ -588,7 +588,7 @@ fn run() -> anyhow::Result<()> {
     });
 
     let mnt_result = if is_zfs {
-        zfs::mount_datasets(&zfs_mountpoints)?
+        zfs::mount_datasets(&zfs_mountpoints, &env_pwds)?
     } else {
         Command::new("/bin/mount")
             .args(mnt_args)
