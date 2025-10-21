@@ -189,7 +189,7 @@ sudo -E anylinuxfs /dev/disk9
 ```
 
 > [!NOTE]
-> If you have more disks with different passphrases you can define variables named `ALFS_PASSPHRASE1`, `ALFS_PASSPHRASE2`, etc.
+> If you have more disks with different passphrases you can define variables named `ALFS_PASSPHRASE1`, `ALFS_PASSPHRASE2`, `ALFS_PASSPHRASE3`, etc.
 
 **Mount partition and share it via NFS to other devices in any subnet**
 ```
