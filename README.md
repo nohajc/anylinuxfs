@@ -180,8 +180,16 @@ sudo anylinuxfs list -d all
 
 **Mount LUKS-encrypted or BitLocker-encrypted partition**
 ```
+# anylinuxfs will show an interactive passphrase prompt
 sudo anylinuxfs /dev/disk9
+
+# or it can take the passphrase from environment
+export ALFS_PASSPHRASE="my_strong_password"
+sudo -E anylinuxfs /dev/disk9
 ```
+
+> [!NOTE]
+> If you have more disks with different passphrases you can define variables named `ALFS_PASSPHRASE1`, `ALFS_PASSPHRASE2`, etc.
 
 **Mount partition and share it via NFS to other devices in any subnet**
 ```
