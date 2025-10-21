@@ -1,4 +1,5 @@
 use anyhow::anyhow;
+use bstr::ByteSlice;
 use common_utils::host_println;
 use rayon::prelude::*;
 use std::{
@@ -99,20 +100,22 @@ fn os_str_from_c_chars(chars: &[i8]) -> &OsStr {
 mod dirtrie {
     use std::{collections::BTreeMap, ffi::OsString, fmt::Display, path::Path};
 
+    use bstr::{BStr, BString};
+
     #[derive(Debug, Default)]
     pub struct Node {
-        pub paths: Option<(OsString, String)>,
+        pub paths: Option<(OsString, BString)>,
         pub children: BTreeMap<OsString, Node>,
     }
 
     impl Node {
-        pub fn insert(&mut self, path: &Path, full_path: &str) {
+        pub fn insert(&mut self, path: &Path, full_path: &BStr) {
             let mut current = self;
             for segment in path.components() {
                 let segment = segment.as_os_str().to_owned();
                 current = current.children.entry(segment).or_default();
             }
-            current.paths = Some((path.as_os_str().to_owned(), full_path.to_owned()));
+            current.paths = Some((path.as_os_str().into(), full_path.into()));
         }
     }
 
@@ -133,7 +136,7 @@ mod dirtrie {
                             .paths
                             .as_ref()
                             .map(|(_, p)| p.clone())
-                            .unwrap_or("".to_owned())
+                            .unwrap_or(b"".into())
                     )?;
                     fmt_node(child, f, &format!("{}--", prefix))?;
                 }
@@ -196,7 +199,7 @@ pub fn mount_nfs_subdirs<'a>(
             .trim_start_matches(share_path_base)
             .trim_start_matches('/');
 
-        trie.insert(Path::new(subdir_relative), subdir);
+        trie.insert(Path::new(subdir_relative), subdir.into());
     }
 
     parallel_mount_recursive(mnt_point_base.as_ref().into(), &trie, elevate)?;
@@ -225,12 +228,16 @@ pub fn unmount_nfs_subdirs<'a>(
     let mut trie = dirtrie::Node::default();
 
     for subdir in subdirs {
-        let subdir = subdir.to_string_lossy();
+        let subdir = subdir.as_bytes();
         let subdir_relative = subdir
-            .trim_start_matches(&*mnt_point_base.as_ref().to_string_lossy())
-            .trim_start_matches('/');
+            .strip_prefix(mnt_point_base.as_ref().as_os_str().as_bytes())
+            .and_then(|s| s.strip_prefix(b"/"))
+            .unwrap_or(b"");
 
-        trie.insert(Path::new(subdir_relative), &subdir);
+        trie.insert(
+            Path::new(&*subdir_relative.to_os_str_lossy()),
+            subdir.into(),
+        );
     }
 
     parallel_unmount_recursive(&trie)?;
