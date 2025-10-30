@@ -270,6 +270,9 @@ You will be asked for your passphrase (if you haven't set `capture_environment` 
 Then it will spin up a VM so it can install dependencies and do the initial environment setup. After that, the Linux root filesystem will be reused for every mount operation.
 You can also run `anylinuxfs init` to download a fresh copy of `alpine:latest` and reinitialize the environment at any time.
 
+### Custom CA certificates
+- If you need to add custom CA certificates to enable Linux image or package download, you can do so by adding them to a file in your user profile (`~/.anylinuxfs/ca-certificates`). These will be appended to the image defaults.
+
 ### Permissions
 - It is needed to run mount commands with `sudo` otherwise we're not allowed direct access to `/dev/disk*` files. However, the virtual machine itself will in fact run under the regular user who invoked `sudo` in the first place (i.e. all unnecessary permissions are dropped after the disk is opened)
 
