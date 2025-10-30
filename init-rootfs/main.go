@@ -190,6 +190,31 @@ func configureDNS(rootfsPath, nameserver string) error {
 	return nil
 }
 
+func appendCaCerts(cfg *Config) error {
+	userCaCertPath := filepath.Join(cfg.UserStore, "ca-certificates.crt")
+	caCertPath := fmt.Sprintf("%s/etc/ssl/certs/ca-certificates.crt", cfg.RootfsPath)
+
+	certs, err := os.ReadFile(userCaCertPath)
+
+	// no certificates to append
+	if err != nil || len(certs) == 0 {
+		fmt.Printf("Did not find certificates at %s\n", userCaCertPath)
+		return nil
+	}
+
+	f, err := os.OpenFile(caCertPath, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
+	if err != nil {
+		return err
+	}
+
+	defer f.Close()
+
+	if _, err = f.Write(certs); err != nil {
+		return err
+	}
+	return nil
+}
+
 func configureFstab(rootfsPath string) error {
 	nfsDirs := []string{
 		"/var/lib/nfs/rpc_pipefs",
@@ -373,6 +398,10 @@ func initRootfs(cfg *Config, nameserver string) error {
 	}
 
 	if err := configureDNS(cfg.RootfsPath, nameserver); err != nil {
+		return err
+	}
+
+	if err := appendCaCerts(cfg); err != nil {
 		return err
 	}
 
