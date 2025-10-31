@@ -157,6 +157,7 @@ pub const LINUX_LABELS: Labels = Labels {
         "Linux_RAID",
         "Linux",
         "ZFS",
+        "516E7CBA-6ECF-11D6-8FF8-00022D09712B", // FreeBSD ZFS
     ]),
     fs_types: FsTypes(&[
         "btrfs",
