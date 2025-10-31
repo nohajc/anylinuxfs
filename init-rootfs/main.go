@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"crypto/x509"
+	"encoding/pem"
 
 	"anylinuxfs/init-rootfs/vmrunner"
 
@@ -209,9 +211,33 @@ func appendCaCerts(cfg *Config) error {
 
 	defer f.Close()
 
-	if _, err = f.Write(certs); err != nil {
-		return err
+	certCount := 0
+	for block, rest := pem.Decode(certs); block != nil; block, rest = pem.Decode(rest) {
+		switch block.Type {
+		case "CERTIFICATE":
+			_, err := x509.ParseCertificate(block.Bytes)
+			if err != nil {
+				fmt.Printf("Encountered error while parsing CA certificate. Skipping...\n")
+				continue
+			}
+
+			err = pem.Encode(f, block)
+			if err != nil {
+				fmt.Printf("Encountered error while writing CA certificate to %s. Skipping...\n", caCertPath)
+				continue
+			}
+
+			certCount += 1
+
+		case "PRIVATE KEY":
+			fmt.Printf("CA certificates cannot contain private keys. Skipping...\n")
+
+		default:
+			fmt.Printf("Malformed CA certificate. Skipping...\n")
+		}
 	}
+	
+	fmt.Printf("Added %v entries to CA certificate store\n", certCount)
 	return nil
 }
 
