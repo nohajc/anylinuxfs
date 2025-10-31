@@ -95,6 +95,7 @@ pub struct Source {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Mountpoint {
+    pub name: String,
     pub path: String,
     pub pool: String,
 }
@@ -116,6 +117,7 @@ fn mountpoints_from_json(text: &str) -> anyhow::Result<Vec<Mountpoint>> {
                 && !EXCLUDED_MOUNTPOINT_TYPES.contains(&mount_prop.value.as_str())
             {
                 out.insert(Mountpoint {
+                    name: ds.name.clone(),
                     path: mount_prop.value.clone(),
                     pool: ds.pool.clone(),
                 });
@@ -153,34 +155,25 @@ pub fn mount_datasets(
     env_pwds: &HashMap<usize, BString>,
 ) -> anyhow::Result<ExitStatus> {
     // println!("ZFS mountpoints");
-    let mut mounted_zpools = HashSet::new();
 
     // for mp in &zfs_mountpoints {
     //     println!("  {:?}", mp);
     // }
 
     for (i, mp) in mountpoints.iter().enumerate() {
-        if mounted_zpools.insert(mp.pool.clone()) {
-            // first time seeing this pool
-            // println!("Mounting pool {}", &mp.pool);
-            let mut cmd = script(&format!("zfs mount -lR {}", mp.pool));
+        let mut cmd = script(&format!("zfs mount -l {}", mp.name));
 
-            let status = if let Some(pwd) = env_pwds.get(&(i + 1)) {
-                let mut child = cmd.stdin(Stdio::piped()).spawn()?;
-                {
-                    let mut stdin = child.stdin.take().unwrap();
-                    stdin.write_all(pwd.as_bytes())?;
-                }
-                child.wait()
-            } else {
-                cmd.status()
+        let status = if let Some(pwd) = env_pwds.get(&(i + 1)) {
+            let mut child = cmd.stdin(Stdio::piped()).spawn()?;
+            {
+                let mut stdin = child.stdin.take().unwrap();
+                stdin.write_all(pwd.as_bytes())?;
             }
-            .with_context(|| format!("Failed to mount ZFS pool {}", mp.pool))?;
-
-            if !status.success() {
-                return Ok(status);
-            }
+            child.wait()
+        } else {
+            cmd.status()
         }
+        .with_context(|| format!("Failed to mount ZFS dataset {}", mp.name))?;
     }
     Ok(ExitStatus::default())
 }
@@ -221,6 +214,7 @@ mod tests {
         let mps = mountpoints_from_json(json).expect("parse should succeed");
         assert_eq!(mps.len(), 1);
         assert!(mps.contains(&Mountpoint {
+            name: "pool/ds1".into(),
             path: "/mnt/foo".into(),
             pool: "pool".into(),
         }));
