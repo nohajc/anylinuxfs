@@ -271,7 +271,7 @@ Then it will spin up a VM so it can install dependencies and do the initial envi
 You can also run `anylinuxfs init` to download a fresh copy of `alpine:latest` and reinitialize the environment at any time.
 
 ### Custom CA certificates
-- If you need to add custom CA certificates to fetch the alpine image or download packages, you can do so by adding them to a file in your user profile (`~/.anylinuxfs/ca-certificates.crt`). The CA certificates must be in newline-separated PEM blocks. These will be appended to the alpine image defaults during the first run of `anylinuxfs`, or when calling `anylinuxfs init`.
+- If you need to add custom CA certificates for the alpine VM to download packages, you can do so by adding them to a file in your user profile (`~/.anylinuxfs/ca-certificates.crt`). The CA certificates must be in newline-separated PEM blocks. These will be appended to the alpine image defaults during the first run of `anylinuxfs`, or when calling `anylinuxfs init`.
 
 ### Permissions
 - It is needed to run mount commands with `sudo` otherwise we're not allowed direct access to `/dev/disk*` files. However, the virtual machine itself will in fact run under the regular user who invoked `sudo` in the first place (i.e. all unnecessary permissions are dropped after the disk is opened)
