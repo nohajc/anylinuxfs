@@ -18,6 +18,9 @@ ffi.cdef [[
     int32_t krun_set_kernel(uint32_t ctx_id, const char *kernel_path, uint32_t kernel_format, const char *initramfs, const char *cmdline);
     int32_t krun_start_enter(uint32_t ctx_id);
 
+    int32_t krun_disable_implicit_console(uint32_t ctx_id);
+    int32_t krun_add_serial_console_default(uint32_t ctx_id, int input_fd, int output_fd);
+
     // Constants
     static const int KRUN_KERNEL_FORMAT_RAW = 0;
 ]]
@@ -63,6 +66,13 @@ local function launch_vm(config)
     local ram_mib = vm.ram_mib or 512
     print(string.format("Configuring VM (%d vCPU, %dMB RAM)...", vcpus, ram_mib))
     check_error(libkrun.krun_set_vm_config(ctx, vcpus, ram_mib), "krun_set_vm_config")
+
+    local legacy_console = vm.legacy_console or false
+    if legacy_console then
+        print("Configuring legacy serial console...")
+        check_error(libkrun.krun_disable_implicit_console(ctx), "krun_disable_implicit_console")
+        check_error(libkrun.krun_add_serial_console_default(ctx, 0, 1), "krun_add_serial_console_default")
+    end
 
     -- Set root filesystem
     local root = config.root
@@ -139,12 +149,11 @@ local function launch_vm(config)
     --     error("Kernel path is required")
     -- end
 
-    local cmdline = kernel.cmdline
-    if cmdline then
-        cmdline = cmdline .. " KRUN_INIT=" .. command.path
-    end
-
     if kernel and kernel.path then
+        local cmdline = kernel.cmdline
+        if cmdline then
+            cmdline = cmdline .. " KRUN_INIT=" .. command.path
+        end
         print("Setting kernel: " .. kernel.path)
         check_error(libkrun.krun_set_kernel(ctx, kernel.path, ffi.C.KRUN_KERNEL_FORMAT_RAW, nil, cmdline),
             "krun_set_kernel")
