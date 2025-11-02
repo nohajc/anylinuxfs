@@ -25,8 +25,6 @@ ffi.cdef [[
     static const int KRUN_KERNEL_FORMAT_RAW = 0;
 ]]
 
--- Load libkrun
-local libkrun = ffi.load("/usr/local/lib/libkrun.dylib")
 -- local libkrun = ffi.load("krun")
 
 -- Helper function to check for errors
@@ -52,6 +50,15 @@ end
 
 -- Main VM launcher function
 local function launch_vm(config)
+    -- Configure VM resources
+    local vm = config.vm or {}
+    local vcpus = vm.vcpus or 1
+    local ram_mib = vm.ram_mib or 512
+    local efi = vm.efi or false
+
+    -- Load libkrun
+    local libkrun = ffi.load(efi and "/usr/local/lib/libkrun-efi.dylib" or "/usr/local/lib/libkrun.dylib")
+
     print("Creating libkrun context...")
     local ctx = check_error(libkrun.krun_create_ctx(), "krun_create_ctx")
 
@@ -60,10 +67,6 @@ local function launch_vm(config)
         check_error(libkrun.krun_set_log_level(config.log_level), "krun_set_log_level")
     end
 
-    -- Configure VM resources
-    local vm = config.vm or {}
-    local vcpus = vm.vcpus or 1
-    local ram_mib = vm.ram_mib or 512
     print(string.format("Configuring VM (%d vCPU, %dMB RAM)...", vcpus, ram_mib))
     check_error(libkrun.krun_set_vm_config(ctx, vcpus, ram_mib), "krun_set_vm_config")
 
