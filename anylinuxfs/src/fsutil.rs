@@ -1,11 +1,11 @@
-use anyhow::anyhow;
+use anyhow::{Context, anyhow};
 use bstr::ByteSlice;
 use common_utils::host_println;
 use rayon::prelude::*;
 use std::{
     collections::HashSet,
     ffi::{CStr, CString, OsStr, OsString},
-    io, mem,
+    fs, io, mem,
     os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
     process::Command,
@@ -90,6 +90,30 @@ fn statfs(path: impl AsRef<Path>) -> io::Result<libc::statfs> {
         return Err(io::Error::last_os_error());
     }
     Ok(buf)
+}
+
+// If `copied` refers to a file which should be synchronized with `orig`,
+// we can detect whether the copied file is too old by comparing mtime.
+// Also, if file sizes differ, we trivially know the files are different.
+pub fn files_likely_differ(
+    orig: impl AsRef<Path>,
+    copied: impl AsRef<Path>,
+) -> anyhow::Result<bool> {
+    let orig = orig.as_ref();
+    let copied = copied.as_ref();
+    let orig_md = fs::metadata(&orig).context(format!("Error accessing {}", orig.display()))?;
+    let copied_md =
+        fs::metadata(&copied).context(format!("Error accessing {}", copied.display()))?;
+
+    if orig_md.len() != copied_md.len() {
+        return Ok(true);
+    }
+
+    if orig_md.modified()? > copied_md.modified()? {
+        return Ok(true);
+    }
+
+    Ok(false)
 }
 
 fn os_str_from_c_chars(chars: &[i8]) -> &OsStr {

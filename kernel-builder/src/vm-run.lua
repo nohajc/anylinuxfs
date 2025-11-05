@@ -20,6 +20,7 @@ ffi.cdef [[
 
     int32_t krun_disable_implicit_console(uint32_t ctx_id);
     int32_t krun_add_serial_console_default(uint32_t ctx_id, int input_fd, int output_fd);
+    int32_t krun_set_gvproxy_path(uint32_t ctx_id, const char *c_path);
 
     // Constants
     static const int KRUN_KERNEL_FORMAT_RAW = 0;
@@ -75,6 +76,13 @@ local function launch_vm(config)
         print("Configuring legacy serial console...")
         check_error(libkrun.krun_disable_implicit_console(ctx), "krun_disable_implicit_console")
         check_error(libkrun.krun_add_serial_console_default(ctx, 0, 1), "krun_add_serial_console_default")
+    end
+
+    if vm.net then
+        if vm.net.gvproxy_sock then
+            print("Setting gvproxy path: " .. vm.net.gvproxy_sock)
+            check_error(libkrun.krun_set_gvproxy_path(ctx, vm.net.gvproxy_sock), "krun_set_gvproxy_path")
+        end
     end
 
     -- Set root filesystem

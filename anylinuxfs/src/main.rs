@@ -111,6 +111,7 @@ struct Config {
     kernel_path: PathBuf,
     gvproxy_path: PathBuf,
     gvproxy_log_path: PathBuf,
+    vmproxy_host_path: PathBuf,
     vsock_path: String,
     vfkit_sock_path: String,
     invoker_uid: libc::uid_t,
@@ -821,6 +822,7 @@ fn load_config(common_args: &CommonArgs) -> anyhow::Result<Config> {
     let init_rootfs_path = libexec_dir.join("init-rootfs").to_owned();
     let kernel_path = libexec_dir.join("Image").to_owned();
     let gvproxy_path = libexec_dir.join("gvproxy").to_owned();
+    let vmproxy_host_path = libexec_dir.join("vmproxy").to_owned();
 
     let vsock_path = format!("/tmp/anylinuxfs-{}-vsock", rand_string(8));
     let vfkit_sock_path = format!("/tmp/vfkit-{}.sock", rand_string(8));
@@ -849,6 +851,7 @@ fn load_config(common_args: &CommonArgs) -> anyhow::Result<Config> {
         kernel_path,
         gvproxy_path,
         gvproxy_log_path,
+        vmproxy_host_path,
         vsock_path,
         vfkit_sock_path,
         invoker_uid,
@@ -1526,11 +1529,11 @@ fn init_rootfs(config: &Config, force: bool) -> anyhow::Result<()> {
         let bash_path = config.root_path.join("bin/bash");
         let nfsd_path = config.root_path.join("usr/sbin/rpc.nfsd");
         let entry_point_path = config.root_path.join("usr/local/bin/entrypoint.sh");
-        let vmproxy_path = config.root_path.join("vmproxy");
+        let vmproxy_guest_path = config.root_path.join("vmproxy");
         let required_files_exist = bash_path.exists()
             && nfsd_path.exists()
             && entry_point_path.exists()
-            && vmproxy_path.exists();
+            && vmproxy_guest_path.exists();
 
         let fstab_path = config.root_path.join("etc/fstab");
 
@@ -1547,6 +1550,15 @@ fn init_rootfs(config: &Config, force: bool) -> anyhow::Result<()> {
         };
         if required_files_exist && fstab_configured && rootfs_version_matches(&config) {
             // host_println!("VM root filesystem is initialized");
+            // rootfs should be initialized but check if we need to update vmproxy executable
+            if fsutil::files_likely_differ(&config.vmproxy_host_path, &vmproxy_guest_path)? {
+                fs::copy(&config.vmproxy_host_path, &vmproxy_guest_path).context(format!(
+                    "Failed to copy {} to {}",
+                    config.vmproxy_host_path.display(),
+                    vmproxy_guest_path.display()
+                ))?;
+                host_println!("Updated VM root filesystem");
+            }
             return Ok(());
         }
     }
