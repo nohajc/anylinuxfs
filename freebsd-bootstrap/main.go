@@ -3,10 +3,12 @@ package main
 import (
 	"anylinuxfs/freebsd-bootstrap/chroot"
 	"anylinuxfs/freebsd-bootstrap/mount"
+	"anylinuxfs/freebsd-bootstrap/oci"
 	"anylinuxfs/freebsd-bootstrap/remoteiso"
 	"debug/elf"
+	_ "embed"
+	"errors"
 	"fmt"
-	"io/fs"
 	"net/http"
 	"os"
 	"os/exec"
@@ -16,9 +18,19 @@ import (
 	"github.com/kdomanski/iso9660"
 )
 
+const FreeBSD_ISO = "https://download.freebsd.org/releases/ISO-IMAGES/14.3/FreeBSD-14.3-RELEASE-arm64-aarch64-bootonly.iso"
+
 var RequiredFiles = []string{
-	"/libexec/ld-elf.so.1", "/sbin/gpart", "/sbin/newfs", "/usr/sbin/nfsd",
+	// "/etc/group",
+	// "/etc/protocols",
+	// "/etc/services",
 	"/lib/geom/geom_part.so",
+	// "/libexec/ld-elf.so.1",
+	"/sbin/gpart",
+	"/sbin/newfs",
+	"/sbin/zfs",
+	"/sbin/zpool",
+	"/usr/sbin/nfsd", // TODO: the rest of NFS dependencies
 }
 var LibraryBaseDirs = []string{"/lib", "/usr/lib"}
 
@@ -32,17 +44,67 @@ func main() {
 	workdir := "tmp"
 	err := os.Mkdir(workdir, 0755)
 	if err != nil && !os.IsExist(err) {
-		panic(err)
+		fmt.Printf("Failed to create workdir %s: %v\n", workdir, err)
+		return
 	}
 	err = mount.Mount("tmpfs", workdir, "tmpfs", "")
 	if err != nil {
-		panic(err)
+		fmt.Printf("Failed to mount tmpfs on %s: %v\n", workdir, err)
+		return
 	}
 
-	url := "https://download.freebsd.org/releases/ISO-IMAGES/14.3/FreeBSD-14.3-RELEASE-arm64-aarch64-bootonly.iso"
+	// Switch to a temporary root populated from the ISO
+	err = os.Chdir(workdir)
+	if err != nil {
+		fmt.Printf("Failed to change directory to %s: %v\n", workdir, err)
+		return
+	}
+	err = chroot.Chroot(".")
+	if err != nil {
+		fmt.Printf("Failed to chroot into current directory: %v\n", err)
+		return
+	}
+	workdir = "/"
+
+	err = os.Mkdir("/dev", 0755)
+	if err != nil && !os.IsExist(err) {
+		fmt.Printf("Failed to create /dev directory: %v\n", err)
+		return
+	}
+	err = mount.Mount("devfs", "/dev", "devfs", "")
+	if err != nil {
+		fmt.Printf("Failed to mount devfs on /dev: %v\n", err)
+		return
+	}
+
+	err = createResolvConf("/")
+	if err != nil {
+		fmt.Printf("Error creating resolv.conf: %v\n", err)
+		return
+	}
+
+	err = os.MkdirAll("/mnt/img", 0755)
+	if err != nil && !os.IsExist(err) {
+		fmt.Printf("Error creating /mnt/img: %v\n", err)
+		return
+	}
+
+	ociDir := "/mnt/img"
+	err = mount.Mount("/dev/vtbd2", ociDir, "cd9660", "")
+	if err != nil {
+		fmt.Printf("Error mounting /dev/vtbd2 to %s: %v\n", ociDir, err)
+		return
+	}
+
+	// TODO: get tag name dynamically by doing the equivalent of `umoci list`
+	err = oci.Unpack(ociDir, "freebsd-runtime:14.3-RELEASE-aarch64", ".")
+	if err != nil {
+		fmt.Printf("Error unpacking OCI image: %v\n", err)
+		return
+	}
 
 	reader := &remoteiso.HTTPReaderAt{
-		URL:    url,
+		URL:    FreeBSD_ISO,
 		Client: &http.Client{},
 	}
 
@@ -54,15 +116,17 @@ func main() {
 
 	image, err := iso9660.OpenImage(cached)
 	if err != nil {
-		panic(err)
+		fmt.Printf("Failed to open ISO image %s: %v\n", FreeBSD_ISO, err)
+		return
 	}
 
 	root, err := image.RootDir()
 	if err != nil {
-		panic(err)
+		fmt.Printf("Failed to get root directory of ISO: %v\n", err)
+		return
 	}
 
-	fmt.Printf("Reading %s:\n\n", url)
+	fmt.Printf("Reading %s:\n\n", FreeBSD_ISO)
 
 	start := time.Now()
 	// listDir(root, "")
@@ -76,51 +140,51 @@ func main() {
 	fmt.Printf("\nTotal bytes read via HTTP: %d\n", remoteiso.TotalBytesRead)
 	fmt.Printf("Duration: %v\n", duration)
 
-	// Switch to a temporary root populated from the ISO
-	err = os.Chdir(workdir)
-	if err != nil {
-		panic(err)
-	}
-	err = chroot.Chroot(".")
-	if err != nil {
-		panic(err)
-	}
-
-	err = os.Mkdir("/dev", 0755)
-	if err != nil && !os.IsExist(err) {
-		panic(err)
-	}
-	err = mount.Mount("devfs", "/dev", "devfs", "")
-	if err != nil {
-		panic(err)
-	}
-
-	fmt.Printf("\nListing / after chroot:\n")
-	err = filepath.WalkDir(".", func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			fmt.Printf("DIR:  %s\n", path)
-		} else {
-			info, _ := d.Info()
-			fmt.Printf("FILE: %s (%d bytes)\n", path, info.Size())
-		}
-		return nil
-	})
-	if err != nil {
-		fmt.Printf("Error walking directory: %v\n", err)
-	}
-
-	// Run /sbin/gpart show
-	fmt.Printf("\nExecuting /sbin/gpart show:\n")
-	cmd := exec.Command("/sbin/gpart", "show")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	err = cmd.Run()
+	err = run("/sbin/gpart", "show")
 	if err != nil {
 		fmt.Printf("Error executing /sbin/gpart: %v\n", err)
+		return
 	}
+
+	err = run("/sbin/gpart", "create", "-s", "gpt", "vtbd1")
+	if err != nil {
+		fmt.Printf("Error creating GPT partition scheme: %v\n", err)
+	}
+
+	err = run("/sbin/gpart", "add", "-t", "freebsd-ufs", "vtbd1")
+	if err != nil {
+		fmt.Printf("Error adding freebsd-ufs partition: %v\n", err)
+	}
+
+	err = run("/sbin/newfs", "-U", "/dev/vtbd1p1")
+	if err != nil {
+		fmt.Printf("Error creating filesystem: %v\n", err)
+		return
+	}
+
+	err = os.MkdirAll("/mnt/ufs", 0755)
+	if err != nil && !os.IsExist(err) {
+		fmt.Printf("Error creating /mnt/ufs: %v\n", err)
+		return
+	}
+
+	err = mount.Mount("/dev/vtbd1p1", "/mnt/ufs", "ufs", "")
+	if err != nil {
+		fmt.Printf("Error mounting /dev/vtbd1p1 to /mnt/ufs: %v\n", err)
+	}
+
+	err = run("/bin/cp", "-avx", "/", "/mnt/ufs")
+	if err != nil {
+		fmt.Printf("Error copying files to /mnt/ufs: %v\n", err)
+		return
+	}
+}
+
+func run(command string, args ...string) error {
+	cmd := exec.Command(command, args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
 
 type downloader struct {
@@ -139,9 +203,8 @@ func newDownloader(targetDir string, remoteRoot *iso9660.File) *downloader {
 
 func (d *downloader) downloadWithDependencies(remoteFiles []*remoteiso.FileEntry) {
 	libraryDeps := map[string]struct{}{}
-	fmt.Printf("Found files:\n")
 	for _, entry := range remoteFiles {
-		fmt.Printf(" - %s (size: %d bytes)\n", entry.Path, entry.File.Size())
+		// fmt.Printf(" - %s (size: %d bytes)\n", entry.Path, entry.File.Size())
 		if _, done := d.finishedFiles[entry.Path]; done {
 			fmt.Printf("Skipping already downloaded %s\n", entry.Path)
 			continue
@@ -175,7 +238,10 @@ func (d *downloader) downloadWithDependencies(remoteFiles []*remoteiso.FileEntry
 func getLibraryDependencies(filePath string) []string {
 	f, err := elf.Open(filePath)
 	if err != nil {
-		fmt.Printf("   Error opening ELF file %s: %v\n", filePath, err)
+		var fmtErr *elf.FormatError
+		if !errors.As(err, &fmtErr) {
+			fmt.Printf("   Cannot scan file %s for dependencies: %v\n", filePath, err)
+		}
 		return nil
 	}
 	defer f.Close()
@@ -183,4 +249,19 @@ func getLibraryDependencies(filePath string) []string {
 	libs, _ := f.ImportedLibraries()
 
 	return libs
+}
+
+func createResolvConf(targetDir string) error {
+	resolvPath := filepath.Join(targetDir, "etc", "resolv.conf")
+	err := os.MkdirAll(filepath.Dir(resolvPath), 0755)
+	if err != nil {
+		return fmt.Errorf("failed to create etc directory: %w", err)
+	}
+
+	content := "nameserver 192.168.127.1\n"
+	err = os.WriteFile(resolvPath, []byte(content), 0644)
+	if err != nil {
+		return fmt.Errorf("failed to write resolv.conf: %w", err)
+	}
+	return nil
 }

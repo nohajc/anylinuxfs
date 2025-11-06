@@ -29,12 +29,13 @@ func (entry FileEntry) Download(baseDir string) (string, error) {
 	}
 
 	if entry.File.Mode()&os.ModeSymlink != 0 {
-		target := entry.File.SymlinkTarget()
-		if target == "" {
+		origTarget := entry.File.SymlinkTarget()
+		if origTarget == "" {
 			return "", fmt.Errorf("symlink target for %s is empty", entry.Path)
 		}
-		if strings.HasPrefix("/", target) {
-			target = filepath.Join(baseDir, target)
+		target := origTarget
+		if strings.HasPrefix("/", origTarget) {
+			target = filepath.Join(baseDir, origTarget)
 		}
 		if _, err := os.Lstat(localPath); err == nil {
 			_ = os.Remove(localPath)
@@ -42,7 +43,7 @@ func (entry FileEntry) Download(baseDir string) (string, error) {
 		if err := os.Symlink(target, localPath); err != nil {
 			return "", fmt.Errorf("failed to create symlink %s -> %s: %w", localPath, target, err)
 		}
-		fmt.Printf("Successfully created symlink %s -> %s\n", localPath, target)
+		fmt.Printf("Created symlink %s -> %s\n", entry.Path, origTarget)
 		return localPath, nil
 	}
 
@@ -64,7 +65,7 @@ func (entry FileEntry) Download(baseDir string) (string, error) {
 		return "", fmt.Errorf("failed to copy content to %s: %w", localPath, err)
 	}
 
-	fmt.Printf("Successfully downloaded %s (%d bytes)\n", entry.Path, entry.File.Size())
+	fmt.Printf("Downloaded %s (%d bytes)\n", entry.Path, entry.File.Size())
 	return localPath, nil
 }
 
