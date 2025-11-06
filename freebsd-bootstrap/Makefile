@@ -9,16 +9,14 @@ GOOS = freebsd
 GOARCH = arm64
 
 # Static build flags
-CGO_ENABLED = 1
+CGO_ENABLED = 0
 GOTAGS = netgo
-
-CC="zig cc -target aarch64-freebsd.14.0"
 
 # Build flags for fully static binary
 LDFLAGS = -ldflags '-extldflags "-static" -w -s'
 
 # Go build command with static flags
-BUILD_CMD = CGO_ENABLED=$(CGO_ENABLED) GOOS=$(GOOS) GOARCH=$(GOARCH) CC=$(CC) go build \
+BUILD_CMD = CGO_ENABLED=$(CGO_ENABLED) GOOS=$(GOOS) GOARCH=$(GOARCH) go build \
 	-tags $(GOTAGS) \
 	$(LDFLAGS) \
 	-o $(BINARY_NAME) \

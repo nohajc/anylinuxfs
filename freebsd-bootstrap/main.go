@@ -1,21 +1,30 @@
 package main
 
 import (
+	"anylinuxfs/freebsd-bootstrap/mount"
 	"anylinuxfs/freebsd-bootstrap/remoteiso"
 	"debug/elf"
 	"fmt"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/kdomanski/iso9660"
-	"github.com/moby/sys/mount"
 )
 
-func mountUFS() error {
-	return mount.Mount("/dev/vtbd0p1", "/mnt", "ufs", "")
+func mountTarget() error {
+	// just testing if mount works
+	return mount.Mount("/dev/gpt/efiesp", "/mnt/efi", "msdosfs", "")
+	// return mount.Mount("/dev/vtbd0p1", "/mnt", "ufs", "")
 }
 
 func main() {
+	err := mountTarget()
+	if err != nil {
+		panic(err)
+	}
+	os.Exit(0)
+
 	url := "https://download.freebsd.org/releases/ISO-IMAGES/14.3/FreeBSD-14.3-RELEASE-arm64-aarch64-bootonly.iso"
 
 	reader := &remoteiso.HTTPReaderAt{
