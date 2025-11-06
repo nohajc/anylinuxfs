@@ -2,6 +2,6 @@
     "go.toolsEnvVars": {
         "GOOS": "freebsd",
         "GOARCH": "arm64",
-        "CGO_ENABLED": "1"
+        "CGO_ENABLED": "0"
     }
 }
