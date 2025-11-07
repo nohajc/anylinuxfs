@@ -114,6 +114,13 @@ func main() {
 	}
 	fmt.Println("created resolv.conf")
 
+	err = createFstab("/")
+	if err != nil {
+		fmt.Printf("Error creating fstab: %v\n", err)
+		return
+	}
+	fmt.Println("created fstab")
+
 	reader := &remoteiso.HTTPReaderAt{
 		URL:    FreeBSD_ISO,
 		Client: &http.Client{},
@@ -162,7 +169,7 @@ func main() {
 		fmt.Printf("Error creating GPT partition scheme: %v\n", err)
 	}
 
-	err = run("/sbin/gpart", "add", "-t", "freebsd-ufs", "vtbd1")
+	err = run("/sbin/gpart", "add", "-t", "freebsd-ufs", "-l", "rootfs", "vtbd1")
 	if err != nil {
 		fmt.Printf("Error adding freebsd-ufs partition: %v\n", err)
 	}
@@ -333,6 +340,21 @@ func createResolvConf(targetDir string) error {
 	err = os.WriteFile(resolvPath, []byte(content), 0644)
 	if err != nil {
 		return fmt.Errorf("failed to write resolv.conf: %w", err)
+	}
+	return nil
+}
+
+func createFstab(targetDir string) error {
+	fstabPath := filepath.Join(targetDir, "etc", "fstab")
+	err := os.MkdirAll(filepath.Dir(fstabPath), 0755)
+	if err != nil {
+		return fmt.Errorf("failed to create etc directory: %w", err)
+	}
+
+	content := "/dev/gpt/rootfs   /       ufs   rw      1       1\n"
+	err = os.WriteFile(fstabPath, []byte(content), 0644)
+	if err != nil {
+		return fmt.Errorf("failed to write fstab: %w", err)
 	}
 	return nil
 }

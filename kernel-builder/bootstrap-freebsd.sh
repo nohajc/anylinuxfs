@@ -30,7 +30,6 @@ mkdir -p tmp/rootfs/dev
 mkdir -p tmp/rootfs/tmp
 cp $SCRIPT_DIR/../freebsd-bootstrap/freebsd-bootstrap tmp/rootfs/
 cp $SCRIPT_DIR/freebsd/init-freebsd tmp/rootfs/
-# TODO: missing /etc/fstab
 
 $TAR cf "$ROOTFS_IMAGE" --format iso9660 --strip-components=2 tmp/rootfs
 
