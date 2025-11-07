@@ -44,6 +44,7 @@ func loadConfig(path string) (Config, error) {
 	return c, nil
 }
 
+// TODO: include custom files specified by user?
 var RequiredFiles = []string{
 	"/lib/geom/geom_part.so",
 	"/sbin/fsck_ffs",
@@ -52,8 +53,18 @@ var RequiredFiles = []string{
 	"/sbin/newfs",
 	"/sbin/zfs",
 	"/sbin/zpool",
+	"/usr/bin/ee",
+	"/usr/bin/file",
+	"/usr/bin/ldd",
+	"/usr/bin/rpcinfo",
+	"/usr/bin/showmount",
+	"/usr/bin/which",
 	"/usr/lib/pam_xdg.so",
-	"/usr/sbin/nfsd", // TODO: the rest of NFS dependencies
+	"/usr/sbin/mountd",
+	"/usr/sbin/nfsd",
+	"/usr/sbin/rpcbind",
+	"/usr/sbin/rpc.statd",
+	"/usr/sbin/rpc.lockd",
 }
 var LibraryBaseDirs = []string{"/lib", "/usr/lib"}
 
@@ -86,6 +97,12 @@ func main() {
 	err = copyInitBinary(workdir)
 	if err != nil {
 		fmt.Printf("Failed to copy init binary: %v\n", err)
+		return
+	}
+
+	err = copyNFSLauncher(workdir)
+	if err != nil {
+		fmt.Printf("Failed to copy NFS launcher: %v\n", err)
 		return
 	}
 
@@ -395,11 +412,22 @@ func copyFile(srcPath, dstPath string) error {
 }
 
 func copyInitBinary(targetDir string) error {
-	// Copy /init-freebsd to targetDir/init-freebsd
 	srcPath := "/init-freebsd"
 	dstPath := filepath.Join(targetDir, "init-freebsd")
 
 	return copyFile(srcPath, dstPath)
+}
+
+func copyNFSLauncher(targetDir string) error {
+	srcPath := "/entrypoint.sh"
+	dstDir := filepath.Join(targetDir, "usr", "local", "bin")
+	err := os.MkdirAll(dstDir, 0755)
+	if err != nil {
+		return fmt.Errorf("failed to create directory for NFS launcher: %w", err)
+	}
+	dstFile := filepath.Join(dstDir, "entrypoint.sh")
+
+	return copyFile(srcPath, dstFile)
 }
 
 func copyKernelModules(targetDir string) error {
