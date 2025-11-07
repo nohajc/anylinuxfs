@@ -10,10 +10,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/kdomanski/iso9660"
@@ -49,7 +52,6 @@ var RequiredFiles = []string{
 	"/sbin/newfs",
 	"/sbin/zfs",
 	"/sbin/zpool",
-	"/usr/lib/pam_xdg.so.6",
 	"/usr/lib/pam_xdg.so",
 	"/usr/sbin/nfsd", // TODO: the rest of NFS dependencies
 }
@@ -289,6 +291,7 @@ func newDownloader(targetDir string, remoteRoot *iso9660.File) *downloader {
 
 func (d *downloader) downloadWithDependencies(remoteFiles []*remoteiso.FileEntry) {
 	libraryDeps := map[string]struct{}{}
+	pathDeps := map[string]struct{}{}
 	for _, entry := range remoteFiles {
 		// fmt.Printf(" - %s (size: %d bytes)\n", entry.Path, entry.File.Size())
 		if _, done := d.finishedFiles[entry.Path]; done {
@@ -302,26 +305,48 @@ func (d *downloader) downloadWithDependencies(remoteFiles []*remoteiso.FileEntry
 		}
 		d.finishedFiles[entry.Path] = struct{}{}
 
-		deps := getLibraryDependencies(localPath)
-		for _, lib := range deps {
-			libraryDeps[lib] = struct{}{}
+		deps := getDependencies(localPath)
+		for _, d := range deps {
+			if strings.HasPrefix(d, "/") {
+				pathDeps[d] = struct{}{}
+			} else {
+				libraryDeps[d] = struct{}{}
+			}
 		}
 	}
 
-	possibleLibraryPaths := []string{}
+	possiblePaths := []string{}
 	for prefix := range LibraryBaseDirs {
 		for lib := range libraryDeps {
-			possibleLibraryPaths = append(possibleLibraryPaths, filepath.Join(LibraryBaseDirs[prefix], lib))
+			possiblePaths = append(possiblePaths, filepath.Join(LibraryBaseDirs[prefix], lib))
 		}
 	}
+	possiblePaths = append(possiblePaths, slices.Collect(maps.Keys(pathDeps))...)
 
-	foundLibraries := remoteiso.FindFiles(d.remoteRoot, possibleLibraryPaths)
+	foundLibraries := remoteiso.FindFiles(d.remoteRoot, possiblePaths)
 	if len(foundLibraries) > 0 {
 		d.downloadWithDependencies(foundLibraries)
 	}
 }
 
-func getLibraryDependencies(filePath string) []string {
+func getDependencies(filePath string) []string {
+	// Check if the file is a symlink and return its target if so
+	fileInfo, err := os.Lstat(filePath)
+	if err != nil {
+		return nil
+	}
+	if fileInfo.Mode()&os.ModeSymlink != 0 {
+		target, err := os.Readlink(filePath)
+		if err != nil {
+			fmt.Printf("   Cannot resolve symlink %s: %v\n", filePath, err)
+			return nil
+		}
+		if !strings.HasPrefix(target, "/") {
+			target = filepath.Clean(filepath.Join(filepath.Dir(filePath), target))
+		}
+		// fmt.Printf("   Adding dependency: %s\n", target)
+		return []string{target}
+	}
 	f, err := elf.Open(filePath)
 	if err != nil {
 		var fmtErr *elf.FormatError

@@ -34,7 +34,7 @@ func (entry FileEntry) Download(baseDir string) (string, error) {
 			return "", fmt.Errorf("symlink target for %s is empty", entry.Path)
 		}
 		target := origTarget
-		if strings.HasPrefix("/", origTarget) {
+		if strings.HasPrefix(origTarget, "/") {
 			target = filepath.Join(baseDir, origTarget)
 		}
 		if _, err := os.Lstat(localPath); err == nil {
