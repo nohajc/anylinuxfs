@@ -41,17 +41,24 @@ func mountTarget() error {
 }
 
 func main() {
+	fmt.Println("Bootstrap started")
+
 	workdir := "tmp"
-	err := os.Mkdir(workdir, 0755)
-	if err != nil && !os.IsExist(err) {
-		fmt.Printf("Failed to create workdir %s: %v\n", workdir, err)
-		return
+	if _, err := os.Stat(workdir); os.IsNotExist(err) {
+		err := os.Mkdir(workdir, 0755)
+		if err != nil {
+			fmt.Printf("Failed to create workdir %s: %v\n", workdir, err)
+			return
+		}
 	}
-	err = mount.Mount("tmpfs", workdir, "tmpfs", "")
+	err := mount.Mount("tmpfs", workdir, "tmpfs", "")
 	if err != nil {
 		fmt.Printf("Failed to mount tmpfs on %s: %v\n", workdir, err)
 		return
 	}
+	fmt.Println("mounted tmpfs")
+
+	copyInitBinary(workdir)
 
 	// Switch to a temporary root populated from the ISO
 	err = os.Chdir(workdir)
@@ -66,6 +73,8 @@ func main() {
 	}
 	workdir = "/"
 
+	fmt.Println("chrooted to /tmp")
+
 	err = os.Mkdir("/dev", 0755)
 	if err != nil && !os.IsExist(err) {
 		fmt.Printf("Failed to create /dev directory: %v\n", err)
@@ -76,12 +85,7 @@ func main() {
 		fmt.Printf("Failed to mount devfs on /dev: %v\n", err)
 		return
 	}
-
-	err = createResolvConf("/")
-	if err != nil {
-		fmt.Printf("Error creating resolv.conf: %v\n", err)
-		return
-	}
+	fmt.Println("mounted devfs")
 
 	err = os.MkdirAll("/mnt/img", 0755)
 	if err != nil && !os.IsExist(err) {
@@ -95,6 +99,7 @@ func main() {
 		fmt.Printf("Error mounting /dev/vtbd2 to %s: %v\n", ociDir, err)
 		return
 	}
+	fmt.Println("mounted OCI image")
 
 	// TODO: get tag name dynamically by doing the equivalent of `umoci list`
 	err = oci.Unpack(ociDir, "freebsd-runtime:14.3-RELEASE-aarch64", ".")
@@ -102,6 +107,21 @@ func main() {
 		fmt.Printf("Error unpacking OCI image: %v\n", err)
 		return
 	}
+	fmt.Println("unpacked OCI image")
+
+	err = initNetwork()
+	if err != nil {
+		fmt.Printf("Error initializing network: %v\n", err)
+		return
+	}
+	fmt.Println("network initialized")
+
+	err = createResolvConf("/")
+	if err != nil {
+		fmt.Printf("Error creating resolv.conf: %v\n", err)
+		return
+	}
+	fmt.Println("created resolv.conf")
 
 	reader := &remoteiso.HTTPReaderAt{
 		URL:    FreeBSD_ISO,
@@ -249,6 +269,60 @@ func getLibraryDependencies(filePath string) []string {
 	libs, _ := f.ImportedLibraries()
 
 	return libs
+}
+
+func copyInitBinary(targetDir string) {
+	// Copy /init-freebsd to targetDir/init-freebsd
+	srcPath := "/init-freebsd"
+	dstPath := filepath.Join(targetDir, "init-freebsd")
+
+	srcFile, err := os.Open(srcPath)
+	if err != nil {
+		fmt.Printf("Failed to open source file %s: %v\n", srcPath, err)
+		return
+	}
+	defer srcFile.Close()
+
+	dstFile, err := os.Create(dstPath)
+	if err != nil {
+		fmt.Printf("Failed to create destination file %s: %v\n", dstPath, err)
+		return
+	}
+	defer dstFile.Close()
+
+	srcInfo, err := srcFile.Stat()
+	if err != nil {
+		fmt.Printf("Failed to get source file info: %v\n", err)
+		return
+	}
+
+	_, err = srcFile.WriteTo(dstFile)
+	if err != nil {
+		fmt.Printf("Failed to copy file content: %v\n", err)
+		return
+	}
+
+	err = dstFile.Chmod(srcInfo.Mode())
+	if err != nil {
+		fmt.Printf("Failed to set file permissions: %v\n", err)
+		return
+	}
+
+	fmt.Printf("Copied %s to %s\n", srcPath, dstPath)
+}
+
+func initNetwork() error {
+	err := run("/sbin/ifconfig", "vtnet0", "inet", "192.168.127.2/24")
+	if err != nil {
+		return fmt.Errorf("failed to configure network interface: %w", err)
+	}
+
+	err = run("/sbin/route", "add", "default", "192.168.127.1")
+	if err != nil {
+		return fmt.Errorf("failed to add default route: %w", err)
+	}
+
+	return nil
 }
 
 func createResolvConf(targetDir string) error {
