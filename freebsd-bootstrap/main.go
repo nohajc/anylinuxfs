@@ -7,6 +7,7 @@ import (
 	"anylinuxfs/freebsd-bootstrap/remoteiso"
 	"debug/elf"
 	_ "embed"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -18,7 +19,27 @@ import (
 	"github.com/kdomanski/iso9660"
 )
 
-const FreeBSD_ISO = "https://download.freebsd.org/releases/ISO-IMAGES/14.3/FreeBSD-14.3-RELEASE-arm64-aarch64-bootonly.iso"
+type Config struct {
+	ISOURL string `json:"iso_url"`
+}
+
+func loadConfig(path string) (Config, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return Config{}, fmt.Errorf("open config: %w", err)
+	}
+	defer f.Close()
+
+	dec := json.NewDecoder(f)
+	var c Config
+	if err := dec.Decode(&c); err != nil {
+		return Config{}, fmt.Errorf("decode config: %w", err)
+	}
+	if c.ISOURL == "" {
+		return Config{}, fmt.Errorf("config iso_url is empty")
+	}
+	return c, nil
+}
 
 var RequiredFiles = []string{
 	"/lib/geom/geom_part.so",
@@ -34,6 +55,14 @@ var LibraryBaseDirs = []string{"/lib", "/usr/lib"}
 func main() {
 	fmt.Println("Bootstrap started")
 
+	// Load ISO URL from config.json before performing operations
+	config, err := loadConfig("config.json")
+	freebsdISO := config.ISOURL
+	if err != nil {
+		fmt.Printf("Warning: could not load config.json (%v).\n", err)
+		return
+	}
+
 	workdir := "tmp"
 	if _, err := os.Stat(workdir); os.IsNotExist(err) {
 		err := os.Mkdir(workdir, 0755)
@@ -42,7 +71,7 @@ func main() {
 			return
 		}
 	}
-	err := mount.Mount("tmpfs", workdir, "tmpfs", "")
+	err = mount.Mount("tmpfs", workdir, "tmpfs", "")
 	if err != nil {
 		fmt.Printf("Failed to mount tmpfs on %s: %v\n", workdir, err)
 		return
@@ -122,7 +151,7 @@ func main() {
 	fmt.Println("created fstab")
 
 	reader := &remoteiso.HTTPReaderAt{
-		URL:    FreeBSD_ISO,
+		URL:    freebsdISO,
 		Client: &http.Client{},
 	}
 
@@ -134,7 +163,7 @@ func main() {
 
 	image, err := iso9660.OpenImage(cached)
 	if err != nil {
-		fmt.Printf("Failed to open ISO image %s: %v\n", FreeBSD_ISO, err)
+		fmt.Printf("Failed to open ISO image %s: %v\n", freebsdISO, err)
 		return
 	}
 
@@ -144,7 +173,7 @@ func main() {
 		return
 	}
 
-	fmt.Printf("Reading %s:\n\n", FreeBSD_ISO)
+	fmt.Printf("Reading %s:\n", freebsdISO)
 
 	start := time.Now()
 	// listDir(root, "")
