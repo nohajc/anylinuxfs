@@ -54,7 +54,7 @@ var RequiredFiles = []string{
 	"/sbin/zfs",
 	"/sbin/zpool",
 	"/usr/bin/ee",
-	"/usr/bin/file",
+	"/usr/bin/basename",
 	"/usr/bin/ldd",
 	"/usr/bin/rpcinfo",
 	"/usr/bin/showmount",
