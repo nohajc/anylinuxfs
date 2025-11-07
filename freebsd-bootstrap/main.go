@@ -44,10 +44,13 @@ func loadConfig(path string) (Config, error) {
 var RequiredFiles = []string{
 	"/lib/geom/geom_part.so",
 	"/sbin/fsck_ffs",
+	"/sbin/fsck_ufs",
 	"/sbin/gpart",
 	"/sbin/newfs",
 	"/sbin/zfs",
 	"/sbin/zpool",
+	"/usr/lib/pam_xdg.so.6",
+	"/usr/lib/pam_xdg.so",
 	"/usr/sbin/nfsd", // TODO: the rest of NFS dependencies
 }
 var LibraryBaseDirs = []string{"/lib", "/usr/lib"}
@@ -78,7 +81,23 @@ func main() {
 	}
 	fmt.Println("mounted tmpfs")
 
-	copyInitBinary(workdir)
+	err = copyInitBinary(workdir)
+	if err != nil {
+		fmt.Printf("Failed to copy init binary: %v\n", err)
+		return
+	}
+
+	kernelDir := filepath.Join(workdir, "boot", "kernel")
+	err = os.MkdirAll(kernelDir, 0755)
+	if err != nil {
+		fmt.Printf("Failed to create kernel directory %s: %v\n", kernelDir, err)
+		return
+	}
+	err = copyKernelModules(kernelDir)
+	if err != nil {
+		fmt.Printf("%v\n", err)
+		return
+	}
 
 	// Switch to a temporary root populated from the ISO
 	err = os.Chdir(workdir)
@@ -149,6 +168,20 @@ func main() {
 		return
 	}
 	fmt.Println("created fstab")
+
+	err = editGettytab("/")
+	if err != nil {
+		fmt.Printf("Error editing gettytab: %v\n", err)
+		return
+	}
+	fmt.Println("edited gettytab")
+
+	err = createScripts("/")
+	if err != nil {
+		fmt.Printf("Error creating scripts: %v\n", err)
+		return
+	}
+	fmt.Println("created scripts")
 
 	reader := &remoteiso.HTTPReaderAt{
 		URL:    freebsdISO,
@@ -304,44 +337,61 @@ func getLibraryDependencies(filePath string) []string {
 	return libs
 }
 
-func copyInitBinary(targetDir string) {
-	// Copy /init-freebsd to targetDir/init-freebsd
-	srcPath := "/init-freebsd"
-	dstPath := filepath.Join(targetDir, "init-freebsd")
-
+func copyFile(srcPath, dstPath string) error {
 	srcFile, err := os.Open(srcPath)
 	if err != nil {
-		fmt.Printf("Failed to open source file %s: %v\n", srcPath, err)
-		return
+		return fmt.Errorf("failed to open source file %s: %w", srcPath, err)
 	}
 	defer srcFile.Close()
 
 	dstFile, err := os.Create(dstPath)
 	if err != nil {
-		fmt.Printf("Failed to create destination file %s: %v\n", dstPath, err)
-		return
+		return fmt.Errorf("failed to create destination file %s: %w", dstPath, err)
 	}
 	defer dstFile.Close()
 
 	srcInfo, err := srcFile.Stat()
 	if err != nil {
-		fmt.Printf("Failed to get source file info: %v\n", err)
-		return
+		return fmt.Errorf("failed to get source file info: %w", err)
 	}
 
 	_, err = srcFile.WriteTo(dstFile)
 	if err != nil {
-		fmt.Printf("Failed to copy file content: %v\n", err)
-		return
+		return fmt.Errorf("failed to copy file content: %w", err)
 	}
 
 	err = dstFile.Chmod(srcInfo.Mode())
 	if err != nil {
-		fmt.Printf("Failed to set file permissions: %v\n", err)
-		return
+		return fmt.Errorf("failed to set file permissions: %w", err)
 	}
 
 	fmt.Printf("Copied %s to %s\n", srcPath, dstPath)
+	return nil
+}
+
+func copyInitBinary(targetDir string) error {
+	// Copy /init-freebsd to targetDir/init-freebsd
+	srcPath := "/init-freebsd"
+	dstPath := filepath.Join(targetDir, "init-freebsd")
+
+	return copyFile(srcPath, dstPath)
+}
+
+func copyKernelModules(targetDir string) error {
+	files, err := filepath.Glob("/*.ko")
+	if err != nil {
+		return fmt.Errorf("invalid glob pattern: %w", err)
+	}
+
+	for _, srcPath := range files {
+		dstPath := filepath.Join(targetDir, filepath.Base(srcPath))
+
+		err := copyFile(srcPath, dstPath)
+		if err != nil {
+			return fmt.Errorf("Failed to copy kernel module %s: %w", srcPath, err)
+		}
+	}
+	return nil
 }
 
 func initNetwork() error {
@@ -384,6 +434,51 @@ func createFstab(targetDir string) error {
 	err = os.WriteFile(fstabPath, []byte(content), 0644)
 	if err != nil {
 		return fmt.Errorf("failed to write fstab: %w", err)
+	}
+	return nil
+}
+
+func editGettytab(baseDir string) error {
+	gettytabPath := filepath.Join(baseDir, "etc", "gettytab")
+
+	file, err := os.OpenFile(gettytabPath, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open gettytab file: %w", err)
+	}
+	defer file.Close()
+
+	content := "\nal.3wire:\\\n\t:al=root:np:nc:sp#0:\n"
+	_, err = file.WriteString(content)
+	if err != nil {
+		return fmt.Errorf("failed to write to gettytab: %w", err)
+	}
+
+	return nil
+}
+
+const InitNetworkScript = `#!/bin/sh
+
+ifconfig vtnet0 inet 192.168.127.2/24
+route add default 192.168.127.1
+`
+
+const StartShellScript = `#!/bin/sh
+
+trap "mount -fr /" EXIT; mount -u / && TERM=vt100 /usr/libexec/getty al.3wire
+`
+
+var AllScripts = map[string]string{
+	"init-network.sh": InitNetworkScript,
+	"start-shell.sh":  StartShellScript,
+}
+
+func createScripts(targetDir string) error {
+	for name, content := range AllScripts {
+		scriptPath := filepath.Join(targetDir, name)
+		err := os.WriteFile(scriptPath, []byte(content), 0755)
+		if err != nil {
+			return fmt.Errorf("failed to create script %s: %w", scriptPath, err)
+		}
 	}
 	return nil
 }

@@ -26,7 +26,7 @@ return {
     workdir = "/",
     command = {
         path = "/bin/sh",
-        -- args = { "-c", "/start-shell.sh" },
+        args = { "-c", "/start-shell.sh" },
     },
     env = {
     },
