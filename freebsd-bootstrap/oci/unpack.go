@@ -13,7 +13,7 @@ import (
 	"github.com/opencontainers/umoci/oci/layer"
 )
 
-func Unpack(imagePath, fromName, rootfsPath string) error {
+func Unpack(imagePath, rootfsPath string) error {
 	var unpackOptions layer.UnpackOptions
 	var meta umoci.Meta
 
@@ -27,6 +27,15 @@ func Unpack(imagePath, fromName, rootfsPath string) error {
 	engineExt := casext.NewEngine(engine)
 	defer engine.Close()
 
+	names, err := engineExt.ListReferences(context.Background())
+	if err != nil {
+		return fmt.Errorf("list references: %w", err)
+	}
+	if len(names) == 0 {
+		return errors.New("no image tags found in the specified OCI image")
+	}
+
+	fromName := names[0]
 	fromDescriptorPaths, err := engineExt.ResolveReference(context.Background(), fromName)
 	if err != nil {
 		return errors.Wrap(err, "get descriptor")

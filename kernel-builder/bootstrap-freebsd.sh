@@ -11,8 +11,8 @@ TAR=/usr/bin/bsdtar
 # http://ftp.cz.freebsd.org/pub/FreeBSD/releases/OCI-IMAGES/14.3-RELEASE/aarch64/Latest/FreeBSD-14.3-RELEASE-arm64-aarch64-container-image-runtime.txz
 
 BSD_RELEASE_VERSION="14.3"
-# BSD_RELEASE_VERSION="15.0"
 BSD_RELEASE_SUFFIX="RELEASE"
+# BSD_RELEASE_VERSION="15.0"
 # BSD_RELEASE_SUFFIX="BETA4"
 BSD_RELEASE_NAME="FreeBSD-$BSD_RELEASE_VERSION-$BSD_RELEASE_SUFFIX-arm64-aarch64"
 

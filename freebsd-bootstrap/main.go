@@ -122,7 +122,7 @@ func main() {
 	fmt.Println("mounted OCI image")
 
 	// TODO: get tag name dynamically by doing the equivalent of `umoci list`
-	err = oci.Unpack(ociDir, "freebsd-runtime:14.3-RELEASE-aarch64", ".")
+	err = oci.Unpack(ociDir, ".")
 	if err != nil {
 		fmt.Printf("Error unpacking OCI image: %v\n", err)
 		return
