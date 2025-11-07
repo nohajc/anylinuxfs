@@ -1,3 +1,10 @@
+[images.alpine-latest]
+docker_ref = "alpine:latest"
+
+[images."freebsd-14.3"]
+iso_url = "https://download.freebsd.org/releases/ISO-IMAGES/14.3/FreeBSD-14.3-RELEASE-arm64-aarch64-bootonly.iso"
+oci_url = "https://download.freebsd.org/releases/OCI-IMAGES/14.3-RELEASE/aarch64/Latest/FreeBSD-14.3-RELEASE-arm64-aarch64-container-image-runtime.txz"
+
 [custom_actions.ubuntu_zfs_unlock]
 description = "Mount ZFS keystore encrypted with LUKS to unlock Ubuntu system disk"
 before_mount = "cryptsetup open /dev/zd0 ks0 && mkdir -p $KS && mount /dev/mapper/ks0 $KS"

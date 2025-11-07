@@ -7,7 +7,7 @@ use devinfo::DevInfo;
 use nanoid::nanoid;
 
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::ffi::OsStr;
 use std::fmt::Display;
 use std::fs::{self, File};
@@ -124,7 +124,8 @@ struct Config {
 
 trait Preferences {
     fn alpine_custom_packages<'a>(&'a self) -> BTreeSet<&'a str>;
-    fn custom_actions<'a>(&'a self) -> HashMap<&'a str, &'a CustomActionConfig>;
+    fn custom_actions<'a>(&'a self) -> BTreeMap<&'a str, &'a CustomActionConfig>;
+    fn images<'a>(&'a self) -> BTreeMap<&'a str, &'a ImageSource>;
     fn gvproxy_debug(&self) -> bool;
     fn krun_log_level_numeric(&self) -> u32;
     fn krun_num_vcpus(&self) -> u8;
@@ -144,7 +145,9 @@ struct PrefsObject {
     #[serde(default)]
     alpine: AlpineConfig,
     #[serde(default)]
-    custom_actions: HashMap<String, CustomActionConfig>,
+    custom_actions: BTreeMap<String, CustomActionConfig>,
+    #[serde(default)]
+    images: BTreeMap<String, ImageSource>,
     #[serde(default)]
     gvproxy: GvproxyConfig,
     #[serde(default)]
@@ -166,13 +169,23 @@ impl Preferences for [PrefsObject; 2] {
         result
     }
 
-    fn custom_actions<'a>(&'a self) -> HashMap<&'a str, &'a CustomActionConfig> {
-        let mut result: HashMap<_, _> = self[0]
+    fn custom_actions<'a>(&'a self) -> BTreeMap<&'a str, &'a CustomActionConfig> {
+        let mut result: BTreeMap<_, _> = self[0]
             .custom_actions
             .iter()
             .map(|(k, v)| (k.as_str(), v))
             .collect();
         result.extend(self[1].custom_actions.iter().map(|(k, v)| (k.as_str(), v)));
+        result
+    }
+
+    fn images<'a>(&'a self) -> BTreeMap<&'a str, &'a ImageSource> {
+        let mut result: BTreeMap<_, _> = self[0]
+            .images
+            .iter()
+            .map(|(k, v)| (k.as_str(), v))
+            .collect();
+        result.extend(self[1].images.iter().map(|(k, v)| (k.as_str(), v)));
         result
     }
 
@@ -243,13 +256,19 @@ impl PrefsObject {
         let mut custom_actions = self.custom_actions.clone();
         custom_actions.extend(other.custom_actions.clone());
 
+        let mut images = self.images.clone();
+        images.extend(other.images.clone());
+
         PrefsObject {
             alpine: self.alpine.merge_with(&other.alpine),
             custom_actions,
+            images,
             gvproxy: self.gvproxy.merge_with(&other.gvproxy),
             krun: self.krun.merge_with(&other.krun),
             misc: self.misc.merge_with(&other.misc),
-            ..Default::default()
+            log_level_numeric: other.log_level_numeric.or(self.log_level_numeric),
+            num_vcpus: other.num_vcpus.or(self.num_vcpus),
+            ram_size_mib: other.ram_size_mib.or(self.ram_size_mib),
         }
     }
 }
@@ -326,6 +345,13 @@ impl CustomActionEnvironment for CustomActionConfig {
         }
         Ok(())
     }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+struct ImageSource {
+    docker_ref: Option<String>,
+    iso_url: Option<String>,
+    oci_url: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -580,6 +606,9 @@ Recognized environment variables:
     /// Manage custom alpine packages
     #[command(subcommand)]
     Apk(ApkCmd),
+    /// Manage VM images
+    #[command(subcommand)]
+    Image(ImageCmd),
     #[command(subcommand, hide = true)]
     Rpcbind(RpcBindCmd),
 }
@@ -699,6 +728,22 @@ enum ApkCmd {
     Del {
         /// Packages to remove
         packages: Vec<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ImageCmd {
+    /// List available VM images
+    List,
+    /// Install a VM image
+    Install {
+        /// VM image name
+        name: String,
+    },
+    /// Uninstall a VM image
+    Uninstall {
+        /// VM image name
+        name: String,
     },
 }
 
@@ -2003,6 +2048,22 @@ impl AppRunner {
         Ok(())
     }
 
+    fn run_image(&mut self, cmd: ImageCmd) -> anyhow::Result<()> {
+        let config = load_config(&CommonArgs::default())?;
+
+        match cmd {
+            ImageCmd::List => {
+                let images = config.preferences.images();
+                for (name, src) in images {
+                    safe_println!("{}: {:?}", name, src)?;
+                }
+            }
+            ImageCmd::Install { name } => todo!(),
+            ImageCmd::Uninstall { name } => todo!(),
+        }
+        Ok(())
+    }
+
     fn run_rpcbind(&mut self, cmd: RpcBindCmd) -> anyhow::Result<()> {
         match cmd {
             RpcBindCmd::Register => rpcbind::services::register(),
@@ -2955,6 +3016,7 @@ impl AppRunner {
             Commands::Shell(cmd) => self.run_shell(cmd),
             Commands::Dmesg => self.run_dmesg(),
             Commands::Apk(cmd) => self.run_apk(cmd),
+            Commands::Image(cmd) => self.run_image(cmd),
             Commands::Rpcbind(cmd) => self.run_rpcbind(cmd),
         }
     }
