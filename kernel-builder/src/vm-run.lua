@@ -26,8 +26,6 @@ ffi.cdef [[
     static const int KRUN_KERNEL_FORMAT_RAW = 0;
 ]]
 
--- local libkrun = ffi.load("krun")
-
 -- Helper function to check for errors
 local function check_error(result, operation)
     if result < 0 then
@@ -59,6 +57,7 @@ local function launch_vm(config)
 
     -- Load libkrun
     local libkrun = ffi.load(efi and "/usr/local/lib/libkrun-efi.dylib" or "/usr/local/lib/libkrun.dylib")
+    -- local libkrun = ffi.load(efi and "/usr/local/lib/libkrun-efi.dylib" or "krun")
 
     print("Creating libkrun context...")
     local ctx = check_error(libkrun.krun_create_ctx(), "krun_create_ctx")
