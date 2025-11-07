@@ -21,11 +21,8 @@ import (
 const FreeBSD_ISO = "https://download.freebsd.org/releases/ISO-IMAGES/14.3/FreeBSD-14.3-RELEASE-arm64-aarch64-bootonly.iso"
 
 var RequiredFiles = []string{
-	// "/etc/group",
-	// "/etc/protocols",
-	// "/etc/services",
 	"/lib/geom/geom_part.so",
-	// "/libexec/ld-elf.so.1",
+	"/sbin/fsck_ffs",
 	"/sbin/gpart",
 	"/sbin/newfs",
 	"/sbin/zfs",
@@ -33,12 +30,6 @@ var RequiredFiles = []string{
 	"/usr/sbin/nfsd", // TODO: the rest of NFS dependencies
 }
 var LibraryBaseDirs = []string{"/lib", "/usr/lib"}
-
-func mountTarget() error {
-	// just testing if mount works
-	return mount.Mount("/dev/gpt/efiesp", "/mnt/efi", "msdosfs", "")
-	// return mount.Mount("/dev/vtbd0p1", "/mnt", "ufs", "")
-}
 
 func main() {
 	fmt.Println("Bootstrap started")
@@ -198,6 +189,12 @@ func main() {
 		fmt.Printf("Error copying files to /mnt/ufs: %v\n", err)
 		return
 	}
+
+	err = run("/sbin/umount", "/mnt/ufs")
+	if err != nil {
+		fmt.Printf("Error unmounting /mnt/ufs: %v\n", err)
+	}
+	fmt.Println("bootstrap completed successfully")
 }
 
 func run(command string, args ...string) error {
