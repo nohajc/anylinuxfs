@@ -26,7 +26,9 @@ ROOTFS_IMAGE="freebsd-bootstrap.iso"
 VM_DISK_IMAGE="freebsd-microvm-disk.img"
 
 # 1. download oci image
-$CURL -LO "$OCI_IMAGE_URL"
+if [ ! -f "$OCI_IMAGE" ]; then
+    $CURL -LO "$OCI_IMAGE_URL"
+fi
 mkdir -p tmp/oci
 
 # 2. unpack it
