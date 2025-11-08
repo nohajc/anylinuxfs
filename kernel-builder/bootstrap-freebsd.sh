@@ -45,9 +45,12 @@ cp $SCRIPT_DIR/freebsd/init-freebsd tmp/rootfs/
 cp $SCRIPT_DIR/freebsd/*.ko tmp/rootfs/
 echo '{"iso_url": "'$ISO_IMAGE_URL'"}' > tmp/rootfs/config.json
 
-$CURL -LO "https://raw.githubusercontent.com/nohajc/docker-nfs-server/refs/heads/freebsd/entrypoint.sh"
-chmod +x entrypoint.sh
-cp entrypoint.sh tmp/rootfs/
+ENTRYPOINT_SH="entrypoint.sh"
+if [ ! -f "$ENTRYPOINT_SH" ]; then
+    $CURL -LO "https://raw.githubusercontent.com/nohajc/docker-nfs-server/refs/heads/freebsd/entrypoint.sh"
+fi
+chmod +x "$ENTRYPOINT_SH"
+cp "$ENTRYPOINT_SH" tmp/rootfs/
 
 $TAR cf "$ROOTFS_IMAGE" --format iso9660 --strip-components=2 tmp/rootfs
 

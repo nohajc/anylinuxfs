@@ -203,8 +203,10 @@ func main() {
 	fmt.Println("created scripts")
 
 	reader := &remoteiso.HTTPReaderAt{
-		URL:    freebsdISO,
-		Client: &http.Client{},
+		URL: freebsdISO,
+		Client: &http.Client{
+			Timeout: 5 * time.Second,
+		},
 	}
 
 	cached := &remoteiso.CachedReaderAt{
