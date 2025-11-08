@@ -43,7 +43,7 @@ mkdir -p tmp/rootfs/tmp
 cp $SCRIPT_DIR/../freebsd-bootstrap/freebsd-bootstrap tmp/rootfs/
 cp $SCRIPT_DIR/freebsd/init-freebsd tmp/rootfs/
 cp $SCRIPT_DIR/freebsd/*.ko tmp/rootfs/
-echo '{"iso_url": "'$ISO_IMAGE_URL'"}' > tmp/rootfs/config.json
+echo '{"iso_url": "'$ISO_IMAGE_URL'", "pkgs": ["bash", "pidof", "curl"]}' > tmp/rootfs/config.json
 
 ENTRYPOINT_SH="entrypoint.sh"
 if [ ! -f "$ENTRYPOINT_SH" ]; then
@@ -74,6 +74,8 @@ gvproxy --listen unix://$PWD/network.sock --listen-vfkit unixgram://$PWD/$VFKIT_
 GVPROXY_PID=$!
 
 $SCRIPT_DIR/src/vm-run.lua --config $SCRIPT_DIR/src/freebsd-microvm-config.lua \
-    --set "vm.net.gvproxy_sock=$VFKIT_SOCK"
+    --set "vm.net.gvproxy_sock=$VFKIT_SOCK" \
+    --set "command.path=/usr/local/bin/vm-setup.sh" \
+    --set "command.args=nil"
 
 kill $GVPROXY_PID

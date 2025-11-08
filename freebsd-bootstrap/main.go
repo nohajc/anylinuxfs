@@ -23,7 +23,8 @@ import (
 )
 
 type Config struct {
-	ISOURL string `json:"iso_url"`
+	IsoUrl string   `json:"iso_url"`
+	Pkgs   []string `json:"pkgs"`
 }
 
 func loadConfig(path string) (Config, error) {
@@ -38,7 +39,7 @@ func loadConfig(path string) (Config, error) {
 	if err := dec.Decode(&c); err != nil {
 		return Config{}, fmt.Errorf("decode config: %w", err)
 	}
-	if c.ISOURL == "" {
+	if c.IsoUrl == "" {
 		return Config{}, fmt.Errorf("config iso_url is empty")
 	}
 	return c, nil
@@ -73,7 +74,7 @@ func main() {
 
 	// Load ISO URL from config.json before performing operations
 	config, err := loadConfig("config.json")
-	freebsdISO := config.ISOURL
+	freebsdISO := config.IsoUrl
 	if err != nil {
 		fmt.Printf("Warning: could not load config.json (%v).\n", err)
 		return
@@ -195,7 +196,7 @@ func main() {
 	}
 	fmt.Println("edited gettytab")
 
-	err = createScripts("/")
+	err = createScripts(config, "/")
 	if err != nil {
 		fmt.Printf("Error creating scripts: %v\n", err)
 		return
@@ -284,7 +285,7 @@ func main() {
 	if err != nil {
 		fmt.Printf("Error unmounting /mnt/ufs: %v\n", err)
 	}
-	fmt.Println("bootstrap completed successfully")
+	fmt.Println("Bootstrap completed successfully")
 }
 
 func run(command string, args ...string) error {
@@ -527,13 +528,37 @@ var AllScripts = map[string]string{
 	"start-shell.sh":  StartShellScript,
 }
 
-func createScripts(targetDir string) error {
+func createScripts(config Config, targetDir string) error {
 	for name, content := range AllScripts {
 		scriptPath := filepath.Join(targetDir, name)
 		err := os.WriteFile(scriptPath, []byte(content), 0755)
 		if err != nil {
 			return fmt.Errorf("failed to create script %s: %w", scriptPath, err)
 		}
+	}
+	err := createSetupScript(config, targetDir)
+	if err != nil {
+		return fmt.Errorf("failed to create setup script: %w", err)
+	}
+	return nil
+}
+
+func createSetupScript(config Config, targetDir string) error {
+	scriptPath := filepath.Join(targetDir, "usr", "local", "bin", "vm-setup.sh")
+	err := os.MkdirAll(filepath.Dir(scriptPath), 0755)
+	if err != nil {
+		return fmt.Errorf("failed to create bin directory: %w", err)
+	}
+
+	content := fmt.Sprintf(`#!/bin/sh
+mount -u /
+/init-network.sh
+pkg install -y %s
+mount -fr /
+`, strings.Join(config.Pkgs, " "))
+	err = os.WriteFile(scriptPath, []byte(content), 0755)
+	if err != nil {
+		return fmt.Errorf("failed to write setup script: %w", err)
 	}
 	return nil
 }
