@@ -80,13 +80,21 @@ fn init_network(bind_addr: &str, host_rpcbind: bool) -> anyhow::Result<()> {
     fs::write("/etc/resolv.conf", format!("nameserver {VM_GATEWAY_IP}\n"))
         .context("Failed to write /etc/resolv.conf")?;
 
-    Command::new("/bin/sh")
-        .arg("-c")
-        .arg(format!(
-            "ip addr add {VM_IP}/24 dev eth0 \
+    #[cfg(target_os = "linux")]
+    let script = format!(
+        "ip addr add {VM_IP}/24 dev eth0 \
             && ip link set eth0 up \
             && ip route add default via {VM_GATEWAY_IP} dev eth0",
-        ))
+    );
+    #[cfg(target_os = "freebsd")]
+    let script = format!(
+        "ifconfig vtnet0 inet {VM_IP}/24
+            && route add default {VM_GATEWAY_IP}"
+    );
+
+    Command::new("/bin/sh")
+        .arg("-c")
+        .arg(script)
         .status()
         .context("Failed to configure network interface")?;
 
@@ -282,7 +290,14 @@ fn statfs(path: impl AsRef<Path>) -> io::Result<libc::statfs> {
 }
 
 fn export_args_for_path(path: &str, export_mode: &str, fsid: usize) -> anyhow::Result<String> {
+    #[cfg(target_os = "linux")]
     let mut export_args = format!("{export_mode},no_subtree_check,no_root_squash,insecure");
+    #[cfg(target_os = "freebsd")]
+    let mut export_args = format!(
+        "{}-maproot=root",
+        if export_mode == "ro" { "-ro " } else { "" }
+    );
+
     #[cfg(target_os = "linux")]
     if statfs(path)
         .with_context(|| format!("statfs failed for {path}"))?
@@ -492,6 +507,7 @@ fn run() -> anyhow::Result<()> {
     let name = &cli.mount_name;
     let mount_name = if !is_logical {
         if is_zfs {
+            #[cfg(target_os = "linux")]
             script("modprobe zfs")
                 .status()
                 .context("Failed to load zfs module")?;
@@ -751,7 +767,14 @@ fn run() -> anyhow::Result<()> {
 
     for (export_path, export_args) in &all_exports {
         println!("<anylinuxfs-nfs-export:{}>", export_path);
-        exports_content += &format!("\"{}\"      *({})\n", export_path, export_args);
+        #[cfg(target_os = "linux")]
+        {
+            exports_content += &format!("\"{}\"      *({})\n", export_path, export_args);
+        }
+        #[cfg(target_os = "freebsd")]
+        {
+            exports_content += &format!("{} {},network 0.0.0.0/0\n", export_path, export_args);
+        }
     }
 
     fs::write("/etc/exports", exports_content).context("Failed to write to /etc/exports")?;
