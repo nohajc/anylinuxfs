@@ -11,3 +11,4 @@ mv .cargo .cargo_
 trap "mv .cargo_ .cargo" EXIT
 
 cargo build --target-dir target-bsd --release
+cp target-bsd/release/vmproxy vmproxy-bsd
