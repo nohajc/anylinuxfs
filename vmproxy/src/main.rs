@@ -1,13 +1,18 @@
 use anyhow::{Context, anyhow};
 use bstr::{BString, ByteSlice};
 use clap::Parser;
-use common_utils::{CustomActionConfig, Deferred, path_safe_label_name};
+#[cfg(target_os = "freebsd")]
+use common_utils::VM_CTRL_PORT;
+use common_utils::{CustomActionConfig, Deferred, VM_GATEWAY_IP, VM_IP, path_safe_label_name};
+#[cfg(target_os = "linux")]
 use libc::VMADDR_CID_ANY;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::env;
 use std::ffi::{CString, OsStr};
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, Read, Write};
+#[cfg(target_os = "freebsd")]
+use std::net::{TcpListener, TcpStream};
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::process::{Child, Command, ExitCode, Stdio};
@@ -15,7 +20,8 @@ use std::time::Duration;
 use std::{fs, io::BufReader};
 #[cfg(target_os = "linux")]
 use sys_mount::{UnmountFlags, unmount};
-use vsock::{VsockAddr, VsockListener};
+#[cfg(target_os = "linux")]
+use vsock::{VsockAddr, VsockListener, VsockStream};
 
 use crate::utils::{script, script_output};
 
@@ -57,12 +63,11 @@ struct PortDef<'a> {
     remote: &'a str,
 }
 
-const EXPOSE_PORT_SVC: &str = "http://192.168.127.1/services/forwarder/expose";
 const LOCALHOST: &str = "127.0.0.1";
 
 fn expose_port(client: &reqwest::blocking::Client, port_def: &PortDef) -> anyhow::Result<()> {
     client
-        .post(EXPOSE_PORT_SVC)
+        .post(&format!("http://{VM_GATEWAY_IP}/services/forwarder/expose"))
         .json(port_def)
         .send()
         .and_then(|res| res.error_for_status())
@@ -72,16 +77,16 @@ fn expose_port(client: &reqwest::blocking::Client, port_def: &PortDef) -> anyhow
 }
 
 fn init_network(bind_addr: &str, host_rpcbind: bool) -> anyhow::Result<()> {
-    fs::write("/etc/resolv.conf", "nameserver 192.168.127.1\n")
+    fs::write("/etc/resolv.conf", format!("nameserver {VM_GATEWAY_IP}\n"))
         .context("Failed to write /etc/resolv.conf")?;
 
     Command::new("/bin/sh")
         .arg("-c")
-        .arg(
-            "ip addr add 192.168.127.2/24 dev eth0 \
+        .arg(format!(
+            "ip addr add {VM_IP}/24 dev eth0 \
             && ip link set eth0 up \
-            && ip route add default via 192.168.127.1 dev eth0",
-        )
+            && ip route add default via {VM_GATEWAY_IP} dev eth0",
+        ))
         .status()
         .context("Failed to configure network interface")?;
 
@@ -97,7 +102,7 @@ fn init_network(bind_addr: &str, host_rpcbind: bool) -> anyhow::Result<()> {
             &client,
             &PortDef {
                 local: ":111",
-                remote: "192.168.127.2:111",
+                remote: &format!("{VM_IP}:111"),
             },
         )?;
     }
@@ -107,21 +112,21 @@ fn init_network(bind_addr: &str, host_rpcbind: bool) -> anyhow::Result<()> {
             &client,
             &PortDef {
                 local: &format!("{addr}:2049"),
-                remote: "192.168.127.2:2049",
+                remote: &format!("{VM_IP}:2049"),
             },
         )?;
         expose_port(
             &client,
             &PortDef {
                 local: &format!("{addr}:32765"),
-                remote: "192.168.127.2:32765",
+                remote: &format!("{VM_IP}:32765"),
             },
         )?;
         expose_port(
             &client,
             &PortDef {
                 local: &format!("{addr}:32767"),
-                remote: "192.168.127.2:32767",
+                remote: &format!("{VM_IP}:32767"),
             },
         )?;
     }
@@ -129,10 +134,43 @@ fn init_network(bind_addr: &str, host_rpcbind: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn wait_for_quit_cmd() -> anyhow::Result<()> {
-    let addr = VsockAddr::new(VMADDR_CID_ANY, 12700);
-    let listener = VsockListener::bind(&addr)?;
+trait ClonableStream: Read + Write {
+    fn try_clone(&self) -> io::Result<impl ClonableStream + 'static>;
+}
 
+#[cfg(target_os = "linux")]
+impl ClonableStream for VsockStream {
+    fn try_clone(&self) -> io::Result<impl ClonableStream + 'static> {
+        self.try_clone()
+    }
+}
+
+#[cfg(target_os = "freebsd")]
+impl ClonableStream for TcpStream {
+    fn try_clone(&self) -> io::Result<impl ClonableStream + 'static> {
+        self.try_clone()
+    }
+}
+
+trait StreamListener {
+    fn incoming(&self) -> impl Iterator<Item = io::Result<impl ClonableStream>>;
+}
+
+#[cfg(target_os = "linux")]
+impl StreamListener for VsockListener {
+    fn incoming(&self) -> impl Iterator<Item = io::Result<impl ClonableStream>> {
+        self.incoming()
+    }
+}
+
+#[cfg(target_os = "freebsd")]
+impl StreamListener for TcpListener {
+    fn incoming(&self) -> impl Iterator<Item = io::Result<impl ClonableStream>> {
+        self.incoming()
+    }
+}
+
+fn wait_for_quit_cmd(listener: impl StreamListener) -> anyhow::Result<()> {
     for stream in listener.incoming() {
         let mut stream = stream?;
         let mut reader = BufReader::new(stream.try_clone()?);
@@ -738,7 +776,14 @@ fn run() -> anyhow::Result<()> {
         .spawn()
     {
         Ok(mut hnd) => {
-            if let Err(e) = wait_for_quit_cmd() {
+            #[cfg(target_os = "linux")]
+            let listener = {
+                let addr = VsockAddr::new(VMADDR_CID_ANY, 12700);
+                VsockListener::bind(&addr)?
+            };
+            #[cfg(target_os = "freebsd")]
+            let listener = TcpListener::bind(&format!("0.0.0.0:{}", VM_CTRL_PORT))?;
+            if let Err(e) = wait_for_quit_cmd(listener) {
                 eprintln!("Error while waiting for quit command: {:#}", e);
             }
 

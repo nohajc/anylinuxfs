@@ -167,7 +167,7 @@ impl Client {
         if size == 0 {
             return Err(anyhow!("Response size is zero"));
         }
-        if size > 4096 {
+        if size > 65536 {
             return Err(anyhow!("Response size is too large"));
         }
 

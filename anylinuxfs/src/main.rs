@@ -1,7 +1,10 @@
 use anyhow::{Context, anyhow};
 use bstr::{BString, ByteSlice, ByteVec};
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
-use common_utils::{CustomActionConfig, Deferred, host_eprintln, host_println, log, safe_println};
+use common_utils::{
+    CustomActionConfig, Deferred, VM_CTRL_PORT, VM_IP, host_eprintln, host_println, log,
+    safe_println,
+};
 
 use devinfo::DevInfo;
 use nanoid::nanoid;
@@ -100,6 +103,18 @@ fn main() {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+enum OSType {
+    Linux,
+    FreeBSD,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct KernelConfig {
+    os: OSType,
+    path: PathBuf,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct Config {
     exec_path: PathBuf,
@@ -108,7 +123,8 @@ struct Config {
     config_file_path: PathBuf,
     log_file_path: PathBuf,
     init_rootfs_path: PathBuf,
-    kernel_path: PathBuf,
+    kernel: KernelConfig,
+    gvproxy_net_sock_path: String,
     gvproxy_path: PathBuf,
     gvproxy_log_path: PathBuf,
     vmproxy_host_path: PathBuf,
@@ -869,6 +885,7 @@ fn load_config(common_args: &CommonArgs) -> anyhow::Result<Config> {
     let gvproxy_path = libexec_dir.join("gvproxy").to_owned();
     let vmproxy_host_path = libexec_dir.join("vmproxy").to_owned();
 
+    let gvproxy_net_sock_path = format!("/tmp/network-{}.sock", rand_string(8));
     let vsock_path = format!("/tmp/anylinuxfs-{}-vsock", rand_string(8));
     let vfkit_sock_path = format!("/tmp/vfkit-{}.sock", rand_string(8));
 
@@ -886,6 +903,11 @@ fn load_config(common_args: &CommonArgs) -> anyhow::Result<Config> {
         .passphrase_config
         .unwrap_or(preferences.passphrase_prompt_config());
 
+    let kernel = KernelConfig {
+        os: OSType::Linux,
+        path: kernel_path,
+    };
+
     Ok(Config {
         exec_path,
         root_path,
@@ -893,7 +915,8 @@ fn load_config(common_args: &CommonArgs) -> anyhow::Result<Config> {
         config_file_path,
         log_file_path,
         init_rootfs_path,
-        kernel_path,
+        kernel,
+        gvproxy_net_sock_path,
         gvproxy_path,
         gvproxy_log_path,
         vmproxy_host_path,
@@ -1135,7 +1158,7 @@ fn setup_vm(
     unsafe {
         bindings::krun_set_kernel(
             ctx,
-            CString::from_path(&config.kernel_path).as_ptr(),
+            CString::from_path(&config.kernel.path).as_ptr(),
             0, // KRUN_KERNEL_FORMAT_RAW
             null(),
             cmdline.as_ptr(),
@@ -1360,7 +1383,7 @@ fn vsock_cleanup(config: &Config) -> anyhow::Result<()> {
 fn start_gvproxy(config: &Config) -> anyhow::Result<Child> {
     gvproxy_cleanup(config)?;
 
-    let net_sock_uri = format!("unix:///tmp/network-{}.sock", rand_string(8));
+    let net_sock_uri = format!("unix://{}", &config.gvproxy_net_sock_path);
     let vfkit_sock_uri = format!("unixgram://{}", &config.vfkit_sock_path);
     let mut gvproxy_args = vec![
         "--listen",
@@ -1517,15 +1540,42 @@ fn unmount_fs(volume_path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn send_quit_cmd(config: &Config) -> anyhow::Result<()> {
-    let mut stream = UnixStream::connect(&config.vsock_path)?;
+fn connect_to_vm_ctrl_socket(config: &Config) -> anyhow::Result<UnixStream> {
+    let sock_path = match config.kernel.os {
+        OSType::Linux => &config.vsock_path,
+        _ => &config.gvproxy_net_sock_path,
+    };
 
+    let mut stream = UnixStream::connect(sock_path)?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+
+    if config.kernel.os != OSType::Linux {
+        // vsock only available for Linux VMs, use gvproxy tcp tunnel instead
+        let tunnel_req = format!(
+            "POST /tunnel?ip={VM_IP}&port={VM_CTRL_PORT} HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n"
+        );
+
+        stream.write_all(tunnel_req.as_bytes())?;
+        stream.flush()?;
+
+        let mut resp = [0; 2];
+        stream.read_exact(&mut resp)?;
+        if &resp != b"OK" {
+            return Err(anyhow!("Failed to establish VM control socket tunnel"));
+        }
+    }
+
+    Ok(stream)
+}
+
+fn send_quit_cmd(config: &Config) -> anyhow::Result<()> {
+    let mut stream = connect_to_vm_ctrl_socket(config)?;
+
     stream.write_all(b"quit\n")?;
     stream.flush()?;
 
     // we don't care about the response contents
-    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     let mut buf = [0; 1024];
     _ = stream.read(&mut buf)?;
 

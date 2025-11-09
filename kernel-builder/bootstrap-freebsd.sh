@@ -43,7 +43,7 @@ mkdir -p tmp/rootfs/tmp
 cp $SCRIPT_DIR/../freebsd-bootstrap/freebsd-bootstrap tmp/rootfs/
 cp $SCRIPT_DIR/freebsd/init-freebsd tmp/rootfs/
 cp $SCRIPT_DIR/freebsd/*.ko tmp/rootfs/
-echo '{"iso_url": "'$ISO_IMAGE_URL'", "pkgs": ["bash", "pidof", "curl"]}' > tmp/rootfs/config.json
+echo '{"iso_url": "'$ISO_IMAGE_URL'", "pkgs": ["bash", "pidof"]}' > tmp/rootfs/config.json
 
 ENTRYPOINT_SH="entrypoint.sh"
 if [ ! -f "$ENTRYPOINT_SH" ]; then
