@@ -21,5 +21,14 @@ if [ "$NAME" = "build-vmproxy" ]; then
     exit 0
 fi
 
+if [ "$NAME" = "build-init" ]; then
+    $SCRIPT_DIR/src/vm-run.lua --config $SCRIPT_DIR/src/freebsd-vm-config.lua \
+    --set "vm.net.gvproxy_sock=$VFKIT_SOCK" \
+    --set "command.path=/build-init.sh" \
+    --set "command.args=nil"
+
+    exit 0
+fi
+
 $SCRIPT_DIR/src/vm-run.lua --config $SCRIPT_DIR/src/freebsd-$NAME-config.lua \
     --set "vm.net.gvproxy_sock=$VFKIT_SOCK"
