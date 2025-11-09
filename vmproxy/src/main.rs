@@ -271,6 +271,7 @@ impl CustomActionRunner {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn statfs(path: impl AsRef<Path>) -> io::Result<libc::statfs> {
     let c_path = CString::new(path.as_ref().as_os_str().as_bytes()).unwrap();
     let mut buf: libc::statfs = unsafe { std::mem::zeroed() };
@@ -282,6 +283,7 @@ fn statfs(path: impl AsRef<Path>) -> io::Result<libc::statfs> {
 
 fn export_args_for_path(path: &str, export_mode: &str, fsid: usize) -> anyhow::Result<String> {
     let mut export_args = format!("{export_mode},no_subtree_check,no_root_squash,insecure");
+    #[cfg(target_os = "linux")]
     if statfs(path)
         .with_context(|| format!("statfs failed for {path}"))?
         .f_type
