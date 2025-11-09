@@ -57,6 +57,7 @@ var RequiredFiles = []string{
 	"/sbin/zpool",
 	"/usr/bin/ee",
 	"/usr/bin/basename",
+	"/usr/bin/dirname",
 	"/usr/bin/ldd",
 	"/usr/bin/rpcinfo",
 	"/usr/bin/sftp",
