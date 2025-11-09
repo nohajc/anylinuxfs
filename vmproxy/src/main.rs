@@ -91,8 +91,9 @@ fn init_network(bind_addr: &str, host_rpcbind: bool) -> anyhow::Result<()> {
     );
     #[cfg(target_os = "freebsd")]
     let script = format!(
-        "ifconfig vtnet0 inet {VM_IP}/24
-            && route add default {VM_GATEWAY_IP}"
+        "ifconfig vtnet0 inet {VM_IP}/24 \
+            && route add default {VM_GATEWAY_IP} \
+            && ifconfig lo0 up",
     );
 
     Command::new("/bin/sh")
