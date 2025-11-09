@@ -12,5 +12,14 @@ gvproxy --listen unix://$PWD/network.sock --listen-vfkit unixgram://$PWD/$VFKIT_
 GVPROXY_PID=$!
 trap "kill $GVPROXY_PID; rm $VFKIT_SOCK-krun.sock" EXIT
 
+if [ "$NAME" = "build-vmproxy" ]; then
+    $SCRIPT_DIR/src/vm-run.lua --config $SCRIPT_DIR/src/freebsd-vm-config.lua \
+    --set "vm.net.gvproxy_sock=$VFKIT_SOCK" \
+    --set "command.path=/build-vmproxy.sh" \
+    --set "command.args=nil"
+
+    exit 0
+fi
+
 $SCRIPT_DIR/src/vm-run.lua --config $SCRIPT_DIR/src/freebsd-$NAME-config.lua \
     --set "vm.net.gvproxy_sock=$VFKIT_SOCK"
