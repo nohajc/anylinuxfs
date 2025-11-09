@@ -25,4 +25,12 @@ tmp/
 init-rootfs/alpine/
 init-rootfs/init-rootfs
 
+/rpcbind-comm-test
+/sandbox-test
+/generated
+
+*.img
+*.iso
+*.raw
+*.txz
 .DS_Store
