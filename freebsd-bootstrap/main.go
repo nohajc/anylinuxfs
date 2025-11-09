@@ -105,6 +105,12 @@ func main() {
 		return
 	}
 
+	err = copyVmproxyBinary(workdir)
+	if err != nil {
+		fmt.Printf("Failed to copy VM proxy binary: %v\n", err)
+		return
+	}
+
 	err = copyNFSLauncher(workdir)
 	if err != nil {
 		fmt.Printf("Failed to copy NFS launcher: %v\n", err)
@@ -421,6 +427,13 @@ func copyFile(srcPath, dstPath string) error {
 func copyInitBinary(targetDir string) error {
 	srcPath := "/init-freebsd"
 	dstPath := filepath.Join(targetDir, "init-freebsd")
+
+	return copyFile(srcPath, dstPath)
+}
+
+func copyVmproxyBinary(targetDir string) error {
+	srcPath := "/vmproxy-bsd"
+	dstPath := filepath.Join(targetDir, "vmproxy-bsd")
 
 	return copyFile(srcPath, dstPath)
 }
