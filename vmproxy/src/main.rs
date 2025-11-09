@@ -9,11 +9,14 @@ use libc::VMADDR_CID_ANY;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::env;
-use std::ffi::{CString, OsStr};
+#[cfg(target_os = "linux")]
+use std::ffi::CString;
+use std::ffi::OsStr;
 use std::io::{self, BufRead, Read, Write};
 #[cfg(target_os = "freebsd")]
 use std::net::{TcpListener, TcpStream};
 use std::os::unix::ffi::OsStrExt;
+#[cfg(target_os = "linux")]
 use std::path::Path;
 use std::process::{Child, Command, ExitCode, Stdio};
 use std::time::Duration;
@@ -279,6 +282,7 @@ impl CustomActionRunner {
     }
 }
 
+// TODO: we might need this for custom actions on FreeBSD
 #[cfg(target_os = "linux")]
 fn statfs(path: impl AsRef<Path>) -> io::Result<libc::statfs> {
     let c_path = CString::new(path.as_ref().as_os_str().as_bytes()).unwrap();
@@ -289,23 +293,23 @@ fn statfs(path: impl AsRef<Path>) -> io::Result<libc::statfs> {
     Ok(buf)
 }
 
-fn export_args_for_path(path: &str, export_mode: &str, fsid: usize) -> anyhow::Result<String> {
+fn export_args_for_path(_path: &str, export_mode: &str, _fsid: usize) -> anyhow::Result<String> {
     #[cfg(target_os = "linux")]
     let mut export_args = format!("{export_mode},no_subtree_check,no_root_squash,insecure");
     #[cfg(target_os = "freebsd")]
-    let mut export_args = format!(
+    let export_args = format!(
         "{}-maproot=root",
         if export_mode == "ro" { "-ro " } else { "" }
     );
 
     #[cfg(target_os = "linux")]
-    if statfs(path)
-        .with_context(|| format!("statfs failed for {path}"))?
+    if statfs(_path)
+        .with_context(|| format!("statfs failed for {_path}"))?
         .f_type
         == 0x65735546
     {
         // exporting FUSE requires fsid
-        export_args += &format!(",fsid={}", fsid)
+        export_args += &format!(",fsid={}", _fsid)
     }
     Ok(export_args)
 }
