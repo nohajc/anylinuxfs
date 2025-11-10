@@ -5,7 +5,7 @@ target = "aarch64-unknown-linux-musl"
 linker = "aarch64-linux-musl-gcc"
 
 [target.aarch64-unknown-freebsd]
-linker = "/opt/homebrew/opt/llvm/bin/clang"
+linker = "clang"
 rustflags = [
     "-Clink-arg=--target=aarch64-pc-freebsd",
     "-Clink-arg=--sysroot=freebsd-sysroot",
