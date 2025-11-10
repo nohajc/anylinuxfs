@@ -2,12 +2,18 @@
 target = "aarch64-unknown-linux-musl"
 
 [target.aarch64-unknown-linux-musl]
-linker = "aarch64-linux-musl-gcc"
+linker = "clang"
+rustflags = [
+    "-Clinker-plugin-lto",
+    "-Clink-arg=--target=aarch64-unknown-linux-musl",
+    "-Clink-arg=-fuse-ld=lld",
+]
 
 [target.aarch64-unknown-freebsd]
 linker = "clang"
 rustflags = [
-    "-Clink-arg=--target=aarch64-pc-freebsd",
+    "-Clinker-plugin-lto",
+    "-Clink-arg=--target=aarch64-unknown-freebsd",
     "-Clink-arg=--sysroot=freebsd-sysroot",
     "-Clink-arg=-fuse-ld=lld",
     "-Clink-arg=-stdlib=libc++",
