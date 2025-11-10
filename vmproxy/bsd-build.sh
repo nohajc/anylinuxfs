@@ -1,6 +1,6 @@
 #!/bin/sh
 # This is expected to be run on a FreeBSD host
-# (aarch64 is a Tier 3 platform and as such doesn't support cross-compilation)
+# (not really needed anymore as ../build-app.sh can do cross-compilation with rust nightly)
 
 set -e
 

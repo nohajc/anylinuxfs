@@ -22,8 +22,9 @@ libexec/
 vmroot/
 tmp/
 
-init-rootfs/alpine/
-init-rootfs/init-rootfs
+/init-rootfs/alpine/
+/init-rootfs/init-rootfs
+/vmproxy/freebsd-sysroot/
 
 /rpcbind-comm-test
 /sandbox-test
