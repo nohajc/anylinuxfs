@@ -6,7 +6,6 @@ import (
 	"anylinuxfs/freebsd-bootstrap/oci"
 	"anylinuxfs/freebsd-bootstrap/remoteiso"
 	"debug/elf"
-	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -170,7 +169,6 @@ func main() {
 	}
 	fmt.Println("mounted OCI image")
 
-	// TODO: get tag name dynamically by doing the equivalent of `umoci list`
 	err = oci.Unpack(ociDir, ".")
 	if err != nil {
 		fmt.Printf("Error unpacking OCI image: %v\n", err)
