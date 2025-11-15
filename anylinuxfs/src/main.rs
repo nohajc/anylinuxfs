@@ -770,7 +770,7 @@ enum ImageCmd {
         #[arg(short, long)]
         verbose: bool,
     },
-    /// Install a VM image
+    /// Install a VM image (installing alpine-latest is equivalent to `anylinuxfs init`)
     Install {
         /// VM image name
         name: String,
@@ -2025,10 +2025,10 @@ impl AppRunner {
 
     fn run_image(&mut self, cmd: ImageCmd) -> anyhow::Result<()> {
         let config = load_config(&CommonArgs::default())?;
+        let images = config.preferences.images();
 
         match cmd {
             ImageCmd::List { verbose } => {
-                let images = config.preferences.images();
                 for (name, src) in images {
                     let suffix = if config
                         .profile_path
@@ -2048,7 +2048,16 @@ impl AppRunner {
                     safe_println!("{}{}{}", name, suffix, details)?;
                 }
             }
-            ImageCmd::Install { name } => todo!(),
+            ImageCmd::Install { name } => match images.get(name.as_str()) {
+                Some(&src) => {
+                    vm_image::init(&config, true, src)
+                        .context(format!("Failed to install image {}", name))?;
+                    safe_println!("Image {} installed successfully", name)?;
+                }
+                None => {
+                    return Err(anyhow::anyhow!("unknown image {}", name));
+                }
+            },
             ImageCmd::Uninstall { name } => todo!(),
         }
         Ok(())
