@@ -1,12 +1,14 @@
 use std::{
-    fs,
-    os::unix::process::CommandExt,
+    fs::{self, Permissions},
+    os::unix::{fs::PermissionsExt, process::CommandExt},
     path::Path,
     process::{Command, Stdio},
 };
 
 use anyhow::{Context, anyhow};
 use common_utils::{host_eprintln, host_println};
+use glob::glob;
+use serde::Serialize;
 
 use crate::{Config, ImageSource, dnsutil, fsutil, utils};
 
@@ -14,7 +16,7 @@ pub fn init(config: &Config, force: bool, src: &ImageSource) -> anyhow::Result<(
     match src.os_type {
         // we ignore src.docker_ref for now (because only alpine:latest is supported)
         crate::OSType::Linux => init_linux_rootfs(config, force),
-        crate::OSType::FreeBSD => todo!(),
+        crate::OSType::FreeBSD => init_freebsd_rootfs(config, force, src),
     }
 }
 
@@ -117,4 +119,248 @@ fn rootfs_version_matches(root_ver_file_path: &Path, current_version: &str) -> b
         return false;
     }
     true
+}
+
+const BSD_ENTRYPOINT_SCRIPT_URL: &str =
+    "https://raw.githubusercontent.com/nohajc/docker-nfs-server/refs/heads/freebsd/entrypoint.sh";
+
+const FREEBSD_BOOTSTRAP_EXEC: &str = "freebsd-bootstrap";
+const FREEBSD_INIT_EXEC: &str = "init-freebsd";
+const FREEBSD_VMPROXY_EXEC: &str = "vmproxy-bsd";
+
+fn init_freebsd_rootfs(config: &Config, force: bool, src: &ImageSource) -> anyhow::Result<()> {
+    if !force {
+        todo!() // check for existing freebsd image
+    }
+
+    // TODO: add deferred action which will call fs::remove_dir_all(tmp_path)
+
+    if src.base_dir.is_empty() {
+        return Err(anyhow!("FreeBSD base directory not specified"));
+    }
+
+    let Some(iso_image_url) = src.iso_url.as_deref() else {
+        return Err(anyhow!("FreeBSD ISO URL not provided"));
+    };
+    let Some(oci_image_url) = src.oci_url.as_deref() else {
+        return Err(anyhow!("FreeBSD OCI URL not provided"));
+    };
+    let Some(kernel_bundle_url) = src.kernel.bundle_url.as_deref() else {
+        return Err(anyhow!("FreeBSD kernel bundle URL not provided"));
+    };
+
+    if iso_image_url.is_empty() {
+        return Err(anyhow!("FreeBSD ISO URL is empty"));
+    }
+    if oci_image_url.is_empty() {
+        return Err(anyhow!("FreeBSD OCI URL is empty"));
+    }
+    if kernel_bundle_url.is_empty() {
+        return Err(anyhow!("FreeBSD kernel bundle URL is empty"));
+    }
+
+    let oci_image = oci_image_url
+        .split('/')
+        .last()
+        .context("invalid FreeBSD OCI URL")?;
+    let kernel_bundle = kernel_bundle_url
+        .split('/')
+        .last()
+        .context("invalid FreeBSD kernel bundle URL")?;
+
+    let oci_iso_image = "freebsd-oci.iso";
+    let bootstrap_image = "freebsd-bootstrap.iso";
+    let vm_disk_image = "freebsd-microvm-disk.img";
+
+    let freebsd_base_path = config.profile_path.join(&src.base_dir);
+    let tmp_path = freebsd_base_path.join("tmp");
+    let oci_path = tmp_path.join("oci");
+    fs::create_dir_all(&oci_path).context("Failed to create FreeBSD base directory")?;
+
+    fetch(oci_image_url, &tmp_path).context("Failed to fetch FreeBSD OCI image")?;
+    extract(oci_image, &tmp_path, &oci_path).context("Failed to unpack FreeBSD OCI image")?;
+    create_iso(oci_iso_image, &tmp_path, &oci_path)
+        .context("Failed to convert FreeBSD OCI image to ISO")?;
+
+    let bootstrap_rootfs_path = tmp_path.join("rootfs");
+    fs::create_dir_all(bootstrap_rootfs_path.join("dev"))
+        .context("Failed to create rootfs/dev directory")?;
+
+    fs::create_dir_all(bootstrap_rootfs_path.join("tmp"))
+        .context("Failed to create rootfs/tmp directory")?;
+
+    copy_file(
+        config.libexec_path.join(FREEBSD_BOOTSTRAP_EXEC),
+        bootstrap_rootfs_path.join(FREEBSD_BOOTSTRAP_EXEC),
+    )?;
+    copy_file(
+        config.libexec_path.join(FREEBSD_INIT_EXEC),
+        bootstrap_rootfs_path.join(FREEBSD_INIT_EXEC),
+    )?;
+    copy_file(
+        config.libexec_path.join(FREEBSD_VMPROXY_EXEC),
+        bootstrap_rootfs_path.join(FREEBSD_VMPROXY_EXEC),
+    )?;
+
+    fetch(kernel_bundle_url, &tmp_path).context("Failed to fetch FreeBSD kernel bundle")?;
+    extract(kernel_bundle, &tmp_path, &freebsd_base_path)
+        .context("Failed to extract FreeBSD kernel bundle")?;
+
+    let modules = glob(
+        freebsd_base_path
+            .join("kernel")
+            .join("*.ko")
+            .to_str()
+            .context("invalid FreeBSD kernel path")?,
+    )
+    .context("invalid glob pattern")?;
+
+    for m in modules.into_iter().filter_map(|e| e.ok()) {
+        copy_file(&m, bootstrap_rootfs_path.join(m.file_name().unwrap()))?;
+    }
+
+    fs::write(
+        bootstrap_rootfs_path.join("config.json"),
+        serde_json::to_string(&FreeBSDBootstrapConfig {
+            iso_url: iso_image_url.into(),
+            pkgs: vec!["bash".into(), "pidof".into()],
+        })?,
+    )
+    .context("Failed to write FreeBSD bootstrap config")?;
+
+    let entrypoint_sh = BSD_ENTRYPOINT_SCRIPT_URL.split('/').last().unwrap();
+    fetch(BSD_ENTRYPOINT_SCRIPT_URL, &bootstrap_rootfs_path)
+        .context("Failed to fetch FreeBSD entrypoint script")?;
+    fs::set_permissions(
+        bootstrap_rootfs_path.join(entrypoint_sh),
+        Permissions::from_mode(0o755),
+    )
+    .context("Failed to set executable permissions on FreeBSD entrypoint script")?;
+
+    create_iso(bootstrap_image, &tmp_path, &bootstrap_rootfs_path)
+        .context("Failed to create FreeBSD bootstrap ISO")?;
+
+    create_sparse_file(freebsd_base_path.join(vm_disk_image), "32G")
+        .context("Failed to create FreeBSD VM disk image")?;
+
+    // TODO:
+    // 1. boot the VM to run the bootstrap process and populate our disk image
+    // 2. boot it again to install third-party packages
+
+    Ok(())
+}
+
+fn copy_file(src: impl AsRef<Path>, dest: impl AsRef<Path>) -> anyhow::Result<()> {
+    fs::copy(src.as_ref(), dest.as_ref()).context(format!(
+        "Failed to copy {} to {}",
+        src.as_ref().display(),
+        dest.as_ref().display()
+    ))?;
+    Ok(())
+}
+
+fn fetch(url: &str, dest_dir: &Path) -> anyhow::Result<()> {
+    let curl_status = Command::new("/usr/bin/curl")
+        .current_dir(dest_dir)
+        .args(&["-LO"])
+        .arg(url)
+        .status()
+        .context("Failed to execute curl command")?;
+
+    if !curl_status.success() {
+        return Err(anyhow!(
+            "curl command failed with exit code {}",
+            curl_status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or("unknown".to_owned())
+        ));
+    }
+
+    Ok(())
+}
+
+const TAR: &str = "/usr/bin/bsdtar";
+
+fn create_iso(
+    iso_path: impl AsRef<Path>,
+    working_dir: &Path,
+    src_dir: &Path,
+) -> anyhow::Result<()> {
+    let tar_status = Command::new(TAR)
+        .current_dir(working_dir)
+        .args(&["cvf"])
+        .arg(iso_path.as_ref())
+        .args(&["--format", "iso9660"])
+        .arg("-C")
+        .arg(src_dir)
+        .arg(".")
+        .status()
+        .context("Failed to execute tar command")?;
+
+    if !tar_status.success() {
+        return Err(anyhow!(
+            "tar command failed with exit code {}",
+            tar_status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or("unknown".to_owned())
+        ));
+    }
+
+    Ok(())
+}
+
+fn extract(
+    archive_path: impl AsRef<Path>,
+    working_dir: &Path,
+    dest_dir: &Path,
+) -> anyhow::Result<()> {
+    let tar_status = Command::new(TAR)
+        .current_dir(working_dir)
+        .args(&["xvf"])
+        .arg(archive_path.as_ref())
+        .arg("-C")
+        .arg(dest_dir)
+        .status()
+        .context("Failed to execute tar command")?;
+
+    if !tar_status.success() {
+        return Err(anyhow!(
+            "tar command failed with exit code {}",
+            tar_status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or("unknown".to_owned())
+        ));
+    }
+
+    Ok(())
+}
+
+fn create_sparse_file(path: impl AsRef<Path>, size_spec: &str) -> anyhow::Result<()> {
+    let truncate_status = Command::new("/usr/bin/truncate")
+        .arg("-s")
+        .arg(size_spec)
+        .arg(path.as_ref())
+        .status()
+        .context("Failed to execute truncate command")?;
+
+    if !truncate_status.success() {
+        return Err(anyhow!(
+            "truncate command failed with exit code {}",
+            truncate_status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or("unknown".to_owned())
+        ));
+    }
+
+    Ok(())
+}
+
+#[derive(Debug, Serialize)]
+struct FreeBSDBootstrapConfig {
+    iso_url: String,
+    pkgs: Vec<String>,
 }

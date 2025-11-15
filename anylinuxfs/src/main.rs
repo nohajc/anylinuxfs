@@ -433,11 +433,11 @@ fn load_config(common_args: &CommonArgs) -> anyhow::Result<Config> {
     let log_file_path = log_dir.join("anylinuxfs.log");
     let gvproxy_log_path = log_dir.join("gvproxy.log");
 
-    let libexec_dir = prefix_dir.join("libexec");
-    let init_rootfs_path = libexec_dir.join("init-rootfs").to_owned();
-    let kernel_path = libexec_dir.join("Image").to_owned();
-    let gvproxy_path = libexec_dir.join("gvproxy").to_owned();
-    let vmproxy_host_path = libexec_dir.join("vmproxy").to_owned();
+    let libexec_path = prefix_dir.join("libexec");
+    let init_rootfs_path = libexec_path.join("init-rootfs").to_owned();
+    let kernel_path = libexec_path.join("Image").to_owned();
+    let gvproxy_path = libexec_path.join("gvproxy").to_owned();
+    let vmproxy_host_path = libexec_path.join("vmproxy").to_owned();
 
     let gvproxy_net_sock_path = format!("/tmp/network-{}.sock", rand_string(8));
     let vsock_path = format!("/tmp/anylinuxfs-{}-vsock", rand_string(8));
@@ -469,6 +469,7 @@ fn load_config(common_args: &CommonArgs) -> anyhow::Result<Config> {
         root_ver_file_path,
         config_file_path,
         log_file_path,
+        libexec_path,
         init_rootfs_path,
         kernel,
         gvproxy_net_sock_path,

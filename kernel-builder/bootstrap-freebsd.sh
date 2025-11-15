@@ -6,6 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 CURL=/usr/bin/curl
 TAR=/usr/bin/bsdtar
+TRUNCATE=/usr/bin/truncate
 
 # http://ftp.cz.freebsd.org/pub/FreeBSD/releases/ISO-IMAGES/14.3/FreeBSD-14.3-RELEASE-arm64-aarch64-bootonly.iso
 # http://ftp.cz.freebsd.org/pub/FreeBSD/releases/OCI-IMAGES/14.3-RELEASE/aarch64/Latest/FreeBSD-14.3-RELEASE-arm64-aarch64-container-image-runtime.txz
@@ -22,7 +23,7 @@ OCI_IMAGE="$BSD_RELEASE_NAME-container-image-runtime.txz"
 OCI_IMAGE_URL="http://ftp.cz.freebsd.org/pub/FreeBSD/releases/OCI-IMAGES/$BSD_RELEASE_VERSION-$BSD_RELEASE_SUFFIX/aarch64/Latest/$OCI_IMAGE"
 
 OCI_ISO_IMAGE="freebsd-oci.iso"
-ROOTFS_IMAGE="freebsd-bootstrap.iso"
+BOOTSTRAP_IMAGE="freebsd-bootstrap.iso"
 VM_DISK_IMAGE="freebsd-microvm-disk.img"
 
 # 1. download oci image
@@ -48,7 +49,7 @@ cp $LIBEXEC_DIR/vmproxy-bsd tmp/rootfs/       # this will be installed with the 
 
 if [ ! -d "$SCRIPT_DIR/kernel" ]; then
     $CURL -LO "https://github.com/nohajc/freebsd/releases/download/alfs%2F14.3.0-p5/kernel.txz"
-    $TAR xJf kernel.txz -C "$SCRIPT_DIR"
+    $TAR xf kernel.txz -C "$SCRIPT_DIR"
     rm kernel.txz
 fi
 
@@ -64,11 +65,11 @@ fi
 chmod +x "$ENTRYPOINT_SH"
 cp "$ENTRYPOINT_SH" tmp/rootfs/
 
-$TAR cf "$ROOTFS_IMAGE" --format iso9660 --strip-components=2 tmp/rootfs
+$TAR cf "$BOOTSTRAP_IMAGE" --format iso9660 --strip-components=2 tmp/rootfs
 
 # 5. create empty disk image
 rm "$VM_DISK_IMAGE"
-truncate -s 8G "$VM_DISK_IMAGE"
+$TRUNCATE -s 8G "$VM_DISK_IMAGE"
 
 # 6. boot the vm
 VFKIT_SOCK="vfkit-sock"

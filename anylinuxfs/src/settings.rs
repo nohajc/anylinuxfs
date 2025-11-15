@@ -36,6 +36,7 @@ pub struct Config {
     pub root_ver_file_path: PathBuf,
     pub config_file_path: PathBuf,
     pub log_file_path: PathBuf,
+    pub libexec_path: PathBuf,
     pub init_rootfs_path: PathBuf,
     pub kernel: KernelConfig,
     pub gvproxy_net_sock_path: String,
