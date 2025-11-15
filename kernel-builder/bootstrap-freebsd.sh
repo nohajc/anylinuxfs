@@ -47,7 +47,7 @@ cp $LIBEXEC_DIR/init-freebsd tmp/rootfs/      # if this is shipped with the pack
 cp $LIBEXEC_DIR/vmproxy-bsd tmp/rootfs/       # this will be installed with the homebrew package, new version should also be applied ASAP to all VMs
 
 if [ ! -d "$SCRIPT_DIR/kernel" ]; then
-    curl -LO "https://github.com/nohajc/freebsd/releases/download/alfs%2F14.3.0-p5/kernel.txz"
+    $CURL -LO "https://github.com/nohajc/freebsd/releases/download/alfs%2F14.3.0-p5/kernel.txz"
     $TAR xJf kernel.txz -C "$SCRIPT_DIR"
     rm kernel.txz
 fi

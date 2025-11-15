@@ -14,7 +14,7 @@ use anyhow::{Context, anyhow};
 use common_utils::host_eprintln;
 use serde::{Deserialize, Serialize};
 
-use crate::{MountConfig, devinfo::DevInfo};
+use crate::{devinfo::DevInfo, settings::MountConfig};
 
 const API_SOCKET: &str = "/tmp/anylinuxfs.sock";
 

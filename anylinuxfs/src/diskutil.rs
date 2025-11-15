@@ -27,10 +27,10 @@ use std::{
 use url::Url;
 
 use crate::{
-    PassphrasePromptConfig,
     devinfo::DevInfo,
     fsutil,
     pubsub::Subscription,
+    settings::{Config, PassphrasePromptConfig},
     utils::{cfdict_get_value, is_stdin_tty},
 };
 
@@ -324,7 +324,7 @@ impl FromStr for LvIdent {
 }
 
 pub fn list_partitions(
-    config: crate::Config,
+    config: Config,
     enc_partitions: Option<&[String]>,
     filter: Labels,
 ) -> anyhow::Result<List> {
@@ -790,7 +790,7 @@ fn decrypt_script(dev_info: &[DevInfo], partitions: Option<&[String]>) -> anyhow
 }
 
 fn get_lsblk_info(
-    config: &crate::Config,
+    config: &Config,
     dev_info: &[DevInfo],
     enc_partitions: Option<&[String]>,
     assemble_raid: bool,

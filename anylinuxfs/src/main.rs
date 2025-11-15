@@ -1,21 +1,16 @@
 use anyhow::{Context, anyhow};
-use bstr::{BString, ByteSlice, ByteVec};
-use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
-use common_utils::{
-    CustomActionConfig, Deferred, VM_CTRL_PORT, VM_IP, host_eprintln, host_println, log,
-    safe_println,
-};
+use bstr::{BString, ByteVec};
+use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
+use common_utils::{Deferred, VM_CTRL_PORT, VM_IP, host_eprintln, host_println, log, safe_println};
 
 use devinfo::DevInfo;
 use nanoid::nanoid;
 
-use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::BTreeSet;
 use std::ffi::OsStr;
-use std::fmt::Display;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{IpAddr, Ipv4Addr, SocketAddrV4, TcpStream};
+use std::net::{Ipv4Addr, SocketAddrV4, TcpStream};
 use std::os::fd::FromRawFd;
 use std::os::unix::fs::chown;
 use std::os::unix::net::UnixStream;
@@ -41,6 +36,10 @@ use utils::{
 };
 
 use crate::fsutil::{mount_nfs_subdirs, unmount_nfs_subdirs};
+use crate::settings::{
+    Config, CustomActionEnvironment, ImageSource, KernelConfig, KrunLogLevel, MountConfig, OSType,
+    PassphrasePromptConfig, Preferences,
+};
 use crate::utils::{ToCStringVec, ToPtrVec};
 
 mod api;
@@ -52,6 +51,7 @@ mod dnsutil;
 mod fsutil;
 mod pubsub;
 mod rpcbind;
+mod settings;
 mod utils;
 mod vm_image;
 
@@ -104,446 +104,6 @@ fn main() {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
-enum OSType {
-    Linux,
-    FreeBSD,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-struct KernelConfig {
-    os: OSType,
-    path: PathBuf,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-struct Config {
-    profile_path: PathBuf,
-    exec_path: PathBuf,
-    root_path: PathBuf,
-    root_ver_file_path: PathBuf,
-    config_file_path: PathBuf,
-    log_file_path: PathBuf,
-    init_rootfs_path: PathBuf,
-    kernel: KernelConfig,
-    gvproxy_net_sock_path: String,
-    gvproxy_path: PathBuf,
-    gvproxy_log_path: PathBuf,
-    vmproxy_host_path: PathBuf,
-    vsock_path: String,
-    vfkit_sock_path: String,
-    invoker_uid: libc::uid_t,
-    invoker_gid: libc::gid_t,
-    sudo_uid: Option<libc::uid_t>,
-    sudo_gid: Option<libc::gid_t>,
-    passphrase_config: PassphrasePromptConfig,
-    preferences: [PrefsObject; 2],
-}
-
-trait Preferences {
-    fn alpine_custom_packages<'a>(&'a self) -> BTreeSet<&'a str>;
-    fn custom_actions<'a>(&'a self) -> BTreeMap<&'a str, &'a CustomActionConfig>;
-    fn images<'a>(&'a self) -> BTreeMap<&'a str, &'a ImageSource>;
-    fn gvproxy_debug(&self) -> bool;
-    fn krun_log_level_numeric(&self) -> u32;
-    fn krun_num_vcpus(&self) -> u8;
-    fn krun_ram_size_mib(&self) -> u32;
-    fn passphrase_prompt_config(&self) -> PassphrasePromptConfig;
-
-    fn user<'a>(&'a self) -> &'a PrefsObject;
-    fn user_mut<'a>(&'a mut self) -> &'a mut PrefsObject;
-    // fn global<'a>(&'a self) -> &'a PrefsObject;
-    // fn global_mut<'a>(&'a mut self) -> &'a mut PrefsObject;
-
-    fn merged(&self) -> PrefsObject;
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-struct PrefsObject {
-    #[serde(default)]
-    alpine: AlpineConfig,
-    #[serde(default)]
-    custom_actions: BTreeMap<String, CustomActionConfig>,
-    #[serde(default)]
-    images: BTreeMap<String, ImageSource>,
-    #[serde(default)]
-    gvproxy: GvproxyConfig,
-    #[serde(default)]
-    krun: KrunConfig,
-    #[serde(default)]
-    misc: MiscConfig,
-    // legacy config
-    #[serde(rename = "log_level")]
-    log_level_numeric: Option<u32>,
-    num_vcpus: Option<u8>,
-    ram_size_mib: Option<u32>,
-}
-
-impl Preferences for [PrefsObject; 2] {
-    fn alpine_custom_packages<'a>(&'a self) -> BTreeSet<&'a str> {
-        let mut result =
-            BTreeSet::from_iter(self[0].alpine.custom_packages.iter().map(|s| s.as_str()));
-        result.extend(self[1].alpine.custom_packages.iter().map(|s| s.as_str()));
-        result
-    }
-
-    fn custom_actions<'a>(&'a self) -> BTreeMap<&'a str, &'a CustomActionConfig> {
-        let mut result: BTreeMap<_, _> = self[0]
-            .custom_actions
-            .iter()
-            .map(|(k, v)| (k.as_str(), v))
-            .collect();
-        result.extend(self[1].custom_actions.iter().map(|(k, v)| (k.as_str(), v)));
-        result
-    }
-
-    fn images<'a>(&'a self) -> BTreeMap<&'a str, &'a ImageSource> {
-        let mut result: BTreeMap<_, _> = self[0]
-            .images
-            .iter()
-            .map(|(k, v)| (k.as_str(), v))
-            .collect();
-        result.extend(self[1].images.iter().map(|(k, v)| (k.as_str(), v)));
-        result
-    }
-
-    fn gvproxy_debug(&self) -> bool {
-        self[1]
-            .gvproxy
-            .debug
-            .or(self[0].gvproxy.debug)
-            .unwrap_or(false)
-    }
-
-    fn krun_log_level_numeric(&self) -> u32 {
-        self[1]
-            .krun
-            .log_level_numeric
-            .or(self[0].krun.log_level_numeric)
-            .unwrap_or(KrunConfig::default_log_level())
-    }
-
-    fn krun_num_vcpus(&self) -> u8 {
-        self[1]
-            .krun
-            .num_vcpus
-            .or(self[0].krun.num_vcpus)
-            .unwrap_or(KrunConfig::default_num_vcpus())
-    }
-
-    fn krun_ram_size_mib(&self) -> u32 {
-        self[1]
-            .krun
-            .ram_size_mib
-            .or(self[0].krun.ram_size_mib)
-            .unwrap_or(KrunConfig::default_ram_size())
-    }
-
-    fn passphrase_prompt_config(&self) -> PassphrasePromptConfig {
-        self[1]
-            .misc
-            .passphrase_config
-            .or(self[0].misc.passphrase_config)
-            .unwrap_or_default()
-    }
-
-    fn user<'a>(&'a self) -> &'a PrefsObject {
-        &self[1]
-    }
-
-    fn user_mut<'a>(&'a mut self) -> &'a mut PrefsObject {
-        &mut self[1]
-    }
-
-    // fn global<'a>(&'a self) -> &'a PrefsObject {
-    //     &self[0]
-    // }
-
-    // fn global_mut<'a>(&'a mut self) -> &'a mut PrefsObject {
-    //     &mut self[0]
-    // }
-
-    fn merged(&self) -> PrefsObject {
-        let result = self[0].clone();
-        result.merge_with(&self[1])
-    }
-}
-
-impl PrefsObject {
-    fn merge_with(&self, other: &PrefsObject) -> PrefsObject {
-        let mut custom_actions = self.custom_actions.clone();
-        custom_actions.extend(other.custom_actions.clone());
-
-        let mut images = self.images.clone();
-        images.extend(other.images.clone());
-
-        PrefsObject {
-            alpine: self.alpine.merge_with(&other.alpine),
-            custom_actions,
-            images,
-            gvproxy: self.gvproxy.merge_with(&other.gvproxy),
-            krun: self.krun.merge_with(&other.krun),
-            misc: self.misc.merge_with(&other.misc),
-            log_level_numeric: other.log_level_numeric.or(self.log_level_numeric),
-            num_vcpus: other.num_vcpus.or(self.num_vcpus),
-            ram_size_mib: other.ram_size_mib.or(self.ram_size_mib),
-        }
-    }
-}
-
-impl Display for PrefsObject {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "[krun]\n{}", self.krun)?;
-        write!(f, "\n\n[misc]\n{}", self.misc)?;
-        Ok(())
-    }
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-struct AlpineConfig {
-    custom_packages: Vec<String>,
-}
-
-impl AlpineConfig {
-    fn merge_with(&self, other: &AlpineConfig) -> AlpineConfig {
-        let mut custom_packages = BTreeSet::from_iter(self.custom_packages.clone());
-        custom_packages.extend(other.custom_packages.clone());
-        AlpineConfig {
-            custom_packages: custom_packages.into_iter().collect(),
-        }
-    }
-}
-
-trait CustomActionEnvironment {
-    fn prepare_environment(&self, env_vars: &mut Vec<BString>) -> anyhow::Result<()>;
-}
-
-impl CustomActionEnvironment for CustomActionConfig {
-    fn prepare_environment(&self, env_vars: &mut Vec<BString>) -> anyhow::Result<()> {
-        let mut referenced_variables = HashSet::new();
-        for script in self.all_scripts() {
-            referenced_variables.extend(utils::find_env_vars(script));
-        }
-
-        let mut predefined_vars = HashSet::new();
-        let mut undefined_vars = Vec::new();
-
-        for var_str in &self.environment {
-            let var_name = var_str
-                .split(|&c| c == b'=')
-                .next()
-                .ok_or_else(|| anyhow!("invalid environment variable format: {}", var_str))?;
-            predefined_vars.insert(BString::from(var_name));
-            env_vars.push(var_str.clone());
-        }
-        for var_name in referenced_variables.iter().chain(&self.capture_environment) {
-            match env::var_os(var_name.to_os_str_lossy()) {
-                Some(var_value) => {
-                    let mut var_str = var_name.clone();
-                    var_str.push_str(b"=");
-                    var_str.push_str(var_value.as_bytes());
-                    env_vars.push(var_str);
-                }
-                None => {
-                    if !Self::VM_EXPORTED_VARS.contains(&var_name.as_bytes())
-                        && !predefined_vars.contains(var_name)
-                    {
-                        undefined_vars.push(var_name.clone());
-                    }
-                }
-            }
-        }
-
-        if !undefined_vars.is_empty() {
-            let var_list = bstr::join(", ", undefined_vars);
-            return Err(anyhow::anyhow!(
-                "required environment variables not defined: {}",
-                var_list.as_bstr()
-            ));
-        }
-        Ok(())
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-struct ImageSource {
-    base_dir: String,
-    docker_ref: Option<String>,
-    iso_url: Option<String>,
-    oci_url: Option<String>,
-    os_type: OSType,
-}
-
-impl Default for ImageSource {
-    fn default() -> Self {
-        ImageSource {
-            base_dir: "alpine".into(),
-            docker_ref: Some("alpine:latest".into()),
-            iso_url: None,
-            oci_url: None,
-            os_type: OSType::Linux,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-struct GvproxyConfig {
-    debug: Option<bool>,
-}
-
-impl GvproxyConfig {
-    fn merge_with(&self, other: &GvproxyConfig) -> GvproxyConfig {
-        GvproxyConfig {
-            debug: other.debug.or(self.debug),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-struct KrunConfig {
-    #[serde(rename = "log_level")]
-    log_level_numeric: Option<u32>,
-    num_vcpus: Option<u8>,
-    ram_size_mib: Option<u32>,
-}
-
-impl KrunConfig {
-    fn default_log_level() -> u32 {
-        0
-    }
-
-    fn default_num_vcpus() -> u8 {
-        1
-    }
-
-    fn default_ram_size() -> u32 {
-        512
-    }
-
-    fn merge_with(&self, other: &KrunConfig) -> KrunConfig {
-        KrunConfig {
-            log_level_numeric: other.log_level_numeric.or(self.log_level_numeric),
-            num_vcpus: other.num_vcpus.or(self.num_vcpus),
-            ram_size_mib: other.ram_size_mib.or(self.ram_size_mib),
-        }
-    }
-}
-
-impl Display for KrunConfig {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "log_level = {}\nnum_vcpus = {}\nram_size_mib = {}",
-            self.log_level(),
-            self.num_vcpus.unwrap_or(KrunConfig::default_num_vcpus()),
-            self.ram_size_mib.unwrap_or(KrunConfig::default_ram_size())
-        )
-    }
-}
-
-#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
-enum KrunLogLevel {
-    Off = 0,
-    Error = 1,
-    Warn = 2,
-    Info = 3,
-    Debug = 4,
-    Trace = 5,
-}
-
-impl Display for KrunLogLevel {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let val = match self {
-            KrunLogLevel::Off => "off",
-            KrunLogLevel::Error => "error",
-            KrunLogLevel::Warn => "warn",
-            KrunLogLevel::Info => "info",
-            KrunLogLevel::Debug => "debug",
-            KrunLogLevel::Trace => "trace",
-        };
-        write!(f, "{}", val)
-    }
-}
-
-impl From<u32> for KrunLogLevel {
-    fn from(value: u32) -> Self {
-        match value {
-            0 => KrunLogLevel::Off,
-            1 => KrunLogLevel::Error,
-            2 => KrunLogLevel::Warn,
-            3 => KrunLogLevel::Info,
-            4 => KrunLogLevel::Debug,
-            5 => KrunLogLevel::Trace,
-            _ => KrunLogLevel::Off,
-        }
-    }
-}
-
-#[allow(unused)]
-impl KrunConfig {
-    fn log_level(&self) -> KrunLogLevel {
-        self.log_level_numeric
-            .unwrap_or(KrunConfig::default_log_level())
-            .into()
-    }
-
-    fn set_log_level(&mut self, level: KrunLogLevel) {
-        self.log_level_numeric = Some(level as u32);
-    }
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-struct MiscConfig {
-    passphrase_config: Option<PassphrasePromptConfig>,
-}
-
-impl MiscConfig {
-    fn merge_with(&self, other: &MiscConfig) -> MiscConfig {
-        MiscConfig {
-            passphrase_config: other.passphrase_config.or(self.passphrase_config.clone()),
-        }
-    }
-
-    fn passphrase_config(&self) -> PassphrasePromptConfig {
-        self.passphrase_config.unwrap_or_default()
-    }
-}
-
-impl Display for MiscConfig {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "passphrase_config = {}", self.passphrase_config())
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-struct MountConfig {
-    disk_path: String,
-    read_only: bool,
-    mount_options: Option<String>,
-    allow_remount: bool,
-    custom_mount_point: Option<PathBuf>,
-    fs_driver: Option<String>,
-    bind_addr: IpAddr,
-    verbose: bool,
-    open_finder: bool,
-    common: Config,
-    custom_action: Option<String>,
-}
-
-impl MountConfig {
-    fn get_action(&self) -> Option<&CustomActionConfig> {
-        match self.custom_action.as_deref() {
-            Some(action_name) => self
-                .common
-                .preferences
-                .custom_actions()
-                .get(action_name)
-                .map(|a| *a),
-            None => None,
-        }
-    }
-}
-
 fn rand_string(len: usize) -> String {
     nanoid!(
         len,
@@ -554,32 +114,6 @@ fn rand_string(len: usize) -> String {
             'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z',
         ]
     )
-}
-
-#[derive(Debug, Clone, Copy, ValueEnum, Deserialize, Serialize, PartialEq, Eq)]
-enum PassphrasePromptConfig {
-    #[clap(name = "a")]
-    #[serde(rename = "ask_for_each")]
-    AskForEach,
-    #[clap(name = "1")]
-    #[serde(rename = "one_for_all")]
-    OneForAll,
-}
-
-impl Default for PassphrasePromptConfig {
-    fn default() -> Self {
-        PassphrasePromptConfig::AskForEach
-    }
-}
-
-impl Display for PassphrasePromptConfig {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let val = match self {
-            PassphrasePromptConfig::AskForEach => "ask_for_each",
-            PassphrasePromptConfig::OneForAll => "one_for_all",
-        };
-        write!(f, "{}", val)
-    }
 }
 
 #[derive(Parser)]
@@ -916,7 +450,7 @@ fn load_config(common_args: &CommonArgs) -> anyhow::Result<Config> {
     };
     let global_cfg_path = global_prefix_dir.join("etc").join("anylinuxfs.toml");
     let all_cfg_paths = [global_cfg_path.as_path(), config_file_path.as_path()];
-    let preferences = load_preferences(all_cfg_paths.iter().cloned())?;
+    let preferences = settings::load_preferences(all_cfg_paths.iter().cloned())?;
     // println!("Loaded preferences: {:#?}", &preferences);
 
     let passphrase_config = common_args
@@ -950,51 +484,6 @@ fn load_config(common_args: &CommonArgs) -> anyhow::Result<Config> {
         passphrase_config,
         preferences,
     })
-}
-
-fn convert_legacy_config(config: &mut PrefsObject) {
-    if let Some(log_level_numeric) = config.log_level_numeric.take() {
-        config.krun.log_level_numeric = Some(log_level_numeric);
-    }
-    if let Some(num_vcpus) = config.num_vcpus.take() {
-        config.krun.num_vcpus = Some(num_vcpus);
-    }
-    if let Some(ram_size_mib) = config.ram_size_mib.take() {
-        config.krun.ram_size_mib = Some(ram_size_mib);
-    }
-}
-
-fn load_preferences<'a>(paths: impl Iterator<Item = &'a Path>) -> anyhow::Result<[PrefsObject; 2]> {
-    let mut result_config = [PrefsObject::default(), PrefsObject::default()];
-    let mut cfg_idx = 0;
-    for path in paths {
-        match fs::read_to_string(path) {
-            Ok(config_str) => {
-                let mut config = toml::from_str(&config_str)
-                    .context(format!("Failed to parse config file {}", path.display()))?;
-                convert_legacy_config(&mut config);
-                result_config[cfg_idx] = config;
-            }
-            Err(_) => (),
-        };
-        cfg_idx += 1;
-    }
-    Ok(result_config)
-}
-
-fn save_preferences(preferences: &PrefsObject, config_file_path: &Path) -> anyhow::Result<()> {
-    let config_str =
-        toml::to_string(preferences).context("Failed to serialize Preferences to TOML")?;
-    // println!(
-    //     "Saving config to {}:\n{}",
-    //     config_file_path.display(),
-    //     config_str
-    // );
-    fs::write(config_file_path, config_str).context(format!(
-        "Failed to write config file {}",
-        config_file_path.display()
-    ))?;
-    Ok(())
 }
 
 fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
@@ -2018,7 +1507,7 @@ impl AppRunner {
             ));
         }
         // preferences are only saved if apk command was successful
-        save_preferences(config.preferences.user(), config_file_path)?;
+        settings::save_preferences(config.preferences.user(), config_file_path)?;
 
         Ok(())
     }
@@ -2751,7 +2240,7 @@ impl AppRunner {
 
         println!("{}", &config.preferences.merged());
 
-        save_preferences(config.preferences.user(), config_file_path)?;
+        settings::save_preferences(config.preferences.user(), config_file_path)?;
 
         Ok(())
     }

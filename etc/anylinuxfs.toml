@@ -1,12 +1,15 @@
 [images.alpine-latest]
 base_dir = "alpine"
 docker_ref = "alpine:latest"
+kernel.image_url = "https://github.com/nohajc/libkrunfw/releases/download/v6.12.34-rev4/linux-aarch64-Image-v6.12.34-anylinuxfs.tar.gz"
+kernel.modules_url = "https://github.com/nohajc/libkrunfw/releases/download/v6.12.34-rev4/modules.squashfs"
 os_type = "Linux"
 
 [images."freebsd-14.3"]
 base_dir = "freebsd-14.3"
 iso_url = "https://download.freebsd.org/releases/ISO-IMAGES/14.3/FreeBSD-14.3-RELEASE-arm64-aarch64-bootonly.iso"
 oci_url = "https://download.freebsd.org/releases/OCI-IMAGES/14.3-RELEASE/aarch64/Latest/FreeBSD-14.3-RELEASE-arm64-aarch64-container-image-runtime.txz"
+kernel.bundle_url = "https://github.com/nohajc/freebsd/releases/download/alfs%2F14.3.0-p5/kernel.txz"
 os_type = "FreeBSD"
 
 [custom_actions.ubuntu_zfs_unlock]
