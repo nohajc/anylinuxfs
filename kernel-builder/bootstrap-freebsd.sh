@@ -40,10 +40,12 @@ $TAR cf "$OCI_ISO_IMAGE" --format iso9660 --strip-components=2 tmp/oci
 # 4. create bootstrap root image
 mkdir -p tmp/rootfs/dev
 mkdir -p tmp/rootfs/tmp
-cp $SCRIPT_DIR/../libexec/freebsd-bootstrap tmp/rootfs/ # should be installed with the homebrew package?
-cp $SCRIPT_DIR/freebsd/init-freebsd tmp/rootfs/   # should this be downloaded from github when we're bootstrapping?
-cp $SCRIPT_DIR/../libexec/vmproxy-bsd tmp/rootfs/ # this will be installed with the homebrew package
-cp $SCRIPT_DIR/freebsd/*.ko tmp/rootfs/           # kernel, modules and init should be installed with rootfs under ~/.anylinuxfs
+cp $SCRIPT_DIR/../libexec/freebsd-bootstrap tmp/rootfs/ # should be installed with the homebrew package
+cp $SCRIPT_DIR/freebsd/init-freebsd tmp/rootfs/   # if this is shipped with the package, we can patch any existing VMs with it ASAP
+cp $SCRIPT_DIR/../libexec/vmproxy-bsd tmp/rootfs/ # this will be installed with the homebrew package, new version should also be applied ASAP to all VMs
+cp $SCRIPT_DIR/freebsd/*.ko tmp/rootfs/           # kernel, modules and init can be installed under ~/.anylinuxfs but we always need to check if they're up to date
+# ^ we must make sure modules are always in sync with the kernel, otherwise kldload will refuse to load them
+# so, practically, any new version of kernel/modules should trigger re-creation of the entire microVM image
 echo '{"iso_url": "'$ISO_IMAGE_URL'", "pkgs": ["bash", "pidof"]}' > tmp/rootfs/config.json
 
 ENTRYPOINT_SH="entrypoint.sh"

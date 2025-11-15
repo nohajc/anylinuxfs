@@ -10,6 +10,9 @@ IMAGE_ARCHIVE_URL="${RELEASE_URL}/${IMAGE_ARCHIVE_NAME}"
 MODULES_ARCHIVE_NAME="modules.squashfs"
 MODULES_ARCHIVE_URL="${RELEASE_URL}/${MODULES_ARCHIVE_NAME}"
 
+INIT_BSD="init-freebsd"
+INIT_BSD_URL="https://github.com/nohajc/libkrun/releases/download/v1.16.0-init-bsd/${INIT_BSD}"
+
 GVPROXY_VERSION="0.8.7"
 GVPROXY_URL="https://github.com/containers/gvisor-tap-vsock/releases/download/v${GVPROXY_VERSION}/gvproxy-darwin"
 
@@ -22,6 +25,10 @@ rm "$IMAGE_ARCHIVE_NAME"
 curl -LO "$MODULES_ARCHIVE_URL"
 mkdir -p "lib"
 mv ${MODULES_ARCHIVE_NAME} lib/
+
+curl -LO "$INIT_BSD_URL"
+mv "$INIT_BSD" "libexec/"
+chmod +x "libexec/$INIT_BSD"
 
 curl -L -o libexec/gvproxy "$GVPROXY_URL"
 chmod +x libexec/gvproxy

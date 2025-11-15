@@ -3,5 +3,6 @@
         "GOOS": "freebsd",
         "GOARCH": "arm64",
         "CGO_ENABLED": "0"
-    }
+    },
+    "git.ignoreLimitWarning": true
 }
