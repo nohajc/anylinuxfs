@@ -40,10 +40,19 @@ $TAR cf "$OCI_ISO_IMAGE" --format iso9660 --strip-components=2 tmp/oci
 # 4. create bootstrap root image
 mkdir -p tmp/rootfs/dev
 mkdir -p tmp/rootfs/tmp
-cp $SCRIPT_DIR/../libexec/freebsd-bootstrap tmp/rootfs/ # should be installed with the homebrew package
-cp $SCRIPT_DIR/freebsd/init-freebsd tmp/rootfs/   # if this is shipped with the package, we can patch any existing VMs with it ASAP
-cp $SCRIPT_DIR/../libexec/vmproxy-bsd tmp/rootfs/ # this will be installed with the homebrew package, new version should also be applied ASAP to all VMs
-cp $SCRIPT_DIR/freebsd/*.ko tmp/rootfs/           # kernel, modules and init can be installed under ~/.anylinuxfs but we always need to check if they're up to date
+
+LIBEXEC_DIR="$SCRIPT_DIR/../libexec"
+cp $LIBEXEC_DIR/freebsd-bootstrap tmp/rootfs/ # should be installed with the homebrew package
+cp $LIBEXEC_DIR/init-freebsd tmp/rootfs/      # if this is shipped with the package, we can patch any existing VMs with it ASAP
+cp $LIBEXEC_DIR/vmproxy-bsd tmp/rootfs/       # this will be installed with the homebrew package, new version should also be applied ASAP to all VMs
+
+if [ ! -d "$SCRIPT_DIR/kernel" ]; then
+    curl -LO "https://github.com/nohajc/freebsd/releases/download/alfs%2F14.3.0-p5/kernel.txz"
+    $TAR xJf kernel.txz -C "$SCRIPT_DIR"
+    rm kernel.txz
+fi
+
+cp $SCRIPT_DIR/kernel/*.ko tmp/rootfs/       # kernel, modules and init can be installed under ~/.anylinuxfs but we always need to check if they're up to date
 # ^ we must make sure modules are always in sync with the kernel, otherwise kldload will refuse to load them
 # so, practically, any new version of kernel/modules should trigger re-creation of the entire microVM image
 echo '{"iso_url": "'$ISO_IMAGE_URL'", "pkgs": ["bash", "pidof"]}' > tmp/rootfs/config.json

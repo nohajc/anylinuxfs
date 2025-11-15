@@ -1,6 +1,6 @@
 return {
     kernel = {
-        path = "freebsd/kernel.bin",
+        path = "kernel/kernel.bin",
         cmdline = "FreeBSD:" ..
             "vfs.root.mountfrom=ufs:/dev/gpt/rootfs" ..
             " kernel_path=/boot/kernel kernelname=/boot/kernel/kernel" ..
