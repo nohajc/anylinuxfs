@@ -1,6 +1,6 @@
 return {
     kernel = {
-        path = "freebsd/kernel.bin",
+        path = "kernel/kernel.bin",
         cmdline = "FreeBSD:vfs.root.mountfrom=cd9660:/dev/vtbd0" ..
             " kernel_path=/boot/kernel kernelname=/boot/kernel/kernel" ..
             " module_path=/boot/kernel;/boot/modules;/boot/dtb;/boot/dtb/overlays" ..
