@@ -53,6 +53,7 @@ mod fsutil;
 mod pubsub;
 mod rpcbind;
 mod utils;
+mod vm_image;
 
 const LOCK_FILE: &str = "/tmp/anylinuxfs.lock";
 
@@ -117,6 +118,7 @@ struct KernelConfig {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct Config {
+    profile_path: PathBuf,
     exec_path: PathBuf,
     root_path: PathBuf,
     root_ver_file_path: PathBuf,
@@ -363,11 +365,25 @@ impl CustomActionEnvironment for CustomActionConfig {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct ImageSource {
+    base_dir: String,
     docker_ref: Option<String>,
     iso_url: Option<String>,
     oci_url: Option<String>,
+    os_type: OSType,
+}
+
+impl Default for ImageSource {
+    fn default() -> Self {
+        ImageSource {
+            base_dir: "alpine".into(),
+            docker_ref: Some("alpine:latest".into()),
+            iso_url: None,
+            oci_url: None,
+            os_type: OSType::Linux,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -750,7 +766,10 @@ enum ApkCmd {
 #[derive(Subcommand)]
 enum ImageCmd {
     /// List available VM images
-    List,
+    List {
+        #[arg(short, long)]
+        verbose: bool,
+    },
     /// Install a VM image
     Install {
         /// VM image name
@@ -871,7 +890,8 @@ fn load_config(common_args: &CommonArgs) -> anyhow::Result<Config> {
         .context("Failed to get prefix directory")?;
 
     // ~/.anylinuxfs/alpine/rootfs
-    let alpine_path = home_dir.join(".anylinuxfs").join("alpine");
+    let profile_path = home_dir.join(".anylinuxfs");
+    let alpine_path = profile_path.join("alpine");
     let root_path = alpine_path.join("rootfs");
     let root_ver_file_path = alpine_path.join("rootfs.ver");
     let config_file_path = home_dir.join(".anylinuxfs").join("config.toml");
@@ -909,6 +929,7 @@ fn load_config(common_args: &CommonArgs) -> anyhow::Result<Config> {
     };
 
     Ok(Config {
+        profile_path,
         exec_path,
         root_path,
         root_ver_file_path,
@@ -1600,102 +1621,6 @@ fn wait_for_file(file: impl AsRef<Path>) -> anyhow::Result<()> {
     Ok(())
 }
 
-const ROOTFS_CURRENT_VERSION: &str = "1.2.0";
-
-fn rootfs_version_matches(config: &Config) -> bool {
-    let root_ver_file_path = config.root_ver_file_path.as_path();
-    let version = if root_ver_file_path.exists() {
-        fs::read_to_string(root_ver_file_path)
-            .unwrap_or_default()
-            .trim()
-            .to_string()
-    } else {
-        "".into()
-    };
-    if version != ROOTFS_CURRENT_VERSION {
-        host_eprintln!("New version detected.");
-        return false;
-    }
-    true
-}
-
-fn init_rootfs(config: &Config, force: bool) -> anyhow::Result<()> {
-    if !force {
-        let bash_path = config.root_path.join("bin/bash");
-        let nfsd_path = config.root_path.join("usr/sbin/rpc.nfsd");
-        let entry_point_path = config.root_path.join("usr/local/bin/entrypoint.sh");
-        let vmproxy_guest_path = config.root_path.join("vmproxy");
-        let required_files_exist = bash_path.exists()
-            && nfsd_path.exists()
-            && entry_point_path.exists()
-            && vmproxy_guest_path.exists();
-
-        let fstab_path = config.root_path.join("etc/fstab");
-
-        // check if fstab contains rpc_pipefs and nfsd keywords
-        let fstab_configured = match fstab_path.exists() {
-            true => {
-                let fstab_content = std::fs::read_to_string(&fstab_path).context(format!(
-                    "Failed to read fstab file: {}",
-                    fstab_path.display()
-                ))?;
-                fstab_content.contains("rpc_pipefs") && fstab_content.contains("nfsd")
-            }
-            false => false,
-        };
-        if required_files_exist && fstab_configured && rootfs_version_matches(&config) {
-            // host_println!("VM root filesystem is initialized");
-            // rootfs should be initialized but check if we need to update vmproxy executable
-            if fsutil::files_likely_differ(&config.vmproxy_host_path, &vmproxy_guest_path)? {
-                fs::copy(&config.vmproxy_host_path, &vmproxy_guest_path).context(format!(
-                    "Failed to copy {} to {}",
-                    config.vmproxy_host_path.display(),
-                    vmproxy_guest_path.display()
-                ))?;
-                host_println!("Updated VM root filesystem");
-            }
-            return Ok(());
-        }
-    }
-
-    host_println!("Initializing VM root filesystem...");
-
-    let mut init_rootfs_cmd = Command::new(&config.init_rootfs_path);
-    if let (Some(uid), Some(gid)) = (config.sudo_uid, config.sudo_gid) {
-        // run init-rootfs with dropped privileges
-        init_rootfs_cmd.uid(uid).gid(gid);
-    }
-
-    let dns_server = dnsutil::get_dns_server_with_fallback();
-
-    let mut hnd = init_rootfs_cmd
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .args(&["-n", &dns_server])
-        .spawn()
-        .context("Failed to execute init-rootfs")?;
-
-    utils::echo_child_output(&mut hnd, None);
-    let status = hnd.wait().context("Failed to wait for init-rootfs")?;
-
-    if !status.success() {
-        return Err(anyhow!(
-            "init-rootfs failed with exit code {}",
-            status
-                .code()
-                .map(|c| c.to_string())
-                .unwrap_or("unknown".to_owned())
-        ));
-    }
-
-    if let Err(e) = fs::write(config.root_ver_file_path.as_path(), ROOTFS_CURRENT_VERSION) {
-        host_eprintln!("Failed to write rootfs version file: {}", e);
-    }
-
-    Ok(())
-}
-
 fn wait_for_vm_status(pid: libc::pid_t) -> anyhow::Result<Option<i32>> {
     let mut status = 0;
     let wait_result = unsafe { libc::waitpid(pid, &mut status, 0) };
@@ -1974,7 +1899,7 @@ impl AppRunner {
         let config = load_mount_config(cmd.mnt)?;
 
         if !cmd.skip_init {
-            init_rootfs(&config.common, false)?;
+            vm_image::init(&config.common, false, &ImageSource::default())?;
         }
 
         let (vm_env, _) = prepare_vm_environment(&config)?;
@@ -2102,10 +2027,25 @@ impl AppRunner {
         let config = load_config(&CommonArgs::default())?;
 
         match cmd {
-            ImageCmd::List => {
+            ImageCmd::List { verbose } => {
                 let images = config.preferences.images();
                 for (name, src) in images {
-                    safe_println!("{}: {:?}", name, src)?;
+                    let suffix = if config
+                        .profile_path
+                        .join(&src.base_dir)
+                        .join("rootfs.ver")
+                        .exists()
+                    {
+                        " (installed)"
+                    } else {
+                        ""
+                    };
+                    let details = if verbose {
+                        format!(": {:#?}", src)
+                    } else {
+                        "".to_string()
+                    };
+                    safe_println!("{}{}{}", name, suffix, details)?;
                 }
             }
             ImageCmd::Install { name } => todo!(),
@@ -2189,7 +2129,7 @@ impl AppRunner {
         let services_to_restore: Vec<_>;
         let mut deferred = Deferred::new();
 
-        init_rootfs(&config.common, false)?;
+        vm_image::init(&config.common, false, &ImageSource::default())?;
 
         if !config.verbose {
             log::disable_console_log();
@@ -2768,7 +2708,7 @@ impl AppRunner {
     fn run_init(&mut self) -> anyhow::Result<()> {
         let _lock_file = LockFile::new(LOCK_FILE)?.acquire_lock(FlockKind::Exclusive)?;
         let config = load_config(&CommonArgs::default())?;
-        init_rootfs(&config, true)?;
+        vm_image::init(&config, true, &ImageSource::default())?;
 
         Ok(())
     }
@@ -2809,7 +2749,7 @@ impl AppRunner {
 
     fn run_list(&mut self, cmd: ListCmd) -> anyhow::Result<()> {
         let mut config = load_config(&cmd.common)?;
-        init_rootfs(&config, false)?;
+        vm_image::init(&config, false, &ImageSource::default())?;
 
         if cmd.decrypt.is_some() && !cmd.microsoft {
             ensure_enough_ram_for_luks(&mut config);
