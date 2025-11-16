@@ -10,6 +10,7 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     ptr::null_mut,
+    time::{Duration, Instant},
 };
 
 #[derive(Debug, Clone)]
@@ -263,5 +264,19 @@ pub fn unmount_nfs_subdirs<'a>(
     }
 
     parallel_unmount_recursive(&trie)?;
+    Ok(())
+}
+
+pub fn wait_for_file(file: impl AsRef<Path>) -> anyhow::Result<()> {
+    let start = Instant::now();
+    while !file.as_ref().exists() {
+        if start.elapsed() > Duration::from_secs(5) {
+            return Err(anyhow!(
+                "Timeout waiting for file creation: {}",
+                file.as_ref().display()
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
     Ok(())
 }

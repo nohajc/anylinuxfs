@@ -6,11 +6,11 @@ use std::{
 };
 
 use anyhow::{Context, anyhow};
-use common_utils::{host_eprintln, host_println};
+use common_utils::{Deferred, host_eprintln, host_println};
 use glob::glob;
 use serde::Serialize;
 
-use crate::{Config, ImageSource, dnsutil, fsutil, utils};
+use crate::{Config, ImageSource, dnsutil, fsutil, utils, vm_network};
 
 pub fn init(config: &Config, force: bool, src: &ImageSource) -> anyhow::Result<()> {
     match src.os_type {
@@ -133,8 +133,6 @@ fn init_freebsd_rootfs(config: &Config, force: bool, src: &ImageSource) -> anyho
         todo!() // check for existing freebsd image
     }
 
-    // TODO: add deferred action which will call fs::remove_dir_all(tmp_path)
-
     if src.base_dir.is_empty() {
         return Err(anyhow!("FreeBSD base directory not specified"));
     }
@@ -176,6 +174,13 @@ fn init_freebsd_rootfs(config: &Config, force: bool, src: &ImageSource) -> anyho
     let tmp_path = freebsd_base_path.join("tmp");
     let oci_path = tmp_path.join("oci");
     fs::create_dir_all(&oci_path).context("Failed to create FreeBSD base directory")?;
+
+    let mut deferred = Deferred::new();
+    deferred.add(|| {
+        if let Err(e) = fs::remove_dir_all(&tmp_path) {
+            host_eprintln!("Failed to remove {}: {}", tmp_path.display(), e);
+        }
+    });
 
     fetch(oci_image_url, &tmp_path).context("Failed to fetch FreeBSD OCI image")?;
     extract(oci_image, &tmp_path, &oci_path).context("Failed to unpack FreeBSD OCI image")?;
@@ -245,6 +250,15 @@ fn init_freebsd_rootfs(config: &Config, force: bool, src: &ImageSource) -> anyho
 
     // TODO:
     // 1. boot the VM to run the bootstrap process and populate our disk image
+    setup_gvproxy(&config, || {
+        start_freebsd_bootstrap_vm(
+            &config,
+            &freebsd_base_path,
+            &bootstrap_image,
+            &oci_iso_image,
+            &vm_disk_image,
+        )
+    })?;
     // 2. boot it again to install third-party packages
 
     Ok(())
@@ -363,4 +377,48 @@ fn create_sparse_file(path: impl AsRef<Path>, size_spec: &str) -> anyhow::Result
 struct FreeBSDBootstrapConfig {
     iso_url: String,
     pkgs: Vec<String>,
+}
+
+fn setup_gvproxy(
+    config: &Config,
+    start_vm_fn: impl FnOnce() -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    let mut deferred = Deferred::new();
+
+    let mut gvproxy = vm_network::start_gvproxy(&config)?;
+    fsutil::wait_for_file(&config.vfkit_sock_path)?;
+
+    _ = deferred.add(|| {
+        if let Err(e) = vm_network::gvproxy_cleanup(&config) {
+            host_eprintln!("{:#}", e);
+        }
+    });
+
+    if let Some(status) = gvproxy.try_wait().ok().flatten() {
+        return Err(anyhow!(
+            "gvproxy failed with exit code: {}",
+            status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or("unknown".to_owned())
+        ));
+    }
+
+    _ = deferred.add(move || {
+        if let Err(e) = common_utils::terminate_child(&mut gvproxy, "gvproxy", None) {
+            host_eprintln!("{:#}", e);
+        }
+    });
+
+    start_vm_fn()
+}
+
+fn start_freebsd_bootstrap_vm(
+    config: &Config,
+    freebsd_base_path: &Path,
+    bootstrap_image: &str,
+    oci_iso_image: &str,
+    vm_disk_image: &str,
+) -> anyhow::Result<()> {
+    todo!()
 }

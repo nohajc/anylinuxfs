@@ -1,7 +1,7 @@
 use anyhow::{Context, anyhow};
 use bstr::{BString, ByteVec};
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
-use common_utils::{Deferred, VM_CTRL_PORT, VM_IP, host_eprintln, host_println, log, safe_println};
+use common_utils::{Deferred, host_eprintln, host_println, log, safe_println};
 
 use devinfo::DevInfo;
 use nanoid::nanoid;
@@ -13,7 +13,6 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, SocketAddrV4, TcpStream};
 use std::os::fd::FromRawFd;
 use std::os::unix::fs::chown;
-use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 use std::ptr::null;
@@ -21,7 +20,6 @@ use std::time::Duration;
 use std::{
     env,
     ffi::CString,
-    fs::remove_file,
     io,
     os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
@@ -35,7 +33,6 @@ use utils::{
     OutputAction, PassthroughBufReader, StatusError, write_to_pipe,
 };
 
-use crate::fsutil::{mount_nfs_subdirs, unmount_nfs_subdirs};
 use crate::settings::{
     Config, CustomActionEnvironment, ImageSource, KernelConfig, KrunLogLevel, MountConfig, OSType,
     PassphrasePromptConfig, Preferences,
@@ -54,6 +51,7 @@ mod rpcbind;
 mod settings;
 mod utils;
 mod vm_image;
+mod vm_network;
 
 const LOCK_FILE: &str = "/tmp/anylinuxfs.lock";
 
@@ -648,7 +646,7 @@ fn setup_vm(
     // unsafe { bindings::krun_set_port_map(ctx, port_map.as_ptr()) }
     //     .context("Failed to set port map")?;
 
-    vsock_cleanup(&config)?;
+    vm_network::vsock_cleanup(&config)?;
 
     if use_vsock {
         unsafe {
@@ -763,13 +761,13 @@ fn start_vmproxy(
     Ok(())
 }
 
-fn start_vmshell_forked(ctx: u32, command: Option<String>, env: &[BString]) -> anyhow::Result<i32> {
+fn start_vm_forked(ctx: u32, cmdline: &[String], env: &[BString]) -> anyhow::Result<i32> {
     let pid = unsafe { libc::fork() };
     if pid < 0 {
         return Err(io::Error::last_os_error()).context("Failed to fork process");
     } else if pid == 0 {
         // Child process
-        start_vmshell(ctx, command, env)?;
+        start_vm(ctx, cmdline, env)?;
         unreachable!();
     } else {
         // Parent process
@@ -781,12 +779,8 @@ fn start_vmshell_forked(ctx: u32, command: Option<String>, env: &[BString]) -> a
     }
 }
 
-fn start_vmshell(ctx: u32, command: Option<String>, env: &[BString]) -> anyhow::Result<()> {
-    let mut args = vec![c"/bin/bash".to_owned()];
-    if let Some(cmd) = command {
-        args.extend_from_slice(&[c"-c".to_owned(), CString::new(cmd).unwrap()]);
-    }
-
+fn start_vm(ctx: u32, cmdline: &[String], env: &[BString]) -> anyhow::Result<()> {
+    let args = cmdline.to_cstring_vec();
     let argv = args.to_ptr_vec();
 
     let cenv = env.to_cstring_vec();
@@ -825,7 +819,7 @@ fn read_all_from_fd(fd: i32) -> anyhow::Result<Vec<u8>> {
     Ok(output)
 }
 
-fn run_vmcommand(
+fn run_vmcommand_short(
     config: &Config,
     dev_info: &[DevInfo],
     use_gvproxy: bool,
@@ -865,72 +859,6 @@ fn run_vmcommand(
             stderr,
         });
     }
-}
-
-fn gvproxy_cleanup(config: &Config) -> anyhow::Result<()> {
-    let sock_krun_path = config.vfkit_sock_path.replace(".sock", ".sock-krun.sock");
-    match remove_file(&sock_krun_path) {
-        Ok(_) => {}
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e).context("Failed to remove vfkit socket"),
-    }
-    match remove_file(&config.vfkit_sock_path) {
-        Ok(_) => {}
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e).context("Failed to remove vfkit socket"),
-    }
-    Ok(())
-}
-
-fn vsock_cleanup(config: &Config) -> anyhow::Result<()> {
-    match remove_file(&config.vsock_path) {
-        Ok(_) => {}
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e).context("Failed to remove vsock socket"),
-    }
-    Ok(())
-}
-
-fn start_gvproxy(config: &Config) -> anyhow::Result<Child> {
-    gvproxy_cleanup(config)?;
-
-    let net_sock_uri = format!("unix://{}", &config.gvproxy_net_sock_path);
-    let vfkit_sock_uri = format!("unixgram://{}", &config.vfkit_sock_path);
-    let mut gvproxy_args = vec![
-        "--listen",
-        &net_sock_uri,
-        "--listen-vfkit",
-        &vfkit_sock_uri,
-        "--ssh-port",
-        "-1",
-    ];
-
-    if config.preferences.gvproxy_debug() {
-        gvproxy_args.push("--debug");
-    }
-
-    let mut gvproxy_cmd = Command::new(&config.gvproxy_path);
-
-    let gvproxy_out =
-        File::create(&config.gvproxy_log_path).context("Failed to create gvproxy.log file")?;
-    let gvproxy_err =
-        File::try_clone(&gvproxy_out).context("Failed to clone gvproxy.log file handle")?;
-
-    gvproxy_cmd
-        .args(&gvproxy_args)
-        .stdout(gvproxy_out)
-        .stderr(gvproxy_err);
-
-    if let (Some(uid), Some(gid)) = (config.sudo_uid, config.sudo_gid) {
-        // run gvproxy with dropped privileges
-        gvproxy_cmd.uid(uid).gid(gid);
-    }
-
-    let gvproxy_process = gvproxy_cmd
-        .spawn()
-        .context("Failed to start gvproxy process")?;
-
-    Ok(gvproxy_process)
 }
 
 #[derive(Debug)]
@@ -1051,37 +979,8 @@ fn unmount_fs(volume_path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn connect_to_vm_ctrl_socket(config: &Config) -> anyhow::Result<UnixStream> {
-    let sock_path = match config.kernel.os {
-        OSType::Linux => &config.vsock_path,
-        _ => &config.gvproxy_net_sock_path,
-    };
-
-    let mut stream = UnixStream::connect(sock_path)?;
-    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-
-    if config.kernel.os != OSType::Linux {
-        // vsock only available for Linux VMs, use gvproxy tcp tunnel instead
-        let tunnel_req = format!(
-            "POST /tunnel?ip={VM_IP}&port={VM_CTRL_PORT} HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n"
-        );
-
-        stream.write_all(tunnel_req.as_bytes())?;
-        stream.flush()?;
-
-        let mut resp = [0; 2];
-        stream.read_exact(&mut resp)?;
-        if &resp != b"OK" {
-            return Err(anyhow!("Failed to establish VM control socket tunnel"));
-        }
-    }
-
-    Ok(stream)
-}
-
 fn send_quit_cmd(config: &Config) -> anyhow::Result<()> {
-    let mut stream = connect_to_vm_ctrl_socket(config)?;
+    let mut stream = vm_network::connect_to_vm_ctrl_socket(config)?;
 
     stream.write_all(b"quit\n")?;
     stream.flush()?;
@@ -1095,20 +994,6 @@ fn send_quit_cmd(config: &Config) -> anyhow::Result<()> {
 
 fn terminate_child(child: &mut Child, child_name: &str) -> anyhow::Result<()> {
     common_utils::terminate_child(child, child_name, Some(log::Prefix::Host))
-}
-
-fn wait_for_file(file: impl AsRef<Path>) -> anyhow::Result<()> {
-    let start = std::time::Instant::now();
-    while !file.as_ref().exists() {
-        if start.elapsed() > Duration::from_secs(5) {
-            return Err(anyhow!(
-                "Timeout waiting for file creation: {}",
-                file.as_ref().display()
-            ));
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    Ok(())
 }
 
 fn wait_for_vm_status(pid: libc::pid_t) -> anyhow::Result<Option<i32>> {
@@ -1412,7 +1297,13 @@ impl AppRunner {
             config.read_only,
         )
         .context("Failed to setup microVM")?;
-        start_vmshell(ctx, cmd.command, &vm_env).context("Failed to start microVM shell")?;
+
+        let mut cmdline = vec!["/bin/bash".to_owned()];
+        if let Some(command) = cmd.command {
+            cmdline.push("-c".to_owned());
+            cmdline.push(command);
+        }
+        start_vm(ctx, &cmdline, &vm_env).context("Failed to start microVM shell")?;
 
         Ok(())
     }
@@ -1496,10 +1387,11 @@ impl AppRunner {
             }
         };
         let vm_command = format!("{vm_prelude} && {apk_command}");
+        let cmdline = vec!["/bin/bash".to_owned(), "-c".to_owned(), vm_command];
 
         let ctx = setup_vm(&config, &[], false, false, true).context("Failed to setup microVM")?;
-        let status = start_vmshell_forked(ctx, Some(vm_command), &[])
-            .context("Failed to start microVM shell")?;
+        let status =
+            start_vm_forked(ctx, &cmdline, &[]).context("Failed to start microVM shell")?;
 
         if status != 0 {
             return Err(anyhow::anyhow!(
@@ -1697,12 +1589,12 @@ impl AppRunner {
             can_detach = false;
         }
 
-        let mut gvproxy = start_gvproxy(&config.common)?;
+        let mut gvproxy = vm_network::start_gvproxy(&config.common)?;
         let gvproxy_pid = gvproxy.id() as libc::pid_t;
-        wait_for_file(&config.common.vfkit_sock_path)?;
+        fsutil::wait_for_file(&config.common.vfkit_sock_path)?;
 
         _ = deferred.add(|| {
-            if let Err(e) = gvproxy_cleanup(&config.common) {
+            if let Err(e) = vm_network::gvproxy_cleanup(&config.common) {
                 host_eprintln!("{:#}", e);
             }
         });
@@ -1724,7 +1616,7 @@ impl AppRunner {
         });
 
         _ = deferred.add(|| {
-            if let Err(e) = vsock_cleanup(&config.common) {
+            if let Err(e) = vm_network::vsock_cleanup(&config.common) {
                 host_eprintln!("{:#}", e);
             }
         });
@@ -2043,7 +1935,7 @@ impl AppRunner {
                     if elevate && additional_exports.peek().is_some() {
                         host_println!("need to use sudo to mount additional NFS exports");
                     }
-                    match mount_nfs_subdirs(
+                    match fsutil::mount_nfs_subdirs(
                         &share_path,
                         additional_exports.into_iter(),
                         mount_point.display(),
@@ -2187,7 +2079,7 @@ impl AppRunner {
                             .starts_with(mount_point.as_os_str().as_bytes())
                     });
 
-                unmount_nfs_subdirs(our_mount_points, mount_point)?;
+                fsutil::unmount_nfs_subdirs(our_mount_points, mount_point)?;
             }
             Err(err) => {
                 if let Some(err) = err.downcast_ref::<io::Error>() {
@@ -2468,8 +2360,8 @@ impl AppRunner {
                                 .context(format!("Failed to send SIGKILL to anylinuxfs"));
                         }
                     }
-                    _ = vsock_cleanup(&rt_info.mount_config.common);
-                    _ = gvproxy_cleanup(&rt_info.mount_config.common);
+                    _ = vm_network::vsock_cleanup(&rt_info.mount_config.common);
+                    _ = vm_network::gvproxy_cleanup(&rt_info.mount_config.common);
                 }
             }
             Err(err) => {

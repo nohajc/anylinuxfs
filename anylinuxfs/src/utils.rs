@@ -612,6 +612,14 @@ pub trait ToCStringVec {
     fn to_cstring_vec(self) -> Vec<CString>;
 }
 
+impl ToCStringVec for &[String] {
+    fn to_cstring_vec(self) -> Vec<CString> {
+        self.iter()
+            .map(|s| CString::new(s.as_str()).unwrap())
+            .collect()
+    }
+}
+
 impl ToCStringVec for &[BString] {
     fn to_cstring_vec(self) -> Vec<CString> {
         self.iter()
