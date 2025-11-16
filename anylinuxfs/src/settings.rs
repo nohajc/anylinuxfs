@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::utils;
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub enum OSType {
     Linux,
     FreeBSD,
@@ -51,6 +51,21 @@ pub struct Config {
     pub sudo_gid: Option<libc::gid_t>,
     pub passphrase_config: PassphrasePromptConfig,
     pub preferences: [PrefsObject; 2],
+}
+
+impl Config {
+    pub fn with_image_source(&self, src: &ImageSource) -> Self {
+        let mut new_config = self.clone();
+        let kernel_path = self
+            .profile_path
+            .join(&src.base_dir)
+            .join("kernel/kernel.bin"); // TODO: make this configurable?
+        new_config.kernel = KernelConfig {
+            os: src.os_type,
+            path: kernel_path,
+        };
+        new_config
+    }
 }
 
 pub trait Preferences {

@@ -577,12 +577,42 @@ fn drop_privileges(
     Ok(())
 }
 
+struct VMOpts {
+    add_disks_ro: bool,
+    root_device: Option<String>,
+}
+
+impl VMOpts {
+    fn new() -> Self {
+        Self {
+            add_disks_ro: false,
+            root_device: None,
+        }
+    }
+
+    fn read_only_disks(mut self, value: bool) -> Self {
+        self.add_disks_ro = value;
+        self
+    }
+
+    fn root_device(mut self, device: impl AsRef<str>) -> Self {
+        self.root_device = Some(device.as_ref().to_owned());
+        self
+    }
+}
+
+impl Default for VMOpts {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 fn setup_vm(
     config: &Config,
     dev_info: &[DevInfo],
     use_gvproxy: bool,
     use_vsock: bool,
-    add_disks_ro: bool,
+    opts: VMOpts,
 ) -> anyhow::Result<u32> {
     let ctx = unsafe { bindings::krun_create_ctx() }.context("Failed to create context")?;
 
@@ -612,7 +642,7 @@ fn setup_vm(
                 ctx,
                 CString::new(format!("data{}", i)).unwrap().as_ptr(),
                 CString::new(di.rdisk()).unwrap().as_ptr(),
-                add_disks_ro,
+                opts.add_disks_ro,
             )
         }
         .context("Failed to add disk")?;
@@ -662,7 +692,23 @@ fn setup_vm(
 
     unsafe { bindings::krun_set_workdir(ctx, c"/".as_ptr()) }.context("Failed to set workdir")?;
 
-    let cmdline = c"reboot=k panic=-1 panic_print=0 console=hvc0 rootfstype=virtiofs rw quiet no-kvmapf init=/init.krun";
+    let cmdline = match config.kernel.os {
+        OSType::Linux => c"reboot=k panic=-1 panic_print=0 console=hvc0 rootfstype=virtiofs rw quiet no-kvmapf init=/init.krun",
+        OSType::FreeBSD => {
+            match opts.root_device {
+                Some(root_device) => {
+                    let cmdline_str = format!("FreeBSD:vfs.root.mountfrom={root_device} \
+                        kernel_path=/boot/kernel kernelname=/boot/kernel/kernel \
+                        module_path=/boot/kernel;/boot/modules;/boot/dtb;/boot/dtb/overlays \
+                        -mq init_path=/init-freebsd module_verbose=2");
+                    &CString::new(cmdline_str).unwrap()
+                }
+                None => {
+                    return Err(anyhow!("root device must be specified for FreeBSD"));
+                }
+            }
+        }
+    };
 
     unsafe {
         bindings::krun_set_kernel(
@@ -823,14 +869,14 @@ fn run_vmcommand_short(
     config: &Config,
     dev_info: &[DevInfo],
     use_gvproxy: bool,
-    add_disks_ro: bool,
+    opts: VMOpts,
     args: Vec<CString>,
     process_stdin: Option<impl FnOnce(libc::c_int) -> anyhow::Result<()>>,
 ) -> anyhow::Result<VMOutput> {
     let forked = utils::fork_with_piped_output()?;
     if forked.pid == 0 {
         // child process
-        let ctx = setup_vm(config, dev_info, use_gvproxy, false, add_disks_ro)?;
+        let ctx = setup_vm(config, dev_info, use_gvproxy, false, opts)?;
 
         let argv = args.to_ptr_vec();
         let envp = vec![std::ptr::null()];
@@ -1289,14 +1335,9 @@ impl AppRunner {
 
         let (dev_info, _, _disks) = claim_devices(&config)?;
 
-        let ctx = setup_vm(
-            &config.common,
-            dev_info.as_slice(),
-            false,
-            false,
-            config.read_only,
-        )
-        .context("Failed to setup microVM")?;
+        let opts = VMOpts::new().read_only_disks(config.read_only);
+        let ctx = setup_vm(&config.common, dev_info.as_slice(), false, false, opts)
+            .context("Failed to setup microVM")?;
 
         let mut cmdline = vec!["/bin/bash".to_owned()];
         if let Some(command) = cmd.command {
@@ -1389,7 +1430,8 @@ impl AppRunner {
         let vm_command = format!("{vm_prelude} && {apk_command}");
         let cmdline = vec!["/bin/bash".to_owned(), "-c".to_owned(), vm_command];
 
-        let ctx = setup_vm(&config, &[], false, false, true).context("Failed to setup microVM")?;
+        let opts = VMOpts::new().read_only_disks(true);
+        let ctx = setup_vm(&config, &[], false, false, opts).context("Failed to setup microVM")?;
         let status =
             start_vm_forked(ctx, &cmdline, &[]).context("Failed to start microVM shell")?;
 
@@ -1432,6 +1474,7 @@ impl AppRunner {
             }
             ImageCmd::Install { name } => match images.get(name.as_str()) {
                 Some(&src) => {
+                    let config = config.with_image_source(src);
                     vm_image::init(&config, true, src)
                         .context(format!("Failed to install image {}", name))?;
                     safe_println!("Image {} installed successfully", name)?;
@@ -1626,7 +1669,8 @@ impl AppRunner {
             // Child process
             deferred.remove_all(); // deferred actions must be only called in the parent process
 
-            let ctx = setup_vm(&config.common, &dev_info, true, true, config.read_only)
+            let opts = VMOpts::new().read_only_disks(config.read_only);
+            let ctx = setup_vm(&config.common, &dev_info, true, true, opts)
                 .context("Failed to setup microVM")?;
 
             let to_decrypt: Vec<_> = iter::zip(dev_info.iter(), 'a'..='z')

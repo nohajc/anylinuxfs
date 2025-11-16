@@ -27,6 +27,7 @@ use std::{
 use url::Url;
 
 use crate::{
+    VMOpts,
     devinfo::DevInfo,
     fsutil,
     pubsub::Subscription,
@@ -832,9 +833,15 @@ fn get_lsblk_info(
             Ok(())
         }
     });
-    let lsblk_cmd =
-        crate::run_vmcommand_short(config, dev_info, false, true, lsblk_args, prompt_fn)
-            .context("Failed to run command in microVM")?;
+    let lsblk_cmd = crate::run_vmcommand_short(
+        config,
+        dev_info,
+        false,
+        VMOpts::new().read_only_disks(true),
+        lsblk_args,
+        prompt_fn,
+    )
+    .context("Failed to run command in microVM")?;
     // let lsblk_output =
     //     String::from_utf8(lsblk_cmd.output).context("Failed to convert lsblk output to String")?;
     // println!("lsblk_status: {}", &lsblk_cmd.status);

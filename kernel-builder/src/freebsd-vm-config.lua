@@ -3,7 +3,6 @@ return {
         path = "kernel/kernel.bin",
         cmdline = "FreeBSD:" ..
             "vfs.root.mountfrom=ufs:/dev/gpt/rootfs" ..
-            -- "vfs.root.mountfrom=ufs:/dev/vtbd0p1" ..
             " kernel_path=/boot/kernel kernelname=/boot/kernel/kernel" ..
             " module_path=/boot/kernel;/boot/modules;/boot/dtb;/boot/dtb/overlays" ..
             " -mq" ..
