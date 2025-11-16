@@ -10,7 +10,10 @@ use common_utils::{Deferred, host_eprintln, host_println};
 use glob::glob;
 use serde::Serialize;
 
-use crate::{Config, ImageSource, dnsutil, fsutil, utils, vm_network};
+use crate::{
+    Config, ImageSource, VMOpts, devinfo::DevInfo, dnsutil, fsutil, setup_vm, start_vm_forked,
+    utils, vm_network,
+};
 
 pub fn init(config: &Config, force: bool, src: &ImageSource) -> anyhow::Result<()> {
     match src.os_type {
@@ -250,13 +253,22 @@ fn init_freebsd_rootfs(config: &Config, force: bool, src: &ImageSource) -> anyho
 
     // TODO:
     // 1. boot the VM to run the bootstrap process and populate our disk image
-    setup_gvproxy(&config, || {
+    let bootstrap_image_path = tmp_path.join(bootstrap_image);
+    let oci_iso_image_path = tmp_path.join(oci_iso_image);
+    let vm_disk_image_path = freebsd_base_path.join(vm_disk_image);
+
+    let _bstrap_status = setup_gvproxy(&config, || {
         start_freebsd_bootstrap_vm(
             &config,
-            &freebsd_base_path,
-            &bootstrap_image,
-            &oci_iso_image,
-            &vm_disk_image,
+            bootstrap_image_path
+                .to_str()
+                .context("invalid bootstrap image path")?,
+            oci_iso_image_path
+                .to_str()
+                .context("invalid OCI ISO image path")?,
+            vm_disk_image_path
+                .to_str()
+                .context("invalid VM disk image path")?,
         )
     })?;
     // 2. boot it again to install third-party packages
@@ -381,8 +393,8 @@ struct FreeBSDBootstrapConfig {
 
 fn setup_gvproxy(
     config: &Config,
-    start_vm_fn: impl FnOnce() -> anyhow::Result<()>,
-) -> anyhow::Result<()> {
+    start_vm_fn: impl FnOnce() -> anyhow::Result<i32>,
+) -> anyhow::Result<i32> {
     let mut deferred = Deferred::new();
 
     let mut gvproxy = vm_network::start_gvproxy(&config)?;
@@ -415,10 +427,28 @@ fn setup_gvproxy(
 
 fn start_freebsd_bootstrap_vm(
     config: &Config,
-    freebsd_base_path: &Path,
-    bootstrap_image: &str,
-    oci_iso_image: &str,
-    vm_disk_image: &str,
-) -> anyhow::Result<()> {
-    todo!()
+    bootstrap_image_path: &str,
+    oci_iso_image_path: &str,
+    vm_disk_image_path: &str,
+) -> anyhow::Result<i32> {
+    let devices = &[
+        DevInfo::pv(bootstrap_image_path)?,
+        DevInfo::pv(vm_disk_image_path)?,
+        DevInfo::pv(oci_iso_image_path)?,
+    ];
+
+    let opts = VMOpts::new()
+        .root_device("cd9660:/dev/vtbd0")
+        .legacy_console(true);
+    let ctx = setup_vm(&config, devices, true, false, opts)?;
+    let bstrap_status = start_vm_forked(ctx, &["/freebsd-bootstrap".into()], &[])
+        .context("Failed to start FreeBSD bootstrap VM")?;
+
+    if bstrap_status != 0 {
+        return Err(anyhow::anyhow!(
+            "bootstrap microVM exited with status {}",
+            bstrap_status
+        ));
+    }
+    Ok(bstrap_status)
 }

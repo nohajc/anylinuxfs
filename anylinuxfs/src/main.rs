@@ -580,6 +580,7 @@ fn drop_privileges(
 struct VMOpts {
     add_disks_ro: bool,
     root_device: Option<String>,
+    legacy_console: bool,
 }
 
 impl VMOpts {
@@ -587,6 +588,7 @@ impl VMOpts {
         Self {
             add_disks_ro: false,
             root_device: None,
+            legacy_console: false,
         }
     }
 
@@ -597,6 +599,11 @@ impl VMOpts {
 
     fn root_device(mut self, device: impl AsRef<str>) -> Self {
         self.root_device = Some(device.as_ref().to_owned());
+        self
+    }
+
+    fn legacy_console(mut self, value: bool) -> Self {
+        self.legacy_console = value;
         self
     }
 }
@@ -624,6 +631,13 @@ fn setup_vm(
     unsafe { bindings::krun_set_vm_config(ctx, num_vcpus, ram_mib) }
         .context("Failed to set VM config")?;
 
+    if opts.legacy_console {
+        unsafe { bindings::krun_disable_implicit_console(ctx) }
+            .context("Failed to disable implicit console")?;
+        unsafe { bindings::krun_add_serial_console_default(ctx, 0, 1) }
+            .context("Failed to add serial console")?;
+    }
+
     // run vmm as the original user if he used sudo
     if let Some(uid) = config.sudo_uid {
         unsafe { bindings::krun_setuid(ctx, uid) }.context("Failed to set vmm uid")?;
@@ -633,8 +647,10 @@ fn setup_vm(
         unsafe { bindings::krun_setgid(ctx, gid) }.context("Failed to set vmm gid")?;
     }
 
-    unsafe { bindings::krun_set_root(ctx, CString::from_path(&config.root_path).as_ptr()) }
-        .context("Failed to set root")?;
+    if opts.root_device.is_none() {
+        unsafe { bindings::krun_set_root(ctx, CString::from_path(&config.root_path).as_ptr()) }
+            .context("Failed to set root")?;
+    }
 
     for (i, di) in dev_info.iter().enumerate() {
         unsafe {
