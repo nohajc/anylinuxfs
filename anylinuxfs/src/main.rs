@@ -27,7 +27,7 @@ use std::{
 use std::{iter, thread};
 
 use notify::{RecursiveMode, Watcher};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Mutex, Once, mpsc};
 use utils::{
     AcquireLock, CommFd, FlockKind, HasCommFd, HasPipeInFd, HasPipeOutFds, HasPtyFd, LockFile,
     OutputAction, PassthroughBufReader, StatusError, write_to_pipe,
@@ -614,6 +614,8 @@ impl Default for VMOpts {
     }
 }
 
+static KRUN_LOG_LEVEL_INIT: Once = Once::new();
+
 fn setup_vm(
     config: &Config,
     dev_info: &[DevInfo],
@@ -624,7 +626,9 @@ fn setup_vm(
     let ctx = unsafe { bindings::krun_create_ctx() }.context("Failed to create context")?;
 
     let level = config.preferences.krun_log_level_numeric();
-    unsafe { bindings::krun_set_log_level(level) }.context("Failed to set log level")?;
+    KRUN_LOG_LEVEL_INIT.call_once(|| {
+        _ = unsafe { bindings::krun_set_log_level(level) };
+    });
 
     let num_vcpus = config.preferences.krun_num_vcpus();
     let ram_mib = config.preferences.krun_ram_size_mib();
@@ -1352,7 +1356,7 @@ impl AppRunner {
         let (dev_info, _, _disks) = claim_devices(&config)?;
 
         let opts = VMOpts::new().read_only_disks(config.read_only);
-        let ctx = setup_vm(&config.common, dev_info.as_slice(), false, false, opts)
+        let ctx = setup_vm(&config.common, &dev_info, false, false, opts)
             .context("Failed to setup microVM")?;
 
         let mut cmdline = vec!["/bin/bash".to_owned()];

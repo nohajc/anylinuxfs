@@ -131,6 +131,8 @@ const FREEBSD_BOOTSTRAP_EXEC: &str = "freebsd-bootstrap";
 const FREEBSD_INIT_EXEC: &str = "init-freebsd";
 const FREEBSD_VMPROXY_EXEC: &str = "vmproxy-bsd";
 
+const ROOTFS_FREEBSD_CURRENT_VERSION: &str = "1.0.0";
+
 fn init_freebsd_rootfs(config: &Config, force: bool, src: &ImageSource) -> anyhow::Result<()> {
     if !force {
         todo!() // check for existing freebsd image
@@ -257,7 +259,7 @@ fn init_freebsd_rootfs(config: &Config, force: bool, src: &ImageSource) -> anyho
     let oci_iso_image_path = tmp_path.join(oci_iso_image);
     let vm_disk_image_path = freebsd_base_path.join(vm_disk_image);
 
-    let _bstrap_status = setup_gvproxy(&config, || {
+    let bstrap_status = setup_gvproxy(&config, || {
         start_freebsd_bootstrap_vm(
             &config,
             bootstrap_image_path
@@ -271,7 +273,34 @@ fn init_freebsd_rootfs(config: &Config, force: bool, src: &ImageSource) -> anyho
                 .context("invalid VM disk image path")?,
         )
     })?;
+    if bstrap_status != 0 {
+        return Err(anyhow!(
+            "FreeBSD bootstrap VM exited with status {}",
+            bstrap_status
+        ));
+    }
+
     // 2. boot it again to install third-party packages
+    let setup_status = setup_gvproxy(&config, || {
+        start_freebsd_vm_setup(
+            &config,
+            vm_disk_image_path
+                .to_str()
+                .context("invalid VM disk image path")?,
+        )
+    })?;
+    if setup_status != 0 {
+        return Err(anyhow!(
+            "FreeBSD VM setup exited with status {}",
+            setup_status
+        ));
+    }
+
+    // 3. write rootfs version file
+    let root_ver_file_path = freebsd_base_path.join("rootfs.ver");
+    if let Err(e) = fs::write(root_ver_file_path, ROOTFS_FREEBSD_CURRENT_VERSION) {
+        host_eprintln!("Failed to write rootfs version file: {}", e);
+    }
 
     Ok(())
 }
@@ -451,4 +480,23 @@ fn start_freebsd_bootstrap_vm(
         ));
     }
     Ok(bstrap_status)
+}
+
+fn start_freebsd_vm_setup(config: &Config, vm_disk_image_path: &str) -> anyhow::Result<i32> {
+    let devices = &[DevInfo::pv(vm_disk_image_path)?];
+
+    let opts = VMOpts::new()
+        .root_device("ufs:/dev/gpt/rootfs")
+        .legacy_console(true);
+    let ctx = setup_vm(&config, devices, true, false, opts)?;
+    let setup_status = start_vm_forked(ctx, &["/usr/local/bin/vm-setup.sh".into()], &[])
+        .context("Failed to start FreeBSD VM setup")?;
+
+    if setup_status != 0 {
+        return Err(anyhow::anyhow!(
+            "FreeBSD VM setup exited with status {}",
+            setup_status
+        ));
+    }
+    Ok(setup_status)
 }
