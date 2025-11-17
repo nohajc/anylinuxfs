@@ -1,5 +1,5 @@
 use anyhow::{Context, anyhow};
-use bstr::ByteSlice;
+use bstr::{BStr, ByteSlice};
 use common_utils::{FromPath, PathExt, host_println};
 use rayon::prelude::*;
 use std::{
@@ -212,20 +212,20 @@ fn parallel_mount_recursive(
 }
 
 pub fn mount_nfs_subdirs<'a>(
-    share_path_base: &str,
+    share_path_base: &[u8],
     subdirs: impl Iterator<Item = &'a str>,
     mnt_point_base: impl AsRef<Path>,
     elevate: bool,
 ) -> anyhow::Result<()> {
     let mut trie = dirtrie::Node::default();
 
-    for subdir in subdirs {
+    for subdir in subdirs.map(BStr::new) {
         let subdir_relative = subdir
             .strip_prefix(share_path_base)
-            .and_then(|s| s.strip_prefix('/'))
-            .unwrap_or("");
+            .and_then(|s| s.strip_prefix(b"/"))
+            .unwrap_or(b"");
 
-        trie.insert(Path::new(subdir_relative), subdir.into());
+        trie.insert(Path::from_bytes(subdir_relative), subdir.into());
     }
 
     parallel_mount_recursive(mnt_point_base.as_ref().into(), &trie, elevate)?;

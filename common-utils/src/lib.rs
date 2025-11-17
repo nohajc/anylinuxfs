@@ -133,7 +133,7 @@ pub struct CustomActionConfig {
     #[serde(default)]
     pub capture_environment: Vec<BString>,
     #[serde(default)]
-    pub override_nfs_export: String,
+    pub override_nfs_export: BString,
 }
 
 impl CustomActionConfig {
@@ -172,9 +172,15 @@ impl FromPath for CString {
 
 pub trait PathExt {
     fn as_bytes(&self) -> &[u8];
+    fn from_bytes(bstr: &[u8]) -> &Self;
 }
+
 impl PathExt for Path {
     fn as_bytes(&self) -> &[u8] {
         self.as_os_str().as_bytes()
+    }
+
+    fn from_bytes(bstr: &[u8]) -> &Self {
+        bstr.to_path().unwrap()
     }
 }

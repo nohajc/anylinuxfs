@@ -53,7 +53,7 @@ impl DevInfo {
             (path.to_owned(), path.to_owned())
         };
 
-        let Ok(mut probe) = BlkidProbe::new_from_filename(path.to_path().unwrap()) else {
+        let Ok(mut probe) = BlkidProbe::new_from_filename(Path::from_bytes(&path)) else {
             return Err(anyhow!("Cannot probe device. Insufficient permissions?"));
         };
         probe
@@ -86,11 +86,11 @@ impl DevInfo {
     }
 
     pub fn disk(&self) -> &Path {
-        self.path.to_path().unwrap()
+        Path::from_bytes(&self.path)
     }
 
     pub fn rdisk(&self) -> &Path {
-        self.rpath.to_path().unwrap()
+        Path::from_bytes(&self.rpath)
     }
 
     pub fn label(&self) -> Option<&str> {

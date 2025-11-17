@@ -971,22 +971,29 @@ fn wait_for_nfs_server(
     Ok(nfs_ready)
 }
 
-fn mount_nfs(share_path: &str, config: &MountConfig) -> anyhow::Result<()> {
+fn mount_nfs(share_path: &[u8], config: &MountConfig) -> anyhow::Result<()> {
     let status = if let Some(mount_point) = config.custom_mount_point.as_deref() {
-        let mut shell_script = format!(
-            "mount -t nfs \"localhost:{}\" \"{}\"",
+        let mut shell_script = [
+            b"mount -t nfs \"localhost:",
             share_path,
-            mount_point.display()
-        );
+            b"\" \"",
+            mount_point.as_bytes(),
+            b"\"",
+        ]
+        .concat();
+
         if config.open_finder {
-            shell_script += &format!(" && open \"{}\"", mount_point.display());
+            shell_script.extend_from_slice(b" && open \"");
+            shell_script.extend_from_slice(mount_point.as_bytes());
+            shell_script.extend_from_slice(b"\"");
         }
 
+        let shell_script = OsStr::from_bytes(&shell_script);
         // try to run mount as regular user first
         // (if that succeeds, umount will work without sudo)
         let mut status = Command::new("sh")
             .arg("-c")
-            .arg(&shell_script)
+            .arg(shell_script)
             .uid(config.common.invoker_uid)
             .gid(config.common.invoker_gid)
             .stdout(Stdio::null())
@@ -995,22 +1002,24 @@ fn mount_nfs(share_path: &str, config: &MountConfig) -> anyhow::Result<()> {
 
         if !status.success() {
             // otherwise run as root (probably the mount point wasn't accessible)
-            status = Command::new("sh").arg("-c").arg(&shell_script).status()?;
+            status = Command::new("sh").arg("-c").arg(shell_script).status()?;
         }
         status
     } else {
-        let location = format!("nfs://localhost:{}", share_path);
+        let location = [b"nfs://localhost:", share_path].concat();
         let apple_script = if config.open_finder {
-            format!(
-                "tell application \"Finder\" to open location \"{}\"",
-                location
-            )
+            [
+                b"tell application \"Finder\" to open location \"",
+                location.as_slice(),
+                b"\"",
+            ]
+            .concat()
         } else {
-            format!("mount volume \"{}\"", location)
+            [b"mount volume \"", location.as_slice(), b"\""].concat()
         };
         Command::new("osascript")
             .arg("-e")
-            .arg(apple_script)
+            .arg(OsStr::from_bytes(&apple_script))
             .stdout(Stdio::null())
             .status()?
     };
@@ -1128,11 +1137,15 @@ fn validated_mount_point(rt_info: &api::RuntimeInfo) -> MountStatus<'_> {
         Some(action) if !action.override_nfs_export.is_empty() => {
             action.override_nfs_export.clone()
         }
-        _ => format!("/mnt/{}", rt_info.dev_info.auto_mount_name()),
+        _ => [b"/mnt/", rt_info.dev_info.auto_mount_name().as_slice()]
+            .concat()
+            .into(),
     };
-    let expected_mount_dev = PathBuf::from(format!("localhost:{}", expected_mount_point));
+    let expected_mount_dev = [b"localhost:", expected_mount_point.as_slice()].concat();
     match fsutil::mounted_from(&mount_point) {
-        Ok(mount_dev) if mount_dev == expected_mount_dev => MountStatus::Mounted(mount_point),
+        Ok(mount_dev) if mount_dev == Path::from_bytes(&expected_mount_dev) => {
+            MountStatus::Mounted(mount_point)
+        }
         _ => MountStatus::NoLonger,
     }
 }
@@ -1956,7 +1969,7 @@ impl AppRunner {
                     Some(action) if !action.override_nfs_export.is_empty() => {
                         action.override_nfs_export.clone()
                     }
-                    _ => format!("/mnt/{share_name}"),
+                    _ => [b"/mnt/", share_name.as_slice()].concat().into(),
                 };
 
                 let mount_result = mount_nfs(&share_path, &config);

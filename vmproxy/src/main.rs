@@ -746,7 +746,7 @@ fn run() -> anyhow::Result<()> {
     }
 
     let export_path = match nfs_export_override {
-        Some(path) if !path.is_empty() => path,
+        Some(path) if !path.is_empty() => path.to_str_lossy().into(),
         _ => mount_point,
     };
 
