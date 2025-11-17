@@ -2,7 +2,7 @@ use std::path::Path;
 
 use anyhow::{Context, anyhow};
 use bstr::{BStr, BString, ByteSlice};
-use common_utils::path_safe_label_name;
+use common_utils::{PathExt, path_safe_label_name};
 use libblkid_rs::{BlkidProbe, BlkidSublks, BlkidSublksFlags};
 use serde::{Deserialize, Serialize};
 
@@ -125,17 +125,18 @@ impl DevInfo {
         &self.vm_path
     }
 
-    pub fn auto_mount_name(&self) -> String {
+    pub fn auto_mount_name(&self) -> BString {
         self.label()
             .and_then(path_safe_label_name)
+            .map(BString::from)
             // .or(self.uuid())
             // .unwrap_or("lvol0")
             .unwrap_or(
                 self.disk()
-                    .to_string_lossy()
-                    .split('/')
+                    .as_bytes()
+                    .split(|&c| c == b'/')
                     .last()
-                    .map(|d| d.split(':').last())
+                    .map(|d| d.split(|&c| c == b':').last())
                     .flatten()
                     .expect("non-empty disk path")
                     .into(),
