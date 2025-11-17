@@ -735,14 +735,14 @@ fn passphrase_prompt_lazy(
     }
 }
 
-pub fn passphrase_prompt(partition: Option<impl AsRef<str>>) -> impl FnOnce() {
+pub fn passphrase_prompt(partition: Option<impl Display>) -> impl FnOnce() {
     move || {
         if !is_stdin_tty() {
             return;
         }
         match partition {
             Some(part) => {
-                _ = safe_print!("Enter passphrase for {}: ", part.as_ref());
+                _ = safe_print!("Enter passphrase for {}: ", part);
             }
             None => {
                 _ = safe_print!("Enter passphrase: ");

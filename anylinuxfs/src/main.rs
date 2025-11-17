@@ -1640,8 +1640,7 @@ impl AppRunner {
                         ensure_enough_ram_for_luks(&mut config.common);
                     }
                     if config.common.passphrase_config == PassphrasePromptConfig::AskForEach {
-                        let prompt_fn =
-                            diskutil::passphrase_prompt(Some(di.disk().to_string_lossy()));
+                        let prompt_fn = diskutil::passphrase_prompt(Some(di.disk().display()));
                         passphrase_callbacks.push(prompt_fn);
                     }
                     passphrase_needed = true;
