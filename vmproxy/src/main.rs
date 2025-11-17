@@ -252,7 +252,7 @@ impl CustomActionRunner {
         if let Some(action) = &self.config {
             if !action.before_mount.is_empty() {
                 println!("<anylinuxfs-force-output:on>");
-                println!("Running before_mount action: `{}`", action.before_mount);
+                println!("Running before_mount action: `{}`", action.before_mount());
                 let result = self.execute_action(action.before_mount.to_os_str_lossy());
                 println!("<anylinuxfs-force-output:off>");
                 result?;
@@ -265,8 +265,8 @@ impl CustomActionRunner {
         if let Some(action) = &self.config {
             if !action.after_mount.is_empty() {
                 println!("<anylinuxfs-force-output:on>");
-                println!("Running after_mount action: `{}`", action.after_mount);
-                let result = self.execute_action(action.after_mount.to_os_str_lossy());
+                println!("Running after_mount action: `{}`", action.after_mount());
+                let result = self.execute_action(action.after_mount().to_os_str_lossy());
                 println!("<anylinuxfs-force-output:off>");
                 result?;
             }
@@ -277,8 +277,11 @@ impl CustomActionRunner {
     pub fn before_unmount(&self) -> anyhow::Result<()> {
         if let Some(action) = &self.config {
             if !action.before_unmount.is_empty() {
-                println!("Running before_unmount action: `{}`", action.before_unmount);
-                self.execute_action(action.before_unmount.to_os_str_lossy())?;
+                println!(
+                    "Running before_unmount action: `{}`",
+                    action.before_unmount()
+                );
+                self.execute_action(action.before_unmount().to_os_str_lossy())?;
             }
         }
         Ok(())

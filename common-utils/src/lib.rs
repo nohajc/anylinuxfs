@@ -1,7 +1,8 @@
 use anyhow::Context;
-use bstr::{BStr, BString, ByteSlice};
+use bstr::{BStr, ByteSlice};
 use percent_encoding::{AsciiSet, CONTROLS, percent_decode_str, utf8_percent_encode};
 use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
 use std::{ffi::CString, io, os::unix::ffi::OsStrExt, path::Path, process::Child, time::Duration};
 use wait_timeout::ChildExt;
 
@@ -118,22 +119,30 @@ impl<'a> Drop for Deferred<'a> {
     }
 }
 
+#[serde_as]
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct CustomActionConfig {
     #[serde(default)]
-    pub description: BString,
+    #[serde_as(as = "serde_with::Bytes")]
+    pub description: Vec<u8>,
     #[serde(default)]
-    pub before_mount: BString,
+    #[serde_as(as = "serde_with::Bytes")]
+    pub before_mount: Vec<u8>,
     #[serde(default)]
-    pub after_mount: BString,
+    #[serde_as(as = "serde_with::Bytes")]
+    pub after_mount: Vec<u8>,
     #[serde(default)]
-    pub before_unmount: BString,
+    #[serde_as(as = "serde_with::Bytes")]
+    pub before_unmount: Vec<u8>,
     #[serde(default)]
-    pub environment: Vec<BString>, // KEY=value format
+    #[serde_as(as = "Vec<serde_with::Bytes>")]
+    pub environment: Vec<Vec<u8>>, // KEY=value format
     #[serde(default)]
-    pub capture_environment: Vec<BString>,
+    #[serde_as(as = "Vec<serde_with::Bytes>")]
+    pub capture_environment: Vec<Vec<u8>>,
     #[serde(default)]
-    pub override_nfs_export: BString,
+    #[serde_as(as = "serde_with::Bytes")]
+    pub override_nfs_export: Vec<u8>,
 }
 
 impl CustomActionConfig {
@@ -147,16 +156,44 @@ impl CustomActionConfig {
         ]
     }
 
+    pub fn description(&self) -> &BStr {
+        self.description.as_bstr()
+    }
+
+    pub fn before_mount(&self) -> &BStr {
+        self.before_mount.as_bstr()
+    }
+
+    pub fn after_mount(&self) -> &BStr {
+        self.after_mount.as_bstr()
+    }
+
+    pub fn before_unmount(&self) -> &BStr {
+        self.before_unmount.as_bstr()
+    }
+
+    pub fn environment(&self) -> impl Iterator<Item = &BStr> {
+        self.environment.iter().map(|e| e.as_bstr())
+    }
+
+    pub fn capture_environment(&self) -> impl Iterator<Item = &BStr> {
+        self.capture_environment.iter().map(|e| e.as_bstr())
+    }
+
+    pub fn override_nfs_export(&self) -> &BStr {
+        self.override_nfs_export.as_bstr()
+    }
+
     const PERCENT_ENCODE_SET: &AsciiSet = &CONTROLS.add(b' ');
 
     pub fn percent_encode(&self) -> anyhow::Result<String> {
-        let json_encoded = serde_json::to_string(&self)?;
-        Ok(utf8_percent_encode(&json_encoded, Self::PERCENT_ENCODE_SET).to_string())
+        let ron_encoded = ron::ser::to_string(&self)?;
+        Ok(utf8_percent_encode(&ron_encoded, Self::PERCENT_ENCODE_SET).to_string())
     }
 
     pub fn percent_decode(encoded: &str) -> anyhow::Result<Self> {
         let decoded = percent_decode_str(encoded).decode_utf8()?;
-        Ok(serde_json::from_str(&decoded)?)
+        Ok(ron::de::from_str(&decoded)?)
     }
 }
 

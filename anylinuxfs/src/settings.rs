@@ -303,18 +303,22 @@ impl CustomActionEnvironment for CustomActionConfig {
         let mut predefined_vars = HashSet::new();
         let mut undefined_vars = Vec::new();
 
-        for var_str in &self.environment {
+        for var_str in self.environment() {
             let var_name = var_str
                 .split(|&c| c == b'=')
                 .next()
                 .ok_or_else(|| anyhow!("invalid environment variable format: {}", var_str))?;
             predefined_vars.insert(BString::from(var_name));
-            env_vars.push(var_str.clone());
+            env_vars.push(var_str.to_owned());
         }
-        for var_name in referenced_variables.iter().chain(&self.capture_environment) {
+        for var_name in referenced_variables
+            .iter()
+            .map(|e| e.as_bstr())
+            .chain(self.capture_environment())
+        {
             match env::var_os(var_name.to_os_str_lossy()) {
                 Some(var_value) => {
-                    let mut var_str = var_name.clone();
+                    let mut var_str = var_name.to_owned();
                     var_str.push_str(b"=");
                     var_str.push_str(var_value.as_bytes());
                     env_vars.push(var_str);
@@ -323,7 +327,7 @@ impl CustomActionEnvironment for CustomActionConfig {
                     if !Self::VM_EXPORTED_VARS.contains(&var_name.as_bytes())
                         && !predefined_vars.contains(var_name)
                     {
-                        undefined_vars.push(var_name.clone());
+                        undefined_vars.push(var_name);
                     }
                 }
             }

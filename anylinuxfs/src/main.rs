@@ -1966,8 +1966,8 @@ impl AppRunner {
 
                 let share_name = mnt_dev_info.auto_mount_name();
                 let share_path = match config.get_action() {
-                    Some(action) if !action.override_nfs_export.is_empty() => {
-                        action.override_nfs_export.clone()
+                    Some(action) if !action.override_nfs_export().is_empty() => {
+                        action.override_nfs_export().to_owned()
                     }
                     _ => [b"/mnt/", share_name.as_slice()].concat().into(),
                 };
@@ -2231,7 +2231,7 @@ impl AppRunner {
     fn run_actions(&mut self) -> anyhow::Result<()> {
         let config = load_config(&CommonArgs::default())?;
         for (action, config) in config.preferences.custom_actions() {
-            safe_println!("{}: {}", action, &config.description)?;
+            safe_println!("{}: {}", action, config.description())?;
         }
         Ok(())
     }
