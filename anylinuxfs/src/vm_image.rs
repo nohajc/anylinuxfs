@@ -6,8 +6,8 @@ use std::{
 };
 
 use anyhow::{Context, anyhow};
-use common_utils::{Deferred, host_eprintln, host_println};
-use glob::glob;
+use bstr::BStr;
+use common_utils::{Deferred, PathExt, host_eprintln, host_println};
 use serde::Serialize;
 
 use crate::{
@@ -179,6 +179,10 @@ fn init_freebsd_rootfs(config: &Config, force: bool, src: &ImageSource) -> anyho
     let tmp_path = freebsd_base_path.join("tmp");
     let oci_path = tmp_path.join("oci");
     fs::create_dir_all(&oci_path).context("Failed to create FreeBSD base directory")?;
+    host_println!(
+        "Created FreeBSD base directory: {}",
+        freebsd_base_path.display()
+    );
 
     let mut deferred = Deferred::new();
     deferred.add(|| {
@@ -188,9 +192,17 @@ fn init_freebsd_rootfs(config: &Config, force: bool, src: &ImageSource) -> anyho
     });
 
     fetch(oci_image_url, &tmp_path).context("Failed to fetch FreeBSD OCI image")?;
+    host_println!("Fetched FreeBSD OCI image: {}", oci_image);
+
     extract(oci_image, &tmp_path, &oci_path).context("Failed to unpack FreeBSD OCI image")?;
     create_iso(oci_iso_image, &tmp_path, &oci_path)
         .context("Failed to convert FreeBSD OCI image to ISO")?;
+
+    let oci_iso_image_path = tmp_path.join(oci_iso_image);
+    host_println!(
+        "Converted FreeBSD OCI image to ISO: {}",
+        oci_iso_image_path.display()
+    );
 
     let bootstrap_rootfs_path = tmp_path.join("rootfs");
     fs::create_dir_all(bootstrap_rootfs_path.join("dev"))
@@ -203,30 +215,52 @@ fn init_freebsd_rootfs(config: &Config, force: bool, src: &ImageSource) -> anyho
         config.libexec_path.join(FREEBSD_BOOTSTRAP_EXEC),
         bootstrap_rootfs_path.join(FREEBSD_BOOTSTRAP_EXEC),
     )?;
+    host_println!(
+        "Copied {} to {}",
+        FREEBSD_BOOTSTRAP_EXEC,
+        bootstrap_rootfs_path.display()
+    );
+
     copy_file(
         config.libexec_path.join(FREEBSD_INIT_EXEC),
         bootstrap_rootfs_path.join(FREEBSD_INIT_EXEC),
     )?;
+    host_println!(
+        "Copied {} to {}",
+        FREEBSD_INIT_EXEC,
+        bootstrap_rootfs_path.display()
+    );
+
     copy_file(
         config.libexec_path.join(FREEBSD_VMPROXY_EXEC),
         bootstrap_rootfs_path.join(FREEBSD_VMPROXY_EXEC),
     )?;
+    host_println!(
+        "Copied {} to {}",
+        FREEBSD_VMPROXY_EXEC,
+        bootstrap_rootfs_path.display()
+    );
 
     fetch(kernel_bundle_url, &tmp_path).context("Failed to fetch FreeBSD kernel bundle")?;
+    host_println!("Fetched FreeBSD kernel bundle: {}", kernel_bundle_url);
+
     extract(kernel_bundle, &tmp_path, &freebsd_base_path)
         .context("Failed to extract FreeBSD kernel bundle")?;
 
-    let modules = glob(
-        freebsd_base_path
-            .join("kernel")
-            .join("*.ko")
-            .to_str()
-            .context("invalid FreeBSD kernel path")?,
-    )
-    .context("invalid glob pattern")?;
+    let modules = fs::read_dir(freebsd_base_path.join("kernel"))?
+        .filter_map(|e| e.ok())
+        .filter_map(|e| match e.path().extension() {
+            Some(ext) if ext == "ko" => Some(e.path()),
+            _ => None,
+        });
 
-    for m in modules.into_iter().filter_map(|e| e.ok()) {
+    for m in modules {
         copy_file(&m, bootstrap_rootfs_path.join(m.file_name().unwrap()))?;
+        host_println!(
+            "Copied {} to {}",
+            m.display(),
+            bootstrap_rootfs_path.display()
+        );
     }
 
     fs::write(
@@ -238,9 +272,18 @@ fn init_freebsd_rootfs(config: &Config, force: bool, src: &ImageSource) -> anyho
     )
     .context("Failed to write FreeBSD bootstrap config")?;
 
+    host_println!(
+        "Prepared FreeBSD bootstrap config: {}",
+        bootstrap_rootfs_path.join("config.json").display()
+    );
+
     let entrypoint_sh = BSD_ENTRYPOINT_SCRIPT_URL.split('/').last().unwrap();
     fetch(BSD_ENTRYPOINT_SCRIPT_URL, &bootstrap_rootfs_path)
         .context("Failed to fetch FreeBSD entrypoint script")?;
+    host_println!(
+        "Fetched FreeBSD entrypoint script: {}",
+        BSD_ENTRYPOINT_SCRIPT_URL
+    );
     fs::set_permissions(
         bootstrap_rootfs_path.join(entrypoint_sh),
         Permissions::from_mode(0o755),
@@ -250,27 +293,28 @@ fn init_freebsd_rootfs(config: &Config, force: bool, src: &ImageSource) -> anyho
     create_iso(bootstrap_image, &tmp_path, &bootstrap_rootfs_path)
         .context("Failed to create FreeBSD bootstrap ISO")?;
 
+    let bootstrap_image_path = tmp_path.join(bootstrap_image);
+    host_println!(
+        "Created FreeBSD bootstrap ISO: {}",
+        bootstrap_image_path.display()
+    );
+
     create_sparse_file(freebsd_base_path.join(vm_disk_image), "32G")
         .context("Failed to create FreeBSD VM disk image")?;
 
-    // TODO:
-    // 1. boot the VM to run the bootstrap process and populate our disk image
-    let bootstrap_image_path = tmp_path.join(bootstrap_image);
-    let oci_iso_image_path = tmp_path.join(oci_iso_image);
     let vm_disk_image_path = freebsd_base_path.join(vm_disk_image);
+    host_println!(
+        "Created FreeBSD VM disk image: {}",
+        vm_disk_image_path.display()
+    );
 
+    // 1. boot the VM to run the bootstrap process and populate our disk image
     let bstrap_status = setup_gvproxy(&config, || {
         start_freebsd_bootstrap_vm(
             &config,
-            bootstrap_image_path
-                .to_str()
-                .context("invalid bootstrap image path")?,
-            oci_iso_image_path
-                .to_str()
-                .context("invalid OCI ISO image path")?,
-            vm_disk_image_path
-                .to_str()
-                .context("invalid VM disk image path")?,
+            bootstrap_image_path.as_bytes(),
+            oci_iso_image_path.as_bytes(),
+            vm_disk_image_path.as_bytes(),
         )
     })?;
     if bstrap_status != 0 {
@@ -282,12 +326,7 @@ fn init_freebsd_rootfs(config: &Config, force: bool, src: &ImageSource) -> anyho
 
     // 2. boot it again to install third-party packages
     let setup_status = setup_gvproxy(&config, || {
-        start_freebsd_vm_setup(
-            &config,
-            vm_disk_image_path
-                .to_str()
-                .context("invalid VM disk image path")?,
-        )
+        start_freebsd_vm_setup(&config, vm_disk_image_path.as_bytes())
     })?;
     if setup_status != 0 {
         return Err(anyhow!(
@@ -456,9 +495,9 @@ fn setup_gvproxy(
 
 fn start_freebsd_bootstrap_vm(
     config: &Config,
-    bootstrap_image_path: &str,
-    oci_iso_image_path: &str,
-    vm_disk_image_path: &str,
+    bootstrap_image_path: impl AsRef<BStr>,
+    oci_iso_image_path: impl AsRef<BStr>,
+    vm_disk_image_path: impl AsRef<BStr>,
 ) -> anyhow::Result<i32> {
     let devices = &[
         DevInfo::pv(bootstrap_image_path)?,
@@ -482,7 +521,10 @@ fn start_freebsd_bootstrap_vm(
     Ok(bstrap_status)
 }
 
-fn start_freebsd_vm_setup(config: &Config, vm_disk_image_path: &str) -> anyhow::Result<i32> {
+fn start_freebsd_vm_setup(
+    config: &Config,
+    vm_disk_image_path: impl AsRef<BStr>,
+) -> anyhow::Result<i32> {
     let devices = &[DevInfo::pv(vm_disk_image_path)?];
 
     let opts = VMOpts::new()

@@ -350,6 +350,16 @@ pub struct ImageSource {
     pub os_type: OSType,
 }
 
+impl ImageSource {
+    pub fn installed_in(&self, profile_path: impl AsRef<Path>) -> bool {
+        profile_path
+            .as_ref()
+            .join(&self.base_dir)
+            .join("rootfs.ver")
+            .exists()
+    }
+}
+
 impl Default for ImageSource {
     fn default() -> Self {
         ImageSource {

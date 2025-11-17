@@ -1,6 +1,8 @@
 use anyhow::{Context, anyhow};
 use bstr::{BString, ByteSlice};
 use clap::Parser;
+#[cfg(target_os = "linux")]
+use common_utils::FromPath;
 #[cfg(target_os = "freebsd")]
 use common_utils::VM_CTRL_PORT;
 use common_utils::{CustomActionConfig, Deferred, VM_GATEWAY_IP, VM_IP, path_safe_label_name};
@@ -286,7 +288,7 @@ impl CustomActionRunner {
 // TODO: we might need this for custom actions on FreeBSD
 #[cfg(target_os = "linux")]
 fn statfs(path: impl AsRef<Path>) -> io::Result<libc::statfs> {
-    let c_path = CString::new(path.as_ref().as_os_str().as_bytes()).unwrap();
+    let c_path = CString::from_path(path.as_ref());
     let mut buf: libc::statfs = unsafe { std::mem::zeroed() };
     if unsafe { libc::statfs(c_path.as_ptr(), &mut buf) } != 0 {
         return Err(io::Error::last_os_error());

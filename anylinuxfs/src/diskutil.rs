@@ -379,7 +379,7 @@ pub fn list_partitions(
                     continue;
                 }
                 let disk_path = format!("/dev/{dev_ident}");
-                let dev_info = DevInfo::pv(&disk_path).ok();
+                let dev_info = DevInfo::pv(disk_path.as_str()).ok();
 
                 let line = match dev_info {
                     Some(dev_info) => {
@@ -412,7 +412,7 @@ pub fn list_partitions(
                 if disks_without_part_table.iter().any(|d| d == dev_ident) {
                     // This is a disk without partition table, it might still contain a Linux filesystem
                     let disk_path = format!("/dev/{dev_ident}");
-                    let dev_info = DevInfo::pv(&disk_path).ok();
+                    let dev_info = DevInfo::pv(disk_path.as_str()).ok();
 
                     let fs_type = dev_info
                         .as_ref()
@@ -735,14 +735,14 @@ fn passphrase_prompt_lazy(
     }
 }
 
-pub fn passphrase_prompt(partition: Option<&str>) -> impl FnOnce() {
+pub fn passphrase_prompt(partition: Option<impl AsRef<str>>) -> impl FnOnce() {
     move || {
         if !is_stdin_tty() {
             return;
         }
         match partition {
             Some(part) => {
-                _ = safe_print!("Enter passphrase for {}: ", part);
+                _ = safe_print!("Enter passphrase for {}: ", part.as_ref());
             }
             None => {
                 _ = safe_print!("Enter passphrase: ");
@@ -753,7 +753,9 @@ pub fn passphrase_prompt(partition: Option<&str>) -> impl FnOnce() {
 }
 
 fn virt_disk_to_decrypt(dev_info: &[DevInfo], partition: &str) -> anyhow::Result<(String, String)> {
-    let enc_part_idx = dev_info.iter().position(|di| di.disk() == partition);
+    let enc_part_idx = dev_info
+        .iter()
+        .position(|di| di.disk() == Path::new(partition));
     Ok(match enc_part_idx {
         Some(idx) => (
             format!(

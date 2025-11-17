@@ -1,14 +1,15 @@
 use std::path::Path;
 
 use anyhow::{Context, anyhow};
+use bstr::{BStr, BString, ByteSlice};
 use common_utils::path_safe_label_name;
 use libblkid_rs::{BlkidProbe, BlkidSublks, BlkidSublksFlags};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct DevInfo {
-    path: String,
-    rpath: String,
+    path: BString,
+    rpath: BString,
     label: Option<String>,
     fs_type: Option<String>,
     uuid: Option<String>,
@@ -16,8 +17,8 @@ pub struct DevInfo {
     fs_driver: Option<String>, // will be auto-detected if not set
 }
 
-const BUF_PREFIX: &str = "/dev/disk";
-const RAW_PREFIX: &str = "/dev/rdisk";
+const BUF_PREFIX: &[u8] = b"/dev/disk";
+const RAW_PREFIX: &[u8] = b"/dev/rdisk";
 
 impl DevInfo {
     pub fn lv(
@@ -36,19 +37,23 @@ impl DevInfo {
         })
     }
 
-    pub fn pv(path: &str) -> anyhow::Result<DevInfo> {
+    pub fn pv(path: impl AsRef<BStr>) -> anyhow::Result<DevInfo> {
+        let path = path.as_ref();
         if path.is_empty() {
             return Err(anyhow!("Empty device path"));
         }
         let (path, rpath) = if path.starts_with(BUF_PREFIX) {
-            (path.to_owned(), path.replace(BUF_PREFIX, RAW_PREFIX))
+            (
+                path.to_owned(),
+                BString::new(path.replace(BUF_PREFIX, RAW_PREFIX)),
+            )
         } else if path.starts_with(RAW_PREFIX) {
-            (path.replace(RAW_PREFIX, BUF_PREFIX), path.to_owned())
+            (path.replace(RAW_PREFIX, BUF_PREFIX).into(), path.to_owned())
         } else {
             (path.to_owned(), path.to_owned())
         };
 
-        let Ok(mut probe) = BlkidProbe::new_from_filename(Path::new(&path)) else {
+        let Ok(mut probe) = BlkidProbe::new_from_filename(path.to_path().unwrap()) else {
             return Err(anyhow!("Cannot probe device. Insufficient permissions?"));
         };
         probe
@@ -80,12 +85,12 @@ impl DevInfo {
         })
     }
 
-    pub fn disk(&self) -> &str {
-        &self.path
+    pub fn disk(&self) -> &Path {
+        self.path.to_path().unwrap()
     }
 
-    pub fn rdisk(&self) -> &str {
-        &self.rpath
+    pub fn rdisk(&self) -> &Path {
+        self.rpath.to_path().unwrap()
     }
 
     pub fn label(&self) -> Option<&str> {
@@ -127,6 +132,7 @@ impl DevInfo {
             // .unwrap_or("lvol0")
             .unwrap_or(
                 self.disk()
+                    .to_string_lossy()
                     .split('/')
                     .last()
                     .map(|d| d.split(':').last())

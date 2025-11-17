@@ -77,7 +77,6 @@ dependencies = [
  "common_utils",
  "crossterm",
  "derive_more",
- "glob",
  "homedir",
  "if-addrs",
  "indexmap",

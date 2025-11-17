@@ -1,6 +1,6 @@
 use anyhow::{Context, anyhow};
 use bstr::ByteSlice;
-use common_utils::host_println;
+use common_utils::{FromPath, PathExt, host_println};
 use rayon::prelude::*;
 use std::{
     collections::HashSet,
@@ -85,7 +85,7 @@ pub fn mounted_from(path: impl AsRef<Path>) -> io::Result<PathBuf> {
 }
 
 fn statfs(path: impl AsRef<Path>) -> io::Result<libc::statfs> {
-    let c_path = CString::new(path.as_ref().as_os_str().as_bytes()).unwrap();
+    let c_path = CString::from_path(path.as_ref());
     let mut buf: libc::statfs = unsafe { std::mem::zeroed() };
     if unsafe { libc::statfs(c_path.as_ptr(), &mut buf) } != 0 {
         return Err(io::Error::last_os_error());
@@ -256,7 +256,7 @@ pub fn unmount_nfs_subdirs<'a>(
     for subdir in subdirs {
         let subdir = subdir.as_bytes();
         let subdir_relative = subdir
-            .strip_prefix(mnt_point_base.as_ref().as_os_str().as_bytes())
+            .strip_prefix(mnt_point_base.as_ref().as_bytes())
             .and_then(|s| s.strip_prefix(b"/"))
             .unwrap_or(b"");
 

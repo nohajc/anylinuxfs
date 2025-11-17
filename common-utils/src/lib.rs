@@ -2,7 +2,7 @@ use anyhow::Context;
 use bstr::{BStr, BString, ByteSlice};
 use percent_encoding::{AsciiSet, CONTROLS, percent_decode_str, utf8_percent_encode};
 use serde::{Deserialize, Serialize};
-use std::{io, process::Child, time::Duration};
+use std::{ffi::CString, io, os::unix::ffi::OsStrExt, path::Path, process::Child, time::Duration};
 use wait_timeout::ChildExt;
 
 pub mod log;
@@ -157,5 +157,24 @@ impl CustomActionConfig {
     pub fn percent_decode(encoded: &str) -> anyhow::Result<Self> {
         let decoded = percent_decode_str(encoded).decode_utf8()?;
         Ok(serde_json::from_str(&decoded)?)
+    }
+}
+
+pub trait FromPath {
+    fn from_path(path: impl AsRef<Path>) -> Self;
+}
+
+impl FromPath for CString {
+    fn from_path(path: impl AsRef<Path>) -> Self {
+        CString::new(path.as_ref().as_bytes()).unwrap()
+    }
+}
+
+pub trait PathExt {
+    fn as_bytes(&self) -> &[u8];
+}
+impl PathExt for Path {
+    fn as_bytes(&self) -> &[u8] {
+        self.as_os_str().as_bytes()
     }
 }

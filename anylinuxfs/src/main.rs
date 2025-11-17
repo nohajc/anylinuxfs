@@ -1,7 +1,7 @@
 use anyhow::{Context, anyhow};
 use bstr::{BString, ByteVec};
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
-use common_utils::{Deferred, host_eprintln, host_println, log, safe_println};
+use common_utils::{Deferred, FromPath, PathExt, host_eprintln, host_println, log, safe_println};
 
 use devinfo::DevInfo;
 use nanoid::nanoid;
@@ -661,7 +661,7 @@ fn setup_vm(
             bindings::krun_add_disk(
                 ctx,
                 CString::new(format!("data{}", i)).unwrap().as_ptr(),
-                CString::new(di.rdisk()).unwrap().as_ptr(),
+                CString::from_path(di.rdisk()).as_ptr(),
                 opts.add_disks_ro,
             )
         }
@@ -1146,8 +1146,8 @@ enum DevType {
 
 fn print_dev_info(dev_info: &DevInfo, dev_type: DevType) {
     if dev_type == DevType::Direct || dev_type == DevType::PV {
-        host_println!("disk: {}", dev_info.disk());
-        host_println!("rdisk: {}", dev_info.rdisk());
+        host_println!("disk: {}", dev_info.disk().display());
+        host_println!("rdisk: {}", dev_info.rdisk().display());
     }
 
     if dev_type == DevType::Direct || dev_type == DevType::LV {
@@ -1188,7 +1188,7 @@ fn claim_devices(config: &MountConfig) -> anyhow::Result<(Vec<DevInfo>, DevInfo,
             if mount_table.is_mounted(&pv_path) {
                 return Err(anyhow!("{} is already mounted", &pv_path));
             }
-            let dev_info = DevInfo::pv(&pv_path)?;
+            let dev_info = DevInfo::pv(pv_path.as_str())?;
             let disk = File::open(dev_info.rdisk())?.acquire_lock(if config.read_only {
                 FlockKind::Shared
             } else {
@@ -1219,7 +1219,7 @@ fn claim_devices(config: &MountConfig) -> anyhow::Result<(Vec<DevInfo>, DevInfo,
             if mount_table.is_mounted(&pv_path) {
                 return Err(anyhow!("{} is already mounted", &pv_path));
             }
-            let dev_info = DevInfo::pv(&pv_path)?;
+            let dev_info = DevInfo::pv(pv_path.as_str())?;
             let disk = File::open(dev_info.rdisk())?.acquire_lock(if config.read_only {
                 FlockKind::Shared
             } else {
@@ -1474,16 +1474,12 @@ impl AppRunner {
         match cmd {
             ImageCmd::List { verbose } => {
                 for (name, src) in images {
-                    let suffix = if config
-                        .profile_path
-                        .join(&src.base_dir)
-                        .join("rootfs.ver")
-                        .exists()
-                    {
+                    let suffix = if src.installed_in(&config.profile_path) {
                         " (installed)"
                     } else {
                         ""
                     };
+
                     let details = if verbose {
                         format!(": {:#?}", src)
                     } else {
@@ -1631,7 +1627,8 @@ impl AppRunner {
                         ensure_enough_ram_for_luks(&mut config.common);
                     }
                     if config.common.passphrase_config == PassphrasePromptConfig::AskForEach {
-                        let prompt_fn = diskutil::passphrase_prompt(Some(di.disk()));
+                        let prompt_fn =
+                            diskutil::passphrase_prompt(Some(di.disk().to_string_lossy()));
                         passphrase_callbacks.push(prompt_fn);
                     }
                     passphrase_needed = true;
@@ -1980,7 +1977,7 @@ impl AppRunner {
                 if let Some(mount_point) = &mount_point_opt {
                     host_println!(
                         "{} was mounted as {}",
-                        mnt_dev_info.disk(),
+                        mnt_dev_info.disk().display(),
                         mount_point.display()
                     );
 
@@ -2138,10 +2135,7 @@ impl AppRunner {
                 let our_mount_points = mount_table
                     .mount_points()
                     .map(|item| item.as_os_str())
-                    .filter(|&mpt| {
-                        mpt.as_bytes()
-                            .starts_with(mount_point.as_os_str().as_bytes())
-                    });
+                    .filter(|&mpt| mpt.as_bytes().starts_with(mount_point.as_bytes()));
 
                 fsutil::unmount_nfs_subdirs(our_mount_points, mount_point)?;
             }
@@ -2464,16 +2458,6 @@ impl AppRunner {
             Commands::Image(cmd) => self.run_image(cmd),
             Commands::Rpcbind(cmd) => self.run_rpcbind(cmd),
         }
-    }
-}
-
-trait FromPath {
-    fn from_path(path: impl AsRef<Path>) -> Self;
-}
-
-impl FromPath for CString {
-    fn from_path(path: impl AsRef<Path>) -> Self {
-        CString::new(path.as_ref().as_os_str().as_bytes()).unwrap()
     }
 }
 
