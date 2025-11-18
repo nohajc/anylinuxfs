@@ -38,13 +38,15 @@ mkdir -p libexec && cp "vmproxy/target/aarch64-unknown-linux-musl/$BUILD_DIR/vmp
 (cd "init-rootfs" && go build -ldflags="-w -s" -tags containers_image_openpgp -o ../libexec/)
 codesign --entitlements "anylinuxfs.entitlements" --force -s - libexec/init-rootfs
 
-(cd "freebsd-bootstrap" && CGO_ENABLED=0 GOOS=freebsd GOARCH=arm64 go build -tags netgo -ldflags '-extldflags "-static" -w -s' -o ../libexec/)
+if [ -n "$FREEBSD" ]; then
+    (cd "freebsd-bootstrap" && CGO_ENABLED=0 GOOS=freebsd GOARCH=arm64 go build -tags netgo -ldflags '-extldflags "-static" -w -s' -o ../libexec/)
 
-SYSROOT=freebsd-sysroot
-(cd "vmproxy" \
-    && test -d $SYSROOT \
-    || (mkdir $SYSROOT && cd $SYSROOT \
-        && curl -LO http://ftp.cz.freebsd.org/pub/FreeBSD/releases/arm64/14.3-RELEASE/base.txz \
-        && tar xJf base.txz 2>/dev/null || true && rm base.txz) \
-    && cargo +nightly build -Z build-std --target aarch64-unknown-freebsd $BUILD_ARGS)
-cp "vmproxy/target/aarch64-unknown-freebsd/$BUILD_DIR/vmproxy" libexec/vmproxy-bsd
+    SYSROOT=freebsd-sysroot
+    (cd "vmproxy" \
+        && test -d $SYSROOT \
+        || (mkdir $SYSROOT && cd $SYSROOT \
+            && curl -LO http://ftp.cz.freebsd.org/pub/FreeBSD/releases/arm64/14.3-RELEASE/base.txz \
+            && tar xJf base.txz 2>/dev/null || true && rm base.txz) \
+        && cargo +nightly build -Z build-std --target aarch64-unknown-freebsd $BUILD_ARGS)
+    cp "vmproxy/target/aarch64-unknown-freebsd/$BUILD_DIR/vmproxy" libexec/vmproxy-bsd
+fi
