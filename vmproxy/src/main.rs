@@ -9,7 +9,7 @@ use common_utils::{CustomActionConfig, Deferred, VM_GATEWAY_IP, VM_IP, path_safe
 #[cfg(target_os = "linux")]
 use libc::VMADDR_CID_ANY;
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::env;
 #[cfg(target_os = "linux")]
 use std::ffi::CString;
@@ -756,10 +756,10 @@ fn run() -> anyhow::Result<()> {
     let export_mode = if effective_read_only { "ro" } else { "rw" };
 
     let all_exports = if is_zfs {
-        let mut paths: Vec<_> = zfs_mountpoints.into_iter().map(|m| m.path).collect();
+        let mut paths: BTreeSet<_> = zfs_mountpoints.into_iter().map(|m| m.path).collect();
 
-        if !paths.iter().any(|p| p == &export_path) {
-            paths.push(export_path);
+        if !paths.contains(&export_path) {
+            paths.insert(export_path);
         }
 
         let mut exports = vec![];
