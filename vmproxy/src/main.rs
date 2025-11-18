@@ -250,10 +250,10 @@ impl CustomActionRunner {
 
     pub fn before_mount(&self) -> anyhow::Result<()> {
         if let Some(action) = &self.config {
-            if !action.before_mount.is_empty() {
+            if !action.before_mount().is_empty() {
                 println!("<anylinuxfs-force-output:on>");
                 println!("Running before_mount action: `{}`", action.before_mount());
-                let result = self.execute_action(action.before_mount.to_os_str_lossy());
+                let result = self.execute_action(action.before_mount());
                 println!("<anylinuxfs-force-output:off>");
                 result?;
             }
@@ -263,10 +263,10 @@ impl CustomActionRunner {
 
     pub fn after_mount(&self) -> anyhow::Result<()> {
         if let Some(action) = &self.config {
-            if !action.after_mount.is_empty() {
+            if !action.after_mount().is_empty() {
                 println!("<anylinuxfs-force-output:on>");
                 println!("Running after_mount action: `{}`", action.after_mount());
-                let result = self.execute_action(action.after_mount().to_os_str_lossy());
+                let result = self.execute_action(action.after_mount());
                 println!("<anylinuxfs-force-output:off>");
                 result?;
             }
@@ -276,12 +276,12 @@ impl CustomActionRunner {
 
     pub fn before_unmount(&self) -> anyhow::Result<()> {
         if let Some(action) = &self.config {
-            if !action.before_unmount.is_empty() {
+            if !action.before_unmount().is_empty() {
                 println!(
                     "Running before_unmount action: `{}`",
                     action.before_unmount()
                 );
-                self.execute_action(action.before_unmount().to_os_str_lossy())?;
+                self.execute_action(action.before_unmount())?;
             }
         }
         Ok(())
@@ -383,7 +383,7 @@ fn run() -> anyhow::Result<()> {
     };
     let nfs_export_override = custom_action_cfg
         .as_ref()
-        .map(|cfg| cfg.override_nfs_export.clone());
+        .map(|cfg| cfg.override_nfs_export().to_owned());
     let mut custom_action = CustomActionRunner::new(custom_action_cfg);
 
     let mut disk_path = cli.disk_path;
@@ -749,7 +749,7 @@ fn run() -> anyhow::Result<()> {
     }
 
     let export_path = match nfs_export_override {
-        Some(path) if !path.is_empty() => path.to_str_lossy().into(),
+        Some(path) if !path.is_empty() => path,
         _ => mount_point,
     };
 

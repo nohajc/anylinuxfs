@@ -1134,8 +1134,8 @@ fn validated_mount_point(rt_info: &api::RuntimeInfo) -> MountStatus<'_> {
     };
 
     let expected_mount_point = match rt_info.mount_config.get_action() {
-        Some(action) if !action.override_nfs_export.is_empty() => {
-            action.override_nfs_export.clone()
+        Some(action) if !action.override_nfs_export().is_empty() => {
+            BString::from(action.override_nfs_export())
         }
         _ => [b"/mnt/", rt_info.dev_info.auto_mount_name().as_slice()]
             .concat()
@@ -1966,7 +1966,7 @@ impl AppRunner {
                 let share_name = mnt_dev_info.auto_mount_name();
                 let share_path = match config.get_action() {
                     Some(action) if !action.override_nfs_export().is_empty() => {
-                        action.override_nfs_export().to_owned()
+                        BString::from(action.override_nfs_export())
                     }
                     _ => [b"/mnt/", share_name.as_slice()].concat().into(),
                 };

@@ -628,14 +628,14 @@ impl ToCStringVec for &[BString] {
     }
 }
 
-pub fn find_env_vars(expression: &BStr) -> HashSet<BString> {
+pub fn find_env_vars(expression: impl AsRef<BStr>) -> HashSet<BString> {
     let mut vars = HashSet::new();
     let mut in_var = false;
     let mut in_braces = false;
     let mut var_name = BString::default();
 
     let mut last_char = '^';
-    for c in expression.chars() {
+    for c in expression.as_ref().chars() {
         match (in_var, in_braces, c) {
             // When we're in a variable with braces and encounter closing brace
             (true, true, '}') => {
@@ -1121,16 +1121,10 @@ mod tests {
     #[test]
     fn test_find_env_vars_simple() {
         // Basic $VAR syntax
+        assert_eq!(find_env_vars("$HOME"), HashSet::from(["HOME".into()]));
+        assert_eq!(find_env_vars("$PATH"), HashSet::from(["PATH".into()]));
         assert_eq!(
-            find_env_vars("$HOME".into()),
-            HashSet::from(["HOME".into()])
-        );
-        assert_eq!(
-            find_env_vars("$PATH".into()),
-            HashSet::from(["PATH".into()])
-        );
-        assert_eq!(
-            find_env_vars("$USER_NAME".into()),
+            find_env_vars("$USER_NAME"),
             HashSet::from(["USER_NAME".into()])
         );
     }
@@ -1138,16 +1132,10 @@ mod tests {
     #[test]
     fn test_find_env_vars_braced() {
         // Basic ${VAR} syntax
+        assert_eq!(find_env_vars("${HOME}"), HashSet::from(["HOME".into()]));
+        assert_eq!(find_env_vars("${PATH}"), HashSet::from(["PATH".into()]));
         assert_eq!(
-            find_env_vars("${HOME}".into()),
-            HashSet::from(["HOME".into()])
-        );
-        assert_eq!(
-            find_env_vars("${PATH}".into()),
-            HashSet::from(["PATH".into()])
-        );
-        assert_eq!(
-            find_env_vars("${USER_NAME}".into()),
+            find_env_vars("${USER_NAME}"),
             HashSet::from(["USER_NAME".into()])
         );
     }
@@ -1156,11 +1144,11 @@ mod tests {
     fn test_find_env_vars_mixed_syntax() {
         // Mix of both syntaxes
         assert_eq!(
-            find_env_vars("$HOME and ${PATH}".into()),
+            find_env_vars("$HOME and ${PATH}"),
             HashSet::from(["HOME".into(), "PATH".into()])
         );
         assert_eq!(
-            find_env_vars("${USER}:$GROUP".into()),
+            find_env_vars("${USER}:$GROUP"),
             HashSet::from(["USER".into(), "GROUP".into()])
         );
     }
@@ -1169,19 +1157,19 @@ mod tests {
     fn test_find_env_vars_consecutive() {
         // Consecutive variables
         assert_eq!(
-            find_env_vars("$A$B".into()),
+            find_env_vars("$A$B"),
             HashSet::from(["A".into(), "B".into()])
         );
         assert_eq!(
-            find_env_vars("$HOME$PATH".into()),
+            find_env_vars("$HOME$PATH"),
             HashSet::from(["HOME".into(), "PATH".into()])
         );
         assert_eq!(
-            find_env_vars("${A}${B}".into()),
+            find_env_vars("${A}${B}"),
             HashSet::from(["A".into(), "B".into()])
         );
         assert_eq!(
-            find_env_vars("$A${B}$C".into()),
+            find_env_vars("$A${B}$C"),
             HashSet::from(["A".into(), "B".into(), "C".into()])
         );
     }
@@ -1190,19 +1178,20 @@ mod tests {
     fn test_find_env_vars_with_text() {
         // Variables mixed with regular text
         assert_eq!(
-            find_env_vars("prefix-$VAR-suffix".into()),
+            find_env_vars("prefix-$VAR-suffix"),
             HashSet::from(["VAR".into()])
         );
         assert_eq!(
-            find_env_vars("path/to/$HOME/file".into()),
+            find_env_vars("path/to/$HOME/file"),
             HashSet::from(["HOME".into()])
         );
+
         assert_eq!(
-            find_env_vars("${USER}_config.txt".into()),
+            find_env_vars("${USER}_config.txt"),
             HashSet::from(["USER".into()])
         );
         assert_eq!(
-            find_env_vars("start-$A-middle-$B-end".into()),
+            find_env_vars("start-$A-middle-$B-end"),
             HashSet::from(["A".into(), "B".into()])
         );
     }
@@ -1210,64 +1199,52 @@ mod tests {
     #[test]
     fn test_find_env_vars_empty_and_edge_cases() {
         // Empty string
-        assert_eq!(find_env_vars("".into()), HashSet::new());
+        assert_eq!(find_env_vars(""), HashSet::new());
 
         // No variables
-        assert_eq!(find_env_vars("just text".into()), HashSet::new());
+        assert_eq!(find_env_vars("just text"), HashSet::new());
 
         // Just dollar sign
-        assert_eq!(find_env_vars("$".into()), HashSet::new());
+        assert_eq!(find_env_vars("$"), HashSet::new());
 
-        assert_eq!(find_env_vars("END$".into()), HashSet::new()); // $ at end with no var name
+        assert_eq!(find_env_vars("END$"), HashSet::new()); // $ at end with no var name
 
         // Empty braces
-        assert_eq!(find_env_vars("${}".into()), HashSet::new());
+        assert_eq!(find_env_vars("${}"), HashSet::new());
 
         // Incomplete braced variable
-        assert_eq!(find_env_vars("${INCOMPLETE".into()), HashSet::new());
+        assert_eq!(find_env_vars("${INCOMPLETE"), HashSet::new());
 
         // Double dollar signs
-        assert_eq!(find_env_vars("$$VAR".into()), HashSet::from(["VAR".into()]));
+        assert_eq!(find_env_vars("$$VAR"), HashSet::from(["VAR".into()]));
     }
 
     #[test]
     fn test_find_env_vars_invalid_chars() {
         // Variables with invalid characters (should stop at invalid char)
-        assert_eq!(
-            find_env_vars("$VAR-suffix".into()),
-            HashSet::from(["VAR".into()])
-        );
-        assert_eq!(
-            find_env_vars("$VAR.ext".into()),
-            HashSet::from(["VAR".into()])
-        );
-        assert_eq!(
-            find_env_vars("$VAR@domain".into()),
-            HashSet::from(["VAR".into()])
-        );
+        assert_eq!(find_env_vars("$VAR-suffix"), HashSet::from(["VAR".into()]));
+        assert_eq!(find_env_vars("$VAR.ext"), HashSet::from(["VAR".into()]));
+        assert_eq!(find_env_vars("$VAR@domain"), HashSet::from(["VAR".into()]));
 
         // Braced variables should not include invalid chars
-        assert_eq!(find_env_vars("${VAR-invalid}".into()), HashSet::new());
-        assert_eq!(find_env_vars("${VAR.invalid}".into()), HashSet::new());
+        assert_eq!(find_env_vars("${VAR-invalid}"), HashSet::new());
+        assert_eq!(find_env_vars("${VAR.invalid}"), HashSet::new());
     }
 
     #[test]
     fn test_find_env_vars_underscores_and_numbers() {
         // Valid identifier characters
+        assert_eq!(find_env_vars("$VAR_123"), HashSet::from(["VAR_123".into()]));
         assert_eq!(
-            find_env_vars("$VAR_123".into()),
-            HashSet::from(["VAR_123".into()])
-        );
-        assert_eq!(
-            find_env_vars("$_PRIVATE".into()),
+            find_env_vars("$_PRIVATE"),
             HashSet::from(["_PRIVATE".into()])
         );
         assert_eq!(
-            find_env_vars("${VAR_123}".into()),
+            find_env_vars("${VAR_123}"),
             HashSet::from(["VAR_123".into()])
         );
         assert_eq!(
-            find_env_vars("${_PRIVATE}".into()),
+            find_env_vars("${_PRIVATE}"),
             HashSet::from(["_PRIVATE".into()])
         );
     }
@@ -1276,11 +1253,11 @@ mod tests {
     fn test_find_env_vars_duplicates() {
         // Duplicate variables should now be deduplicated automatically
         assert_eq!(
-            find_env_vars("$HOME and $HOME".into()),
+            find_env_vars("$HOME and $HOME"),
             HashSet::from(["HOME".into()])
         );
         assert_eq!(
-            find_env_vars("${PATH}:$PATH".into()),
+            find_env_vars("${PATH}:$PATH"),
             HashSet::from(["PATH".into()])
         );
     }
@@ -1289,15 +1266,15 @@ mod tests {
     fn test_find_env_vars_complex_expressions() {
         // More complex real-world examples
         assert_eq!(
-            find_env_vars("export PATH=$HOME/bin:$PATH".into()),
+            find_env_vars("export PATH=$HOME/bin:$PATH"),
             HashSet::from(["HOME".into(), "PATH".into()])
         );
         assert_eq!(
-            find_env_vars("${PREFIX}/bin:${HOME}/.local/bin:$PATH".into()),
+            find_env_vars("${PREFIX}/bin:${HOME}/.local/bin:$PATH"),
             HashSet::from(["PREFIX".into(), "HOME".into(), "PATH".into()])
         );
         assert_eq!(
-            find_env_vars("echo \"User: $USER, Home: ${HOME}, Shell: $SHELL\"".into()),
+            find_env_vars("echo \"User: $USER, Home: ${HOME}, Shell: $SHELL\""),
             HashSet::from(["USER".into(), "HOME".into(), "SHELL".into()])
         );
     }
@@ -1305,25 +1282,25 @@ mod tests {
     #[test]
     fn test_find_env_vars_escaped() {
         // Basic escaping
-        assert_eq!(find_env_vars("\\$VAR".into()), HashSet::new());
+        assert_eq!(find_env_vars("\\$VAR"), HashSet::new());
         assert_eq!(
-            find_env_vars("$VAR\\$NOT_VAR".into()),
+            find_env_vars("$VAR\\$NOT_VAR"),
             HashSet::from(["VAR".into()])
         );
 
         // Multiple escaped variables
-        assert_eq!(find_env_vars("\\$A \\$B \\$C".into()), HashSet::new());
+        assert_eq!(find_env_vars("\\$A \\$B \\$C"), HashSet::new());
 
         // Mix of escaped and unescaped
         assert_eq!(
-            find_env_vars("$REAL \\$FAKE $ANOTHER".into()),
+            find_env_vars("$REAL \\$FAKE $ANOTHER"),
             HashSet::from(["REAL".into(), "ANOTHER".into()])
         );
 
         // Escaped braced variables should also work
-        assert_eq!(find_env_vars("\\${VAR}".into()), HashSet::new());
+        assert_eq!(find_env_vars("\\${VAR}"), HashSet::new());
         assert_eq!(
-            find_env_vars("${REAL} \\${FAKE}".into()),
+            find_env_vars("${REAL} \\${FAKE}"),
             HashSet::from(["REAL".into()])
         );
     }
