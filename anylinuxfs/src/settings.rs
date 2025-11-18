@@ -11,7 +11,7 @@ use std::{
 use anyhow::{Context, anyhow};
 use bstr::{BString, ByteSlice, ByteVec};
 use clap::ValueEnum;
-use common_utils::CustomActionConfig;
+use common_utils::{CustomActionConfig, CustomActionConfigOld};
 use serde::{Deserialize, Serialize};
 
 use crate::utils;
@@ -239,6 +239,48 @@ fn convert_legacy_config(config: &mut PrefsObject) {
     }
 }
 
+// TODO: remove at some point in the future
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct PrefsObjectOld {
+    #[serde(default)]
+    pub alpine: AlpineConfig,
+    #[serde(default)]
+    pub custom_actions: BTreeMap<String, CustomActionConfigOld>,
+    #[serde(default)]
+    pub images: BTreeMap<String, ImageSource>,
+    #[serde(default)]
+    pub gvproxy: GvproxyConfig,
+    #[serde(default)]
+    pub krun: KrunConfig,
+    #[serde(default)]
+    pub misc: MiscConfig,
+    // legacy config
+    #[serde(rename = "log_level")]
+    pub log_level_numeric: Option<u32>,
+    pub num_vcpus: Option<u8>,
+    pub ram_size_mib: Option<u32>,
+}
+
+impl From<PrefsObjectOld> for PrefsObject {
+    fn from(value: PrefsObjectOld) -> Self {
+        PrefsObject {
+            alpine: value.alpine,
+            custom_actions: value
+                .custom_actions
+                .into_iter()
+                .map(|(k, v)| (k, v.into()))
+                .collect(),
+            images: value.images,
+            gvproxy: value.gvproxy,
+            krun: value.krun,
+            misc: value.misc,
+            log_level_numeric: value.log_level_numeric,
+            num_vcpus: value.num_vcpus,
+            ram_size_mib: value.ram_size_mib,
+        }
+    }
+}
+
 pub fn load_preferences<'a>(
     paths: impl Iterator<Item = &'a Path>,
 ) -> anyhow::Result<[PrefsObject; 2]> {
@@ -247,7 +289,7 @@ pub fn load_preferences<'a>(
     for path in paths {
         match fs::read_to_string(path) {
             Ok(config_str) => {
-                let mut config = toml::from_str(&config_str)
+                let mut config = parse_toml_config(&config_str, path)
                     .context(format!("Failed to parse config file {}", path.display()))?;
                 convert_legacy_config(&mut config);
                 result_config[cfg_idx] = config;
@@ -257,6 +299,25 @@ pub fn load_preferences<'a>(
         cfg_idx += 1;
     }
     Ok(result_config)
+}
+
+fn parse_toml_config(config_str: &str, path: &Path) -> anyhow::Result<PrefsObject> {
+    let res = match toml::from_str::<PrefsObject>(config_str) {
+        Ok(config) => Ok(config),
+        Err(_) => {
+            // this could be a config affected by the byte string serialization bug
+            let config: PrefsObjectOld = toml::from_str(config_str)
+                .context("Failed to parse Preferences from TOML string")?;
+
+            // let's fix it up
+            let fixed_config = config.into();
+            save_preferences(&fixed_config, path)
+                .context("Error while converting config to the latest format")?;
+
+            Ok(fixed_config)
+        }
+    };
+    res
 }
 
 pub fn save_preferences(preferences: &PrefsObject, config_file_path: &Path) -> anyhow::Result<()> {

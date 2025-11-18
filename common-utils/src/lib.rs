@@ -1,5 +1,5 @@
 use anyhow::Context;
-use bstr::{BStr, ByteSlice};
+use bstr::{BStr, BString, ByteSlice};
 use percent_encoding::{AsciiSet, CONTROLS, percent_decode_str, utf8_percent_encode};
 use serde::{Deserialize, Serialize};
 use std::{ffi::CString, io, os::unix::ffi::OsStrExt, path::Path, process::Child, time::Duration};
@@ -181,6 +181,47 @@ impl CustomActionConfig {
     pub fn percent_decode(encoded: &str) -> anyhow::Result<Self> {
         let decoded = percent_decode_str(encoded).decode_utf8()?;
         Ok(ron::de::from_str(&decoded)?)
+    }
+}
+
+// TODO: remove at some point in the future
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct CustomActionConfigOld {
+    #[serde(default)]
+    pub description: BString,
+    #[serde(default)]
+    pub before_mount: BString,
+    #[serde(default)]
+    pub after_mount: BString,
+    #[serde(default)]
+    pub before_unmount: BString,
+    #[serde(default)]
+    pub environment: Vec<BString>, // KEY=value format
+    #[serde(default)]
+    pub capture_environment: Vec<BString>,
+    #[serde(default)]
+    pub override_nfs_export: String,
+}
+
+impl From<CustomActionConfigOld> for CustomActionConfig {
+    fn from(old: CustomActionConfigOld) -> Self {
+        Self {
+            description: old.description.to_str_lossy().into(),
+            before_mount: old.before_mount.to_str_lossy().into(),
+            after_mount: old.after_mount.to_str_lossy().into(),
+            before_unmount: old.before_unmount.to_str_lossy().into(),
+            environment: old
+                .environment
+                .into_iter()
+                .map(|e| e.to_str_lossy().into())
+                .collect(),
+            capture_environment: old
+                .capture_environment
+                .into_iter()
+                .map(|e| e.to_str_lossy().into())
+                .collect(),
+            override_nfs_export: old.override_nfs_export,
+        }
     }
 }
 
