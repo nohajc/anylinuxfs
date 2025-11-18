@@ -1519,7 +1519,7 @@ impl AppRunner {
                     return Err(anyhow::anyhow!("unknown image {}", name));
                 }
             },
-            ImageCmd::Uninstall { name } => todo!(),
+            ImageCmd::Uninstall { name: _ } => todo!(),
         }
         Ok(())
     }
