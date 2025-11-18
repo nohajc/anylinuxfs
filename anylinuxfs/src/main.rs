@@ -1389,6 +1389,7 @@ impl AppRunner {
         };
 
         if !cmd.skip_init {
+            // TODO: this must take the correct image source
             vm_image::init(&config.common, false, &ImageSource::default())?;
         }
 
