@@ -92,6 +92,7 @@ dependencies = [
  "plist",
  "rayon",
  "regex",
+ "ron",
  "rpassword",
  "serde",
  "serde_json",

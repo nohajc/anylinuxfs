@@ -104,7 +104,7 @@ impl Handler {
         if size == 0 {
             return Err(anyhow!("Request size is zero"));
         }
-        if size > 4096 {
+        if size > 65536 {
             return Err(anyhow!("Request size is too large"));
         }
 
@@ -114,13 +114,13 @@ impl Handler {
             .context("Failed to read request payload")?;
 
         let request: Request =
-            serde_json::from_slice(&payload_buf).context("Failed to parse request")?;
+            ron::de::from_bytes(&payload_buf).context("Failed to parse request")?;
         Ok(request)
     }
 
     fn write_response(stream: &mut UnixStream, response: Response) -> anyhow::Result<()> {
         let response_str =
-            serde_json::to_string(&response).context("Failed to serialize response")?;
+            ron::ser::to_string(&response).context("Failed to serialize response")?;
         let size = response_str.len() as u32;
         let size_buf = size.to_be_bytes();
         stream
@@ -145,7 +145,7 @@ impl Client {
     }
 
     fn write_request(stream: &mut UnixStream, request: Request) -> anyhow::Result<()> {
-        let request_str = serde_json::to_string(&request).context("Failed to serialize request")?;
+        let request_str = ron::ser::to_string(&request).context("Failed to serialize request")?;
         let size = request_str.len() as u32;
         let size_buf = size.to_be_bytes();
         stream
@@ -177,7 +177,7 @@ impl Client {
             .context("Failed to read response payload")?;
 
         let response: Response =
-            serde_json::from_slice(&payload_buf).context("Failed to parse response")?;
+            ron::de::from_bytes(&payload_buf).context("Failed to parse response")?;
         Ok(response)
     }
 }
