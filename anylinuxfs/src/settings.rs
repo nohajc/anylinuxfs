@@ -57,14 +57,15 @@ impl Config {
     #[cfg(feature = "freebsd")]
     pub fn with_image_source(&self, src: &ImageSource) -> Self {
         let mut new_config = self.clone();
-        let kernel_path = self
-            .profile_path
-            .join(&src.base_dir)
-            .join("kernel/kernel.bin"); // TODO: make this configurable?
-        new_config.kernel = KernelConfig {
-            os: src.os_type,
-            path: kernel_path,
-        };
+        new_config.kernel.os = src.os_type;
+
+        if src.os_type != OSType::Linux {
+            let kernel_path = self
+                .profile_path
+                .join(&src.base_dir)
+                .join("kernel/kernel.bin"); // TODO: make this configurable?
+            new_config.kernel.path = kernel_path;
+        }
         new_config
     }
 }
@@ -604,6 +605,13 @@ impl MountConfig {
                 .map(|a| *a),
             None => None,
         }
+    }
+
+    #[cfg(feature = "freebsd")]
+    pub fn with_image_source(&self, src: &ImageSource) -> Self {
+        let mut new_config = self.clone();
+        new_config.common = new_config.common.with_image_source(src);
+        new_config
     }
 }
 

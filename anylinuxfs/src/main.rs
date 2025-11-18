@@ -276,6 +276,10 @@ struct ShellCmd {
     /// Skip initialization of virtual environment
     #[arg(short, long)]
     skip_init: bool,
+    #[cfg(feature = "freebsd")]
+    /// OS image to use for the shell (alpine Linux by default)
+    #[arg(short, long)]
+    image: Option<String>,
     #[command(flatten)]
     mnt: MountCmd,
 }
@@ -1356,7 +1360,33 @@ impl Default for AppRunner {
 impl AppRunner {
     fn run_shell(&mut self, cmd: ShellCmd) -> anyhow::Result<()> {
         let _lock_file = LockFile::new(LOCK_FILE)?.acquire_lock(FlockKind::Exclusive)?;
+
         let config = load_mount_config(cmd.mnt)?;
+        #[cfg(feature = "freebsd")]
+        let (config, root_disk_path) = match cmd.image {
+            Some(image_name) => {
+                let images = config.common.preferences.images();
+                let matched_images: Vec<_> = images
+                    .into_iter()
+                    .filter_map(|(name, src)| name.starts_with(&image_name).then(|| src))
+                    .collect();
+
+                let src = match matched_images.len() {
+                    2.. => {
+                        return Err(anyhow!("ambiguous image name: {}", image_name));
+                    }
+                    1 => matched_images[0],
+                    0 => {
+                        return Err(anyhow!("unknown image: {}", image_name));
+                    }
+                };
+                let freebsd_base_path = config.common.profile_path.join(&src.base_dir);
+                let vm_disk_image = "freebsd-microvm-disk.img";
+                let disk_path = freebsd_base_path.join(vm_disk_image);
+                (config.with_image_source(src), Some(disk_path))
+            }
+            None => (config, None),
+        };
 
         if !cmd.skip_init {
             vm_image::init(&config.common, false, &ImageSource::default())?;
@@ -1372,17 +1402,36 @@ impl AppRunner {
             config.common.preferences.krun_ram_size_mib()
         );
 
-        let (dev_info, _, _disks) = claim_devices(&config)?;
+        #[allow(unused_mut)]
+        let (mut dev_info, _, _disks) = claim_devices(&config)?;
 
-        let opts = VMOpts::new().read_only_disks(config.read_only);
+        #[allow(unused_mut)]
+        let mut opts = VMOpts::new().read_only_disks(config.read_only);
+
+        #[cfg(feature = "freebsd")]
+        if let Some(root_disk_path) = root_disk_path
+            && config.common.kernel.os == OSType::FreeBSD
+        {
+            opts = opts.root_device("ufs:/dev/gpt/rootfs").legacy_console(true);
+            dev_info = [DevInfo::pv(root_disk_path.as_bytes())?]
+                .iter()
+                .chain(dev_info.iter())
+                .cloned()
+                .collect();
+        }
         let ctx = setup_vm(&config.common, &dev_info, false, false, opts)
             .context("Failed to setup microVM")?;
 
-        let mut cmdline = vec!["/bin/bash".to_owned()];
-        if let Some(command) = cmd.command {
-            cmdline.push("-c".to_owned());
-            cmdline.push(command);
-        }
+        let cmdline = if config.common.kernel.os == OSType::Linux {
+            let mut cmdline = vec!["/bin/bash".to_owned()];
+            if let Some(command) = cmd.command {
+                cmdline.push("-c".to_owned());
+                cmdline.push(command);
+            }
+            cmdline
+        } else {
+            vec!["/start-shell.sh".to_owned()]
+        };
         start_vm(ctx, &cmdline, &vm_env).context("Failed to start microVM shell")?;
 
         Ok(())
