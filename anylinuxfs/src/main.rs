@@ -579,7 +579,9 @@ fn drop_privileges(
 
 struct VMOpts {
     add_disks_ro: bool,
+    #[cfg(feature = "freebsd")]
     root_device: Option<String>,
+    #[cfg(feature = "freebsd")]
     legacy_console: bool,
 }
 
@@ -587,7 +589,9 @@ impl VMOpts {
     fn new() -> Self {
         Self {
             add_disks_ro: false,
+            #[cfg(feature = "freebsd")]
             root_device: None,
+            #[cfg(feature = "freebsd")]
             legacy_console: false,
         }
     }
@@ -597,11 +601,13 @@ impl VMOpts {
         self
     }
 
+    #[cfg(feature = "freebsd")]
     fn root_device(mut self, device: impl AsRef<str>) -> Self {
         self.root_device = Some(device.as_ref().to_owned());
         self
     }
 
+    #[cfg(feature = "freebsd")]
     fn legacy_console(mut self, value: bool) -> Self {
         self.legacy_console = value;
         self
@@ -635,6 +641,7 @@ fn setup_vm(
     unsafe { bindings::krun_set_vm_config(ctx, num_vcpus, ram_mib) }
         .context("Failed to set VM config")?;
 
+    #[cfg(feature = "freebsd")]
     if opts.legacy_console {
         unsafe { bindings::krun_disable_implicit_console(ctx) }
             .context("Failed to disable implicit console")?;
@@ -651,7 +658,12 @@ fn setup_vm(
         unsafe { bindings::krun_setgid(ctx, gid) }.context("Failed to set vmm gid")?;
     }
 
-    if opts.root_device.is_none() {
+    #[cfg(feature = "freebsd")]
+    let root_device_specified = opts.root_device.is_some();
+    #[cfg(not(feature = "freebsd"))]
+    let root_device_specified = false;
+
+    if !root_device_specified {
         unsafe { bindings::krun_set_root(ctx, CString::from_path(&config.root_path).as_ptr()) }
             .context("Failed to set root")?;
     }
@@ -714,6 +726,7 @@ fn setup_vm(
 
     let cmdline = match config.kernel.os {
         OSType::Linux => c"reboot=k panic=-1 panic_print=0 console=hvc0 rootfstype=virtiofs rw quiet no-kvmapf init=/init.krun",
+        #[cfg(feature = "freebsd")]
         OSType::FreeBSD => {
             match opts.root_device {
                 Some(root_device) => {
