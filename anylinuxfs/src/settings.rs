@@ -19,7 +19,6 @@ use crate::utils;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub enum OSType {
     Linux,
-    #[cfg(feature = "freebsd")]
     FreeBSD,
 }
 

@@ -79,7 +79,6 @@ pub fn start_gvproxy(config: &Config) -> anyhow::Result<Child> {
 pub fn connect_to_vm_ctrl_socket(config: &Config) -> anyhow::Result<UnixStream> {
     let sock_path = match config.kernel.os {
         OSType::Linux => &config.vsock_path,
-        #[cfg(feature = "freebsd")]
         _ => &config.gvproxy_net_sock_path,
     };
 

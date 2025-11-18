@@ -1,6 +1,6 @@
-use common_utils::host_eprintln;
-
 use crate::{Config, ImageSource};
+
+use common_utils::host_eprintln;
 use std::{fs, path::Path};
 
 mod alpine {
@@ -543,6 +543,8 @@ pub fn init(config: &Config, force: bool, src: &ImageSource) -> anyhow::Result<(
         crate::OSType::Linux => alpine::init_rootfs(config, force),
         #[cfg(feature = "freebsd")]
         crate::OSType::FreeBSD => freebsd::init_rootfs(config, force, src),
+        #[cfg(not(feature = "freebsd"))]
+        _ => Err(anyhow::anyhow!("unsupported OS type")),
     }
 }
 
