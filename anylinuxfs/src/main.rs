@@ -171,6 +171,7 @@ Recognized environment variables:
     #[command(subcommand)]
     Apk(ApkCmd),
     /// Manage VM images
+    #[cfg(feature = "freebsd")]
     #[command(subcommand)]
     Image(ImageCmd),
     #[command(subcommand, hide = true)]
@@ -1485,6 +1486,7 @@ impl AppRunner {
         Ok(())
     }
 
+    #[cfg(feature = "freebsd")]
     fn run_image(&mut self, cmd: ImageCmd) -> anyhow::Result<()> {
         let config = load_config(&CommonArgs::default())?;
         let images = config.preferences.images();
@@ -2472,6 +2474,7 @@ impl AppRunner {
             Commands::Shell(cmd) => self.run_shell(cmd),
             Commands::Dmesg => self.run_dmesg(),
             Commands::Apk(cmd) => self.run_apk(cmd),
+            #[cfg(feature = "freebsd")]
             Commands::Image(cmd) => self.run_image(cmd),
             Commands::Rpcbind(cmd) => self.run_rpcbind(cmd),
         }

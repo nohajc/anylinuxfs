@@ -54,6 +54,7 @@ pub struct Config {
 }
 
 impl Config {
+    #[cfg(feature = "freebsd")]
     pub fn with_image_source(&self, src: &ImageSource) -> Self {
         let mut new_config = self.clone();
         let kernel_path = self
@@ -71,6 +72,7 @@ impl Config {
 pub trait Preferences {
     fn alpine_custom_packages<'a>(&'a self) -> BTreeSet<&'a str>;
     fn custom_actions<'a>(&'a self) -> BTreeMap<&'a str, &'a CustomActionConfig>;
+    #[cfg(feature = "freebsd")]
     fn images<'a>(&'a self) -> BTreeMap<&'a str, &'a ImageSource>;
     fn gvproxy_debug(&self) -> bool;
     fn krun_log_level_numeric(&self) -> u32;
@@ -125,6 +127,7 @@ impl Preferences for [PrefsObject; 2] {
         result
     }
 
+    #[cfg(feature = "freebsd")]
     fn images<'a>(&'a self) -> BTreeMap<&'a str, &'a ImageSource> {
         let mut result: BTreeMap<_, _> = self[0]
             .images
@@ -416,6 +419,7 @@ pub struct ImageSource {
 }
 
 impl ImageSource {
+    #[cfg(feature = "freebsd")]
     pub fn installed_in(&self, profile_path: impl AsRef<Path>) -> bool {
         profile_path
             .as_ref()
