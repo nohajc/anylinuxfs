@@ -22,3 +22,6 @@ bstr = { version = "1.12.0", features = ["serde"] }
 procfs = { version = "0.17.0", features = ["flate2"] }
 sys-mount = { version = "3.0.1", default-features = false }
 vsock = "0.5.1"
+
+[features]
+freebsd = []
