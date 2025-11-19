@@ -1408,10 +1408,11 @@ impl AppRunner {
 
         #[allow(unused_mut)]
         let mut opts = VMOpts::new().read_only_disks(config.read_only);
+        let os = config.common.kernel.os;
 
         #[cfg(feature = "freebsd")]
         if let Some(root_disk_path) = root_disk_path
-            && config.common.kernel.os == OSType::FreeBSD
+            && os == OSType::FreeBSD
         {
             opts = opts.root_device("ufs:/dev/gpt/rootfs").legacy_console(true);
             dev_info = [DevInfo::pv(root_disk_path.as_bytes())?]
@@ -1420,20 +1421,28 @@ impl AppRunner {
                 .cloned()
                 .collect();
         }
-        let ctx = setup_vm(&config.common, &dev_info, false, false, opts)
-            .context("Failed to setup microVM")?;
+        let ctx = setup_vm(
+            &config.common,
+            &dev_info,
+            os == OSType::FreeBSD,
+            false,
+            opts,
+        )
+        .context("Failed to setup microVM")?;
 
-        let cmdline = if config.common.kernel.os == OSType::Linux {
+        if os == OSType::Linux {
             let mut cmdline = vec!["/bin/bash".to_owned()];
             if let Some(command) = cmd.command {
                 cmdline.push("-c".to_owned());
                 cmdline.push(command);
             }
-            cmdline
+            start_vm(ctx, &cmdline, &vm_env).context("Failed to start microVM shell")?;
         } else {
-            vec!["/start-shell.sh".to_owned()]
-        };
-        start_vm(ctx, &cmdline, &vm_env).context("Failed to start microVM shell")?;
+            let cmdline = vec!["/start-shell.sh".to_owned()];
+            vm_image::setup_gvproxy(&config.common, || {
+                start_vm_forked(ctx, &cmdline, &vm_env).context("Failed to start microVM shell")
+            })?;
+        }
 
         Ok(())
     }

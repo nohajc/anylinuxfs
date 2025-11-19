@@ -1,6 +1,7 @@
-use crate::{Config, ImageSource};
+use crate::{Config, ImageSource, fsutil, vm_network};
+use anyhow::anyhow;
 
-use common_utils::host_eprintln;
+use common_utils::{Deferred, host_eprintln};
 use std::{fs, path::Path};
 
 mod alpine {
@@ -99,6 +100,7 @@ mod alpine {
 
 #[cfg(feature = "freebsd")]
 mod freebsd {
+    use super::*;
     use std::{
         fs::{self, Permissions},
         os::unix::fs::PermissionsExt,
@@ -109,9 +111,8 @@ mod freebsd {
     use crate::{
         VMOpts,
         devinfo::DevInfo,
-        fsutil,
         settings::{Config, ImageSource},
-        setup_vm, start_vm_forked, vm_network,
+        setup_vm, start_vm_forked,
     };
     use anyhow::{Context, anyhow};
     use bstr::BStr;
@@ -452,40 +453,6 @@ mod freebsd {
         pkgs: Vec<String>,
     }
 
-    fn setup_gvproxy(
-        config: &Config,
-        start_vm_fn: impl FnOnce() -> anyhow::Result<i32>,
-    ) -> anyhow::Result<i32> {
-        let mut deferred = Deferred::new();
-
-        let mut gvproxy = vm_network::start_gvproxy(&config)?;
-        fsutil::wait_for_file(&config.vfkit_sock_path)?;
-
-        _ = deferred.add(|| {
-            if let Err(e) = vm_network::gvproxy_cleanup(&config) {
-                host_eprintln!("{:#}", e);
-            }
-        });
-
-        if let Some(status) = gvproxy.try_wait().ok().flatten() {
-            return Err(anyhow!(
-                "gvproxy failed with exit code: {}",
-                status
-                    .code()
-                    .map(|c| c.to_string())
-                    .unwrap_or("unknown".to_owned())
-            ));
-        }
-
-        _ = deferred.add(move || {
-            if let Err(e) = common_utils::terminate_child(&mut gvproxy, "gvproxy", None) {
-                host_eprintln!("{:#}", e);
-            }
-        });
-
-        start_vm_fn()
-    }
-
     fn start_freebsd_bootstrap_vm(
         config: &Config,
         bootstrap_image_path: impl AsRef<BStr>,
@@ -562,4 +529,38 @@ fn rootfs_version_matches(root_ver_file_path: &Path, current_version: &str) -> b
         return false;
     }
     true
+}
+
+pub fn setup_gvproxy(
+    config: &Config,
+    start_vm_fn: impl FnOnce() -> anyhow::Result<i32>,
+) -> anyhow::Result<i32> {
+    let mut deferred = Deferred::new();
+
+    let mut gvproxy = vm_network::start_gvproxy(&config)?;
+    fsutil::wait_for_file(&config.vfkit_sock_path)?;
+
+    _ = deferred.add(|| {
+        if let Err(e) = vm_network::gvproxy_cleanup(&config) {
+            host_eprintln!("{:#}", e);
+        }
+    });
+
+    if let Some(status) = gvproxy.try_wait().ok().flatten() {
+        return Err(anyhow!(
+            "gvproxy failed with exit code: {}",
+            status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or("unknown".to_owned())
+        ));
+    }
+
+    _ = deferred.add(move || {
+        if let Err(e) = common_utils::terminate_child(&mut gvproxy, "gvproxy", None) {
+            host_eprintln!("{:#}", e);
+        }
+    });
+
+    start_vm_fn()
 }
