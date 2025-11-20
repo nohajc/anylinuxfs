@@ -46,6 +46,9 @@ func loadConfig(path string) (Config, error) {
 
 // TODO: include custom files specified by user?
 var RequiredFiles = []string{
+	"/etc/rc.d/mountd",
+	"/etc/rc.d/nfsd",
+	"/etc/rc.d/statd",
 	"/etc/ssh/ssh_config",
 	"/lib/geom/geom_part.so",
 	"/sbin/fsck_ffs",
@@ -62,6 +65,7 @@ var RequiredFiles = []string{
 	"/usr/bin/sftp",
 	"/usr/bin/showmount",
 	"/usr/bin/ssh",
+	"/usr/bin/tty",
 	"/usr/bin/which",
 	"/usr/lib/pam_xdg.so",
 	"/usr/sbin/mountd",
