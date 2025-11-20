@@ -12,6 +12,13 @@ oci_url = "https://download.freebsd.org/releases/OCI-IMAGES/14.3-RELEASE/aarch64
 kernel.bundle_url = "https://github.com/nohajc/freebsd/releases/download/alfs%2F14.3.0-p5/kernel.txz"
 os_type = "FreeBSD"
 
+[images."freebsd-15.0"]
+base_dir = "freebsd-15.0"
+iso_url = "https://download.freebsd.org/releases/ISO-IMAGES/15.0/FreeBSD-15.0-RC2-arm64-aarch64-bootonly.iso"
+oci_url = "https://download.freebsd.org/releases/OCI-IMAGES/15.0-RC2/aarch64/Latest/FreeBSD-15.0-RC2-arm64-aarch64-container-image-runtime.txz"
+kernel.bundle_url = "https://github.com/nohajc/freebsd/releases/download/alfs%2F15.0-rc2/kernel.txz"
+os_type = "FreeBSD"
+
 [custom_actions.ubuntu_zfs_unlock]
 description = "Mount ZFS keystore encrypted with LUKS to unlock Ubuntu system disk"
 before_mount = "cryptsetup open /dev/zd0 ks0 && mkdir -p $KS && mount /dev/mapper/ks0 $KS"

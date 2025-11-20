@@ -283,7 +283,7 @@ func main() {
 		fmt.Printf("Error mounting /dev/vtbd1p1 to /mnt/ufs: %v\n", err)
 	}
 
-	err = run("/bin/cp", "-avx", "/", "/mnt/ufs")
+	err = run("/bin/cp", "-avx", "./", "/mnt/ufs")
 	if err != nil {
 		fmt.Printf("Error copying files to /mnt/ufs: %v\n", err)
 		return
