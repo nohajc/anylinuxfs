@@ -1431,7 +1431,13 @@ impl AppRunner {
         .context("Failed to setup microVM")?;
 
         if os == OSType::Linux {
-            let mut cmdline = vec!["/bin/bash".to_owned()];
+            let dns_server = dnsutil::get_dns_server_with_fallback();
+            let vm_prelude = format!("echo nameserver {} > /etc/resolv.conf", dns_server);
+            let mut cmdline = vec![
+                "/bin/bash".to_owned(),
+                "-c".to_owned(),
+                vm_prelude + " && /bin/bash -l",
+            ];
             if let Some(command) = cmd.command {
                 cmdline.push("-c".to_owned());
                 cmdline.push(command);
