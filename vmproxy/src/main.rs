@@ -82,6 +82,8 @@ fn expose_port(client: &reqwest::blocking::Client, port_def: &PortDef) -> anyhow
 }
 
 fn init_network(bind_addr: &str, host_rpcbind: bool) -> anyhow::Result<()> {
+    // resolv.conf is already initialized and always the same on FreeBSD
+    #[cfg(target_os = "linux")]
     fs::write("/etc/resolv.conf", format!("nameserver {VM_GATEWAY_IP}\n"))
         .context("Failed to write /etc/resolv.conf")?;
 
@@ -145,6 +147,30 @@ fn init_network(bind_addr: &str, host_rpcbind: bool) -> anyhow::Result<()> {
         )?;
     }
 
+    Ok(())
+}
+
+#[cfg(target_os = "freebsd")]
+fn setup_fs_overlay(dir: &str) -> anyhow::Result<()> {
+    let status = script(&format!(
+        "mount -t tmpfs tmpfs /overlay/{} && mount -t unionfs /overlay/{} /{}",
+        dir, dir, dir
+    ))
+    .status()
+    .context(format!("Failed to setup overlay for {}", dir))?;
+
+    if !status.success() {
+        return Err(anyhow!("Failed to setup overlay for {}", dir));
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "freebsd")]
+fn setup_writable_dirs_for_nfsd() -> anyhow::Result<()> {
+    for dir in &["etc", "var"] {
+        setup_fs_overlay(dir)?;
+    }
     Ok(())
 }
 
@@ -348,6 +374,8 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
+const KERNEL_LOG_PATH: &str = "/var/log/kernel.log";
+
 fn run() -> anyhow::Result<()> {
     // println!("vmproxy started");
     // println!("uid = {}", unsafe { libc::getuid() });
@@ -362,8 +390,11 @@ fn run() -> anyhow::Result<()> {
     let mut deferred = Deferred::new();
 
     deferred.add(|| {
-        let kernel_log_warning = "Warning: failed to dump dmesg output to /kernel.log";
-        match script("dmesg > /kernel.log").status() {
+        let kernel_log_warning = format!(
+            "Warning: failed to dump dmesg output to {}",
+            KERNEL_LOG_PATH
+        );
+        match script(&format!("dmesg > {}", KERNEL_LOG_PATH)).status() {
             Ok(status) if !status.success() => {
                 eprintln!("{}", kernel_log_warning);
             }
@@ -495,6 +526,7 @@ fn run() -> anyhow::Result<()> {
 
     // activate LVM volumes if any
     // vgchange can return non-zero but still partially succeed
+    #[cfg(target_os = "linux")]
     let _vgchange_result = Command::new("/sbin/vgchange")
         .arg("-ay")
         .status()
@@ -573,6 +605,19 @@ fn run() -> anyhow::Result<()> {
             .args(["device", "scan"])
             .status()
             .context("Failed to run btrfs command")?;
+    }
+
+    #[cfg(target_os = "freebsd")]
+    {
+        setup_writable_dirs_for_nfsd().context("Failed to setup writable dirs for nfsd")?;
+
+        let mnt_tmp_status = script("mount -t tmpfs tmpfs /mnt")
+            .status()
+            .context("Failed to mount tmpfs on /mnt")?;
+
+        if !mnt_tmp_status.success() {
+            return Err(anyhow!("Failed to mount tmpfs on /mnt"));
+        }
     }
 
     let mount_point = format!("/mnt/{}", mount_name);

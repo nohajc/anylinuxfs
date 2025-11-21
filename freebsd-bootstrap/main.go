@@ -215,6 +215,12 @@ func main() {
 	}
 	fmt.Println("created scripts")
 
+	err = createAdditionalDirs()
+	if err != nil {
+		fmt.Printf("Error creating additional directories: %v\n", err)
+		return
+	}
+
 	reader := &remoteiso.HTTPReaderAt{
 		URL: freebsdISO,
 		Client: &http.Client{
@@ -578,6 +584,20 @@ mount -fr /
 	err = os.WriteFile(scriptPath, []byte(content), 0755)
 	if err != nil {
 		return fmt.Errorf("failed to write setup script: %w", err)
+	}
+	return nil
+}
+
+func createAdditionalDirs() error {
+	dirs := []string{
+		"/overlay/var",
+		"/overlay/etc",
+	}
+	for _, dir := range dirs {
+		err := os.MkdirAll(dir, 0755)
+		if err != nil {
+			return fmt.Errorf("failed to create directory %s: %w", dir, err)
+		}
 	}
 	return nil
 }

@@ -3,8 +3,8 @@ use std::process::Command;
 use anyhow::Context;
 
 pub fn script(script: &str) -> Command {
-    let mut cmd = Command::new("/bin/busybox");
-    cmd.arg("sh").arg("-c").arg(script);
+    let mut cmd = Command::new("/bin/sh");
+    cmd.arg("-c").arg(script);
     cmd
 }
 

@@ -1455,7 +1455,7 @@ impl AppRunner {
 
     fn run_dmesg(&mut self) -> anyhow::Result<()> {
         let config = load_config(&CommonArgs::default())?;
-        let kernel_log_path = config.root_path.join("kernel.log");
+        let kernel_log_path = config.root_path.join("var/log/kernel.log");
 
         if !kernel_log_path.exists() {
             return Ok(());
