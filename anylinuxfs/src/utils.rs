@@ -722,18 +722,11 @@ pub struct PassthroughBufReader<R> {
     suppress_current_line: bool,
     pending_output: String, // Buffer for chunks we haven't output yet
     first_chunk: bool,      // Track if this is the first chunk on a new line
-}
-
-fn select_prefix(first_chunk: bool) -> Option<Prefix> {
-    if first_chunk {
-        Some(Prefix::Guest)
-    } else {
-        None
-    }
+    guest_prefix: Prefix,
 }
 
 impl<R: Read> PassthroughBufReader<R> {
-    pub fn new(inner: R) -> Self {
+    pub fn new(inner: R, guest_prefix: Prefix) -> Self {
         Self {
             inner,
             buffer: vec![0; 8192],
@@ -742,6 +735,15 @@ impl<R: Read> PassthroughBufReader<R> {
             suppress_current_line: false,
             pending_output: String::new(),
             first_chunk: true,
+            guest_prefix,
+        }
+    }
+
+    fn select_prefix(&self, first_chunk: bool) -> Option<Prefix> {
+        if first_chunk {
+            Some(self.guest_prefix)
+        } else {
+            None
         }
     }
 
@@ -757,7 +759,7 @@ impl<R: Read> PassthroughBufReader<R> {
                 if self.cap == 0 {
                     // EOF - output any pending content
                     if !self.pending_output.is_empty() {
-                        let prefix = select_prefix(self.first_chunk);
+                        let prefix = self.select_prefix(self.first_chunk);
                         prefix_print!(prefix, "{}", self.pending_output);
                         self.first_chunk = false;
                         io::stdout().flush().unwrap_or(());
@@ -806,13 +808,13 @@ impl<R: Read> PassthroughBufReader<R> {
                 } else {
                     // This line can never be a control message - output everything
                     if !self.pending_output.is_empty() {
-                        let prefix = select_prefix(self.first_chunk);
+                        let prefix = self.select_prefix(self.first_chunk);
                         prefix_print!(prefix, "{}", self.pending_output);
                         self.first_chunk = false;
                         self.pending_output.clear();
                     }
 
-                    let prefix = select_prefix(self.first_chunk);
+                    let prefix = self.select_prefix(self.first_chunk);
                     prefix_print!(prefix, "{}", chunk);
                     self.first_chunk = false;
                     io::stdout().flush().unwrap_or(());
@@ -824,7 +826,7 @@ impl<R: Read> PassthroughBufReader<R> {
             if found_newline {
                 // End of line - output any remaining pending content if not suppressed
                 if !self.suppress_current_line && !self.pending_output.is_empty() {
-                    let prefix = select_prefix(self.first_chunk);
+                    let prefix = self.select_prefix(self.first_chunk);
                     prefix_print!(prefix, "{}", self.pending_output);
                     self.first_chunk = false;
                     io::stdout().flush().unwrap_or(());

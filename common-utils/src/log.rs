@@ -9,7 +9,8 @@ use std::{
 };
 
 pub const HOST_PREFIX: &str = "macOS: ";
-pub const GUEST_PREFIX: &str = "Linux: ";
+pub const GUEST_LINUX_PREFIX: &str = "Linux: ";
+pub const GUEST_BSD_PREFIX: &str = "  BSD: ";
 pub const EMPTY_PREFIX: &str = "";
 
 pub static LOG_FILE: OnceLock<Mutex<File>> = OnceLock::new();
@@ -56,7 +57,8 @@ pub fn print_log_file() {
 #[derive(Debug, Clone, Copy)]
 pub enum Prefix {
     Host,
-    Guest,
+    GuestLinux,
+    GuestBSD,
 }
 
 #[macro_export]
@@ -121,14 +123,14 @@ macro_rules! host_eprintln {
 #[macro_export]
 macro_rules! guest_println {
     ($($arg:tt)*) => {
-        _ = $crate::println_impl!(safe_print, GUEST_PREFIX, $($arg)*)
+        _ = $crate::println_impl!(safe_print, GUEST_LINUX_PREFIX, $($arg)*)
     };
 }
 
 #[macro_export]
 macro_rules! guest_print {
     ($($arg:tt)*) => {
-        _ = $crate::print_impl!(safe_print, GUEST_PREFIX, $($arg)*)
+        _ = $crate::print_impl!(safe_print, GUEST_LINUX_PREFIX, $($arg)*)
     };
 }
 
@@ -139,8 +141,11 @@ macro_rules! prefix_println {
             Some($crate::log::Prefix::Host) => {
                 $crate::println_impl!(safe_print, HOST_PREFIX, $($arg)*)
             }
-            Some($crate::log::Prefix::Guest) => {
-                $crate::println_impl!(safe_print, GUEST_PREFIX, $($arg)*)
+            Some($crate::log::Prefix::GuestLinux) => {
+                $crate::println_impl!(safe_print, GUEST_LINUX_PREFIX, $($arg)*)
+            }
+            Some($crate::log::Prefix::GuestBSD) => {
+                $crate::println_impl!(safe_print, GUEST_BSD_PREFIX, $($arg)*)
             }
             None => {
                 $crate::println_impl!(safe_print, EMPTY_PREFIX, $($arg)*)
@@ -156,8 +161,11 @@ macro_rules! prefix_print {
             Some($crate::log::Prefix::Host) => {
                 $crate::print_impl!(safe_print, HOST_PREFIX, $($arg)*)
             }
-            Some($crate::log::Prefix::Guest) => {
-                $crate::print_impl!(safe_print, GUEST_PREFIX, $($arg)*)
+            Some($crate::log::Prefix::GuestLinux) => {
+                $crate::print_impl!(safe_print, GUEST_LINUX_PREFIX, $($arg)*)
+            }
+            Some($crate::log::Prefix::GuestBSD) => {
+                $crate::print_impl!(safe_print, GUEST_BSD_PREFIX, $($arg)*)
             }
             None => {
                 $crate::print_impl!(safe_print, EMPTY_PREFIX, $($arg)*)
@@ -173,8 +181,11 @@ macro_rules! prefix_eprintln {
             Some($crate::log::Prefix::Host) => {
                 $crate::println_impl!(safe_eprint, HOST_PREFIX, $($arg)*)
             }
-            Some($crate::log::Prefix::Guest) => {
-                $crate::println_impl!(safe_eprint, GUEST_PREFIX, $($arg)*)
+            Some($crate::log::Prefix::GuestLinux) => {
+                $crate::println_impl!(safe_eprint, GUEST_LINUX_PREFIX, $($arg)*)
+            }
+            Some($crate::log::Prefix::GuestBSD) => {
+                $crate::println_impl!(safe_eprint, GUEST_BSD_PREFIX, $($arg)*)
             }
             None => {
                 $crate::println_impl!(safe_eprint, EMPTY_PREFIX, $($arg)*)

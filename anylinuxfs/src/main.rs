@@ -1922,6 +1922,11 @@ impl AppRunner {
             let (nfs_ready_tx, nfs_ready_rx) = mpsc::channel();
             let (vm_pwd_prompt_tx, vm_pwd_prompt_rx) = mpsc::channel();
 
+            let guest_prefix = match config.common.kernel.os {
+                OSType::Linux => log::Prefix::GuestLinux,
+                OSType::FreeBSD => log::Prefix::GuestBSD,
+            };
+
             let pty_fd = forked.master_fd();
             // Spawn a thread to read from the pipe
             _ = thread::spawn(move || {
@@ -1931,7 +1936,7 @@ impl AppRunner {
                 let mut changed_to_ro = false;
                 let mut exit_code = None;
                 let mut buf_reader =
-                    PassthroughBufReader::new(unsafe { File::from_raw_fd(pty_fd) });
+                    PassthroughBufReader::new(unsafe { File::from_raw_fd(pty_fd) }, guest_prefix);
                 let mut line = String::new();
                 let mut exports = BTreeSet::new();
 
