@@ -1779,38 +1779,38 @@ impl AppRunner {
             }
         });
 
+        #[allow(unused_mut)]
+        let mut opts = VMOpts::new().read_only_disks(config.read_only);
+
+        // TODO: ask the user if they want to use FreeBSD for ZFS
+        #[cfg(feature = "freebsd")]
+        if mnt_dev_info.fs_type() == Some("zfs_member") {
+            // TODO: figure out how we're gonna pick the right image in case there's more than one
+            if let Some(src) = config
+                .common
+                .preferences
+                .images()
+                .get("freebsd-15.0")
+                .map(|s| (*s).to_owned())
+            {
+                config = config.with_image_source(&src);
+                let freebsd_base_path = config.common.profile_path.join(&src.base_dir);
+                let vm_disk_image = "freebsd-microvm-disk.img";
+                let root_disk_path = freebsd_base_path.join(vm_disk_image);
+
+                opts = opts.root_device("ufs:/dev/gpt/rootfs").legacy_console(true);
+                dev_info = [DevInfo::pv(root_disk_path.as_bytes())?]
+                    .iter()
+                    .chain(dev_info.iter())
+                    .cloned()
+                    .collect();
+            }
+        }
+
         let mut forked = utils::fork_with_pty_output(OutputAction::RedirectLater)?;
         if forked.pid == 0 {
             // Child process
             deferred.remove_all(); // deferred actions must be only called in the parent process
-
-            #[allow(unused_mut)]
-            let mut opts = VMOpts::new().read_only_disks(config.read_only);
-
-            // TODO: ask the user if they want to use FreeBSD for ZFS
-            #[cfg(feature = "freebsd")]
-            if mnt_dev_info.fs_type() == Some("zfs_member") {
-                // TODO: figure out how we're gonna pick the right image in case there's more than one
-                if let Some(src) = config
-                    .common
-                    .preferences
-                    .images()
-                    .get("freebsd-15.0")
-                    .map(|s| (*s).to_owned())
-                {
-                    config = config.with_image_source(&src);
-                    let freebsd_base_path = config.common.profile_path.join(&src.base_dir);
-                    let vm_disk_image = "freebsd-microvm-disk.img";
-                    let root_disk_path = freebsd_base_path.join(vm_disk_image);
-
-                    opts = opts.root_device("ufs:/dev/gpt/rootfs").legacy_console(true);
-                    dev_info = [DevInfo::pv(root_disk_path.as_bytes())?]
-                        .iter()
-                        .chain(dev_info.iter())
-                        .cloned()
-                        .collect();
-                }
-            }
 
             let ctx = setup_vm(&config.common, &dev_info, true, true, opts)
                 .context("Failed to setup microVM")?;

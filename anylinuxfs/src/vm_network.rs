@@ -8,7 +8,7 @@ use std::{
 
 use crate::settings::{Config, OSType, Preferences};
 use anyhow::{Context, anyhow};
-use common_utils::{VM_CTRL_PORT, VM_IP};
+use common_utils::{VM_CTRL_PORT, VM_IP, host_println};
 
 pub fn gvproxy_cleanup(vfkit_sock_path: &str) -> anyhow::Result<()> {
     let sock_krun_path = vfkit_sock_path.replace(".sock", ".sock-krun.sock");
@@ -78,8 +78,14 @@ pub fn start_gvproxy(config: &Config) -> anyhow::Result<Child> {
 
 pub fn connect_to_vm_ctrl_socket(config: &Config) -> anyhow::Result<UnixStream> {
     let sock_path = match config.kernel.os {
-        OSType::Linux => &config.vsock_path,
-        _ => &config.gvproxy_net_sock_path,
+        OSType::Linux => {
+            host_println!("Using vsock for VM control socket");
+            &config.vsock_path
+        }
+        _ => {
+            host_println!("Using gvproxy tunnel for VM control socket");
+            &config.gvproxy_net_sock_path
+        }
     };
 
     let mut stream = UnixStream::connect(sock_path)?;
