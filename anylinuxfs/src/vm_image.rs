@@ -293,10 +293,11 @@ mod freebsd {
             bootstrap_image_path.display()
         );
 
-        create_sparse_file(freebsd_base_path.join(vm_disk_image), "32G")
+        let vm_disk_image_path = freebsd_base_path.join(vm_disk_image);
+        _ = fs::remove_file(&vm_disk_image_path);
+        create_sparse_file(&vm_disk_image_path, "32G")
             .context("Failed to create FreeBSD VM disk image")?;
 
-        let vm_disk_image_path = freebsd_base_path.join(vm_disk_image);
         host_println!(
             "Created FreeBSD VM disk image: {}",
             vm_disk_image_path.display()
