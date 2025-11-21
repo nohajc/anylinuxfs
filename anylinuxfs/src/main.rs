@@ -1590,7 +1590,17 @@ impl AppRunner {
                     return Err(anyhow::anyhow!("unknown image {}", name));
                 }
             },
-            ImageCmd::Uninstall { name: _ } => todo!(),
+            ImageCmd::Uninstall { name } => match images.get(name.as_str()) {
+                Some(&src) => {
+                    let config = config.with_image_source(src);
+                    vm_image::remove(&config, src)
+                        .context(format!("Failed to uninstall image {}", name))?;
+                    safe_println!("Image {} uninstalled successfully", name)?;
+                }
+                None => {
+                    return Err(anyhow::anyhow!("unknown image {}", name));
+                }
+            },
         }
         Ok(())
     }

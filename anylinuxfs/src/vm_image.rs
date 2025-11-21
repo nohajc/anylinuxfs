@@ -46,7 +46,7 @@ mod alpine {
                 && rootfs_version_matches(&config.root_ver_file_path, ROOTFS_CURRENT_VERSION)
             {
                 // host_println!("VM root filesystem is initialized");
-                // rootfs should be initialized but check if we need to update vmproxy executable
+                // rootfs is initialized but check if we need to update vmproxy executable
                 if fsutil::files_likely_differ(&config.vmproxy_host_path, &vmproxy_guest_path)? {
                     fs::copy(&config.vmproxy_host_path, &vmproxy_guest_path).context(format!(
                         "Failed to copy {} to {}",
@@ -514,6 +514,12 @@ pub fn init(config: &Config, force: bool, src: &ImageSource) -> anyhow::Result<(
         #[cfg(not(feature = "freebsd"))]
         _ => Err(anyhow::anyhow!("unsupported OS type")),
     }
+}
+
+pub fn remove(config: &Config, src: &ImageSource) -> anyhow::Result<()> {
+    let base_path = config.profile_path.join(&src.base_dir);
+    fs::remove_dir_all(&base_path)?;
+    Ok(())
 }
 
 fn rootfs_version_matches(root_ver_file_path: &Path, current_version: &str) -> bool {
