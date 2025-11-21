@@ -14,6 +14,9 @@ use clap::ValueEnum;
 use common_utils::{CustomActionConfig, CustomActionConfigOld};
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "freebsd")]
+use crate::vm_image::KERNEL_IMAGE;
+
 use crate::utils;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -60,10 +63,7 @@ impl Config {
         new_config.kernel.os = src.os_type;
 
         if src.os_type != OSType::Linux {
-            let kernel_path = self
-                .profile_path
-                .join(&src.base_dir)
-                .join("kernel/kernel.bin"); // TODO: make this configurable?
+            let kernel_path = self.profile_path.join(&src.base_dir).join(KERNEL_IMAGE);
             new_config.kernel.path = kernel_path;
         }
         new_config

@@ -1369,7 +1369,7 @@ impl AppRunner {
 
         let config = load_mount_config(cmd.mnt)?;
         #[cfg(feature = "freebsd")]
-        let (config, root_disk_path) = match cmd.image {
+        let (config, src, root_disk_path) = match cmd.image {
             Some(image_name) => {
                 let images = config.common.preferences.images();
                 let matched_images: Vec<_> = images
@@ -1389,14 +1389,15 @@ impl AppRunner {
                 let freebsd_base_path = config.common.profile_path.join(&src.base_dir);
                 let vm_disk_image = "freebsd-microvm-disk.img";
                 let disk_path = freebsd_base_path.join(vm_disk_image);
-                (config.with_image_source(src), Some(disk_path))
+                (config.with_image_source(src), src, Some(disk_path))
             }
-            None => (config, None),
+            None => (config, &ImageSource::default(), None),
         };
+        #[cfg(not(feature = "freebsd"))]
+        let src = &ImageSource::default();
 
         if !cmd.skip_init {
-            // TODO: this must take the correct image source
-            vm_image::init(&config.common, false, &ImageSource::default())?;
+            vm_image::init(&config.common, false, src)?;
         }
 
         let (vm_env, _) = prepare_vm_environment(&config)?;

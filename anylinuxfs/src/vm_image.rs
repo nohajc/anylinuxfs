@@ -4,6 +4,9 @@ use anyhow::anyhow;
 use common_utils::{Deferred, host_eprintln};
 use std::{fs, path::Path};
 
+#[cfg(feature = "freebsd")]
+pub const KERNEL_IMAGE: &str = "kernel/kernel.bin";
+
 mod alpine {
     use super::*;
     use crate::{Config, dnsutil, fsutil, utils};
@@ -127,13 +130,27 @@ mod freebsd {
 
     pub const ROOTFS_CURRENT_VERSION: &str = "1.0.0";
 
-    pub fn init_rootfs(config: &Config, force: bool, src: &ImageSource) -> anyhow::Result<()> {
-        if !force {
-            todo!() // check for existing freebsd image
-        }
+    pub const VM_DISK_IMAGE: &str = "freebsd-microvm-disk.img";
 
+    pub fn init_rootfs(config: &Config, force: bool, src: &ImageSource) -> anyhow::Result<()> {
         if src.base_dir.is_empty() {
             return Err(anyhow!("FreeBSD base directory not specified"));
+        }
+
+        if !force {
+            let base_path = config.profile_path.join(&src.base_dir);
+            let kernel_path = base_path.join(KERNEL_IMAGE);
+            let vm_disk_image = base_path.join(VM_DISK_IMAGE);
+            let rootfs_ver_file = base_path.join("rootfs.ver");
+
+            let required_files_exist = kernel_path.exists() && vm_disk_image.exists();
+            if required_files_exist
+                && rootfs_version_matches(&rootfs_ver_file, ROOTFS_CURRENT_VERSION)
+            {
+                // host_println!("FreeBSD VM root filesystem is initialized");
+                // TODO: can we update vmproxy-bsd in the vm disk image when it's not up-to-date?
+                return Ok(());
+            }
         }
 
         let Some(iso_image_url) = src.iso_url.as_deref() else {
@@ -167,7 +184,6 @@ mod freebsd {
 
         let oci_iso_image = "freebsd-oci.iso";
         let bootstrap_image = "freebsd-bootstrap.iso";
-        let vm_disk_image = "freebsd-microvm-disk.img";
 
         let freebsd_base_path = config.profile_path.join(&src.base_dir);
         let tmp_path = freebsd_base_path.join("tmp");
@@ -293,7 +309,7 @@ mod freebsd {
             bootstrap_image_path.display()
         );
 
-        let vm_disk_image_path = freebsd_base_path.join(vm_disk_image);
+        let vm_disk_image_path = freebsd_base_path.join(VM_DISK_IMAGE);
         _ = fs::remove_file(&vm_disk_image_path);
         create_sparse_file(&vm_disk_image_path, "32G")
             .context("Failed to create FreeBSD VM disk image")?;
@@ -516,6 +532,7 @@ pub fn init(config: &Config, force: bool, src: &ImageSource) -> anyhow::Result<(
     }
 }
 
+#[cfg(feature = "freebsd")]
 pub fn remove(config: &Config, src: &ImageSource) -> anyhow::Result<()> {
     let base_path = config.profile_path.join(&src.base_dir);
     fs::remove_dir_all(&base_path)?;
