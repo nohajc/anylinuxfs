@@ -543,9 +543,13 @@ ifconfig vtnet0 inet 192.168.127.2/24
 route add default 192.168.127.1
 `
 
+// const StartShellScript = `#!/bin/sh
+
+// trap "mount -fr /" EXIT; mount -u / && TERM=vt100 /usr/libexec/getty al.3wire
+// `
 const StartShellScript = `#!/bin/sh
 
-trap "mount -fr /" EXIT; mount -u / && TERM=vt100 /usr/libexec/getty al.3wire
+trap "mount -fr /" EXIT; TERM=vt100 /bin/sh -l
 `
 
 var AllScripts = map[string]string{
