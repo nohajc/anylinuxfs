@@ -706,7 +706,7 @@ fn setup_vm(
     // unsafe { bindings::krun_set_port_map(ctx, port_map.as_ptr()) }
     //     .context("Failed to set port map")?;
 
-    vm_network::vsock_cleanup(&config)?;
+    vm_network::vsock_cleanup(&config.vsock_path)?;
 
     if use_vsock {
         unsafe {
@@ -772,8 +772,14 @@ fn start_vmproxy(
 
     let reuse_passphrase = config.common.passphrase_config == PassphrasePromptConfig::OneForAll;
 
+    let vmproxy = match config.common.kernel.os {
+        OSType::Linux => c"/vmproxy",
+        OSType::FreeBSD => c"/vmproxy-bsd",
+    }
+    .to_owned();
+
     let args: Vec<_> = [
-        c"/vmproxy".to_owned(),
+        vmproxy,
         CString::new(dev_info.vm_path()).unwrap(),
         CString::new(dev_info.auto_mount_name()).unwrap(),
         c"-b".to_owned(),
@@ -1680,7 +1686,8 @@ impl AppRunner {
             config.common.preferences.krun_ram_size_mib()
         );
 
-        let (dev_info, mut mnt_dev_info, _disks) = claim_devices(&config)?;
+        #[allow(unused_mut)]
+        let (mut dev_info, mut mnt_dev_info, _disks) = claim_devices(&config)?;
 
         // if this is NTFS or exFAT, we add uid/gid mount options
         if let Some(fs_type) = mnt_dev_info.fs_type()
@@ -1712,7 +1719,8 @@ impl AppRunner {
                         ensure_enough_ram_for_luks(&mut config.common);
                     }
                     if config.common.passphrase_config == PassphrasePromptConfig::AskForEach {
-                        let prompt_fn = diskutil::passphrase_prompt(Some(di.disk().display()));
+                        let disk = di.disk().to_owned();
+                        let prompt_fn = diskutil::passphrase_prompt(Some(disk));
                         passphrase_callbacks.push(prompt_fn);
                     }
                     passphrase_needed = true;
@@ -1737,9 +1745,12 @@ impl AppRunner {
         let gvproxy_pid = gvproxy.id() as libc::pid_t;
         fsutil::wait_for_file(&config.common.vfkit_sock_path)?;
 
-        _ = deferred.add(|| {
-            if let Err(e) = vm_network::gvproxy_cleanup(&config.common) {
-                host_eprintln!("{:#}", e);
+        _ = deferred.add({
+            let vfkit_sock_path = config.common.vfkit_sock_path.clone();
+            move || {
+                if let Err(e) = vm_network::gvproxy_cleanup(&vfkit_sock_path) {
+                    host_eprintln!("{:#}", e);
+                }
             }
         });
 
@@ -1759,9 +1770,12 @@ impl AppRunner {
             }
         });
 
-        _ = deferred.add(|| {
-            if let Err(e) = vm_network::vsock_cleanup(&config.common) {
-                host_eprintln!("{:#}", e);
+        _ = deferred.add({
+            let vsock_path = config.common.vsock_path.clone();
+            move || {
+                if let Err(e) = vm_network::vsock_cleanup(&vsock_path) {
+                    host_eprintln!("{:#}", e);
+                }
             }
         });
 
@@ -1770,7 +1784,34 @@ impl AppRunner {
             // Child process
             deferred.remove_all(); // deferred actions must be only called in the parent process
 
-            let opts = VMOpts::new().read_only_disks(config.read_only);
+            #[allow(unused_mut)]
+            let mut opts = VMOpts::new().read_only_disks(config.read_only);
+
+            // TODO: ask the user if they want to use FreeBSD for ZFS
+            #[cfg(feature = "freebsd")]
+            if mnt_dev_info.fs_type() == Some("zfs_member") {
+                // TODO: figure out how we're gonna pick the right image in case there's more than one
+                if let Some(src) = config
+                    .common
+                    .preferences
+                    .images()
+                    .get("freebsd-15.0")
+                    .map(|s| (*s).to_owned())
+                {
+                    config = config.with_image_source(&src);
+                    let freebsd_base_path = config.common.profile_path.join(&src.base_dir);
+                    let vm_disk_image = "freebsd-microvm-disk.img";
+                    let root_disk_path = freebsd_base_path.join(vm_disk_image);
+
+                    opts = opts.root_device("ufs:/dev/gpt/rootfs").legacy_console(true);
+                    dev_info = [DevInfo::pv(root_disk_path.as_bytes())?]
+                        .iter()
+                        .chain(dev_info.iter())
+                        .cloned()
+                        .collect();
+                }
+            }
+
             let ctx = setup_vm(&config.common, &dev_info, true, true, opts)
                 .context("Failed to setup microVM")?;
 
@@ -2502,8 +2543,8 @@ impl AppRunner {
                                 .context(format!("Failed to send SIGKILL to anylinuxfs"));
                         }
                     }
-                    _ = vm_network::vsock_cleanup(&rt_info.mount_config.common);
-                    _ = vm_network::gvproxy_cleanup(&rt_info.mount_config.common);
+                    _ = vm_network::vsock_cleanup(&rt_info.mount_config.common.vsock_path);
+                    _ = vm_network::gvproxy_cleanup(&rt_info.mount_config.common.vfkit_sock_path);
                 }
             }
             Err(err) => {

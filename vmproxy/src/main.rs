@@ -403,6 +403,7 @@ fn run() -> anyhow::Result<()> {
             }
             _ => {}
         }
+        // TODO: on FreeBSD, we must move the log somewhere persistent where the host can access it
     });
 
     let cli = Cli::parse();

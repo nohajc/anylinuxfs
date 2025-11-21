@@ -542,7 +542,7 @@ pub fn setup_gvproxy(
     fsutil::wait_for_file(&config.vfkit_sock_path)?;
 
     _ = deferred.add(|| {
-        if let Err(e) = vm_network::gvproxy_cleanup(&config) {
+        if let Err(e) = vm_network::gvproxy_cleanup(&config.vfkit_sock_path) {
             host_eprintln!("{:#}", e);
         }
     });

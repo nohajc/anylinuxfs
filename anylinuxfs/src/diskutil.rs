@@ -18,7 +18,7 @@ use std::{
     io::{self, Write},
     iter,
     marker::PhantomData,
-    path::Path,
+    path::{Path, PathBuf},
     process::Command,
     ptr::{NonNull, null_mut},
     str::FromStr,
@@ -735,14 +735,14 @@ fn passphrase_prompt_lazy(
     }
 }
 
-pub fn passphrase_prompt(partition: Option<impl Display>) -> impl FnOnce() {
+pub fn passphrase_prompt(partition: Option<PathBuf>) -> impl FnOnce() {
     move || {
         if !is_stdin_tty() {
             return;
         }
         match partition {
             Some(part) => {
-                _ = safe_print!("Enter passphrase for {}: ", part);
+                _ = safe_print!("Enter passphrase for {}: ", part.display());
             }
             None => {
                 _ = safe_print!("Enter passphrase: ");

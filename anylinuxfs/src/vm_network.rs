@@ -10,14 +10,14 @@ use crate::settings::{Config, OSType, Preferences};
 use anyhow::{Context, anyhow};
 use common_utils::{VM_CTRL_PORT, VM_IP};
 
-pub fn gvproxy_cleanup(config: &Config) -> anyhow::Result<()> {
-    let sock_krun_path = config.vfkit_sock_path.replace(".sock", ".sock-krun.sock");
+pub fn gvproxy_cleanup(vfkit_sock_path: &str) -> anyhow::Result<()> {
+    let sock_krun_path = vfkit_sock_path.replace(".sock", ".sock-krun.sock");
     match fs::remove_file(&sock_krun_path) {
         Ok(_) => {}
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
         Err(e) => return Err(e).context("Failed to remove vfkit socket"),
     }
-    match fs::remove_file(&config.vfkit_sock_path) {
+    match fs::remove_file(&vfkit_sock_path) {
         Ok(_) => {}
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
         Err(e) => return Err(e).context("Failed to remove vfkit socket"),
@@ -25,8 +25,8 @@ pub fn gvproxy_cleanup(config: &Config) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn vsock_cleanup(config: &Config) -> anyhow::Result<()> {
-    match fs::remove_file(&config.vsock_path) {
+pub fn vsock_cleanup(vsock_path: &str) -> anyhow::Result<()> {
+    match fs::remove_file(vsock_path) {
         Ok(_) => {}
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
         Err(e) => return Err(e).context("Failed to remove vsock socket"),
@@ -35,7 +35,7 @@ pub fn vsock_cleanup(config: &Config) -> anyhow::Result<()> {
 }
 
 pub fn start_gvproxy(config: &Config) -> anyhow::Result<Child> {
-    gvproxy_cleanup(config)?;
+    gvproxy_cleanup(&config.vfkit_sock_path)?;
 
     let net_sock_uri = format!("unix://{}", &config.gvproxy_net_sock_path);
     let vfkit_sock_uri = format!("unixgram://{}", &config.vfkit_sock_path);
