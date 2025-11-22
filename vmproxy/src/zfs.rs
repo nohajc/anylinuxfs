@@ -100,8 +100,13 @@ pub struct Mountpoint {
     pub pool: String,
 }
 
+const PROP_MOUNTPOINT: &str = "mountpoint";
+const PROP_CANMOUNT: &str = "canmount";
+const PROPS_TO_LIST: &[&str] = &[PROP_MOUNTPOINT, PROP_CANMOUNT];
+
 pub fn mountpoints() -> anyhow::Result<Vec<Mountpoint>> {
-    let text = script_output("zfs list -j").context("Failed to get ZFS mountpoints")?;
+    let text = script_output(&format!("zfs list -o {} -j", PROPS_TO_LIST.join(",")))
+        .context("Failed to get ZFS mountpoints")?;
     mountpoints_from_json(&text)
 }
 
@@ -113,8 +118,10 @@ fn mountpoints_from_json(text: &str) -> anyhow::Result<Vec<Mountpoint>> {
     let mut out = HashSet::new();
     for (_key, ds) in parsed.datasets.into_iter() {
         if let Some(props) = ds.properties {
-            if let Some(mount_prop) = props.get("mountpoint")
+            if let (Some(mount_prop), Some(canmount)) =
+                (props.get(PROP_MOUNTPOINT), props.get(PROP_CANMOUNT))
                 && !EXCLUDED_MOUNTPOINT_TYPES.contains(&mount_prop.value.as_str())
+                && canmount.value != "off"
             {
                 out.insert(Mountpoint {
                     name: ds.name.clone(),

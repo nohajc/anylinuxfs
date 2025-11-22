@@ -1683,7 +1683,65 @@ impl AppRunner {
         let services_to_restore: Vec<_>;
         let mut deferred = Deferred::new();
 
-        vm_image::init(&config.common, false, &ImageSource::default())?;
+        if !config.verbose {
+            log::disable_console_log();
+        }
+
+        #[allow(unused_mut)]
+        let (mut dev_info, mut mnt_dev_info, _disks) = claim_devices(&config)?;
+
+        #[allow(unused_mut)]
+        let mut opts = VMOpts::new().read_only_disks(config.read_only);
+
+        #[allow(unused_mut)]
+        let mut img_src = ImageSource::default();
+
+        // pick FreeBSD for ZFS if preferred and if there
+        // isn't any incompatible custom action specified
+        #[cfg(feature = "freebsd")]
+        if mnt_dev_info.fs_type() == Some("zfs_member")
+            && config.common.preferences.zfs_os() == OSType::FreeBSD
+            && config
+                .get_action()
+                .map(|a| a.required_os())
+                .flatten()
+                .unwrap_or(OSType::FreeBSD)
+                == OSType::FreeBSD
+        {
+            let bsd_image = config
+                .common
+                .preferences
+                .default_image(OSType::FreeBSD)
+                .unwrap_or("freebsd-15.0");
+
+            if let Some(src) = config
+                .common
+                .preferences
+                .images()
+                .get(bsd_image)
+                .map(|s| (*s).to_owned())
+            {
+                config = config.with_image_source(&src);
+                let freebsd_base_path = config.common.profile_path.join(&src.base_dir);
+                let vm_disk_image = "freebsd-microvm-disk.img";
+                let root_disk_path = freebsd_base_path.join(vm_disk_image);
+
+                opts = opts.root_device("ufs:/dev/gpt/rootfs").legacy_console(true);
+                dev_info = [DevInfo::pv(root_disk_path.as_bytes())?]
+                    .iter()
+                    .chain(dev_info.iter())
+                    .cloned()
+                    .collect();
+
+                img_src = src;
+            }
+        }
+
+        if !config.verbose {
+            log::enable_console_log();
+        }
+
+        vm_image::init(&config.common, false, &img_src)?;
 
         if !config.verbose {
             log::disable_console_log();
@@ -1698,9 +1756,6 @@ impl AppRunner {
             "ram_size_mib: {}",
             config.common.preferences.krun_ram_size_mib()
         );
-
-        #[allow(unused_mut)]
-        let (mut dev_info, mut mnt_dev_info, _disks) = claim_devices(&config)?;
 
         // if this is NTFS or exFAT, we add uid/gid mount options
         if let Some(fs_type) = mnt_dev_info.fs_type()
@@ -1791,41 +1846,6 @@ impl AppRunner {
                 }
             }
         });
-
-        #[allow(unused_mut)]
-        let mut opts = VMOpts::new().read_only_disks(config.read_only);
-
-        // TODO: also check if any custom action incompatible with FreeBSD has been specified
-        #[cfg(feature = "freebsd")]
-        if mnt_dev_info.fs_type() == Some("zfs_member")
-            && config.common.preferences.zfs_os() == OSType::FreeBSD
-        {
-            let bsd_image = config
-                .common
-                .preferences
-                .default_image(OSType::FreeBSD)
-                .unwrap_or("freebsd-15.0");
-
-            if let Some(src) = config
-                .common
-                .preferences
-                .images()
-                .get(bsd_image)
-                .map(|s| (*s).to_owned())
-            {
-                config = config.with_image_source(&src);
-                let freebsd_base_path = config.common.profile_path.join(&src.base_dir);
-                let vm_disk_image = "freebsd-microvm-disk.img";
-                let root_disk_path = freebsd_base_path.join(vm_disk_image);
-
-                opts = opts.root_device("ufs:/dev/gpt/rootfs").legacy_console(true);
-                dev_info = [DevInfo::pv(root_disk_path.as_bytes())?]
-                    .iter()
-                    .chain(dev_info.iter())
-                    .cloned()
-                    .collect();
-            }
-        }
 
         let mut forked = utils::fork_with_pty_output(OutputAction::RedirectLater)?;
         if forked.pid == 0 {
