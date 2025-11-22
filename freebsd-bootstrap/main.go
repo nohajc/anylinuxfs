@@ -552,9 +552,26 @@ const StartShellScript = `#!/bin/sh
 trap "mount -fr /" EXIT; TERM=vt100 /bin/sh -l
 `
 
+const UpgradeBinariesScript = `#!/bin/sh
+
+MOUNT_POINT="/mnt/img"
+
+upgrade() {
+	test -f $MOUNT_POINT/$1 && cp $MOUNT_POINT/$1 /$1.tmp && mv -f /$1.tmp /$1 && echo "Upgraded $1"
+}
+
+mount -t cd9660 /dev/vtbd1 $MOUNT_POINT
+mount -u /
+upgrade init-freebsd
+upgrade vmproxy-bsd
+mount -fr /
+umount $MOUNT_POINT
+`
+
 var AllScripts = map[string]string{
-	"init-network.sh": InitNetworkScript,
-	"start-shell.sh":  StartShellScript,
+	"init-network.sh":     InitNetworkScript,
+	"start-shell.sh":      StartShellScript,
+	"upgrade-binaries.sh": UpgradeBinariesScript,
 }
 
 func createScripts(config Config, targetDir string) error {

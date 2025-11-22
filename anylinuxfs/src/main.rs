@@ -1442,17 +1442,15 @@ impl AppRunner {
         if os == OSType::Linux {
             let dns_server = dnsutil::get_dns_server_with_fallback();
             let vm_prelude = format!("echo nameserver {} > /etc/resolv.conf", dns_server);
-            let mut cmdline = vec![
-                "/bin/bash".to_owned(),
-                "-c".to_owned(),
-                vm_prelude + " && /bin/bash -l",
-            ];
+            let mut cmdline = vec!["/bin/bash".to_owned(), "-c".to_owned()];
             if let Some(command) = cmd.command {
-                cmdline.push("-c".to_owned());
                 cmdline.push(command);
+            } else {
+                cmdline.push(vm_prelude + " && /bin/bash -l");
             }
             start_vm(ctx, &cmdline, &vm_env).context("Failed to start microVM shell")?;
         } else {
+            // TODO: support -c flag
             let cmdline = vec!["/start-shell.sh".to_owned()];
             vm_image::setup_gvproxy(&config.common, || {
                 start_vm_forked(ctx, &cmdline, &vm_env).context("Failed to start microVM shell")
