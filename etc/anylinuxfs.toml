@@ -27,3 +27,8 @@ before_unmount = "umount /dev/mapper/ks0 && cryptsetup close ks0"
 environment = ["KS=/run/keystore/rpool"]
 capture_environment = []
 override_nfs_export = ""
+required_os = "Linux"
+
+[misc]
+default_image.Linux = "alpine-latest"
+default_image.FreeBSD = "freebsd-15.0"

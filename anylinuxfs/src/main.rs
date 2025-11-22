@@ -1,7 +1,9 @@
 use anyhow::{Context, anyhow};
 use bstr::{BString, ByteVec};
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
-use common_utils::{Deferred, FromPath, PathExt, host_eprintln, host_println, log, safe_println};
+use common_utils::{
+    Deferred, FromPath, OSType, PathExt, host_eprintln, host_println, log, safe_println,
+};
 
 use devinfo::DevInfo;
 use nanoid::nanoid;
@@ -34,7 +36,7 @@ use utils::{
 };
 
 use crate::settings::{
-    Config, CustomActionEnvironment, ImageSource, KernelConfig, KrunLogLevel, MountConfig, OSType,
+    Config, CustomActionEnvironment, ImageSource, KernelConfig, KrunLogLevel, MountConfig,
     PassphrasePromptConfig, Preferences,
 };
 use crate::utils::{ToCStringVec, ToPtrVec};
@@ -1793,15 +1795,22 @@ impl AppRunner {
         #[allow(unused_mut)]
         let mut opts = VMOpts::new().read_only_disks(config.read_only);
 
-        // TODO: ask the user if they want to use FreeBSD for ZFS
+        // TODO: also check if any custom action incompatible with FreeBSD has been specified
         #[cfg(feature = "freebsd")]
-        if mnt_dev_info.fs_type() == Some("zfs_member") {
-            // TODO: figure out how we're gonna pick the right image in case there's more than one
+        if mnt_dev_info.fs_type() == Some("zfs_member")
+            && config.common.preferences.zfs_os() == OSType::FreeBSD
+        {
+            let bsd_image = config
+                .common
+                .preferences
+                .default_image(OSType::FreeBSD)
+                .unwrap_or("freebsd-15.0");
+
             if let Some(src) = config
                 .common
                 .preferences
                 .images()
-                .get("freebsd-15.0")
+                .get(bsd_image)
                 .map(|s| (*s).to_owned())
             {
                 config = config.with_image_source(&src);

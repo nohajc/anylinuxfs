@@ -130,6 +130,8 @@ fn mountpoints_from_json(text: &str) -> anyhow::Result<Vec<Mountpoint>> {
     Ok(res)
 }
 
+// TODO: detect if any dataset is encrypted and tell the user
+// how to configure FreeBSD instead of Linux for best performance
 pub fn import_all_zpools(
     mount_point_root: &str,
     read_only: bool,

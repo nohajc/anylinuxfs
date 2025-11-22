@@ -118,6 +118,13 @@ impl<'a> Drop for Deferred<'a> {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Default, Deserialize, Serialize)]
+pub enum OSType {
+    #[default]
+    Linux,
+    FreeBSD,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct CustomActionConfig {
     #[serde(default)]
@@ -134,6 +141,7 @@ pub struct CustomActionConfig {
     capture_environment: Vec<String>,
     #[serde(default)]
     override_nfs_export: String,
+    required_os: Option<OSType>,
 }
 
 impl CustomActionConfig {
@@ -169,6 +177,10 @@ impl CustomActionConfig {
 
     pub fn override_nfs_export(&self) -> &str {
         &self.override_nfs_export
+    }
+
+    pub fn required_os(&self) -> Option<OSType> {
+        self.required_os
     }
 
     const PERCENT_ENCODE_SET: &AsciiSet = &CONTROLS.add(b' ');
@@ -221,6 +233,7 @@ impl From<CustomActionConfigOld> for CustomActionConfig {
                 .map(|e| e.to_str_lossy().into())
                 .collect(),
             override_nfs_export: old.override_nfs_export,
+            required_os: None,
         }
     }
 }

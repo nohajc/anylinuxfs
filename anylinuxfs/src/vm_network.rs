@@ -6,9 +6,9 @@ use std::{
     time::Duration,
 };
 
-use crate::settings::{Config, OSType, Preferences};
+use crate::settings::{Config, Preferences};
 use anyhow::{Context, anyhow};
-use common_utils::{VM_CTRL_PORT, VM_IP, host_println};
+use common_utils::{OSType, VM_CTRL_PORT, VM_IP, host_println};
 
 pub fn gvproxy_cleanup(vfkit_sock_path: &str) -> anyhow::Result<()> {
     let sock_krun_path = vfkit_sock_path.replace(".sock", ".sock-krun.sock");

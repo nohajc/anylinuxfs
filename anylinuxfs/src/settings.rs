@@ -11,19 +11,13 @@ use std::{
 use anyhow::{Context, anyhow};
 use bstr::{BString, ByteSlice, ByteVec};
 use clap::ValueEnum;
-use common_utils::{CustomActionConfig, CustomActionConfigOld};
+use common_utils::{CustomActionConfig, CustomActionConfigOld, OSType};
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "freebsd")]
 use crate::vm_image::KERNEL_IMAGE;
 
 use crate::utils;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
-pub enum OSType {
-    Linux,
-    FreeBSD,
-}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct KernelConfig {
@@ -80,6 +74,8 @@ pub trait Preferences {
     fn krun_num_vcpus(&self) -> u8;
     fn krun_ram_size_mib(&self) -> u32;
     fn passphrase_prompt_config(&self) -> PassphrasePromptConfig;
+    fn default_image(&self, os_type: OSType) -> Option<&str>;
+    fn zfs_os(&self) -> OSType;
 
     fn user<'a>(&'a self) -> &'a PrefsObject;
     fn user_mut<'a>(&'a mut self) -> &'a mut PrefsObject;
@@ -176,6 +172,23 @@ impl Preferences for [PrefsObject; 2] {
             .misc
             .passphrase_config
             .or(self[0].misc.passphrase_config)
+            .unwrap_or_default()
+    }
+
+    fn default_image(&self, os_type: OSType) -> Option<&str> {
+        self[1]
+            .misc
+            .default_image
+            .get(&os_type)
+            .map(|s| s.as_str())
+            .or_else(|| self[0].misc.default_image.get(&os_type).map(|s| s.as_str()))
+    }
+
+    fn zfs_os(&self) -> OSType {
+        self[1]
+            .misc
+            .zfs_os
+            .or(self[0].misc.zfs_os)
             .unwrap_or_default()
     }
 
@@ -559,12 +572,19 @@ impl KrunConfig {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct MiscConfig {
     pub passphrase_config: Option<PassphrasePromptConfig>,
+    #[serde(default)]
+    pub default_image: BTreeMap<OSType, String>,
+    pub zfs_os: Option<OSType>,
 }
 
 impl MiscConfig {
     fn merge_with(&self, other: &MiscConfig) -> MiscConfig {
+        let mut default_image = self.default_image.clone();
+        default_image.extend(other.default_image.clone());
         MiscConfig {
             passphrase_config: other.passphrase_config.or(self.passphrase_config.clone()),
+            default_image,
+            zfs_os: other.zfs_os.or(self.zfs_os),
         }
     }
 
