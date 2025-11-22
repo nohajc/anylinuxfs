@@ -593,9 +593,11 @@ impl MiscConfig {
     }
 }
 
+// TODO: make a command-line flag for setting zfs_os
 impl Display for MiscConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "passphrase_config = {}", self.passphrase_config())
+        write!(f, "passphrase_config = {}\n", self.passphrase_config())
+            .and_then(|_| write!(f, "zfs_os = {:?}", self.zfs_os.unwrap_or_default()))
     }
 }
 
