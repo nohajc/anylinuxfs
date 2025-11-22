@@ -74,7 +74,9 @@ pub trait Preferences {
     fn krun_num_vcpus(&self) -> u8;
     fn krun_ram_size_mib(&self) -> u32;
     fn passphrase_prompt_config(&self) -> PassphrasePromptConfig;
+    #[cfg(feature = "freebsd")]
     fn default_image(&self, os_type: OSType) -> Option<&str>;
+    #[cfg(feature = "freebsd")]
     fn zfs_os(&self) -> OSType;
 
     fn user<'a>(&'a self) -> &'a PrefsObject;
@@ -175,6 +177,7 @@ impl Preferences for [PrefsObject; 2] {
             .unwrap_or_default()
     }
 
+    #[cfg(feature = "freebsd")]
     fn default_image(&self, os_type: OSType) -> Option<&str> {
         self[1]
             .misc
@@ -184,6 +187,7 @@ impl Preferences for [PrefsObject; 2] {
             .or_else(|| self[0].misc.default_image.get(&os_type).map(|s| s.as_str()))
     }
 
+    #[cfg(feature = "freebsd")]
     fn zfs_os(&self) -> OSType {
         self[1]
             .misc
