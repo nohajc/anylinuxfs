@@ -314,7 +314,7 @@ You can also run `anylinuxfs init` to download a fresh copy of `alpine:latest` a
 
 > [!NOTE]
 > If you encounter this error pop-up while mounting a drive, it could be caused by a non-standard configuration in `/etc/nfs.conf`.
-> By default, this file should be empty (except for any comments - lines starting with `#`). If you have previously enabled NFSv4 for example
+> By default, this file should be empty (except for any comments - starting with `#`). If you have previously enabled NFSv4 for example
 > (`nfs.client.mount.options = vers=4`), I recommend reverting this back to the empty config so that macOS uses NFSv3 which is generally more stable.
 >
 > <img width="232" height="250" alt="macos-nfs-error" src="https://github.com/user-attachments/assets/63a79b51-8012-4094-956f-f703b56f1f9d" />
