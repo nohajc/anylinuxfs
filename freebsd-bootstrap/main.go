@@ -557,7 +557,7 @@ const UpgradeBinariesScript = `#!/bin/sh
 MOUNT_POINT="/mnt/img"
 
 upgrade() {
-	test -f $MOUNT_POINT/$1 && mv /$1 /$1.old && cp $MOUNT_POINT/$1 /$1 && echo "Upgraded $1"
+	test -f $MOUNT_POINT/$1 && mv /$1 /$1.old && cp $MOUNT_POINT/$1 /$1
 }
 
 mount -t cd9660 /dev/vtbd1 $MOUNT_POINT

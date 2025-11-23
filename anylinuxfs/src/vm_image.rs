@@ -106,9 +106,11 @@ mod freebsd {
     use super::*;
     use std::{
         fs::{self, Permissions},
+        io,
         os::unix::fs::PermissionsExt,
         path::Path,
         process::Command,
+        time::SystemTime,
     };
 
     use crate::{
@@ -137,8 +139,16 @@ mod freebsd {
             return Err(anyhow!("FreeBSD base directory not specified"));
         }
 
+        let base_path = config.profile_path.join(&src.base_dir);
+        let mtimes_path = base_path.join("mtimes");
+        let tmp_path = base_path.join("tmp");
+
+        let init_src_path = config.libexec_path.join(INIT_EXEC);
+        let vmproxy_src_path = config.libexec_path.join(VMPROXY_EXEC);
+        let vm_disk_image_path = base_path.join(VM_DISK_IMAGE);
+
+        let mut deferred = Deferred::new();
         if !force {
-            let base_path = config.profile_path.join(&src.base_dir);
             let kernel_path = base_path.join(KERNEL_IMAGE);
             let vm_disk_image = base_path.join(VM_DISK_IMAGE);
             let rootfs_ver_file = base_path.join("rootfs.ver");
@@ -148,7 +158,59 @@ mod freebsd {
                 && rootfs_version_matches(&rootfs_ver_file, ROOTFS_CURRENT_VERSION)
             {
                 // host_println!("FreeBSD VM root filesystem is initialized");
-                // TODO: can we update vmproxy-bsd in the vm disk image when it's not up-to-date?
+                let mut to_upgrade = vec![];
+
+                if get_file_mtime(&init_src_path)?
+                    > read_mtime_file(&mtimes_path.join(INIT_EXEC))?
+                        .unwrap_or(SystemTime::UNIX_EPOCH)
+                {
+                    to_upgrade.push(INIT_EXEC);
+                }
+
+                if get_file_mtime(&vmproxy_src_path)?
+                    > read_mtime_file(&mtimes_path.join(VMPROXY_EXEC))?
+                        .unwrap_or(SystemTime::UNIX_EPOCH)
+                {
+                    to_upgrade.push(VMPROXY_EXEC);
+                }
+
+                if !to_upgrade.is_empty() {
+                    // prepare iso and run the upgrade script inside the VM
+                    fs::create_dir_all(&tmp_path)?;
+                    deferred.add(|| {
+                        if let Err(e) = fs::remove_dir_all(&tmp_path) {
+                            host_eprintln!("Failed to remove {}: {}", tmp_path.display(), e);
+                        }
+                    });
+
+                    let upgrade_iso_image = "upgrade.iso";
+                    create_iso(
+                        upgrade_iso_image,
+                        &tmp_path,
+                        &config.libexec_path,
+                        IsoAdd::Files(&to_upgrade),
+                    )?;
+                    let upgrade_iso_image_path = tmp_path.join(upgrade_iso_image);
+
+                    let devices = &[
+                        DevInfo::pv(vm_disk_image_path.as_bytes())?,
+                        DevInfo::pv(upgrade_iso_image_path.as_bytes())?,
+                    ];
+                    let cmdline = &["/upgrade-binaries.sh".into()];
+                    start_freebsd_vm(&config, devices, cmdline, false)
+                        .context("Failed to start FreeBSD VM for upgrade")?;
+
+                    write_mtime_files(
+                        &base_path,
+                        &to_upgrade
+                            .iter()
+                            .map(|f| config.libexec_path.join(f))
+                            .collect::<Vec<_>>(),
+                    )
+                    .context("Failed to write mtime files")?;
+
+                    host_println!("Updated VM image");
+                }
                 return Ok(());
             }
         }
@@ -185,16 +247,10 @@ mod freebsd {
         let oci_iso_image = "freebsd-oci.iso";
         let bootstrap_image = "freebsd-bootstrap.iso";
 
-        let freebsd_base_path = config.profile_path.join(&src.base_dir);
-        let tmp_path = freebsd_base_path.join("tmp");
         let oci_path = tmp_path.join("oci");
         fs::create_dir_all(&oci_path).context("Failed to create FreeBSD base directory")?;
-        host_println!(
-            "Created FreeBSD base directory: {}",
-            freebsd_base_path.display()
-        );
+        host_println!("Created FreeBSD base directory: {}", base_path.display());
 
-        let mut deferred = Deferred::new();
         deferred.add(|| {
             if let Err(e) = fs::remove_dir_all(&tmp_path) {
                 host_eprintln!("Failed to remove {}: {}", tmp_path.display(), e);
@@ -205,7 +261,7 @@ mod freebsd {
         host_println!("Fetched FreeBSD OCI image: {}", oci_image);
 
         extract(oci_image, &tmp_path, &oci_path).context("Failed to unpack FreeBSD OCI image")?;
-        create_iso(oci_iso_image, &tmp_path, &oci_path)
+        create_iso(oci_iso_image, &tmp_path, &oci_path, IsoAdd::All)
             .context("Failed to convert FreeBSD OCI image to ISO")?;
 
         let oci_iso_image_path = tmp_path.join(oci_iso_image);
@@ -231,20 +287,14 @@ mod freebsd {
             bootstrap_rootfs_path.display()
         );
 
-        copy_file(
-            config.libexec_path.join(INIT_EXEC),
-            bootstrap_rootfs_path.join(INIT_EXEC),
-        )?;
+        copy_file(&init_src_path, bootstrap_rootfs_path.join(INIT_EXEC))?;
         host_println!(
             "Copied {} to {}",
             INIT_EXEC,
             bootstrap_rootfs_path.display()
         );
 
-        copy_file(
-            config.libexec_path.join(VMPROXY_EXEC),
-            bootstrap_rootfs_path.join(VMPROXY_EXEC),
-        )?;
+        copy_file(&vmproxy_src_path, bootstrap_rootfs_path.join(VMPROXY_EXEC))?;
         host_println!(
             "Copied {} to {}",
             VMPROXY_EXEC,
@@ -254,10 +304,10 @@ mod freebsd {
         fetch(kernel_bundle_url, &tmp_path).context("Failed to fetch FreeBSD kernel bundle")?;
         host_println!("Fetched FreeBSD kernel bundle: {}", kernel_bundle_url);
 
-        extract(kernel_bundle, &tmp_path, &freebsd_base_path)
+        extract(kernel_bundle, &tmp_path, &base_path)
             .context("Failed to extract FreeBSD kernel bundle")?;
 
-        let modules = fs::read_dir(freebsd_base_path.join("kernel"))?
+        let modules = fs::read_dir(base_path.join("kernel"))?
             .filter_map(|e| e.ok())
             .filter_map(|e| match e.path().extension() {
                 Some(ext) if ext == "ko" => Some(e.path()),
@@ -300,8 +350,13 @@ mod freebsd {
         )
         .context("Failed to set executable permissions on FreeBSD entrypoint script")?;
 
-        create_iso(bootstrap_image, &tmp_path, &bootstrap_rootfs_path)
-            .context("Failed to create FreeBSD bootstrap ISO")?;
+        create_iso(
+            bootstrap_image,
+            &tmp_path,
+            &bootstrap_rootfs_path,
+            IsoAdd::All,
+        )
+        .context("Failed to create FreeBSD bootstrap ISO")?;
 
         let bootstrap_image_path = tmp_path.join(bootstrap_image);
         host_println!(
@@ -309,7 +364,6 @@ mod freebsd {
             bootstrap_image_path.display()
         );
 
-        let vm_disk_image_path = freebsd_base_path.join(VM_DISK_IMAGE);
         _ = fs::remove_file(&vm_disk_image_path);
         create_sparse_file(&vm_disk_image_path, "32G")
             .context("Failed to create FreeBSD VM disk image")?;
@@ -337,7 +391,9 @@ mod freebsd {
 
         // 2. boot it again to install third-party packages
         let setup_status = setup_gvproxy(&config, || {
-            start_freebsd_vm_setup(&config, vm_disk_image_path.as_bytes())
+            let devices = &[DevInfo::pv(vm_disk_image_path.as_bytes())?];
+            let cmdline = &["/usr/local/bin/vm-setup.sh".into()];
+            start_freebsd_vm(&config, devices, cmdline, true)
         })?;
         if setup_status != 0 {
             return Err(anyhow!(
@@ -347,10 +403,13 @@ mod freebsd {
         }
 
         // 3. write rootfs version file
-        let root_ver_file_path = freebsd_base_path.join("rootfs.ver");
+        let root_ver_file_path = base_path.join("rootfs.ver");
         if let Err(e) = fs::write(root_ver_file_path, ROOTFS_CURRENT_VERSION) {
             host_eprintln!("Failed to write rootfs version file: {}", e);
         }
+
+        write_mtime_files(&base_path, &[&init_src_path, &vmproxy_src_path])
+            .context("Failed to write mtime files")?;
 
         Ok(())
     }
@@ -387,19 +446,28 @@ mod freebsd {
 
     const TAR: &str = "/usr/bin/bsdtar";
 
+    enum IsoAdd<'a, 'b> {
+        All,
+        Files(&'a [&'b str]),
+    }
+
     fn create_iso(
         iso_path: impl AsRef<Path>,
         working_dir: &Path,
         src_dir: &Path,
+        file_list: IsoAdd<'_, '_>,
     ) -> anyhow::Result<()> {
         let tar_status = Command::new(TAR)
             .current_dir(working_dir)
-            .args(&["cvf"])
+            .args(&["cf"])
             .arg(iso_path.as_ref())
             .args(&["--format", "iso9660"])
             .arg("-C")
             .arg(src_dir)
-            .arg(".")
+            .args(match file_list {
+                IsoAdd::All => &["."],
+                IsoAdd::Files(files) => files,
+            })
             .status()
             .context("Failed to execute tar command")?;
 
@@ -423,7 +491,7 @@ mod freebsd {
     ) -> anyhow::Result<()> {
         let tar_status = Command::new(TAR)
             .current_dir(working_dir)
-            .args(&["xvf"])
+            .args(&["xf"])
             .arg(archive_path.as_ref())
             .arg("-C")
             .arg(dest_dir)
@@ -498,18 +566,18 @@ mod freebsd {
         Ok(bstrap_status)
     }
 
-    fn start_freebsd_vm_setup(
+    fn start_freebsd_vm(
         config: &Config,
-        vm_disk_image_path: impl AsRef<BStr>,
+        devices: &[DevInfo],
+        cmdline: &[String],
+        use_gvproxy: bool,
     ) -> anyhow::Result<i32> {
-        let devices = &[DevInfo::pv(vm_disk_image_path)?];
-
         let opts = VMOpts::new()
             .root_device("ufs:/dev/gpt/rootfs")
             .legacy_console(true);
-        let ctx = setup_vm(&config, devices, true, false, opts)?;
-        let setup_status = start_vm_forked(ctx, &["/usr/local/bin/vm-setup.sh".into()], &[])
-            .context("Failed to start FreeBSD VM setup")?;
+        let ctx = setup_vm(&config, devices, use_gvproxy, false, opts)?;
+        let setup_status =
+            start_vm_forked(ctx, cmdline, &[]).context("Failed to start FreeBSD VM setup")?;
 
         if setup_status != 0 {
             return Err(anyhow::anyhow!(
@@ -518,6 +586,38 @@ mod freebsd {
             ));
         }
         Ok(setup_status)
+    }
+
+    fn read_mtime_file(path: &Path) -> anyhow::Result<Option<SystemTime>> {
+        let content = match fs::read_to_string(path) {
+            Ok(content) => content,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => return Err(err).context("Failed to read mtime file"),
+        };
+        let mtime: SystemTime =
+            ron::de::from_str(&content).context("Failed to parse mtime file")?;
+        Ok(Some(mtime))
+    }
+
+    fn get_file_mtime(path: &Path) -> anyhow::Result<SystemTime> {
+        let metadata = fs::metadata(path).context("Failed to get file metadata")?;
+        let mtime = metadata
+            .modified()
+            .context("Failed to get file modified time")?;
+        Ok(mtime)
+    }
+
+    fn write_mtime_files(base_path: &Path, files: &[impl AsRef<Path>]) -> anyhow::Result<()> {
+        let mtimes_path = base_path.join("mtimes");
+        fs::create_dir_all(&mtimes_path).context("Failed to create mtimes directory")?;
+
+        for f in files {
+            let target_path = mtimes_path.join(f.as_ref().file_name().unwrap());
+            let mtime = fs::metadata(f.as_ref())?.modified()?;
+            fs::write(target_path, ron::ser::to_string(&mtime)?)
+                .context("Failed to write mtime file")?;
+        }
+        Ok(())
     }
 }
 
