@@ -32,7 +32,7 @@ codesign --entitlements "anylinuxfs.entitlements" --force -s - bin/anylinuxfs
 
 ROOTFS_PATH=~/.anylinuxfs/alpine/rootfs
 
-(cd "vmproxy" && cargo build $BUILD_ARGS)
+(cd "vmproxy" && cargo build $BUILD_ARGS $FEATURE_ARG)
 mkdir -p libexec && cp "vmproxy/target/aarch64-unknown-linux-musl/$BUILD_DIR/vmproxy" libexec/
 
 (cd "init-rootfs" && go build -ldflags="-w -s" -tags containers_image_openpgp -o ../libexec/)

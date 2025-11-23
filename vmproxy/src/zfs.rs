@@ -98,11 +98,13 @@ pub struct Mountpoint {
     pub name: String,
     pub path: String,
     pub pool: String,
+    pub encrypted: bool,
 }
 
 const PROP_MOUNTPOINT: &str = "mountpoint";
 const PROP_CANMOUNT: &str = "canmount";
-const PROPS_TO_LIST: &[&str] = &[PROP_MOUNTPOINT, PROP_CANMOUNT];
+const PROP_ENCRYPTION: &str = "encryption";
+const PROPS_TO_LIST: &[&str] = &[PROP_MOUNTPOINT, PROP_CANMOUNT, PROP_ENCRYPTION];
 
 pub fn mountpoints() -> anyhow::Result<Vec<Mountpoint>> {
     let text = script_output(&format!("zfs list -o {} -j", PROPS_TO_LIST.join(",")))
@@ -123,10 +125,14 @@ fn mountpoints_from_json(text: &str) -> anyhow::Result<Vec<Mountpoint>> {
                 && !EXCLUDED_MOUNTPOINT_TYPES.contains(&mount_prop.value.as_str())
                 && canmount.value != "off"
             {
+                let encrypted = props
+                    .get(PROP_ENCRYPTION)
+                    .map_or(false, |p| p.value != "off");
                 out.insert(Mountpoint {
                     name: ds.name.clone(),
                     path: mount_prop.value.clone(),
                     pool: ds.pool.clone(),
+                    encrypted,
                 });
             }
         }
@@ -226,6 +232,7 @@ mod tests {
             name: "pool/ds1".into(),
             path: "/mnt/foo".into(),
             pool: "pool".into(),
+            encrypted: false,
         }));
     }
 }

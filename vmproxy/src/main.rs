@@ -662,6 +662,22 @@ fn run() -> anyhow::Result<()> {
         vec![]
     };
 
+    #[cfg(all(feature = "freebsd", target_os = "linux"))]
+    {
+        // Inform the user about ZFS crypto performance on Linux arm64 and suggest using FreeBSD
+        if zfs_mountpoints.iter().any(|m| m.encrypted) {
+            println!("<anylinuxfs-force-output:on>");
+            println!(
+                "Warning: Using encrypted ZFS datasets on Linux with ARM64 hardware results in degraded performance due to GPL/CDDL license incompatibility."
+            );
+            println!(
+                "You can use a FreeBSD VM which is not affected by this issue. Simply run `anylinuxfs config --zfs-os freebsd` to set it as default for ZFS."
+            );
+            println!("For more information, see https://github.com/openzfs/zfs/issues/12171");
+            println!("<anylinuxfs-force-output:off>");
+        }
+    }
+
     custom_action
         .before_mount()
         .context("before_mount action")?;
