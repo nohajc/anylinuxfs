@@ -1762,27 +1762,27 @@ impl AppRunner {
                 .default_image(OSType::FreeBSD)
                 .unwrap_or("freebsd-15.0");
 
-            if let Some(src) = config
+            let src = config
                 .common
                 .preferences
                 .images()
                 .get(bsd_image)
-                .map(|s| (*s).to_owned())
-            {
-                config = config.with_image_source(&src);
-                let freebsd_base_path = config.common.profile_path.join(&src.base_dir);
-                let vm_disk_image = "freebsd-microvm-disk.img";
-                let root_disk_path = freebsd_base_path.join(vm_disk_image);
+                .map(|&s| s.to_owned())
+                .with_context(|| format!("FreeBSD image {} not found", bsd_image))?;
 
-                opts = opts.root_device("ufs:/dev/gpt/rootfs").legacy_console(true);
-                dev_info = [DevInfo::pv(root_disk_path.as_bytes())?]
-                    .iter()
-                    .chain(dev_info.iter())
-                    .cloned()
-                    .collect();
+            config = config.with_image_source(&src);
+            let freebsd_base_path = config.common.profile_path.join(&src.base_dir);
+            let vm_disk_image = "freebsd-microvm-disk.img";
+            let root_disk_path = freebsd_base_path.join(vm_disk_image);
 
-                img_src = src;
-            }
+            opts = opts.root_device("ufs:/dev/gpt/rootfs").legacy_console(true);
+            dev_info = [DevInfo::pv(root_disk_path.as_bytes())?]
+                .iter()
+                .chain(dev_info.iter())
+                .cloned()
+                .collect();
+
+            img_src = src;
         }
 
         if !config.verbose {
