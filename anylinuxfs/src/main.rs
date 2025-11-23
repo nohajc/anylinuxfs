@@ -2,11 +2,12 @@ use anyhow::{Context, anyhow};
 use bstr::{BString, ByteVec};
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use common_utils::{
-    Deferred, FromPath, OSType, PathExt, host_eprintln, host_println, log, safe_println,
+    Deferred, FromPath, OSType, PathExt, host_eprintln, host_println, log, safe_print, safe_println,
 };
 
 use devinfo::DevInfo;
 use nanoid::nanoid;
+use toml_edit::{Document, DocumentMut};
 
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
@@ -178,6 +179,8 @@ Recognized environment variables:
     Image(ImageCmd),
     #[command(subcommand, hide = true)]
     Rpcbind(RpcBindCmd),
+    #[command(hide = true)]
+    UpgradeConfig(UpgradeConfigCmd),
 }
 
 #[derive(Args, Default, PartialEq, Eq)]
@@ -333,6 +336,13 @@ enum RpcBindCmd {
     Unregister,
     /// List registered RPC services
     List,
+}
+
+#[derive(Args)]
+struct UpgradeConfigCmd {
+    input: String,
+    #[arg(short, long)]
+    output: Option<String>,
 }
 
 #[derive(Parser)]
@@ -1635,6 +1645,34 @@ impl AppRunner {
         }
     }
 
+    fn run_upgrade_config(&mut self, cmd: UpgradeConfigCmd) -> anyhow::Result<()> {
+        let default_cfg_str = include_str!("../../etc/anylinuxfs.toml");
+        let mut target_cfg = default_cfg_str
+            .parse::<DocumentMut>()
+            .context("Failed to parse default config")?;
+
+        let current_cfg_str =
+            fs::read_to_string(&cmd.input).context("Failed to read current config file")?;
+        let current_cfg = current_cfg_str
+            .parse::<Document<String>>()
+            .context("Failed to parse current config file")?;
+
+        settings::merge_toml_configs(&mut target_cfg, &current_cfg)
+            .context("Failed to merge config files")?;
+
+        let target_cfg_str = target_cfg.to_string();
+        match cmd.output {
+            Some(output) => {
+                fs::write(&output, target_cfg_str)
+                    .context("Failed to write upgraded config file")?;
+            }
+            None => {
+                safe_print!("{}", target_cfg_str)?;
+            }
+        }
+        Ok(())
+    }
+
     fn run_mount(&mut self, cmd: MountCmd) -> anyhow::Result<()> {
         let _lock_file = LockFile::new(LOCK_FILE)?.acquire_lock(FlockKind::Exclusive)?;
         let mut service_status = ServiceStatus::default();
@@ -2643,6 +2681,7 @@ impl AppRunner {
             #[cfg(feature = "freebsd")]
             Commands::Image(cmd) => self.run_image(cmd),
             Commands::Rpcbind(cmd) => self.run_rpcbind(cmd),
+            Commands::UpgradeConfig(cmd) => self.run_upgrade_config(cmd),
         }
     }
 }

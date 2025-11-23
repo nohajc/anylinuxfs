@@ -13,6 +13,7 @@ use bstr::{BString, ByteSlice, ByteVec};
 use clap::ValueEnum;
 use common_utils::{CustomActionConfig, CustomActionConfigOld, OSType};
 use serde::{Deserialize, Serialize};
+use toml_edit::{Document, DocumentMut, Item};
 
 #[cfg(feature = "freebsd")]
 use crate::vm_image::KERNEL_IMAGE;
@@ -103,6 +104,10 @@ pub struct PrefsObject {
     pub krun: KrunConfig,
     #[serde(default)]
     pub misc: MiscConfig,
+    #[serde(default)]
+    pub linux: OSConfig,
+    #[serde(default)]
+    pub freebsd: OSConfig,
     // legacy config
     #[serde(rename = "log_level")]
     pub log_level_numeric: Option<u32>,
@@ -181,12 +186,10 @@ impl Preferences for [PrefsObject; 2] {
 
     #[cfg(feature = "freebsd")]
     fn default_image(&self, os_type: OSType) -> Option<&str> {
-        self[1]
-            .misc
-            .default_image
-            .get(&os_type)
-            .map(|s| s.as_str())
-            .or_else(|| self[0].misc.default_image.get(&os_type).map(|s| s.as_str()))
+        match os_type {
+            OSType::Linux => self[1].linux.default_image.as_deref(),
+            OSType::FreeBSD => self[1].freebsd.default_image.as_deref(),
+        }
     }
 
     #[cfg(feature = "freebsd")]
@@ -221,7 +224,7 @@ impl Preferences for [PrefsObject; 2] {
 }
 
 impl PrefsObject {
-    fn merge_with(&self, other: &PrefsObject) -> PrefsObject {
+    pub fn merge_with(&self, other: &PrefsObject) -> PrefsObject {
         let mut custom_actions = self.custom_actions.clone();
         custom_actions.extend(other.custom_actions.clone());
 
@@ -235,6 +238,8 @@ impl PrefsObject {
             gvproxy: self.gvproxy.merge_with(&other.gvproxy),
             krun: self.krun.merge_with(&other.krun),
             misc: self.misc.merge_with(&other.misc),
+            linux: self.linux.merge_with(&other.linux),
+            freebsd: self.freebsd.merge_with(&other.freebsd),
             log_level_numeric: other.log_level_numeric.or(self.log_level_numeric),
             num_vcpus: other.num_vcpus.or(self.num_vcpus),
             ram_size_mib: other.ram_size_mib.or(self.ram_size_mib),
@@ -297,6 +302,8 @@ impl From<PrefsObjectOld> for PrefsObject {
             gvproxy: value.gvproxy,
             krun: value.krun,
             misc: value.misc,
+            linux: OSConfig::default(),
+            freebsd: OSConfig::default(),
             log_level_numeric: value.log_level_numeric,
             num_vcpus: value.num_vcpus,
             ram_size_mib: value.ram_size_mib,
@@ -324,7 +331,7 @@ pub fn load_preferences<'a>(
     Ok(result_config)
 }
 
-fn parse_toml_config(config_str: &str, path: &Path) -> anyhow::Result<PrefsObject> {
+pub fn parse_toml_config(config_str: &str, path: impl AsRef<Path>) -> anyhow::Result<PrefsObject> {
     let res = match toml::from_str::<PrefsObject>(config_str) {
         Ok(config) => Ok(config),
         Err(_) => {
@@ -334,7 +341,7 @@ fn parse_toml_config(config_str: &str, path: &Path) -> anyhow::Result<PrefsObjec
 
             // let's fix it up
             let fixed_config = config.into();
-            save_preferences(&fixed_config, path)
+            save_preferences(&fixed_config, path.as_ref())
                 .context("Error while converting config to the latest format")?;
 
             Ok(fixed_config)
@@ -578,18 +585,13 @@ impl KrunConfig {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct MiscConfig {
     pub passphrase_config: Option<PassphrasePromptConfig>,
-    #[serde(default)]
-    pub default_image: BTreeMap<OSType, String>,
     pub zfs_os: Option<OSType>,
 }
 
 impl MiscConfig {
     fn merge_with(&self, other: &MiscConfig) -> MiscConfig {
-        let mut default_image = self.default_image.clone();
-        default_image.extend(other.default_image.clone());
         MiscConfig {
             passphrase_config: other.passphrase_config.or(self.passphrase_config.clone()),
-            default_image,
             zfs_os: other.zfs_os.or(self.zfs_os),
         }
     }
@@ -610,6 +612,17 @@ impl Display for MiscConfig {
     }
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct OSConfig {
+    pub default_image: Option<String>,
+}
+impl OSConfig {
+    fn merge_with(&self, other: &OSConfig) -> OSConfig {
+        OSConfig {
+            default_image: other.default_image.clone().or(self.default_image.clone()),
+        }
+    }
+}
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct MountConfig {
     pub disk_path: String,
@@ -669,5 +682,46 @@ impl Display for PassphrasePromptConfig {
             PassphrasePromptConfig::OneForAll => "one_for_all",
         };
         write!(f, "{}", val)
+    }
+}
+
+pub fn merge_toml_configs<S>(dst: &mut DocumentMut, src: &Document<S>) -> anyhow::Result<()> {
+    for (key, dst_item) in dst.iter_mut() {
+        if let Some(src_item) = src.get(&key) {
+            match dst_item {
+                Item::None => (),
+                Item::Value(value) => {
+                    *value = src_item
+                        .as_value()
+                        .context("source item is not a value")?
+                        .to_owned();
+                }
+                Item::Table(table) => {
+                    merge_toml_tables(
+                        table,
+                        src_item.as_table().context("source item is not a table")?,
+                    );
+                }
+                Item::ArrayOfTables(_array_of_tables) => unimplemented!(),
+            }
+        }
+    }
+
+    merge_toml_tables(dst, src.as_table());
+    Ok(())
+}
+
+fn merge_toml_tables(dst: &mut toml_edit::Table, src: &toml_edit::Table) {
+    for (key, src_item) in src.iter() {
+        // only add src items not present in dst
+        if dst.contains_key(key) {
+            continue;
+        }
+        let mut item = src_item.clone();
+        if let Item::Table(ref mut tbl) = item {
+            tbl.clear_position();
+            *tbl.decor_mut() = toml_edit::Decor::new("\n", "");
+        }
+        dst.insert(&key, item);
     }
 }

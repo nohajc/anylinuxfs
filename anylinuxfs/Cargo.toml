@@ -33,9 +33,11 @@ os_socketaddr = "0.2.5"
 rayon = "1.11.0"
 bstr = { version = "1.12.0", features = ["serde"] }
 ron = "0.12.0"
+toml_edit = "0.23.7"
 
 [features]
 freebsd = []
 
 [patch.crates-io]
-libblkid-rs = { git = 'https://github.com/stratis-storage/libblkid-rs.git', rev = "5c08342" }
+libblkid-rs = { git = "https://github.com/stratis-storage/libblkid-rs.git", rev = "5c08342" }
+toml_edit = { git = "https://github.com/nohajc/toml.git", branch = "main" }
