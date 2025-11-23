@@ -1459,8 +1459,11 @@ impl AppRunner {
             }
             start_vm(ctx, &cmdline, &vm_env).context("Failed to start microVM shell")?;
         } else {
-            // TODO: support -c flag
-            let cmdline = vec!["/start-shell.sh".to_owned()];
+            let cmdline = if let Some(command) = cmd.command {
+                vec!["/bin/sh".to_owned(), "-c".to_owned(), command]
+            } else {
+                vec!["/start-shell.sh".to_owned()]
+            };
             vm_image::setup_gvproxy(&config.common, || {
                 start_vm_forked(ctx, &cmdline, &vm_env).context("Failed to start microVM shell")
             })?;
