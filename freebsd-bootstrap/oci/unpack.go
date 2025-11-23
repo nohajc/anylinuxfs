@@ -44,7 +44,6 @@ func Unpack(imagePath, rootfsPath string) error {
 		return fmt.Errorf("tag is not found: %s", fromName)
 	}
 	if len(fromDescriptorPaths) != 1 {
-		// TODO: Handle this more nicely.
 		return fmt.Errorf("tag is ambiguous: %s", fromName)
 	}
 	meta.From = fromDescriptorPaths[0]

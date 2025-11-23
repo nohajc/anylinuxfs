@@ -2505,6 +2505,7 @@ impl AppRunner {
                     rt_info.mount_config.common.preferences.krun_num_vcpus(),
                     rt_info.mount_config.common.preferences.krun_ram_size_mib(),
                 );
+                // println!("mount_config: {:#?}", &rt_info.mount_config);
             }
             Err(err) => {
                 if let Some(err) = err.downcast_ref::<io::Error>() {
