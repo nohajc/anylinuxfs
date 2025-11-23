@@ -47,6 +47,8 @@ pub struct Config {
     pub sudo_uid: Option<libc::uid_t>,
     pub sudo_gid: Option<libc::gid_t>,
     pub passphrase_config: PassphrasePromptConfig,
+    #[cfg(feature = "freebsd")]
+    pub zfs_os: OSType,
     pub preferences: [PrefsObject; 2],
 }
 
@@ -260,7 +262,7 @@ fn convert_legacy_config(config: &mut PrefsObject) {
     }
 }
 
-// TODO: remove at some point in the future
+// FIXME: remove at some point in the future
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct PrefsObjectOld {
     #[serde(default)]
@@ -597,11 +599,14 @@ impl MiscConfig {
     }
 }
 
-// TODO: make a command-line flag for setting zfs_os
 impl Display for MiscConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "passphrase_config = {}\n", self.passphrase_config())
-            .and_then(|_| write!(f, "zfs_os = {:?}", self.zfs_os.unwrap_or_default()))
+        write!(
+            f,
+            "passphrase_config = {}\nzfs_os = {:?}",
+            self.passphrase_config(),
+            self.zfs_os.unwrap_or_default()
+        )
     }
 }
 

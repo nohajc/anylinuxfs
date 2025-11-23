@@ -1,5 +1,6 @@
 use anyhow::Context;
 use bstr::{BStr, BString, ByteSlice};
+use clap::ValueEnum;
 use percent_encoding::{AsciiSet, CONTROLS, percent_decode_str, utf8_percent_encode};
 use serde::{Deserialize, Serialize};
 use std::{ffi::CString, io, os::unix::ffi::OsStrExt, path::Path, process::Child, time::Duration};
@@ -118,10 +119,14 @@ impl<'a> Drop for Deferred<'a> {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Default, Deserialize, Serialize)]
+#[derive(
+    Clone, Copy, ValueEnum, Debug, PartialEq, Eq, PartialOrd, Ord, Default, Deserialize, Serialize,
+)]
 pub enum OSType {
+    #[clap(name = "linux")]
     #[default]
     Linux,
+    #[clap(name = "freebsd")]
     FreeBSD,
 }
 
@@ -196,7 +201,7 @@ impl CustomActionConfig {
     }
 }
 
-// TODO: remove at some point in the future
+// FIXME: remove at some point in the future
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct CustomActionConfigOld {
     #[serde(default)]

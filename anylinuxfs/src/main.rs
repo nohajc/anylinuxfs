@@ -185,6 +185,10 @@ struct CommonArgs {
     /// Passphrase configuration (ask for each drive / use one for all)
     #[arg(short, long)]
     passphrase_config: Option<PassphrasePromptConfig>,
+    /// Operating system to use with ZFS
+    #[cfg(feature = "freebsd")]
+    #[arg(long)]
+    zfs_os: Option<OSType>,
 }
 
 #[derive(Args)]
@@ -462,6 +466,9 @@ fn load_config(common_args: &CommonArgs) -> anyhow::Result<Config> {
         .passphrase_config
         .unwrap_or(preferences.passphrase_prompt_config());
 
+    #[cfg(feature = "freebsd")]
+    let zfs_os = common_args.zfs_os.unwrap_or(preferences.zfs_os());
+
     let kernel = KernelConfig {
         os: OSType::Linux,
         path: kernel_path,
@@ -488,6 +495,8 @@ fn load_config(common_args: &CommonArgs) -> anyhow::Result<Config> {
         sudo_uid,
         sudo_gid,
         passphrase_config,
+        #[cfg(feature = "freebsd")]
+        zfs_os,
         preferences,
     })
 }
@@ -1698,7 +1707,7 @@ impl AppRunner {
         // isn't any incompatible custom action specified
         #[cfg(feature = "freebsd")]
         if mnt_dev_info.fs_type() == Some("zfs_member")
-            && config.common.preferences.zfs_os() == OSType::FreeBSD
+            && config.common.zfs_os == OSType::FreeBSD
             && config
                 .get_action()
                 .map(|a| a.required_os())
@@ -2355,6 +2364,10 @@ impl AppRunner {
         let misc_config = &mut config.preferences.user_mut().misc;
         if let Some(passphrase_config) = cmd.common.passphrase_config {
             misc_config.passphrase_config = Some(passphrase_config);
+        }
+        #[cfg(feature = "freebsd")]
+        if let Some(zfs_os) = cmd.common.zfs_os {
+            misc_config.zfs_os = Some(zfs_os);
         }
 
         println!("{}", &config.preferences.merged());
