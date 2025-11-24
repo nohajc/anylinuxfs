@@ -1399,7 +1399,8 @@ dependencies = [
 [[package]]
 name = "toml_datetime"
 version = "0.7.3"
-source = "git+https://github.com/nohajc/toml.git?branch=main#eee5aa07b8e558259a27c32c5d0da99087f302d5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f2cdb639ebbc97961c51720f858597f7f24c4fc295327923af55b74c3c724533"
 dependencies = [
  "serde_core",
 ]
@@ -1421,7 +1422,8 @@ dependencies = [
 [[package]]
 name = "toml_edit"
 version = "0.23.7"
-source = "git+https://github.com/nohajc/toml.git?branch=main#eee5aa07b8e558259a27c32c5d0da99087f302d5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6485ef6d0d9b5d0ec17244ff7eb05310113c3f316f2d14200d4de56b3cb98f8d"
 dependencies = [
  "indexmap",
  "toml_datetime 0.7.3",
@@ -1433,7 +1435,8 @@ dependencies = [
 [[package]]
 name = "toml_parser"
 version = "1.0.4"
-source = "git+https://github.com/nohajc/toml.git?branch=main#eee5aa07b8e558259a27c32c5d0da99087f302d5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c0cbe268d35bdb4bb5a56a2de88d0ad0eb70af5384a99d648cd4b3d04039800e"
 dependencies = [
  "winnow",
 ]
@@ -1447,7 +1450,8 @@ checksum = "5d99f8c9a7727884afe522e9bd5edbfc91a3312b36a77b5fb8926e4c31a41801"
 [[package]]
 name = "toml_writer"
 version = "1.0.4"
-source = "git+https://github.com/nohajc/toml.git?branch=main#eee5aa07b8e558259a27c32c5d0da99087f302d5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df8b2b54733674ad286d16267dcfc7a71ed5c776e4ac7aa3c3e2561f7c637bf2"
 
 [[package]]
 name = "typeid"

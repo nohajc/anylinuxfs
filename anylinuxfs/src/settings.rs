@@ -719,9 +719,26 @@ fn merge_toml_tables(dst: &mut toml_edit::Table, src: &toml_edit::Table) {
         }
         let mut item = src_item.clone();
         if let Item::Table(ref mut tbl) = item {
-            tbl.clear_position();
+            *tbl = tbl.without_position();
             *tbl.decor_mut() = toml_edit::Decor::new("\n", "");
         }
         dst.insert(&key, item);
+    }
+}
+
+trait TableExt {
+    fn without_position(&self) -> Self;
+}
+
+impl TableExt for toml_edit::Table {
+    fn without_position(&self) -> Self {
+        let mut new_table = Self::default();
+
+        *new_table.decor_mut() = self.decor().clone();
+        new_table.set_implicit(self.is_implicit());
+        new_table.set_dotted(self.is_dotted());
+        new_table.extend(self);
+
+        new_table
     }
 }

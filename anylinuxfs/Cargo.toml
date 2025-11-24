@@ -40,4 +40,3 @@ freebsd = []
 
 [patch.crates-io]
 libblkid-rs = { git = "https://github.com/stratis-storage/libblkid-rs.git", rev = "5c08342" }
-toml_edit = { git = "https://github.com/nohajc/toml.git", branch = "main" }
