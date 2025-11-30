@@ -749,9 +749,7 @@ fn setup_vm(
             match opts.root_device {
                 Some(root_device) => {
                     let cmdline_str = format!("FreeBSD:vfs.root.mountfrom={root_device} \
-                        kernel_path=/boot/kernel kernelname=/boot/kernel/kernel \
-                        module_path=/boot/kernel;/boot/modules;/boot/dtb;/boot/dtb/overlays \
-                        -mq init_path=/init-freebsd module_verbose=2");
+                        -mq init_path=/init-freebsd");
                     &CString::new(cmdline_str).unwrap()
                 }
                 None => {
