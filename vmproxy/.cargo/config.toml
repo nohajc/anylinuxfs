@@ -2,7 +2,7 @@
 target = "aarch64-unknown-linux-musl"
 
 [target.aarch64-unknown-linux-musl]
-linker = "/opt/homebrew/opt/llvm/bin/clang"
+linker = "/usr/bin/clang"
 rustflags = [
     "-Clinker-plugin-lto",
     "-Clink-arg=--target=aarch64-unknown-linux-musl",
@@ -10,7 +10,7 @@ rustflags = [
 ]
 
 [target.aarch64-unknown-freebsd]
-linker = "/opt/homebrew/opt/llvm/bin/clang"
+linker = "/usr/bin/clang"
 rustflags = [
     "-Clinker-plugin-lto",
     "-Clink-arg=--target=aarch64-unknown-freebsd",
