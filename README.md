@@ -6,7 +6,7 @@ With full write support, based on the libkrun microVM hypervisor and NFS. Doesn'
 
 > [!IMPORTANT]
 > If anylinuxfs is suddenly freezing, you are most probably affected by a new bug in the libkrun library.
-> Please, upgrade to the latest version and read the release notes.
+> Please, upgrade to the latest version and read the [release notes](https://github.com/nohajc/anylinuxfs/releases/tag/v0.8.7).
 
 ## Features
 - mounts any filesystem supported by Linux (**ext4**, **btrfs**, **xfs**, ... but also **NTFS** and **exFAT**)
