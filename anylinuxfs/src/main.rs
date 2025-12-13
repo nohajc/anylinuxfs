@@ -1050,7 +1050,7 @@ fn mount_nfs(share_path: &[u8], config: &MountConfig) -> anyhow::Result<()> {
     };
 
     let shell_script = [
-        b"mount -t nfs -o nfc \"localhost:",
+        b"mount -t nfs -o nfc,vers=3 \"localhost:",
         share_path,
         b"\" \"",
         mount_point.as_bytes(),
