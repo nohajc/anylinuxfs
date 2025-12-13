@@ -2,13 +2,15 @@ use anyhow::{Context, anyhow};
 use bstr::{BString, ByteVec};
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use common_utils::{
-    Deferred, FromPath, OSType, PathExt, host_eprintln, host_println, log, safe_print, safe_println,
+    Deferred, FromPath, OSType, PathBufExt, PathExt, host_eprintln, host_println, log, safe_print,
+    safe_println,
 };
 
 use devinfo::DevInfo;
 use nanoid::nanoid;
 use toml_edit::{Document, DocumentMut};
 
+use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::fs::{self, File};
@@ -1007,67 +1009,98 @@ fn wait_for_nfs_server(
 }
 
 fn mount_nfs(share_path: &[u8], config: &MountConfig) -> anyhow::Result<()> {
-    let status = if let Some(mount_point) = config.custom_mount_point.as_deref() {
-        let mut shell_script = [
-            b"mount -t nfs \"localhost:",
-            share_path,
-            b"\" \"",
-            mount_point.as_bytes(),
-            b"\"",
-        ]
-        .concat();
+    let mount_point: Cow<'_, _> = match config.custom_mount_point.as_deref() {
+        // custom mount point must already exist
+        Some(mount_point) => mount_point.into(),
+        None => {
+            // default mount point will be created
+            let mount_name = share_path.split(|&b| b == b'/').last().unwrap();
+            let mut mount_path = PathBuf::from_bytes([b"/Volumes/", mount_name].concat());
+            let mut counter = 1;
 
-        if config.open_finder {
-            shell_script.extend_from_slice(b" && open \"");
-            shell_script.extend_from_slice(mount_point.as_bytes());
-            shell_script.extend_from_slice(b"\"");
+            while mount_path.exists() {
+                mount_path = PathBuf::from_bytes(
+                    [
+                        b"/Volumes/", // TODO: use ~/Volumes when not running as root
+                        mount_name,
+                        b"-",
+                        counter.to_string().as_bytes(),
+                    ]
+                    .concat(),
+                );
+                counter += 1;
+            }
+
+            fs::create_dir_all(&mount_path).with_context(|| {
+                format!(
+                    "Failed to create mount point directory {}",
+                    mount_path.display()
+                )
+            })?;
+            chown(
+                &mount_path,
+                Some(config.common.invoker_uid),
+                Some(config.common.invoker_gid),
+            )
+            .context(format!(
+                "Failed to change owner of {}",
+                mount_path.display(),
+            ))?;
+
+            mount_path.into()
         }
-
-        let shell_script = OsStr::from_bytes(&shell_script);
-        // try to run mount as regular user first
-        // (if that succeeds, umount will work without sudo)
-        let mut status = Command::new("sh")
-            .arg("-c")
-            .arg(shell_script)
-            .uid(config.common.invoker_uid)
-            .gid(config.common.invoker_gid)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()?;
-
-        if !status.success() {
-            // otherwise run as root (probably the mount point wasn't accessible)
-            status = Command::new("sh").arg("-c").arg(shell_script).status()?;
-        }
-        status
-    } else {
-        let location = [b"nfs://localhost:", share_path].concat();
-        let apple_script = if config.open_finder {
-            [
-                b"tell application \"Finder\" to open location \"",
-                location.as_slice(),
-                b"\"",
-            ]
-            .concat()
-        } else {
-            [b"mount volume \"", location.as_slice(), b"\""].concat()
-        };
-        Command::new("osascript")
-            .arg("-e")
-            .arg(OsStr::from_bytes(&apple_script))
-            .stdout(Stdio::null())
-            .status()?
     };
+
+    let shell_script = [
+        b"mount -t nfs -o nfc \"localhost:",
+        share_path,
+        b"\" \"",
+        mount_point.as_bytes(),
+        b"\"",
+    ]
+    .concat();
+
+    let shell_script = OsStr::from_bytes(&shell_script);
+    // try to run mount as regular user first
+    // (if that succeeds, umount will work without sudo)
+    let mut status = Command::new("sh")
+        .arg("-c")
+        .arg(shell_script)
+        .uid(config.common.invoker_uid)
+        .gid(config.common.invoker_gid)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?;
+
+    if !status.success() {
+        // otherwise run as root (probably the mount point wasn't accessible)
+        status = Command::new("sh").arg("-c").arg(shell_script).status()?;
+    }
 
     if !status.success() {
         return Err(anyhow!(
-            "osascript failed with exit code {}",
+            "failed with exit code {}",
             status
                 .code()
                 .map(|c| c.to_string())
                 .unwrap_or("unknown".to_owned())
         ));
     }
+
+    if config.open_finder {
+        let mut shell_script = b"afplay \"/System/Library/Components/CoreAudio.component/Contents/SharedSupport/SystemSounds/system/Volume Mount.aif\"".to_vec();
+        shell_script.extend_from_slice(b" &! open \"");
+        shell_script.extend_from_slice(mount_point.as_bytes());
+        shell_script.extend_from_slice(b"\"");
+        let shell_script = OsStr::from_bytes(&shell_script);
+        let _ = Command::new("sh")
+            .arg("-c")
+            .arg(shell_script)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+
     Ok(())
 }
 
@@ -2178,7 +2211,15 @@ impl AppRunner {
                 let mount_result = mount_nfs(&share_path, &config);
                 match &mount_result {
                     Ok(_) => host_println!("Requested NFS share mount"),
-                    Err(e) => host_eprintln!("Failed to request NFS mount: {:#}", e),
+                    Err(e) => {
+                        if !config.verbose {
+                            log::enable_console_log();
+                        }
+                        host_eprintln!("Failed to request NFS mount: {:#}", e);
+                        if !config.verbose {
+                            log::disable_console_log();
+                        }
+                    }
                 };
 
                 let mount_point_opt = if mount_result.is_ok() {
@@ -2205,7 +2246,9 @@ impl AppRunner {
                         .filter(|&export_path| export_path != &share_path)
                         .peekable();
 
-                    log::enable_console_log();
+                    if !config.verbose {
+                        log::enable_console_log();
+                    }
                     let elevate =
                         config.common.sudo_uid.is_none() && config.common.invoker_uid != 0;
 
@@ -2221,7 +2264,9 @@ impl AppRunner {
                         Ok(_) => {}
                         Err(e) => host_eprintln!("Failed to mount additional NFS exports: {:#}", e),
                     }
-                    log::disable_console_log();
+                    if !config.verbose {
+                        log::disable_console_log();
+                    }
                 }
 
                 // drop privileges back to the original user if he used sudo
