@@ -1101,7 +1101,9 @@ fn mount_nfs(share_path: &[u8], config: &MountConfig) -> anyhow::Result<()> {
     }
 
     if config.open_finder {
-        let mut shell_script = b"afplay \"/System/Library/Components/CoreAudio.component/Contents/SharedSupport/SystemSounds/system/Volume Mount.aif\"".to_vec();
+        let mut shell_script =
+            br#"(afplay /System/Library/Components/CoreAudio.component/Contents/SharedSupport/SystemSounds/system/Volume\ Mount.aif \
+                -v $(awk "BEGIN { print "$(osascript -e "get alert volume of (get volume settings)")"/100 };"))"#.to_vec();
         shell_script.extend_from_slice(b" &! open \"");
         shell_script.extend_from_slice(mount_point.as_bytes());
         shell_script.extend_from_slice(b"\"");
@@ -1109,6 +1111,8 @@ fn mount_nfs(share_path: &[u8], config: &MountConfig) -> anyhow::Result<()> {
         let _ = Command::new("sh")
             .arg("-c")
             .arg(shell_script)
+            .uid(config.common.invoker_uid)
+            .gid(config.common.invoker_gid)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
