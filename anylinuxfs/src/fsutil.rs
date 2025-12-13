@@ -74,6 +74,7 @@ pub struct NfsOptions(BTreeMap<BString, BString>);
 impl Default for NfsOptions {
     fn default() -> Self {
         let mut opts = BTreeMap::new();
+        opts.insert("deadtimeout".into(), "45".into()); // this if what Finder uses
         opts.insert("nfc".into(), "".into());
         opts.insert("vers".into(), "3".into());
         NfsOptions(opts)
