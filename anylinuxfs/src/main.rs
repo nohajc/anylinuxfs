@@ -2236,6 +2236,17 @@ impl AppRunner {
                         mount_point.display()
                     );
 
+                    if config.custom_mount_point.is_none() {
+                        // mount point will be removed only if it was auto-created
+                        let mnt_point_path = PathBuf::from(mount_point.display());
+                        deferred.add(move || {
+                            if mnt_point_path.exists() {
+                                host_println!("Removing mount point {}", mnt_point_path.display());
+                                _ = fs::remove_dir(&mnt_point_path);
+                            }
+                        });
+                    }
+
                     rt_info.lock().unwrap().mount_point = Some(mount_point.display().into());
 
                     let mut additional_exports = exports

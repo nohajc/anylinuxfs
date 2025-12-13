@@ -767,7 +767,7 @@ fn run() -> anyhow::Result<()> {
             }
             println!("Unmounted '{}' successfully.", &mount_point);
 
-            _ = fs::remove_dir_all(&mount_point);
+            _ = fs::remove_dir(&mount_point);
         }
     });
 
