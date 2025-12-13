@@ -3,14 +3,7 @@ use bstr::{BStr, BString, ByteSlice};
 use clap::ValueEnum;
 use percent_encoding::{AsciiSet, CONTROLS, percent_decode_str, utf8_percent_encode};
 use serde::{Deserialize, Serialize};
-use std::{
-    ffi::{CString, OsStr},
-    io,
-    os::unix::ffi::OsStrExt,
-    path::{Path, PathBuf},
-    process::Child,
-    time::Duration,
-};
+use std::{ffi::CString, io, os::unix::ffi::OsStrExt, path::Path, process::Child, time::Duration};
 use wait_timeout::ChildExt;
 
 pub mod log;
@@ -277,10 +270,4 @@ impl PathExt for Path {
 
 pub trait PathBufExt {
     fn from_bytes(bstr: impl AsRef<[u8]>) -> Self;
-}
-
-impl PathBufExt for PathBuf {
-    fn from_bytes(bstr: impl AsRef<[u8]>) -> Self {
-        OsStr::from_bytes(bstr.as_ref()).into()
-    }
 }

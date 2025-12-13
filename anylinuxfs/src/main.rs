@@ -2,8 +2,7 @@ use anyhow::{Context, anyhow};
 use bstr::{BString, ByteVec};
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use common_utils::{
-    Deferred, FromPath, OSType, PathBufExt, PathExt, host_eprintln, host_println, log, safe_print,
-    safe_println,
+    Deferred, FromPath, OSType, PathExt, host_eprintln, host_println, log, safe_print, safe_println,
 };
 
 use devinfo::DevInfo;
@@ -487,6 +486,7 @@ fn load_config(common_args: &CommonArgs) -> anyhow::Result<Config> {
     };
 
     Ok(Config {
+        home_dir,
         profile_path,
         exec_path,
         root_path,
@@ -1014,20 +1014,21 @@ fn mount_nfs(share_path: &[u8], config: &MountConfig) -> anyhow::Result<()> {
         Some(mount_point) => mount_point.into(),
         None => {
             // default mount point will be created
+            let volume_base_dir = if config.common.sudo_uid.is_some() {
+                PathBuf::from("/")
+            } else {
+                config.common.home_dir.clone()
+            }
+            .join("Volumes");
+
             let mount_name = share_path.split(|&b| b == b'/').last().unwrap();
-            let mut mount_path = PathBuf::from_bytes([b"/Volumes/", mount_name].concat());
+            let mut mount_path = volume_base_dir.join(Path::from_bytes(mount_name));
             let mut counter = 1;
 
             while mount_path.exists() {
-                mount_path = PathBuf::from_bytes(
-                    [
-                        b"/Volumes/", // TODO: use ~/Volumes when not running as root
-                        mount_name,
-                        b"-",
-                        counter.to_string().as_bytes(),
-                    ]
-                    .concat(),
-                );
+                mount_path = volume_base_dir.join(Path::from_bytes(
+                    &[mount_name, b"-", counter.to_string().as_bytes()].concat(),
+                ));
                 counter += 1;
             }
 
@@ -1042,10 +1043,7 @@ fn mount_nfs(share_path: &[u8], config: &MountConfig) -> anyhow::Result<()> {
                 Some(config.common.invoker_uid),
                 Some(config.common.invoker_gid),
             )
-            .context(format!(
-                "Failed to change owner of {}",
-                mount_path.display(),
-            ))?;
+            .with_context(|| format!("Failed to change owner of {}", mount_path.display()))?;
 
             mount_path.into()
         }

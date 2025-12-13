@@ -28,6 +28,7 @@ pub struct KernelConfig {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Config {
+    pub home_dir: PathBuf,
     pub profile_path: PathBuf,
     pub exec_path: PathBuf,
     pub root_path: PathBuf,
