@@ -24,7 +24,7 @@ signal-hook = { version = "0.3.17", features = ["iterator"] }
 regex = "1.11.1"
 plist = "1.7.1"
 indexmap = "2.9.0"
-derive_more = { version = "2.0.1", features = ["add_assign", "deref"] }
+derive_more = { version = "2.0.1", features = ["add_assign", "deref", "deref_mut"] }
 rpassword = "7.4.0"
 if-addrs = "0.13.4"
 crossterm = "0.29.0"

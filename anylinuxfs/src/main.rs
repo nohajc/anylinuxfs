@@ -206,9 +206,12 @@ struct MountCmd {
     disk_ident: String,
     /// Custom mount path to override the default under /Volumes
     mount_point: Option<String>,
-    /// Options passed to the Linux mount command
+    /// Options passed to the Linux mount command (comma-separated)
     #[arg(short, long)]
     options: Option<String>,
+    /// NFS options passed to the macOS mount command (comma-separated)
+    #[arg(short, long, value_delimiter = ',', num_args = 1..)]
+    nfs_options: Option<Vec<String>>,
     /// Allow remount: proceed even if the disk is already mounted by macOS (NTFS, exFAT)
     #[arg(short, long)]
     remount: bool,
@@ -523,6 +526,8 @@ fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
         std::process::exit(1);
     };
 
+    let nfs_options = cmd.nfs_options.unwrap_or_default();
+
     let allow_remount = cmd.remount;
     let custom_mount_point = match cmd.mount_point {
         Some(path) => {
@@ -579,6 +584,7 @@ fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
         disk_path,
         read_only,
         mount_options,
+        nfs_options,
         allow_remount,
         custom_mount_point,
         fs_driver,
@@ -1049,8 +1055,16 @@ fn mount_nfs(share_path: &[u8], config: &MountConfig) -> anyhow::Result<()> {
         }
     };
 
+    let mut nfs_opts = fsutil::NfsOptions::default();
+    nfs_opts.extend(config.nfs_options.iter().map(|s| match s.split_once('=') {
+        Some((key, value)) => (key.as_bytes().into(), value.as_bytes().into()),
+        None => (s.as_bytes().into(), b"".into()),
+    }));
+
     let shell_script = [
-        b"mount -t nfs -o nfc,vers=3 \"localhost:",
+        b"mount -t nfs -o ",
+        nfs_opts.to_list().as_slice(),
+        b" \"localhost:",
         share_path,
         b"\" \"",
         mount_point.as_bytes(),
@@ -1059,6 +1073,7 @@ fn mount_nfs(share_path: &[u8], config: &MountConfig) -> anyhow::Result<()> {
     .concat();
 
     let shell_script = OsStr::from_bytes(&shell_script);
+    host_println!("NFS mount command: {}", shell_script.display());
     // try to run mount as regular user first
     // (if that succeeds, umount will work without sudo)
     let mut status = Command::new("sh")

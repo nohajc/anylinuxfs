@@ -1,9 +1,10 @@
 use anyhow::{Context, anyhow};
-use bstr::{BStr, ByteSlice};
+use bstr::{BStr, BString, ByteSlice};
 use common_utils::{FromPath, PathExt, host_println};
+use derive_more::{Deref, DerefMut};
 use rayon::prelude::*;
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     ffi::{CStr, CString, OsStr, OsString},
     fs, io, mem,
     os::unix::ffi::OsStrExt,
@@ -64,6 +65,33 @@ impl MountTable {
 
     pub fn mount_points(&self) -> impl Iterator<Item = &OsString> {
         self.mount_points.iter()
+    }
+}
+
+#[derive(Debug, Clone, Deref, DerefMut)]
+pub struct NfsOptions(BTreeMap<BString, BString>);
+
+impl Default for NfsOptions {
+    fn default() -> Self {
+        let mut opts = BTreeMap::new();
+        opts.insert("nfc".into(), "".into());
+        opts.insert("vers".into(), "3".into());
+        NfsOptions(opts)
+    }
+}
+
+impl NfsOptions {
+    pub fn to_list(&self) -> Vec<u8> {
+        bstr::join(
+            ",",
+            self.0.iter().map(|(k, v)| {
+                if v.is_empty() {
+                    k.to_owned()
+                } else {
+                    bstr::join("=", [k, v]).into()
+                }
+            }),
+        )
     }
 }
 
