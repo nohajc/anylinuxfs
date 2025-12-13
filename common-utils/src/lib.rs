@@ -267,7 +267,3 @@ impl PathExt for Path {
         bstr.to_path().unwrap()
     }
 }
-
-pub trait PathBufExt {
-    fn from_bytes(bstr: impl AsRef<[u8]>) -> Self;
-}
