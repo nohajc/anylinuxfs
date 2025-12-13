@@ -621,6 +621,8 @@ fn run() -> anyhow::Result<()> {
         }
     }
 
+    common_utils::fail_for_known_nonmountable_types(fs_type.as_deref())?;
+
     let mount_point = format!("/mnt/{}", mount_name);
     custom_action.set_env("ALFS_VM_MOUNT_POINT", mount_point.clone());
 

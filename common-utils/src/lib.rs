@@ -1,4 +1,4 @@
-use anyhow::Context;
+use anyhow::{Context, anyhow};
 use bstr::{BStr, BString, ByteSlice};
 use clap::ValueEnum;
 use percent_encoding::{AsciiSet, CONTROLS, percent_decode_str, utf8_percent_encode};
@@ -265,5 +265,22 @@ impl PathExt for Path {
 
     fn from_bytes(bstr: &[u8]) -> &Self {
         bstr.to_path().unwrap()
+    }
+}
+
+pub fn fail_for_known_nonmountable_types(fs_type: Option<&str>) -> anyhow::Result<()> {
+    let err_prefix = "partition cannot be mounted directly.";
+    match fs_type {
+        Some(fs @ "LVM2_member") => Err(anyhow!(
+            "`{}` {}\nIf the drive is encrypted, run `sudo anylinuxfs list -d all` to see available `lvm:...` volumes.",
+            fs,
+            err_prefix
+        )),
+        Some(fs @ "linux_raid_member") => Err(anyhow!(
+            "`{}` {}\nRun `sudo anylinuxfs list` to see available `raid:...` volumes.",
+            fs,
+            err_prefix
+        )),
+        _ => Ok(()),
     }
 }
