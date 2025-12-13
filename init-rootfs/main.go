@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/x509"
 	_ "embed"
+	"encoding/pem"
 	"flag"
 	"fmt"
 	"io"
@@ -13,23 +15,21 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-	"crypto/x509"
-	"encoding/pem"
 
 	"anylinuxfs/init-rootfs/vmrunner"
 
 	"github.com/BurntSushi/toml"
-	"github.com/containers/image/v5/copy"
-	"github.com/containers/image/v5/docker"
-	"github.com/containers/image/v5/oci/layout"
-	"github.com/containers/image/v5/signature"
-	"github.com/containers/image/v5/types"
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/opencontainers/umoci"
 	"github.com/opencontainers/umoci/oci/cas/dir"
 	"github.com/opencontainers/umoci/oci/casext"
 	"github.com/opencontainers/umoci/oci/layer"
 	"github.com/opencontainers/umoci/pkg/idtools"
+	"go.podman.io/image/v5/copy"
+	"go.podman.io/image/v5/docker"
+	"go.podman.io/image/v5/oci/layout"
+	"go.podman.io/image/v5/signature"
+	"go.podman.io/image/v5/types"
 )
 
 const DEFAULT_DNS_SERVER = "1.1.1.1"
@@ -236,7 +236,7 @@ func appendCaCerts(cfg *Config) error {
 			fmt.Printf("Malformed CA certificate. Skipping...\n")
 		}
 	}
-	
+
 	fmt.Printf("Added %v entries to CA certificate store\n", certCount)
 	return nil
 }
