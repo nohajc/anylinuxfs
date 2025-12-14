@@ -1,5 +1,5 @@
 use anyhow::{Context, anyhow};
-use bstr::{BStr, BString, ByteSlice};
+use bstr::{B, BStr, BString, ByteSlice};
 use common_utils::{FromPath, PathExt, host_println};
 use derive_more::{Deref, DerefMut};
 use rayon::prelude::*;
@@ -204,18 +204,24 @@ mod dirtrie {
 fn parallel_mount_recursive(
     mnt_point_base: PathBuf,
     trie: &dirtrie::Node,
+    nfs_opts: &BStr,
     elevate: bool,
 ) -> anyhow::Result<()> {
     if let Some((rel_path, nfs_path)) = &trie.paths {
-        let shell_script = format!(
-            "mount -t nfs \"localhost:{}\" \"{}\"",
-            nfs_path,
-            mnt_point_base.join(rel_path).display()
-        );
+        let shell_script = [
+            b"mount -t nfs -o ",
+            nfs_opts.as_bytes(),
+            b" \"localhost:",
+            nfs_path.as_bytes(),
+            b"\" \"",
+            mnt_point_base.join(rel_path).as_bytes(),
+            b"\"",
+        ]
+        .concat();
         // host_println!("Running NFS mount command: `{}`", &shell_script);
 
         // elevate if needed (e.g. mounting image under /Volumes)
-        let cmdline = ["sudo", "-S", "sh", "-c", &shell_script];
+        let cmdline = [B("sudo"), B("-S"), B("sh"), B("-c"), &shell_script].map(OsStr::from_bytes);
         let cmdline = if elevate { &cmdline[..] } else { &cmdline[2..] };
         let status = Command::new(cmdline[0]).args(&cmdline[1..]).status()?;
 
@@ -234,7 +240,7 @@ fn parallel_mount_recursive(
         );
     }
     trie.children.par_iter().try_for_each(|(_, child)| {
-        parallel_mount_recursive(mnt_point_base.clone(), child, elevate)
+        parallel_mount_recursive(mnt_point_base.clone(), child, nfs_opts, elevate)
     })?;
 
     Ok(())
@@ -244,6 +250,7 @@ pub fn mount_nfs_subdirs<'a>(
     share_path_base: &[u8],
     subdirs: impl Iterator<Item = &'a str>,
     mnt_point_base: impl AsRef<Path>,
+    nfs_opts: &NfsOptions,
     elevate: bool,
 ) -> anyhow::Result<()> {
     let mut trie = dirtrie::Node::default();
@@ -257,7 +264,12 @@ pub fn mount_nfs_subdirs<'a>(
         trie.insert(Path::from_bytes(subdir_relative), subdir.into());
     }
 
-    parallel_mount_recursive(mnt_point_base.as_ref().into(), &trie, elevate)?;
+    parallel_mount_recursive(
+        mnt_point_base.as_ref().into(),
+        &trie,
+        nfs_opts.to_list().as_bstr(),
+        elevate,
+    )?;
     // host_println!("Mounted NFS subdirectories:\r\n{}", trie);
     Ok(())
 }

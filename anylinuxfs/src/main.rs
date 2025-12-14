@@ -1014,7 +1014,11 @@ fn wait_for_nfs_server(
     Ok(nfs_ready)
 }
 
-fn mount_nfs(share_path: &[u8], config: &MountConfig) -> anyhow::Result<()> {
+fn mount_nfs(
+    share_path: &[u8],
+    config: &MountConfig,
+    nfs_opts: &fsutil::NfsOptions,
+) -> anyhow::Result<()> {
     let mount_point: Cow<'_, _> = match config.custom_mount_point.as_deref() {
         // custom mount point must already exist
         Some(mount_point) => mount_point.into(),
@@ -1054,12 +1058,6 @@ fn mount_nfs(share_path: &[u8], config: &MountConfig) -> anyhow::Result<()> {
             mount_path.into()
         }
     };
-
-    let mut nfs_opts = fsutil::NfsOptions::default();
-    nfs_opts.extend(config.nfs_options.iter().map(|s| match s.split_once('=') {
-        Some((key, value)) => (key.as_bytes().into(), value.as_bytes().into()),
-        None => (s.as_bytes().into(), b"".into()),
-    }));
 
     let shell_script = [
         b"mount -t nfs -o ",
@@ -2225,7 +2223,13 @@ impl AppRunner {
                     _ => [b"/mnt/", share_name.as_slice()].concat().into(),
                 };
 
-                let mount_result = mount_nfs(&share_path, &config);
+                let mut nfs_opts = fsutil::NfsOptions::default();
+                nfs_opts.extend(config.nfs_options.iter().map(|s| match s.split_once('=') {
+                    Some((key, value)) => (key.as_bytes().into(), value.as_bytes().into()),
+                    None => (s.as_bytes().into(), b"".into()),
+                }));
+
+                let mount_result = mount_nfs(&share_path, &config, &nfs_opts);
                 match &mount_result {
                     Ok(_) => host_println!("Requested NFS share mount"),
                     Err(e) => {
@@ -2287,6 +2291,7 @@ impl AppRunner {
                         &share_path,
                         additional_exports.into_iter(),
                         mount_point.display(),
+                        &nfs_opts,
                         elevate,
                     ) {
                         Ok(_) => {}
