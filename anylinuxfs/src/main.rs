@@ -2397,7 +2397,7 @@ impl AppRunner {
     }
 
     fn run_unmount(&mut self, cmd: UnmountCmd) -> anyhow::Result<()> {
-        let resp = api::Client::make_request(api::Request::GetConfig);
+        let resp = api::UnixClient::make_request(api::Request::GetConfig);
 
         match resp {
             Ok(api::Response::Config(rt_info)) => {
@@ -2585,7 +2585,7 @@ impl AppRunner {
     }
 
     fn run_status(&mut self) -> anyhow::Result<()> {
-        let resp = api::Client::make_request(api::Request::GetConfig);
+        let resp = api::UnixClient::make_request(api::Request::GetConfig);
 
         match resp {
             Ok(api::Response::Config(rt_info)) => {
@@ -2650,7 +2650,7 @@ impl AppRunner {
     }
 
     fn run_stop(&mut self, cmd: StopCmd) -> anyhow::Result<()> {
-        let resp = api::Client::make_request(api::Request::GetConfig);
+        let resp = api::UnixClient::make_request(api::Request::GetConfig);
 
         match resp {
             Ok(api::Response::Config(rt_info)) => {
