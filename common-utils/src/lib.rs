@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::{ffi::CString, io, os::unix::ffi::OsStrExt, path::Path, process::Child, time::Duration};
 use wait_timeout::ChildExt;
 
+pub mod ipc;
 pub mod log;
 
 pub const VM_GATEWAY_IP: &str = "192.168.127.1";
