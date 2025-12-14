@@ -2,7 +2,8 @@ use anyhow::{Context, anyhow};
 use bstr::{BString, ByteVec};
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use common_utils::{
-    Deferred, FromPath, OSType, PathExt, host_eprintln, host_println, log, safe_print, safe_println,
+    Deferred, FromPath, OSType, PathExt, host_eprintln, host_println, ipc, log, safe_print,
+    safe_println, vmctrl,
 };
 
 use devinfo::DevInfo;
@@ -1140,12 +1141,11 @@ fn unmount_fs(volume_path: &Path) -> anyhow::Result<()> {
 fn send_quit_cmd(config: &Config) -> anyhow::Result<()> {
     let mut stream = vm_network::connect_to_vm_ctrl_socket(config)?;
 
-    stream.write_all(b"quit\n")?;
+    ipc::Client::write_request(&mut stream, &vmctrl::Request::Quit)?;
     stream.flush()?;
 
     // we don't care about the response contents
-    let mut buf = [0; 1024];
-    _ = stream.read(&mut buf)?;
+    let _: vmctrl::Response = ipc::Client::read_response(&mut stream)?;
 
     Ok(())
 }

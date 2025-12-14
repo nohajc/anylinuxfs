@@ -8,6 +8,7 @@ use wait_timeout::ChildExt;
 
 pub mod ipc;
 pub mod log;
+pub mod vmctrl;
 
 pub const VM_GATEWAY_IP: &str = "192.168.127.1";
 pub const VM_IP: &str = "192.168.127.2";
