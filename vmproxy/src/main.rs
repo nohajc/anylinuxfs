@@ -5,7 +5,9 @@ use clap::Parser;
 use common_utils::FromPath;
 #[cfg(target_os = "freebsd")]
 use common_utils::VM_CTRL_PORT;
-use common_utils::{CustomActionConfig, Deferred, VM_GATEWAY_IP, VM_IP, path_safe_label_name};
+use common_utils::{
+    CustomActionConfig, Deferred, VM_GATEWAY_IP, VM_IP, ipc, path_safe_label_name, vmctrl,
+};
 #[cfg(target_os = "linux")]
 use libc::VMADDR_CID_ANY;
 use serde::Serialize;
@@ -13,9 +15,10 @@ use std::collections::{BTreeSet, HashMap};
 #[cfg(target_os = "linux")]
 use std::ffi::CString;
 use std::ffi::OsStr;
-use std::io::{self, BufRead, Read, Write};
+use std::fs;
+use std::io::{self, Read, Write};
 #[cfg(target_os = "freebsd")]
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpListener;
 use std::os::unix::ffi::OsStrExt;
 #[cfg(target_os = "linux")]
 use std::path::Path;
@@ -23,11 +26,10 @@ use std::process::{Child, Command, ExitCode, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 use std::{env, thread};
-use std::{fs, io::BufReader};
 #[cfg(target_os = "linux")]
 use sys_mount::{UnmountFlags, unmount};
 #[cfg(target_os = "linux")]
-use vsock::{VsockAddr, VsockListener, VsockStream};
+use vsock::{VsockAddr, VsockListener};
 
 use crate::utils::{script, script_output};
 
@@ -175,38 +177,20 @@ fn setup_writable_dirs_for_nfsd() -> anyhow::Result<()> {
     Ok(())
 }
 
-trait ClonableStream: Read + Write {
-    fn try_clone(&self) -> io::Result<impl ClonableStream + 'static>;
-}
-
-#[cfg(target_os = "linux")]
-impl ClonableStream for VsockStream {
-    fn try_clone(&self) -> io::Result<impl ClonableStream + 'static> {
-        self.try_clone()
-    }
-}
-
-#[cfg(target_os = "freebsd")]
-impl ClonableStream for TcpStream {
-    fn try_clone(&self) -> io::Result<impl ClonableStream + 'static> {
-        self.try_clone()
-    }
-}
-
 trait StreamListener: Send + Sync + 'static {
-    fn incoming(&self) -> impl Iterator<Item = io::Result<impl ClonableStream>>;
+    fn incoming(&self) -> impl Iterator<Item = io::Result<impl Read + Write>>;
 }
 
 #[cfg(target_os = "linux")]
 impl StreamListener for VsockListener {
-    fn incoming(&self) -> impl Iterator<Item = io::Result<impl ClonableStream>> {
+    fn incoming(&self) -> impl Iterator<Item = io::Result<impl Read + Write>> {
         self.incoming()
     }
 }
 
 #[cfg(target_os = "freebsd")]
 impl StreamListener for TcpListener {
-    fn incoming(&self) -> impl Iterator<Item = io::Result<impl ClonableStream>> {
+    fn incoming(&self) -> impl Iterator<Item = io::Result<impl Read + Write>> {
         self.incoming()
     }
 }
@@ -224,21 +208,17 @@ impl CtrlSocketServer {
                 let Ok(mut stream) = stream else {
                     continue;
                 };
-                let Ok(stream_cloned) = stream.try_clone() else {
-                    continue;
-                };
-                let mut reader = BufReader::new(stream_cloned);
-                let mut cmd = String::new();
-                if reader.read_line(&mut cmd).is_ok() {
-                    println!("Received command: '{}'", cmd.trim());
-                    if cmd == "quit\n" {
-                        let _ = quit_tx.send(());
-                        _ = stream.write(b"ok\n");
-                        _ = stream.flush();
-                        break;
+
+                if let Ok(cmd) = ipc::Handler::read_request(&mut stream) {
+                    println!("Received command: '{:?}'", &cmd);
+                    match cmd {
+                        vmctrl::Request::Quit => {
+                            let _ = quit_tx.send(());
+                            _ = ipc::Handler::write_response(&mut stream, &vmctrl::Response::Ack);
+                            _ = stream.flush();
+                            break;
+                        }
                     }
-                    _ = stream.write(b"unknown\n");
-                    _ = stream.flush();
                 }
             }
         });
