@@ -12,7 +12,7 @@ use std::{
 
 use anyhow::{Context, anyhow};
 use common_utils::host_eprintln;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::{devinfo::DevInfo, settings::MountConfig};
 
@@ -37,7 +37,7 @@ pub fn serve_info(rt_info: Arc<Mutex<RuntimeInfo>>) {
                 host_eprintln!("Error removing socket file: {}", e);
             }
         }
-        if let Err(e) = Handler::serve(rt_info, socket_path) {
+        if let Err(e) = UnixHandler::serve(rt_info, socket_path) {
             host_eprintln!("Error in serve_config: {}", e);
         }
     });
@@ -53,9 +53,9 @@ pub enum Response {
     Config(RuntimeInfo),
 }
 
-struct Handler {}
+struct UnixHandler {}
 
-impl Handler {
+impl UnixHandler {
     fn serve(runtime_info: Arc<Mutex<RuntimeInfo>>, socket_path: &Path) -> anyhow::Result<()> {
         let listener = UnixListener::bind(socket_path).context("Failed to bind to Unix socket")?;
 
@@ -76,7 +76,7 @@ impl Handler {
             let Ok(stream) = stream else {
                 continue;
             };
-            _ = Handler::serve_to_client(stream, runtime_info.clone());
+            _ = UnixHandler::serve_to_client(stream, runtime_info.clone());
         }
 
         Ok(())
@@ -90,12 +90,20 @@ impl Handler {
         let resp = match req {
             Request::GetConfig => Response::Config(runtime_info.lock().unwrap().clone()),
         };
-        Handler::write_response(&mut stream, resp)?;
+        Handler::write_response(&mut stream, &resp)?;
 
         Ok(())
     }
+}
 
-    fn read_request(stream: &mut UnixStream) -> anyhow::Result<Request> {
+pub struct Handler {}
+
+impl Handler {
+    fn read_request<S, R>(stream: &mut S) -> anyhow::Result<R>
+    where
+        S: Read + Write,
+        R: DeserializeOwned,
+    {
         let mut size_buf = [0u8; 4];
         stream
             .read_exact(&mut size_buf)
@@ -113,12 +121,15 @@ impl Handler {
             .read_exact(&mut payload_buf)
             .context("Failed to read request payload")?;
 
-        let request: Request =
-            ron::de::from_bytes(&payload_buf).context("Failed to parse request")?;
+        let request = ron::de::from_bytes(&payload_buf).context("Failed to parse request")?;
         Ok(request)
     }
 
-    fn write_response(stream: &mut UnixStream, response: Response) -> anyhow::Result<()> {
+    fn write_response<S, R>(stream: &mut S, response: &R) -> anyhow::Result<()>
+    where
+        S: Read + Write,
+        R: ?Sized + Serialize,
+    {
         let response_str =
             ron::ser::to_string(&response).context("Failed to serialize response")?;
         let size = response_str.len() as u32;
@@ -134,17 +145,25 @@ impl Handler {
     }
 }
 
-pub struct Client {}
+pub struct UnixClient {}
 
-impl Client {
+impl UnixClient {
     pub fn make_request(req: Request) -> anyhow::Result<Response> {
         let mut stream = UnixStream::connect(API_SOCKET).context("Failed to connect to socket")?;
-        Client::write_request(&mut stream, req)?;
+        Client::write_request(&mut stream, &req)?;
         let resp = Client::read_response(&mut stream)?;
         Ok(resp)
     }
+}
 
-    fn write_request(stream: &mut UnixStream, request: Request) -> anyhow::Result<()> {
+pub struct Client {}
+
+impl Client {
+    fn write_request<S, R>(stream: &mut S, request: &R) -> anyhow::Result<()>
+    where
+        S: Read + Write,
+        R: ?Sized + Serialize,
+    {
         let request_str = ron::ser::to_string(&request).context("Failed to serialize request")?;
         let size = request_str.len() as u32;
         let size_buf = size.to_be_bytes();
@@ -158,7 +177,11 @@ impl Client {
         Ok(())
     }
 
-    fn read_response(stream: &mut UnixStream) -> anyhow::Result<Response> {
+    fn read_response<S, R>(stream: &mut S) -> anyhow::Result<R>
+    where
+        S: Read + Write,
+        R: DeserializeOwned,
+    {
         let mut size_buf = [0u8; 4];
         stream
             .read_exact(&mut size_buf)
@@ -176,8 +199,7 @@ impl Client {
             .read_exact(&mut payload_buf)
             .context("Failed to read response payload")?;
 
-        let response: Response =
-            ron::de::from_bytes(&payload_buf).context("Failed to parse response")?;
+        let response = ron::de::from_bytes(&payload_buf).context("Failed to parse response")?;
         Ok(response)
     }
 }
