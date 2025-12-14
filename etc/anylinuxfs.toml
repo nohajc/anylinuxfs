@@ -14,9 +14,9 @@ os_type = "FreeBSD"
 
 [images."freebsd-15.0"]
 base_dir = "freebsd-15.0"
-iso_url = "https://download.freebsd.org/releases/ISO-IMAGES/15.0/FreeBSD-15.0-RC4-arm64-aarch64-bootonly.iso"
-oci_url = "https://download.freebsd.org/releases/OCI-IMAGES/15.0-RC4/aarch64/Latest/FreeBSD-15.0-RC4-arm64-aarch64-container-image-runtime.txz"
-kernel.bundle_url = "https://github.com/nohajc/freebsd/releases/download/alfs%2F15.0-rc4/kernel.txz"
+iso_url = "https://download.freebsd.org/releases/ISO-IMAGES/15.0/FreeBSD-15.0-RELEASE-arm64-aarch64-bootonly.iso"
+oci_url = "https://download.freebsd.org/releases/OCI-IMAGES/15.0-RELEASE/aarch64/Latest/FreeBSD-15.0-RELEASE-arm64-aarch64-container-image-runtime.txz"
+kernel.bundle_url = "https://github.com/nohajc/freebsd/releases/download/alfs%2F15.0/kernel.txz"
 os_type = "FreeBSD"
 
 [custom_actions.ubuntu_zfs_unlock]
