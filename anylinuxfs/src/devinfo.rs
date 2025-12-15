@@ -6,7 +6,7 @@ use common_utils::{PathExt, path_safe_label_name};
 use libblkid_rs::{BlkidProbe, BlkidSublks, BlkidSublksFlags};
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct DevInfo {
     path: BString,
     rpath: BString,
