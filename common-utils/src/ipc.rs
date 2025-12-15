@@ -3,6 +3,8 @@ use std::io::{Read, Write};
 use anyhow::{Context, anyhow};
 use serde::{Serialize, de::DeserializeOwned};
 
+const MAX_MSG_SIZE: usize = 1048576; // 1 MiB
+
 pub struct Handler {}
 
 impl Handler {
@@ -19,7 +21,7 @@ impl Handler {
         if size == 0 {
             return Err(anyhow!("Request size is zero"));
         }
-        if size > 65536 {
+        if size > MAX_MSG_SIZE {
             return Err(anyhow!("Request size is too large"));
         }
 
@@ -86,7 +88,7 @@ impl Client {
         if size == 0 {
             return Err(anyhow!("Response size is zero"));
         }
-        if size > 65536 {
+        if size > MAX_MSG_SIZE {
             return Err(anyhow!("Response size is too large"));
         }
 
