@@ -1697,8 +1697,18 @@ impl AppRunner {
             .parse::<DocumentMut>()
             .context("Failed to parse default config")?;
 
+        let input_path = Path::new(&cmd.input);
+        if !input_path.exists() {
+            let target_path = cmd.output.as_ref().map(Path::new).unwrap_or(input_path);
+
+            // just write the default config and exit
+            fs::write(target_path, default_cfg_str)
+                .context("Failed to write default config file")?;
+            return Ok(());
+        }
+
         let current_cfg_str =
-            fs::read_to_string(&cmd.input).context("Failed to read current config file")?;
+            fs::read_to_string(input_path).context("Failed to read current config file")?;
         let current_cfg = current_cfg_str
             .parse::<Document<String>>()
             .context("Failed to parse current config file")?;
