@@ -196,15 +196,27 @@ struct CommonArgs {
     zfs_os: Option<OSType>,
 }
 
+macro_rules! disk_ident_arg {
+    ($struct_name:ident, $field_type:ty) => {
+        #[derive(Args, Clone)]
+        struct $struct_name {
+            /// File path(s), LVM identifier or RAID identifier, e.g.:
+            /// /dev/diskXsY[:/dev/diskYsZ:...]
+            /// lvm:<vg-name>:diskXsY[:diskYsZ:...]:<lv-name>
+            /// raid:diskXsY[:diskYsZ:...]
+            /// (see `list` command output for available volumes)
+            #[clap(verbatim_doc_comment)]
+            disk_ident: $field_type,
+        }
+    };
+}
+
+disk_ident_arg!(DiskIdentArg, String);
+
 #[derive(Args)]
 struct MountCmd {
-    /// File path(s), LVM identifier or RAID identifier, e.g.:
-    /// /dev/diskXsY[:/dev/diskYsZ:...]
-    /// lvm:<vg-name>:diskXsY[:diskYsZ:...]:<lv-name>
-    /// raid:diskXsY[:diskYsZ:...]
-    /// (see `list` command output for available volumes)
-    #[clap(verbatim_doc_comment)]
-    disk_ident: String,
+    #[command(flatten)]
+    d: DiskIdentArg,
     /// Custom mount path to override the default under /Volumes
     mount_point: Option<String>,
     /// Options passed to the Linux mount command (comma-separated)
@@ -232,6 +244,12 @@ struct MountCmd {
     bind_addr: String,
     #[arg(short, long)]
     verbose: bool,
+}
+
+impl MountCmd {
+    fn disk_ident(&self) -> String {
+        self.d.disk_ident.clone()
+    }
 }
 
 #[derive(Args)]
@@ -282,7 +300,9 @@ struct StopCmd {
     force: bool,
 }
 
-#[derive(Args)]
+disk_ident_arg!(DiskIdentOptionalArg, Option<String>);
+
+#[derive(Args, Clone)]
 struct ShellCmd {
     /// Command to run in the shell
     #[arg(short, long)]
@@ -295,7 +315,30 @@ struct ShellCmd {
     #[arg(short, long)]
     image: Option<String>,
     #[command(flatten)]
-    mnt: MountCmd,
+    d: DiskIdentOptionalArg,
+    /// Allow remount: proceed even if the disk is already mounted by macOS (NTFS, exFAT)
+    #[arg(short, long)]
+    remount: bool,
+}
+
+impl From<ShellCmd> for MountCmd {
+    fn from(shell_cmd: ShellCmd) -> Self {
+        MountCmd {
+            d: DiskIdentArg {
+                disk_ident: shell_cmd.d.disk_ident.unwrap_or_default(),
+            },
+            mount_point: None,
+            options: None,
+            nfs_options: None,
+            remount: shell_cmd.remount,
+            action: None,
+            fs_driver: None,
+            common: CommonArgs::default(),
+            window: false,
+            bind_addr: "127.0.0.1".into(),
+            verbose: false,
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -517,14 +560,13 @@ fn load_config(common_args: &CommonArgs) -> anyhow::Result<Config> {
     })
 }
 
-fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
+fn load_mount_config(cmd: MountCmd, allow_diskless: bool) -> anyhow::Result<MountConfig> {
     let common = load_config(&cmd.common)?;
 
-    let (disk_path, mount_options) = if !cmd.disk_ident.is_empty() {
-        (cmd.disk_ident, cmd.options)
+    let (disk_path, mount_options) = if !cmd.disk_ident().is_empty() || allow_diskless {
+        (cmd.disk_ident(), cmd.options)
     } else {
-        host_eprintln!("No disk path provided");
-        std::process::exit(1);
+        return Err(anyhow!("no disk path provided"));
     };
 
     let nfs_options = cmd.nfs_options.unwrap_or_default();
@@ -1332,6 +1374,9 @@ fn claim_devices(config: &MountConfig) -> anyhow::Result<(Vec<DevInfo>, DevInfo,
         let lv_info = DevInfo::lv(disk_path, None, vm_path)?;
         print_dev_info(&lv_info, DevType::LV);
         lv_info
+    } else if disk_path.is_empty() {
+        // diskless mode
+        DevInfo::default()
     } else {
         let disk_paths: Vec<_> = disk_path.split(":").collect();
 
@@ -1434,7 +1479,7 @@ impl AppRunner {
     fn run_shell(&mut self, cmd: ShellCmd) -> anyhow::Result<()> {
         let _lock_file = LockFile::new(LOCK_FILE)?.acquire_lock(FlockKind::Exclusive)?;
 
-        let config = load_mount_config(cmd.mnt)?;
+        let config = load_mount_config(cmd.clone().into(), true)?;
         #[cfg(feature = "freebsd")]
         let (config, src, root_disk_path) = match cmd.image {
             Some(image_name) => {
@@ -1742,7 +1787,7 @@ impl AppRunner {
             service_status.rpcbind_running = true;
         }
 
-        let config = load_mount_config(cmd)?;
+        let config = load_mount_config(cmd, false)?;
         let log_file_path = &config.common.log_file_path;
 
         log::init_log_file(log_file_path).context("Failed to create log file")?;
