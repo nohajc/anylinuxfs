@@ -10,8 +10,8 @@ pub struct Handler {}
 impl Handler {
     pub fn read_request<R, S>(stream: &mut S) -> anyhow::Result<R>
     where
-        S: Read + Write,
         R: DeserializeOwned,
+        S: Read + Write,
     {
         let mut size_buf = [0u8; 4];
         stream
@@ -36,8 +36,8 @@ impl Handler {
 
     pub fn write_response<R, S>(stream: &mut S, response: &R) -> anyhow::Result<()>
     where
-        S: Read + Write,
         R: ?Sized + Serialize,
+        S: Read + Write,
     {
         let response_str =
             ron::ser::to_string(&response).context("Failed to serialize response")?;
@@ -59,8 +59,8 @@ pub struct Client {}
 impl Client {
     pub fn write_request<R, S>(stream: &mut S, request: &R) -> anyhow::Result<()>
     where
-        S: Read + Write,
         R: ?Sized + Serialize,
+        S: Read + Write,
     {
         let request_str = ron::ser::to_string(&request).context("Failed to serialize request")?;
         let size = request_str.len() as u32;
@@ -77,8 +77,8 @@ impl Client {
 
     pub fn read_response<R, S>(stream: &mut S) -> anyhow::Result<R>
     where
-        S: Read + Write,
         R: DeserializeOwned,
+        S: Read + Write,
     {
         let mut size_buf = [0u8; 4];
         stream
