@@ -22,6 +22,10 @@ With full write support, based on the libkrun microVM hypervisor and NFS. Doesn'
 - NFS share by default only reachable from localhost but can be shared across network too
 - define your own [custom actions](#custom-actions) (e.g. mount **borg backup** located on a Linux drive)
 
+## Limitations
+- Only one drive can be mounted at a time (this might be improved in the future)
+- Only Apple Silicon Macs are supported (libkrun limitation)
+
 > [!CAUTION]
 > Before using anylinuxfs with **NTFS**, please read [the notes](#ntfs)
 
@@ -304,10 +308,6 @@ You can also run `anylinuxfs init` to download a fresh copy of `alpine:latest` a
 * **ntfs3** is included in the mainline Linux kernel so it is considered stable. It was contributed by Paragon Software in [2021](https://www.paragon-software.com/paragon-software-announces-the-inclusion-of-its-ntfs3-driver-into-linux-kernel-5-15/).
 * If you trust it, want the best performance and you're OK with inconsistent permissions on Windows system drives, use **ntfs3**
 * Otherwise you're probably better of with the default and more established **ntfs-3g**
-
-## Limitations
-- Only one drive can be mounted at a time (this might be improved in the future)
-- Only Apple Silicon Macs are supported (libkrun limitation)
 
 ## Troubleshooting
 - Make sure nothing is running on ports 2049, 32765 and 32767. If there's another NFS server already running, `anylinuxfs` will not work.
