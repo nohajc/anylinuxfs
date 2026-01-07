@@ -8,6 +8,7 @@ use common_utils::{
 
 use devinfo::DevInfo;
 use nanoid::nanoid;
+use serde_json::json;
 use toml_edit::{Document, DocumentMut};
 
 use std::borrow::Cow;
@@ -904,8 +905,63 @@ fn start_vmproxy(
     let cenv = env.to_cstring_vec();
     let envp = cenv.to_ptr_vec();
 
-    unsafe { bindings::krun_set_exec(ctx, argv[0], argv[1..].as_ptr(), envp.as_ptr()) }
-        .context("Failed to set exec")?;
+    match config.common.kernel.os {
+        OSType::Linux => {
+            unsafe { bindings::krun_set_exec(ctx, argv[0], argv[1..].as_ptr(), envp.as_ptr()) }
+                .context("Failed to set exec")?;
+        }
+        OSType::FreeBSD => {
+            // due to limitations of FreeBSD kernel command line,
+            // we will use virtio multi-port console to pass the arguments
+            let (pipe_in_read, pipe_in_write) =
+                utils::new_pipe().context("Failed to create pipe")?;
+            let (pipe_out_read, pipe_out_write) =
+                utils::new_pipe().context("Failed to create pipe")?;
+
+            let console_id = unsafe { bindings::krun_add_virtio_console_multiport(ctx) }
+                .context("Failed to add virtio multiportconsole")?;
+
+            unsafe {
+                bindings::krun_add_console_port_inout(
+                    ctx,
+                    console_id,
+                    c"krun-config".as_ptr(),
+                    pipe_in_read,
+                    pipe_out_write,
+                )
+            }
+            .context("Failed to add console port")?;
+
+            let krun_config = json!({
+                "process": {
+                    "args": args,
+                    "env": env,
+                }
+            })
+            .to_string();
+
+            _ = thread::spawn(move || {
+                let mut reader = unsafe { File::from_raw_fd(pipe_out_read) };
+                let mut handshake_buf = [0u8; 6];
+                if let Err(e) = reader.read_exact(&mut handshake_buf) {
+                    host_eprintln!("Failed to read from virtio console: {}", e);
+                    return;
+                }
+                // TODO: check if handshake_buf == b"READY\0"
+
+                if let Err(e) =
+                    unsafe { utils::write_to_pipe(pipe_in_write, krun_config.as_bytes()) }
+                {
+                    host_eprintln!("Failed to write krun config to virtio console: {}", e);
+                    return;
+                }
+                // send EOF
+                if let Err(e) = unsafe { utils::write_to_pipe(pipe_in_write, &[0x04]) } {
+                    host_eprintln!("Failed to write EOF to virtio console: {}", e);
+                }
+            });
+        }
+    }
 
     before_start().context("Before start callback failed")?;
     unsafe { bindings::krun_start_enter(ctx) }.context("Failed to start VM")?;

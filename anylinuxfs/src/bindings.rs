@@ -20,6 +20,14 @@ unsafe extern "C" {
     pub fn krun_set_workdir(ctx: u32, workdir_path: *const c_char) -> i32;
     pub fn krun_disable_implicit_console(ctx_id: u32) -> i32;
     pub fn krun_add_serial_console_default(ctx_id: u32, input_fd: c_int, output_fd: c_int) -> i32;
+    pub fn krun_add_virtio_console_multiport(ctx_id: u32) -> i32;
+    pub fn krun_add_console_port_inout(
+        ctx_id: u32,
+        console_id: u32,
+        name: *const c_char,
+        input_fd: c_int,
+        output_fd: c_int,
+    ) -> i32;
     pub fn krun_set_exec(
         ctx: u32,
         exec_path: *const c_char,
