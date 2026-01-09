@@ -586,6 +586,7 @@ mod freebsd {
     }
 }
 
+#[allow(unused)]
 pub enum IsoAdd<'a, 'b> {
     All,
     Files(&'a [&'b str]),
