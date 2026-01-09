@@ -5,7 +5,7 @@ With full write support, based on the libkrun microVM hypervisor and NFS. Doesn'
 <a href='https://ko-fi.com/Q5Q41EHAGK' target='_blank'><img height='36' style='border:0px;height:36px;' src='https://storage.ko-fi.com/cdn/kofi1.png?v=6' border='0' alt='Buy Me a Coffee at ko-fi.com' /></a>
 
 > [!IMPORTANT]
-> **The VM freezing issue with low RAM has now been fixed!** Make sure you're running libkrun 1.17 (`brew update && brew upgrade libkrun`).
+> **The VM freezing issue with low RAM has now been fixed!** Make sure you're running libkrun 1.17 or newer (`brew update && brew upgrade libkrun`).
 > Then you should have no problem running VMs with less than 1 GB RAM again (see `anylinuxfs config -r`).
 
 ## Features
