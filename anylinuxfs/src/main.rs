@@ -946,11 +946,6 @@ fn set_vm_cmdline(ctx: VMContext, args: &[BString], env: &[BString]) -> anyhow::
                 .context("Failed to set exec")?;
         }
         OSType::FreeBSD => {
-            let argv = cargs.to_ptr_vec();
-            let envp = cenv.to_ptr_vec();
-            unsafe { bindings::krun_set_exec(ctx.id, argv[0], argv[1..].as_ptr(), envp.as_ptr()) }
-                .context("Failed to set exec")?;
-
             let krun_config = serde_json::to_string(&KrunConfig {
                 process: KrunConfigProcess { args, env },
             })

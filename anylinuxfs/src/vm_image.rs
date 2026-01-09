@@ -275,6 +275,9 @@ mod freebsd {
         fs::create_dir_all(bootstrap_rootfs_path.join("dev"))
             .context("Failed to create rootfs/dev directory")?;
 
+        fs::create_dir_all(bootstrap_rootfs_path.join("mnt"))
+            .context("Failed to create rootfs/mnt directory")?;
+
         fs::create_dir_all(bootstrap_rootfs_path.join("tmp"))
             .context("Failed to create rootfs/tmp directory")?;
 
