@@ -11,7 +11,7 @@ objc2-core-foundation = "0.3.1"
 objc2-disk-arbitration = "0.3.1"
 url = "2.5.4"
 nanoid = "0.4.0"
-libblkid-rs = "0.4.0"
+libblkid-rs = "0.4.1"
 clap = { version = "4.5.35", features = ["cargo", "derive"] }
 homedir = "0.3.4"
 common_utils = { path = "../common-utils" }
@@ -42,6 +42,3 @@ serde_with = "3.16.1"
 
 [features]
 freebsd = []
-
-[patch.crates-io]
-libblkid-rs = { git = "https://github.com/stratis-storage/libblkid-rs.git", rev = "5c08342" }
