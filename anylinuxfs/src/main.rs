@@ -8,7 +8,8 @@ use common_utils::{
 
 use devinfo::DevInfo;
 use nanoid::nanoid;
-use serde_json::json;
+use serde::Serialize;
+use serde_with::{DisplayFromStr, serde_as};
 use toml_edit::{Document, DocumentMut};
 
 use std::borrow::Cow;
@@ -44,6 +45,7 @@ use crate::settings::{
     PassphrasePromptConfig, Preferences,
 };
 use crate::utils::{ToCStringVec, ToPtrVec};
+use crate::vm_image::IsoAdd;
 
 mod api;
 #[allow(unused)]
@@ -698,14 +700,20 @@ impl Default for VMOpts {
 
 static KRUN_LOG_LEVEL_INIT: Once = Once::new();
 
+#[derive(Debug, Clone, Copy)]
+struct VMContext {
+    id: u32,
+    os: OSType,
+}
+
 fn setup_vm(
     config: &Config,
     dev_info: &[DevInfo],
     use_gvproxy: bool,
     use_vsock: bool,
     opts: VMOpts,
-) -> anyhow::Result<u32> {
-    let ctx = unsafe { bindings::krun_create_ctx() }.context("Failed to create context")?;
+) -> anyhow::Result<VMContext> {
+    let ctx_id = unsafe { bindings::krun_create_ctx() }.context("Failed to create context")?;
 
     let level = config.preferences.krun_log_level_numeric();
     KRUN_LOG_LEVEL_INIT.call_once(|| {
@@ -714,35 +722,35 @@ fn setup_vm(
 
     let num_vcpus = config.preferences.krun_num_vcpus();
     let ram_mib = config.preferences.krun_ram_size_mib();
-    unsafe { bindings::krun_set_vm_config(ctx, num_vcpus, ram_mib) }
+    unsafe { bindings::krun_set_vm_config(ctx_id, num_vcpus, ram_mib) }
         .context("Failed to set VM config")?;
 
     #[cfg(feature = "freebsd")]
     if opts.legacy_console {
-        unsafe { bindings::krun_disable_implicit_console(ctx) }
+        unsafe { bindings::krun_disable_implicit_console(ctx_id) }
             .context("Failed to disable implicit console")?;
-        unsafe { bindings::krun_add_serial_console_default(ctx, 0, 1) }
+        unsafe { bindings::krun_add_serial_console_default(ctx_id, 0, 1) }
             .context("Failed to add serial console")?;
     }
 
     // run vmm as the original user if he used sudo
     if let Some(uid) = config.sudo_uid {
-        unsafe { bindings::krun_setuid(ctx, uid) }.context("Failed to set vmm uid")?;
+        unsafe { bindings::krun_setuid(ctx_id, uid) }.context("Failed to set vmm uid")?;
     }
 
     if let Some(gid) = config.sudo_gid {
-        unsafe { bindings::krun_setgid(ctx, gid) }.context("Failed to set vmm gid")?;
+        unsafe { bindings::krun_setgid(ctx_id, gid) }.context("Failed to set vmm gid")?;
     }
 
     if opts.root_device.is_none() {
-        unsafe { bindings::krun_set_root(ctx, CString::from_path(&config.root_path).as_ptr()) }
+        unsafe { bindings::krun_set_root(ctx_id, CString::from_path(&config.root_path).as_ptr()) }
             .context("Failed to set root")?;
     }
 
     for (i, di) in dev_info.iter().enumerate() {
         unsafe {
             bindings::krun_add_disk(
-                ctx,
+                ctx_id,
                 CString::new(format!("data{}", i)).unwrap().as_ptr(),
                 CString::from_path(di.rdisk()).as_ptr(),
                 opts.add_disks_ro,
@@ -754,7 +762,7 @@ fn setup_vm(
     if use_gvproxy {
         unsafe {
             bindings::krun_set_gvproxy_path(
-                ctx,
+                ctx_id,
                 CString::new(config.vfkit_sock_path.as_str())
                     .unwrap()
                     .as_ptr(),
@@ -784,7 +792,7 @@ fn setup_vm(
     if use_vsock {
         unsafe {
             bindings::krun_add_vsock_port2(
-                ctx,
+                ctx_id,
                 12700,
                 CString::new(config.vsock_path.as_str()).unwrap().as_ptr(),
                 true,
@@ -793,9 +801,11 @@ fn setup_vm(
         .context("Failed to add vsock port")?;
     }
 
-    unsafe { bindings::krun_set_workdir(ctx, c"/".as_ptr()) }.context("Failed to set workdir")?;
+    unsafe { bindings::krun_set_workdir(ctx_id, c"/".as_ptr()) }
+        .context("Failed to set workdir")?;
 
-    let cmdline = match config.kernel.os {
+    let os = config.kernel.os;
+    let cmdline = match os {
         OSType::Linux => c"reboot=k panic=-1 panic_print=0 console=hvc0 rootfstype=virtiofs rw quiet no-kvmapf init=/init.krun",
         OSType::FreeBSD => {
             match opts.root_device {
@@ -813,7 +823,7 @@ fn setup_vm(
 
     unsafe {
         bindings::krun_set_kernel(
-            ctx,
+            ctx_id,
             CString::from_path(&config.kernel.path).as_ptr(),
             0, // KRUN_KERNEL_FORMAT_RAW
             null(),
@@ -822,11 +832,11 @@ fn setup_vm(
     }
     .context("Failed to set kernel")?;
 
-    Ok(ctx)
+    Ok(VMContext { id: ctx_id, os })
 }
 
 fn start_vmproxy(
-    ctx: u32,
+    ctx: VMContext,
     config: &MountConfig,
     service_status: &ServiceStatus,
     env: &[BString],
@@ -843,133 +853,153 @@ fn start_vmproxy(
 
     let reuse_passphrase = config.common.passphrase_config == PassphrasePromptConfig::OneForAll;
 
-    let vmproxy = match config.common.kernel.os {
-        OSType::Linux => c"/vmproxy",
-        OSType::FreeBSD => c"/vmproxy-bsd",
+    let vmproxy: BString = match config.common.kernel.os {
+        OSType::Linux => "/vmproxy",
+        OSType::FreeBSD => "/vmproxy-bsd",
     }
-    .to_owned();
+    .into();
 
     let args: Vec<_> = [
         vmproxy,
-        CString::new(dev_info.vm_path()).unwrap(),
-        CString::new(dev_info.auto_mount_name()).unwrap(),
-        c"-b".to_owned(),
-        CString::new(config.bind_addr.to_string()).unwrap(),
+        dev_info.vm_path().into(),
+        dev_info.auto_mount_name().into(),
+        "-b".into(),
+        config.bind_addr.to_string().into(),
     ]
     .into_iter()
-    .chain([
-        c"-t".to_owned(),
-        CString::new(dev_info.fs_type().unwrap_or("auto")).unwrap(),
-    ])
+    .chain(["-t".into(), dev_info.fs_type().unwrap_or("auto").into()])
     .chain(
         config
             .fs_driver
             .as_deref()
             .into_iter()
-            .flat_map(|fs_driver| [c"--fs-driver".to_owned(), CString::new(fs_driver).unwrap()]),
+            .flat_map(|fs_driver| ["--fs-driver".into(), fs_driver.into()]),
     )
     .chain(
         config
             .mount_options
             .as_deref()
             .into_iter()
-            .flat_map(|opts| [c"-o".to_owned(), CString::new(opts).unwrap()]),
+            .flat_map(|opts| ["-o".into(), opts.into()]),
     )
     .chain(
         to_decrypt_arg
             .as_deref()
             .into_iter()
-            .flat_map(|d| vec![c"-d".to_owned(), CString::new(d).unwrap()]),
+            .flat_map(|d| vec!["-d".into(), d.into()]),
     )
     .chain(config.get_action().into_iter().flat_map(|action| {
         vec![
-            c"-a".to_owned(),
-            CString::new(action.percent_encode().expect("failed to serialize action")).unwrap(),
+            "-a".into(),
+            action
+                .percent_encode()
+                .expect("failed to serialize action")
+                .into(),
         ]
     }))
-    .chain(multi_device.then_some(c"-m".to_owned()).into_iter())
-    .chain(reuse_passphrase.then_some(c"-r".to_owned()).into_iter())
+    .chain(multi_device.then_some("-m".into()).into_iter())
+    .chain(reuse_passphrase.then_some("-r".into()).into_iter())
     .chain(
         service_status
             .rpcbind_running
-            .then_some(c"-h".to_owned())
+            .then_some("-h".into())
             .into_iter(),
     )
-    .chain(config.verbose.then_some(c"-v".to_owned()).into_iter())
+    .chain(config.verbose.then_some("-v".into()).into_iter())
     .collect();
 
     host_println!("vmproxy args: {:?}", &args);
-
-    let argv = args.to_ptr_vec();
-
-    let cenv = env.to_cstring_vec();
-    let envp = cenv.to_ptr_vec();
-
-    match config.common.kernel.os {
-        OSType::Linux => {
-            unsafe { bindings::krun_set_exec(ctx, argv[0], argv[1..].as_ptr(), envp.as_ptr()) }
-                .context("Failed to set exec")?;
-        }
-        OSType::FreeBSD => {
-            // due to limitations of FreeBSD kernel command line,
-            // we will use virtio multi-port console to pass the arguments
-            let (pipe_in_read, pipe_in_write) =
-                utils::new_pipe().context("Failed to create pipe")?;
-            let (pipe_out_read, pipe_out_write) =
-                utils::new_pipe().context("Failed to create pipe")?;
-
-            let console_id = unsafe { bindings::krun_add_virtio_console_multiport(ctx) }
-                .context("Failed to add virtio multiportconsole")?;
-
-            unsafe {
-                bindings::krun_add_console_port_inout(
-                    ctx,
-                    console_id,
-                    c"krun-config".as_ptr(),
-                    pipe_in_read,
-                    pipe_out_write,
-                )
-            }
-            .context("Failed to add console port")?;
-
-            let krun_config = json!({
-                "process": {
-                    "args": args,
-                    "env": env,
-                }
-            })
-            .to_string();
-
-            _ = thread::spawn(move || {
-                let mut reader = unsafe { File::from_raw_fd(pipe_out_read) };
-                let mut handshake_buf = [0u8; 6];
-                if let Err(e) = reader.read_exact(&mut handshake_buf) {
-                    host_eprintln!("Failed to read from virtio console: {}", e);
-                    return;
-                }
-                // TODO: check if handshake_buf == b"READY\0"
-
-                if let Err(e) =
-                    unsafe { utils::write_to_pipe(pipe_in_write, krun_config.as_bytes()) }
-                {
-                    host_eprintln!("Failed to write krun config to virtio console: {}", e);
-                    return;
-                }
-                // send EOF
-                if let Err(e) = unsafe { utils::write_to_pipe(pipe_in_write, &[0x04]) } {
-                    host_eprintln!("Failed to write EOF to virtio console: {}", e);
-                }
-            });
-        }
-    }
+    set_vm_cmdline(ctx, &args, env)?;
 
     before_start().context("Before start callback failed")?;
-    unsafe { bindings::krun_start_enter(ctx) }.context("Failed to start VM")?;
+    unsafe { bindings::krun_start_enter(ctx.id) }.context("Failed to start VM")?;
 
     Ok(())
 }
 
-fn start_vm_forked(ctx: u32, cmdline: &[String], env: &[BString]) -> anyhow::Result<i32> {
+#[serde_as]
+#[derive(Serialize)]
+struct KrunConfigProcess<'a, 'b> {
+    #[serde_as(as = "[DisplayFromStr]")]
+    args: &'a [BString],
+    #[serde_as(as = "[DisplayFromStr]")]
+    env: &'b [BString],
+}
+
+#[derive(Serialize)]
+struct KrunConfig<'a, 'b> {
+    process: KrunConfigProcess<'a, 'b>,
+}
+
+fn set_vm_cmdline(ctx: VMContext, args: &[BString], env: &[BString]) -> anyhow::Result<()> {
+    let cargs = args.to_cstring_vec();
+    let cenv = env.to_cstring_vec();
+
+    let krun_config_tmp_dir;
+    let mut deferred = Deferred::new();
+
+    match ctx.os {
+        OSType::Linux => {
+            let argv = cargs.to_ptr_vec();
+            let envp = cenv.to_ptr_vec();
+            unsafe { bindings::krun_set_exec(ctx.id, argv[0], argv[1..].as_ptr(), envp.as_ptr()) }
+                .context("Failed to set exec")?;
+        }
+        OSType::FreeBSD => {
+            let argv = cargs.to_ptr_vec();
+            let envp = cenv.to_ptr_vec();
+            unsafe { bindings::krun_set_exec(ctx.id, argv[0], argv[1..].as_ptr(), envp.as_ptr()) }
+                .context("Failed to set exec")?;
+
+            let krun_config = serde_json::to_string(&KrunConfig {
+                process: KrunConfigProcess { args, env },
+            })
+            .context("Failed to serialize krun config")?;
+
+            krun_config_tmp_dir = PathBuf::from("/tmp").join(format!("alfs-{}", rand_string(8)));
+            fs::create_dir_all(&krun_config_tmp_dir)
+                .context("Failed to create krun config temp directory")?;
+
+            let krun_config_file_name = "krun_config.json";
+            let krun_config_file = krun_config_tmp_dir.join(krun_config_file_name);
+            fs::write(&krun_config_file, krun_config.as_bytes()).with_context(|| {
+                format!(
+                    "Failed to write krun config file {}",
+                    krun_config_file.display()
+                )
+            })?;
+
+            deferred.add(|| {
+                _ = fs::remove_dir_all(&krun_config_tmp_dir);
+            });
+
+            // TODO: clean-up
+            let krun_config_iso = "/tmp/krun_config.iso";
+            vm_image::create_iso(
+                krun_config_iso,
+                &krun_config_tmp_dir,
+                &krun_config_tmp_dir,
+                IsoAdd::Files(&[&krun_config_file_name]),
+                Some("KRUN_CONFIG"),
+            )
+            .context("Failed to create ISO image for krun config")?;
+
+            unsafe {
+                bindings::krun_add_disk(
+                    ctx.id,
+                    CString::new("config").unwrap().as_ptr(),
+                    CString::new(krun_config_iso).unwrap().as_ptr(),
+                    true,
+                )
+            }
+            .context("Failed to add disk")?;
+        }
+    }
+
+    Ok(())
+}
+
+fn start_vm_forked(ctx: VMContext, cmdline: &[BString], env: &[BString]) -> anyhow::Result<i32> {
     let pid = unsafe { libc::fork() };
     if pid < 0 {
         return Err(io::Error::last_os_error()).context("Failed to fork process");
@@ -987,17 +1017,9 @@ fn start_vm_forked(ctx: u32, cmdline: &[String], env: &[BString]) -> anyhow::Res
     }
 }
 
-fn start_vm(ctx: u32, cmdline: &[String], env: &[BString]) -> anyhow::Result<()> {
-    let args = cmdline.to_cstring_vec();
-    let argv = args.to_ptr_vec();
-
-    let cenv = env.to_cstring_vec();
-    let envp = cenv.to_ptr_vec();
-
-    unsafe { bindings::krun_set_exec(ctx, argv[0], argv[1..].as_ptr(), envp.as_ptr()) }
-        .context("Failed to set exec")?;
-
-    unsafe { bindings::krun_start_enter(ctx) }.context("Failed to start VM")?;
+fn start_vm(ctx: VMContext, cmdline: &[BString], env: &[BString]) -> anyhow::Result<()> {
+    set_vm_cmdline(ctx, cmdline, env)?;
+    unsafe { bindings::krun_start_enter(ctx.id) }.context("Failed to start VM")?;
 
     Ok(())
 }
@@ -1043,10 +1065,11 @@ fn run_vmcommand_short(
         let argv = args.to_ptr_vec();
         let envp = vec![std::ptr::null()];
 
-        unsafe { bindings::krun_set_exec(ctx, argv[0], argv[1..].as_ptr(), envp.as_ptr()) }
+        // this is only used with Linux so far; no need to call set_vm_cmdline
+        unsafe { bindings::krun_set_exec(ctx.id, argv[0], argv[1..].as_ptr(), envp.as_ptr()) }
             .context("Failed to set exec")?;
 
-        unsafe { bindings::krun_start_enter(ctx) }.context("Failed to start VM")?;
+        unsafe { bindings::krun_start_enter(ctx.id) }.context("Failed to start VM")?;
         unreachable!();
     } else {
         // parent process
@@ -1608,18 +1631,18 @@ impl AppRunner {
         if os == OSType::Linux {
             let dns_server = dnsutil::get_dns_server_with_fallback();
             let vm_prelude = format!("echo nameserver {} > /etc/resolv.conf", dns_server);
-            let mut cmdline = vec!["/bin/bash".to_owned(), "-c".to_owned()];
+            let mut cmdline: Vec<BString> = vec!["/bin/bash".into(), "-c".into()];
             if let Some(command) = cmd.command {
-                cmdline.push(command);
+                cmdline.push(command.into());
             } else {
-                cmdline.push(vm_prelude + " && /bin/bash -l");
+                cmdline.push((vm_prelude + " && /bin/bash -l").into());
             }
             start_vm(ctx, &cmdline, &vm_env).context("Failed to start microVM shell")?;
         } else {
-            let cmdline = if let Some(command) = cmd.command {
-                vec!["/bin/sh".to_owned(), "-c".to_owned(), command]
+            let cmdline: Vec<BString> = if let Some(command) = cmd.command {
+                vec!["/bin/sh".into(), "-c".into(), command.into()]
             } else {
-                vec!["/start-shell.sh".to_owned()]
+                vec!["/start-shell.sh".into()]
             };
             vm_image::setup_gvproxy(&config.common, || {
                 start_vm_forked(ctx, &cmdline, &vm_env).context("Failed to start microVM shell")
@@ -1708,7 +1731,7 @@ impl AppRunner {
             }
         };
         let vm_command = format!("{vm_prelude} && {apk_command}");
-        let cmdline = vec!["/bin/bash".to_owned(), "-c".to_owned(), vm_command];
+        let cmdline: Vec<BString> = vec!["/bin/bash".into(), "-c".into(), vm_command.into()];
 
         let opts = VMOpts::new().read_only_disks(true);
         let ctx = setup_vm(&config, &[], false, false, opts).context("Failed to setup microVM")?;

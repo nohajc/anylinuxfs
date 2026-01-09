@@ -1,8 +1,8 @@
 use crate::{Config, ImageSource, fsutil, vm_network};
-use anyhow::anyhow;
+use anyhow::{Context, anyhow};
 
 use common_utils::{Deferred, host_eprintln};
-use std::{fs, path::Path};
+use std::{fs, path::Path, process::Command};
 
 #[cfg(feature = "freebsd")]
 pub const KERNEL_IMAGE: &str = "kernel/kernel.bin";
@@ -120,7 +120,7 @@ mod freebsd {
         setup_vm, start_vm_forked,
     };
     use anyhow::{Context, anyhow};
-    use bstr::BStr;
+    use bstr::{BStr, BString};
     use common_utils::{Deferred, PathExt, host_eprintln, host_println};
     use serde::Serialize;
 
@@ -189,6 +189,7 @@ mod freebsd {
                         &tmp_path,
                         &config.libexec_path,
                         IsoAdd::Files(&to_upgrade),
+                        None,
                     )?;
                     let upgrade_iso_image_path = tmp_path.join(upgrade_iso_image);
 
@@ -261,7 +262,7 @@ mod freebsd {
         host_println!("Fetched FreeBSD OCI image: {}", oci_image);
 
         extract(oci_image, &tmp_path, &oci_path).context("Failed to unpack FreeBSD OCI image")?;
-        create_iso(oci_iso_image, &tmp_path, &oci_path, IsoAdd::All)
+        create_iso(oci_iso_image, &tmp_path, &oci_path, IsoAdd::All, None)
             .context("Failed to convert FreeBSD OCI image to ISO")?;
 
         let oci_iso_image_path = tmp_path.join(oci_iso_image);
@@ -355,6 +356,7 @@ mod freebsd {
             &tmp_path,
             &bootstrap_rootfs_path,
             IsoAdd::All,
+            None,
         )
         .context("Failed to create FreeBSD bootstrap ISO")?;
 
@@ -435,46 +437,6 @@ mod freebsd {
             return Err(anyhow!(
                 "curl command failed with exit code {}",
                 curl_status
-                    .code()
-                    .map(|c| c.to_string())
-                    .unwrap_or("unknown".to_owned())
-            ));
-        }
-
-        Ok(())
-    }
-
-    const TAR: &str = "/usr/bin/bsdtar";
-
-    enum IsoAdd<'a, 'b> {
-        All,
-        Files(&'a [&'b str]),
-    }
-
-    fn create_iso(
-        iso_path: impl AsRef<Path>,
-        working_dir: &Path,
-        src_dir: &Path,
-        file_list: IsoAdd<'_, '_>,
-    ) -> anyhow::Result<()> {
-        let tar_status = Command::new(TAR)
-            .current_dir(working_dir)
-            .args(&["cf"])
-            .arg(iso_path.as_ref())
-            .args(&["--format", "iso9660"])
-            .arg("-C")
-            .arg(src_dir)
-            .args(match file_list {
-                IsoAdd::All => &["."],
-                IsoAdd::Files(files) => files,
-            })
-            .status()
-            .context("Failed to execute tar command")?;
-
-        if !tar_status.success() {
-            return Err(anyhow!(
-                "tar command failed with exit code {}",
-                tar_status
                     .code()
                     .map(|c| c.to_string())
                     .unwrap_or("unknown".to_owned())
@@ -569,7 +531,7 @@ mod freebsd {
     fn start_freebsd_vm(
         config: &Config,
         devices: &[DevInfo],
-        cmdline: &[String],
+        cmdline: &[BString],
         use_gvproxy: bool,
     ) -> anyhow::Result<i32> {
         let opts = VMOpts::new()
@@ -619,6 +581,52 @@ mod freebsd {
         }
         Ok(())
     }
+}
+
+pub enum IsoAdd<'a, 'b> {
+    All,
+    Files(&'a [&'b str]),
+}
+
+const TAR: &str = "/usr/bin/bsdtar";
+
+pub fn create_iso(
+    iso_path: impl AsRef<Path>,
+    working_dir: impl AsRef<Path>,
+    src_dir: impl AsRef<Path>,
+    file_list: IsoAdd<'_, '_>,
+    label: Option<&str>,
+) -> anyhow::Result<()> {
+    let tar_status = Command::new(TAR)
+        .current_dir(working_dir)
+        .args(&["cf"])
+        .arg(iso_path.as_ref())
+        .args(&["--format", "iso9660"])
+        .args(
+            label
+                .into_iter()
+                .flat_map(|l| vec!["--options".into(), format!("volume-id={}", l)]),
+        )
+        .arg("-C")
+        .arg(src_dir.as_ref())
+        .args(match file_list {
+            IsoAdd::All => &["."],
+            IsoAdd::Files(files) => files,
+        })
+        .status()
+        .context("Failed to execute tar command")?;
+
+    if !tar_status.success() {
+        return Err(anyhow!(
+            "tar command failed with exit code {}",
+            tar_status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or("unknown".to_owned())
+        ));
+    }
+
+    Ok(())
 }
 
 pub fn init(config: &Config, force: bool, src: &ImageSource) -> anyhow::Result<()> {
