@@ -5,8 +5,8 @@ With full write support, based on the libkrun microVM hypervisor and NFS. Doesn'
 <a href='https://ko-fi.com/Q5Q41EHAGK' target='_blank'><img height='36' style='border:0px;height:36px;' src='https://storage.ko-fi.com/cdn/kofi1.png?v=6' border='0' alt='Buy Me a Coffee at ko-fi.com' /></a>
 
 > [!IMPORTANT]
-> If anylinuxfs is suddenly freezing, you are most probably affected by a new bug in the libkrun library.
-> Please, upgrade to the latest version and read the [release notes](https://github.com/nohajc/anylinuxfs/releases/tag/v0.8.7).
+> **The VM freezing issue with low RAM has now been fixed!** Make sure you're running libkrun 1.17 (`brew update && brew upgrade libkrun`).
+> Then you should have no problem running VMs with less than 1 GB RAM again (see `anylinuxfs config -r`).
 
 ## Features
 - mounts any filesystem supported by Linux (**ext4**, **btrfs**, **xfs**, ... but also **NTFS** and **exFAT**)
