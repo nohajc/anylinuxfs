@@ -1367,6 +1367,9 @@ fn print_dev_info(dev_info: &DevInfo, dev_type: DevType) {
     }
 
     if dev_type == DevType::Direct || dev_type == DevType::LV {
+        if let Some(block_size) = dev_info.block_size() {
+            host_println!("block size: {}", block_size);
+        }
         host_println!("label: {:?}", dev_info.label());
         host_println!("fs_type: {:?}", dev_info.fs_type());
         host_println!("uuid: {:?}", dev_info.uuid());
