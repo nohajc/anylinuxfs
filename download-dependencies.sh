@@ -12,7 +12,7 @@ MODULES_ARCHIVE_URL="${RELEASE_URL}/${MODULES_ARCHIVE_NAME}"
 
 if [ -n "$FREEBSD" ]; then
     INIT_BSD="init-freebsd"
-    INIT_BSD_URL="https://github.com/nohajc/libkrun/releases/download/v1.16.0-init-bsd/${INIT_BSD}"
+    INIT_BSD_URL="https://github.com/nohajc/libkrun/releases/download/v1.17.0-init-bsd/${INIT_BSD}"
 fi
 
 GVPROXY_VERSION="0.8.7"
