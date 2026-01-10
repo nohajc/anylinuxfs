@@ -18,7 +18,7 @@ mod alpine {
         process::{Command, Stdio},
     };
 
-    pub const ROOTFS_CURRENT_VERSION: &str = "1.2.0";
+    pub const ROOTFS_CURRENT_VERSION: &str = "1.2.1";
 
     pub fn init_rootfs(config: &Config, force: bool) -> anyhow::Result<()> {
         if !force {
