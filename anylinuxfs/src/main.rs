@@ -18,7 +18,7 @@ use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, SocketAddrV4, TcpStream};
-use std::os::fd::FromRawFd;
+use std::os::fd::{FromRawFd, IntoRawFd};
 use std::os::unix::fs::chown;
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
@@ -955,6 +955,10 @@ fn set_vm_cmdline(ctx: VMContext, args: &[BString], env: &[BString]) -> anyhow::
             fs::create_dir_all(&krun_config_tmp_dir)
                 .context("Failed to create krun config temp directory")?;
 
+            deferred.add(|| {
+                _ = fs::remove_dir_all(&krun_config_tmp_dir);
+            });
+
             let krun_config_file_name = "krun_config.json";
             let krun_config_file = krun_config_tmp_dir.join(krun_config_file_name);
             fs::write(&krun_config_file, krun_config.as_bytes()).with_context(|| {
@@ -964,14 +968,9 @@ fn set_vm_cmdline(ctx: VMContext, args: &[BString], env: &[BString]) -> anyhow::
                 )
             })?;
 
-            deferred.add(|| {
-                _ = fs::remove_dir_all(&krun_config_tmp_dir);
-            });
-
-            // TODO: clean-up
-            let krun_config_iso = "/tmp/krun_config.iso";
+            let krun_config_iso = krun_config_tmp_dir.join("krun_config.iso");
             vm_image::create_iso(
-                krun_config_iso,
+                &krun_config_iso,
                 &krun_config_tmp_dir,
                 &krun_config_tmp_dir,
                 IsoAdd::Files(&[&krun_config_file_name]),
@@ -979,11 +978,16 @@ fn set_vm_cmdline(ctx: VMContext, args: &[BString], env: &[BString]) -> anyhow::
             )
             .context("Failed to create ISO image for krun config")?;
 
+            // open the file before we unlink the temp dir and everything inside it;
+            // this way the config iso remains accessible until process termination
+            let config_iso_fd = File::open(&krun_config_iso)?.into_raw_fd();
+            let krun_config_iso_fd_path = format!("/dev/fd/{}", config_iso_fd);
+
             unsafe {
                 bindings::krun_add_disk(
                     ctx.id,
                     CString::new("config").unwrap().as_ptr(),
-                    CString::new(krun_config_iso).unwrap().as_ptr(),
+                    CString::from_path(&krun_config_iso_fd_path).as_ptr(),
                     true,
                 )
             }
