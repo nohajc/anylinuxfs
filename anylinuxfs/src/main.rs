@@ -1377,7 +1377,7 @@ fn print_dev_info(dev_info: &DevInfo, dev_type: DevType) {
     }
 }
 
-fn claim_devices(config: &MountConfig) -> anyhow::Result<(Vec<DevInfo>, DevInfo, Vec<File>)> {
+fn claim_devices(config: &mut MountConfig) -> anyhow::Result<(Vec<DevInfo>, DevInfo, Vec<File>)> {
     let mount_table = fsutil::MountTable::new()?;
     // host_println!("Current mount table: {:#?}", mount_table);
 
@@ -1495,6 +1495,11 @@ fn claim_devices(config: &MountConfig) -> anyhow::Result<(Vec<DevInfo>, DevInfo,
         mnt_dev_info.set_fs_driver(&fs_driver);
     };
 
+    if mnt_dev_info.fs_type() == Some("f2fs") && mnt_dev_info.block_size() == Some(4096) {
+        host_println!("Using 4K-page kernel for f2fs filesystem");
+        config.common.kernel.path = config.common.kernel.path.parent().unwrap().join("Image-4K");
+    }
+
     Ok((dev_infos, mnt_dev_info, disks))
 }
 
@@ -1562,7 +1567,7 @@ impl AppRunner {
 
         let config = load_mount_config(cmd.clone().into(), true)?;
         #[cfg(feature = "freebsd")]
-        let (config, src, root_disk_path) = match cmd.image {
+        let (mut config, src, root_disk_path) = match cmd.image {
             Some(image_name) => {
                 let images = config.common.preferences.images();
                 let matched_images: Vec<_> = images
@@ -1604,7 +1609,7 @@ impl AppRunner {
         );
 
         #[allow(unused_mut)]
-        let (mut dev_info, _, _disks) = claim_devices(&config)?;
+        let (mut dev_info, _, _disks) = claim_devices(&mut config)?;
 
         #[allow(unused_mut)]
         let mut opts = VMOpts::new().read_only_disks(config.read_only);
@@ -1918,7 +1923,7 @@ impl AppRunner {
         }
 
         #[allow(unused_mut)]
-        let (mut dev_info, mut mnt_dev_info, _disks) = claim_devices(&config)?;
+        let (mut dev_info, mut mnt_dev_info, _disks) = claim_devices(&mut config)?;
 
         #[allow(unused_mut)]
         let mut opts = VMOpts::new().read_only_disks(config.read_only);
