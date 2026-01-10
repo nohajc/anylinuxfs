@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 pub struct DevInfo {
     path: BString,
     rpath: BString,
+    block_size: Option<u32>,
     label: Option<String>,
     fs_type: Option<String>,
     uuid: Option<String>,
@@ -29,6 +30,7 @@ impl DevInfo {
         Ok(DevInfo {
             path: path.into(),
             rpath: path.into(),
+            block_size: None,
             label: label.map(|l| l.to_owned()),
             fs_type: Some("auto".into()),
             uuid: None,
@@ -70,6 +72,11 @@ impl DevInfo {
             .do_safeprobe()
             .context(format!("Cannot probe device {}", &path))?;
 
+        let block_size = probe
+            .lookup_value("BLOCK_SIZE")
+            .ok()
+            .and_then(|v| v.parse().ok());
+
         let label = probe.lookup_value("LABEL").ok();
         let fs_type = probe.lookup_value("TYPE").ok();
         let uuid = probe.lookup_value("UUID").ok();
@@ -77,6 +84,7 @@ impl DevInfo {
         Ok(DevInfo {
             path,
             rpath,
+            block_size,
             label,
             fs_type,
             uuid,
@@ -91,6 +99,10 @@ impl DevInfo {
 
     pub fn rdisk(&self) -> &Path {
         Path::from_bytes(&self.rpath)
+    }
+
+    pub fn block_size(&self) -> Option<u32> {
+        self.block_size
     }
 
     pub fn label(&self) -> Option<&str> {
