@@ -681,6 +681,8 @@ fn run() -> anyhow::Result<()> {
         }
     }
 
+    init_network(&cli.bind_addr, cli.host_rpcbind).context("Failed to initialize network")?;
+
     custom_action
         .before_mount()
         .context("before_mount action")?;
@@ -796,8 +798,6 @@ fn run() -> anyhow::Result<()> {
     .split(',')
     .map(|s| s.to_owned())
     .collect::<Vec<String>>();
-
-    init_network(&cli.bind_addr, cli.host_rpcbind).context("Failed to initialize network")?;
 
     #[cfg(target_os = "linux")]
     let listener = {
