@@ -702,6 +702,7 @@ pub fn merge_toml_configs<S>(dst: &mut DocumentMut, src: &Document<S>) -> anyhow
                     merge_toml_tables(
                         table,
                         src_item.as_table().context("source item is not a table")?,
+                        &key,
                     );
                 }
                 Item::ArrayOfTables(_array_of_tables) => unimplemented!(),
@@ -709,22 +710,35 @@ pub fn merge_toml_configs<S>(dst: &mut DocumentMut, src: &Document<S>) -> anyhow
         }
     }
 
-    merge_toml_tables(dst, src.as_table());
+    merge_toml_tables(dst, src.as_table(), "");
     Ok(())
 }
 
-fn merge_toml_tables(dst: &mut toml_edit::Table, src: &toml_edit::Table) {
+const OBSOLETE_KEYS: &[&str] = &["images.freebsd-14.3"];
+
+fn merge_toml_tables(dst: &mut toml_edit::Table, src: &toml_edit::Table, path: &str) {
     let decor = toml_edit::Decor::new("\n", "");
     for (key, src_item) in src.iter() {
         // only add src items not present in dst
         if dst.contains_key(key) {
             continue;
         }
-        let item = match src_item {
-            Item::Table(tbl) => Item::Table(tbl.without_pos(decor.clone())),
-            _ => src_item.clone(),
+
+        let abs_key = if path.is_empty() {
+            key.to_string()
+        } else {
+            format!("{}.{}", path, key)
         };
-        dst.insert(&key, item);
+
+        if !OBSOLETE_KEYS.contains(&abs_key.as_str()) {
+            println!("Adding missing key {}", abs_key);
+
+            let item = match src_item {
+                Item::Table(tbl) => Item::Table(tbl.without_pos(decor.clone())),
+                _ => src_item.clone(),
+            };
+            dst.insert(&key, item);
+        }
     }
 }
 
