@@ -199,22 +199,16 @@ struct CommonArgs {
     zfs_os: Option<OSType>,
 }
 
-macro_rules! disk_ident_arg {
-    ($struct_name:ident, $field_type:ty) => {
-        #[derive(Args, Clone)]
-        struct $struct_name {
-            /// File path(s), LVM identifier or RAID identifier, e.g.:
-            /// /dev/diskXsY[:/dev/diskYsZ:...]
-            /// lvm:<vg-name>:diskXsY[:diskYsZ:...]:<lv-name>
-            /// raid:diskXsY[:diskYsZ:...]
-            /// (see `list` command output for available volumes)
-            #[clap(verbatim_doc_comment)]
-            disk_ident: $field_type,
-        }
-    };
+#[derive(Args, Clone)]
+struct DiskIdentArg {
+    /// File path(s), LVM identifier or RAID identifier, e.g.:
+    /// /dev/diskXsY[:/dev/diskYsZ:...]
+    /// lvm:<vg-name>:diskXsY[:diskYsZ:...]:<lv-name>
+    /// raid:diskXsY[:diskYsZ:...]
+    /// (see `list` command output for available volumes)
+    #[clap(verbatim_doc_comment)]
+    disk_ident: Option<String>,
 }
-
-disk_ident_arg!(DiskIdentArg, String);
 
 #[derive(Args)]
 struct MountCmd {
@@ -254,7 +248,7 @@ struct MountCmd {
 
 impl MountCmd {
     fn disk_ident(&self) -> String {
-        self.d.disk_ident.clone()
+        self.d.disk_ident.clone().unwrap_or_default()
     }
 }
 
@@ -306,8 +300,6 @@ struct StopCmd {
     force: bool,
 }
 
-disk_ident_arg!(DiskIdentOptionalArg, Option<String>);
-
 #[derive(Args, Clone)]
 struct ShellCmd {
     /// Command to run in the shell
@@ -321,7 +313,7 @@ struct ShellCmd {
     #[arg(short, long)]
     image: Option<String>,
     #[command(flatten)]
-    d: DiskIdentOptionalArg,
+    d: DiskIdentArg,
     /// Allow remount: proceed even if the disk is already mounted by macOS (NTFS, exFAT)
     #[arg(short, long)]
     remount: bool,
@@ -333,9 +325,7 @@ struct ShellCmd {
 impl From<ShellCmd> for MountCmd {
     fn from(shell_cmd: ShellCmd) -> Self {
         MountCmd {
-            d: DiskIdentArg {
-                disk_ident: shell_cmd.d.disk_ident.unwrap_or_default(),
-            },
+            d: shell_cmd.d,
             mount_point: None,
             options: None,
             nfs_options: None,
@@ -425,7 +415,7 @@ impl Cli {
     // (this effectively makes `mount` the default command so the keyword can be omitted)
     fn try_parse_with_default_cmd() -> Result<Cli, clap::Error> {
         let mount_cmd_usage =
-            "\x1b[1manylinuxfs [mount]\x1b[0m [OPTIONS] <DISK_IDENT> [MOUNT_POINT]";
+            "\x1b[1manylinuxfs [mount]\x1b[0m [OPTIONS] [DISK_IDENT] [MOUNT_POINT]";
         let cmd = Cli::command().mut_subcommand("mount", |mount_cmd: clap::Command| {
             mount_cmd.override_usage(mount_cmd_usage)
         });
@@ -1161,7 +1151,10 @@ fn mount_nfs(
             }
             .join("Volumes");
 
-            let mount_name = share_path.split(|&b| b == b'/').last().unwrap();
+            let mut mount_name = share_path.split(|&b| b == b'/').last().unwrap();
+            if mount_name.is_empty() {
+                mount_name = b"root";
+            }
             let mut mount_path = volume_base_dir.join(Path::from_bytes(mount_name));
             let mut counter = 1;
 
@@ -1884,7 +1877,8 @@ impl AppRunner {
             service_status.rpcbind_running = true;
         }
 
-        let config = load_mount_config(cmd, false)?;
+        // TODO: verify if custom action can be used without a disk
+        let config = load_mount_config(cmd, true)?;
         let log_file_path = &config.common.log_file_path;
 
         log::init_log_file(log_file_path).context("Failed to create log file")?;
@@ -2405,11 +2399,11 @@ impl AppRunner {
                 deferred.call_now(disable_stdin_fwd_action);
 
                 if let Some(mount_point) = &mount_point_opt {
-                    host_println!(
-                        "{} was mounted as {}",
-                        mnt_dev_info.disk().display(),
-                        mount_point.display()
-                    );
+                    let mut disk: String = mnt_dev_info.disk().display().to_string();
+                    if disk.is_empty() {
+                        disk = "<unknown>".into();
+                    }
+                    host_println!("{} was mounted as {}", disk, mount_point.display());
 
                     if config.custom_mount_point.is_none() {
                         // mount point will be removed only if it was auto-created
@@ -2749,6 +2743,10 @@ impl AppRunner {
                     }
                 };
 
+                let user_name = utils::user_name_from_uid(rt_info.mount_config.common.invoker_uid)
+                    .unwrap_or("<unknown>".into());
+                let mounted_by = format!("mounted by {}", &user_name);
+
                 let info: Vec<_> = rt_info
                     .dev_info
                     .fs_driver()
@@ -2760,17 +2758,18 @@ impl AppRunner {
                             .iter()
                             .flat_map(|opts| opts.split(',')),
                     )
+                    .chain([mounted_by.as_str()])
                     .collect();
 
-                let user_name = utils::user_name_from_uid(rt_info.mount_config.common.invoker_uid)
-                    .unwrap_or("<unknown>".into());
-
+                let mut disk = rt_info.mount_config.disk_path.as_str();
+                if disk.is_empty() {
+                    disk = "<unknown>";
+                }
                 println!(
-                    "{} on {} ({}, mounted by {}) VM[cpus: {}, ram: {} MiB]",
-                    &rt_info.mount_config.disk_path,
+                    "{} on {} ({}) VM[cpus: {}, ram: {} MiB]",
+                    disk,
                     mount_point.display(),
                     info.join(", "),
-                    &user_name,
                     rt_info.mount_config.common.preferences.krun_num_vcpus(),
                     rt_info.mount_config.common.preferences.krun_ram_size_mib(),
                 );
