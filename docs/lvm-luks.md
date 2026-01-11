@@ -9,6 +9,19 @@ After this command, anylinuxfs will scan for any identified volume groups with t
 
 Then, you can properly mount the volume group like the example below and use before flags as necessary, like setting it to read only, and write only. 
 
+After that, you should see a layout of this:
+```
+lvm:<volume group name> (volume group)
+#: TYPE NAME
+0: LVM2_scheme SIZE                   IDENTIFIER 
+               (Size of your drive).  <name of volume group>
+                Physical Store disk7s3 
+1:  <file system type> <size of lvm>   <name of volume group>:diskidentifier:<name of volume>
+```
+[!NOTE]
+This is just an example layout, things may look different as your disk sizes and disk identifiers vary on macOS. disk7s3 is just a placeholder to show you what it might look like. 
+
+
 **Example for mounting a volume group** 
 ```
 sudo anylinuxfs mount lvm:<vg-name>:<disk partition name>:<lv-name>
