@@ -617,6 +617,7 @@ impl Display for MiscConfig {
 pub struct OSConfig {
     pub default_image: Option<String>,
 }
+
 impl OSConfig {
     fn merge_with(&self, other: &OSConfig) -> OSConfig {
         OSConfig {
@@ -624,6 +625,15 @@ impl OSConfig {
         }
     }
 }
+
+#[derive(Clone, Copy, ValueEnum, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub enum KernelPage {
+    #[clap(name = "4k")]
+    Size4K,
+    #[clap(name = "16k")]
+    Size16K,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct MountConfig {
     pub disk_path: String,
@@ -636,6 +646,7 @@ pub struct MountConfig {
     pub bind_addr: IpAddr,
     pub verbose: bool,
     pub open_finder: bool,
+    pub kernel_page_size: Option<KernelPage>,
     pub common: Config,
     pub custom_action: Option<String>,
 }
