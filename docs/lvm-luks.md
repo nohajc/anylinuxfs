@@ -21,10 +21,8 @@ lvm:<volume group name> (volume group)
 [!NOTE]
 This is just an example layout, things may look different as your disk sizes and disk identifiers vary on macOS. disk7s3 is just a placeholder to show you what it might look like. 
 
-
 **Example for mounting a volume group** 
 ```
 sudo anylinuxfs mount lvm:<vg-name>:<disk partition name>:<lv-name>
 ```
-
 These are some basic examples, but anylinuxfs then after using this command will prompt you for your LUKS password to decrypt and you should be all set. 
