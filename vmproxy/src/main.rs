@@ -548,7 +548,7 @@ fn run() -> anyhow::Result<()> {
     let is_logical = disk_path.starts_with("/dev/mapper") || is_raid;
     let is_zfs = fs_type.as_deref() == Some("zfs_member");
 
-    let name = &cli.mount_name;
+    let name = cli.mount_name;
     let mount_name = if !is_logical {
         if is_zfs {
             #[cfg(target_os = "linux")]
@@ -559,7 +559,7 @@ fn run() -> anyhow::Result<()> {
             println!("<anylinuxfs-label:{}>", &label);
             label
         } else {
-            name.to_owned()
+            name
         }
     } else {
         let label = Command::new("/sbin/blkid")
@@ -578,27 +578,29 @@ fn run() -> anyhow::Result<()> {
         label
     };
 
-    match fs_type.as_deref() {
-        Some("auto") | None => {
-            let fs = Command::new("/sbin/blkid")
-                .arg(&disk_path)
-                .arg("-s")
-                .arg("TYPE")
-                .arg("-o")
-                .arg("value")
-                .output()
-                .context("Failed to run blkid command")?
-                .stdout;
+    if !disk_path.is_empty() {
+        match fs_type.as_deref() {
+            Some("auto") | None => {
+                let fs = Command::new("/sbin/blkid")
+                    .arg(&disk_path)
+                    .arg("-s")
+                    .arg("TYPE")
+                    .arg("-o")
+                    .arg("value")
+                    .output()
+                    .context("Failed to run blkid command")?
+                    .stdout;
 
-            let fs = String::from_utf8_lossy(&fs).trim().to_owned();
-            println!("<anylinuxfs-type:{}>", &fs);
-            fs_type = if !fs.is_empty() { Some(fs) } else { None };
+                let fs = String::from_utf8_lossy(&fs).trim().to_owned();
+                println!("<anylinuxfs-type:{}>", &fs);
+                fs_type = if !fs.is_empty() { Some(fs) } else { None };
+            }
+            Some("zfs_member") => {
+                fs_type = Some("zfs".to_owned());
+                println!("<anylinuxfs-type:{}>", fs_type.as_deref().unwrap());
+            }
+            _ => (),
         }
-        Some("zfs_member") => {
-            fs_type = Some("zfs".to_owned());
-            println!("<anylinuxfs-type:{}>", fs_type.as_deref().unwrap());
-        }
-        _ => (),
     }
 
     // scan multidisk volumes
@@ -624,12 +626,17 @@ fn run() -> anyhow::Result<()> {
 
     common_utils::fail_for_known_nonmountable_types(fs_type.as_deref())?;
 
-    let mount_point = format!("/mnt/{}", mount_name);
-    custom_action.set_env("ALFS_VM_MOUNT_POINT", mount_point.clone());
+    let mount_point = if !mount_name.is_empty() {
+        let mount_point = format!("/mnt/{}", mount_name);
+        custom_action.set_env("ALFS_VM_MOUNT_POINT", mount_point.clone());
 
-    fs::create_dir_all(&mount_point)
-        .context(format!("Failed to create directory '{}'", &mount_point))?;
-    println!("Directory '{}' created successfully.", &mount_point);
+        fs::create_dir_all(&mount_point)
+            .context(format!("Failed to create directory '{}'", &mount_point))?;
+        println!("Directory '{}' created successfully.", &mount_point);
+        mount_point
+    } else {
+        "".into()
+    };
 
     // let supported_fs =
     //     SupportedFilesystems::new().context("Failed to get supported filesystems")?;
@@ -713,68 +720,70 @@ fn run() -> anyhow::Result<()> {
         vec![]
     };
 
-    // we must show any output of mount command
-    // in case there's a warning (e.g. NTFS cannot be accessed rw)
-    println!("<anylinuxfs-force-output:on>");
-    let force_output_off = deferred.add(|| {
-        println!("<anylinuxfs-force-output:off>");
-    });
+    if !disk_path.is_empty() && !mount_point.is_empty() {
+        // we must show any output of mount command
+        // in case there's a warning (e.g. NTFS cannot be accessed rw)
+        println!("<anylinuxfs-force-output:on>");
+        let force_output_off = deferred.add(|| {
+            println!("<anylinuxfs-force-output:off>");
+        });
 
-    let mnt_result = if is_zfs {
-        zfs::mount_datasets(&zfs_mountpoints, &env_pwds)?
-    } else {
-        Command::new("/bin/mount")
-            .args(mnt_args)
-            .status()
-            .context("Failed to run mount command")?
-    };
+        let mnt_result = if is_zfs {
+            zfs::mount_datasets(&zfs_mountpoints, &env_pwds)?
+        } else {
+            Command::new("/bin/mount")
+                .args(mnt_args)
+                .status()
+                .context("Failed to run mount command")?
+        };
 
-    if !mnt_result.success() {
-        return Err(anyhow!(
-            "Mounting {} on {} failed with error code {}",
+        if !mnt_result.success() {
+            return Err(anyhow!(
+                "Mounting {} on {} failed with error code {}",
+                &disk_path,
+                &mount_point,
+                mnt_result
+                    .code()
+                    .map(|c| c.to_string())
+                    .unwrap_or("unknown".to_owned())
+            ));
+        }
+        deferred.call_now(force_output_off);
+
+        println!(
+            "'{}' mounted successfully on '{}', filesystem {}.",
             &disk_path,
             &mount_point,
-            mnt_result
-                .code()
-                .map(|c| c.to_string())
-                .unwrap_or("unknown".to_owned())
-        ));
-    }
-    deferred.call_now(force_output_off);
+            fs_type.unwrap_or("unknown".to_owned())
+        );
 
-    println!(
-        "'{}' mounted successfully on '{}', filesystem {}.",
-        &disk_path,
-        &mount_point,
-        fs_type.unwrap_or("unknown".to_owned())
-    );
+        deferred.add({
+            let mount_point = mount_point.clone();
+            move || {
+                let mut backoff = Duration::from_millis(50);
+                let umount_action: &dyn Fn() -> _ = if is_zfs {
+                    &|| script("zpool export -a").status().map(|_| ())
+                } else {
+                    #[cfg(target_os = "linux")]
+                    {
+                        &|| unmount(&mount_point, UnmountFlags::empty())
+                    }
+                    #[cfg(not(target_os = "linux"))]
+                    {
+                        &|| Ok(())
+                    }
+                };
+                while let Err(e) = umount_action() {
+                    eprintln!("Failed to unmount '{}': {}", &mount_point, e);
+                    thread::sleep(backoff);
+                    backoff = std::cmp::min(backoff * 2, Duration::from_secs(32));
+                }
+                println!("Unmounted '{}' successfully.", &mount_point);
 
-    deferred.add({
-        let mount_point = mount_point.clone();
-        move || {
-            let mut backoff = Duration::from_millis(50);
-            let umount_action: &dyn Fn() -> _ = if is_zfs {
-                &|| script("zpool export -a").status().map(|_| ())
-            } else {
-                #[cfg(target_os = "linux")]
-                {
-                    &|| unmount(&mount_point, UnmountFlags::empty())
-                }
-                #[cfg(not(target_os = "linux"))]
-                {
-                    &|| Ok(())
-                }
-            };
-            while let Err(e) = umount_action() {
-                eprintln!("Failed to unmount '{}': {}", &mount_point, e);
-                thread::sleep(backoff);
-                backoff = std::cmp::min(backoff * 2, Duration::from_secs(32));
+                _ = fs::remove_dir(&mount_point);
             }
-            println!("Unmounted '{}' successfully.", &mount_point);
-
-            _ = fs::remove_dir(&mount_point);
-        }
-    });
+        });
+    }
 
     custom_action.after_mount().context("after_mount action")?;
 
