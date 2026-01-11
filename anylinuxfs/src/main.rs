@@ -560,14 +560,11 @@ fn load_config(common_args: &CommonArgs) -> anyhow::Result<Config> {
     })
 }
 
-fn load_mount_config(cmd: MountCmd, allow_diskless: bool) -> anyhow::Result<MountConfig> {
+fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
     let common = load_config(&cmd.common)?;
 
-    let (disk_path, mount_options) = if !cmd.disk_ident().is_empty() || allow_diskless {
-        (cmd.disk_ident(), cmd.options)
-    } else {
-        return Err(anyhow!("no disk path provided"));
-    };
+    let disk_path = cmd.disk_ident();
+    let mount_options = cmd.options;
 
     let nfs_options = cmd.nfs_options.unwrap_or_default();
 
@@ -1569,7 +1566,7 @@ impl AppRunner {
     fn run_shell(&mut self, cmd: ShellCmd) -> anyhow::Result<()> {
         let _lock_file = LockFile::new(LOCK_FILE)?.acquire_lock(FlockKind::Exclusive)?;
 
-        let config = load_mount_config(cmd.clone().into(), true)?;
+        let config = load_mount_config(cmd.clone().into())?;
         #[cfg(feature = "freebsd")]
         let (mut config, src, root_disk_path) = match cmd.image {
             Some(image_name) => {
@@ -1877,8 +1874,19 @@ impl AppRunner {
             service_status.rpcbind_running = true;
         }
 
-        // TODO: verify if custom action can be used without a disk
-        let config = load_mount_config(cmd, true)?;
+        let config = load_mount_config(cmd)?;
+        // verify if mount can be executed without a disk
+        if config.disk_path.is_empty()
+            && match config.get_action() {
+                Some(action) => action.override_nfs_export().is_empty(),
+                None => true,
+            }
+        {
+            return Err(anyhow!(
+                "mount with no disk isn't valid unless a custom action with NFS export override is specified"
+            ));
+        }
+
         let log_file_path = &config.common.log_file_path;
 
         log::init_log_file(log_file_path).context("Failed to create log file")?;
