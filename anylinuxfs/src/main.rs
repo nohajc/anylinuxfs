@@ -41,8 +41,8 @@ use utils::{
 };
 
 use crate::settings::{
-    Config, CustomActionEnvironment, ImageSource, KernelConfig, KrunLogLevel, MountConfig,
-    PassphrasePromptConfig, Preferences,
+    Config, CustomActionEnvironment, ImageSource, KernelConfig, KernelPage, KrunLogLevel,
+    MountConfig, PassphrasePromptConfig, Preferences,
 };
 use crate::utils::{ToCStringVec, ToPtrVec};
 use crate::vm_image::IsoAdd;
@@ -245,6 +245,9 @@ struct MountCmd {
     /// Override this to share the mount to a different machine
     #[arg(short, long, default_value = "127.0.0.1")]
     bind_addr: String,
+    /// Linux kernel page size
+    #[arg(long)]
+    kernel_page_size: Option<KernelPage>,
     #[arg(short, long)]
     verbose: bool,
 }
@@ -322,6 +325,9 @@ struct ShellCmd {
     /// Allow remount: proceed even if the disk is already mounted by macOS (NTFS, exFAT)
     #[arg(short, long)]
     remount: bool,
+    /// Linux kernel page size
+    #[arg(long)]
+    kernel_page_size: Option<KernelPage>,
 }
 
 impl From<ShellCmd> for MountCmd {
@@ -339,6 +345,7 @@ impl From<ShellCmd> for MountCmd {
             common: CommonArgs::default(),
             window: false,
             bind_addr: "127.0.0.1".into(),
+            kernel_page_size: shell_cmd.kernel_page_size,
             verbose: false,
         }
     }
@@ -614,6 +621,7 @@ fn load_mount_config(cmd: MountCmd, allow_diskless: bool) -> anyhow::Result<Moun
     }
 
     let open_finder = cmd.window;
+    let kernel_page_size = cmd.kernel_page_size;
 
     let custom_action = if let Some(action_name) = cmd.action.as_deref() {
         match common.preferences.custom_actions().get(&action_name) {
@@ -637,6 +645,7 @@ fn load_mount_config(cmd: MountCmd, allow_diskless: bool) -> anyhow::Result<Moun
         bind_addr,
         verbose,
         open_finder,
+        kernel_page_size,
         common,
         custom_action,
     })
@@ -1495,8 +1504,10 @@ fn claim_devices(config: &mut MountConfig) -> anyhow::Result<(Vec<DevInfo>, DevI
         mnt_dev_info.set_fs_driver(&fs_driver);
     };
 
-    if mnt_dev_info.fs_type() == Some("f2fs") && mnt_dev_info.block_size() == Some(4096) {
-        host_println!("Using 4K-page kernel for f2fs filesystem");
+    if config.kernel_page_size == Some(KernelPage::Size4K)
+        || (mnt_dev_info.fs_type() == Some("f2fs") && mnt_dev_info.block_size() == Some(4096))
+    {
+        host_println!("using 4K-page kernel");
         config.common.kernel.path = config.common.kernel.path.parent().unwrap().join("Image-4K");
     }
 
