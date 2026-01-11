@@ -1,7 +1,7 @@
 [images.alpine-latest]
 base_dir = "alpine"
 docker_ref = "alpine:latest"
-kernel.image_url = "https://github.com/nohajc/libkrunfw/releases/download/v6.12.62-rev1/linux-aarch64-Image-v6.12.62-anylinuxfs.tar.gz"
+kernel.image_url = "https://github.com/nohajc/libkrunfw/releases/download/v6.12.62-rev1/linux-aarch64-Images-v6.12.62-anylinuxfs.tar.gz"
 kernel.modules_url = "https://github.com/nohajc/libkrunfw/releases/download/v6.12.62-rev1/modules.squashfs"
 os_type = "Linux"
 
