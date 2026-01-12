@@ -1,16 +1,17 @@
 use anyhow::{Context, anyhow};
+use bstr::BStr;
 use common_utils::{host_println, safe_print};
 use derive_more::{AddAssign, Deref};
 use indexmap::IndexMap;
 use objc2_core_foundation::{
-    CFDictionary, CFRetained, CFRunLoop, CFString, CFURL, kCFRunLoopDefaultMode,
+    CFBoolean, CFDictionary, CFRetained, CFRunLoop, CFString, CFURL, kCFRunLoopDefaultMode,
 };
 use objc2_disk_arbitration::{
     DADisk, DARegisterDiskAppearedCallback, DARegisterDiskDisappearedCallback, DASession,
     DAUnregisterCallback,
 };
 use regex::Regex;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{
     ffi::{CString, c_void},
     fmt::Display,
@@ -1081,6 +1082,41 @@ impl EventSession {
         let callback_nonnull: NonNull<c_void> = NonNull::new(callback_ptr).unwrap();
         unsafe { DAUnregisterCallback(&self.session, callback_nonnull, null_mut()) };
     }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DiskInfo {
+    pub media_writable: bool,
+}
+
+impl Default for DiskInfo {
+    fn default() -> Self {
+        Self {
+            media_writable: true,
+        }
+    }
+}
+
+pub fn get_info(bsd_name: impl AsRef<BStr>) -> anyhow::Result<DiskInfo> {
+    let session = unsafe { DASession::new(None).unwrap() };
+    let c_bsd_name = CString::new(bsd_name.as_ref().to_owned()).unwrap();
+
+    let disk = unsafe {
+        DADisk::from_bsd_name(
+            None,
+            &session,
+            NonNull::new_unchecked(c_bsd_name.into_raw()),
+        )
+    }
+    .context("failed to get DADisk by BSD name")?;
+
+    let descr = unsafe { DADisk::description(disk.as_ref()) }
+        .context("failed to get DADisk description")?;
+
+    let media_writable: Option<&CFBoolean> = unsafe { cfdict_get_value(&descr, "DAMediaWritable") };
+    let media_writable = media_writable.map(|b| b.value()).unwrap_or(true);
+
+    Ok(DiskInfo { media_writable })
 }
 
 #[derive(Debug, Deserialize)]

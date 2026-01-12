@@ -1363,6 +1363,7 @@ fn print_dev_info(dev_info: &DevInfo, dev_type: DevType) {
     if dev_type == DevType::Direct || dev_type == DevType::PV {
         host_println!("disk: {}", dev_info.disk().display());
         host_println!("rdisk: {}", dev_info.rdisk().display());
+        host_println!("media_writable: {}", dev_info.media_writable());
     }
 
     if dev_type == DevType::Direct || dev_type == DevType::LV {
@@ -1499,6 +1500,10 @@ fn claim_devices(config: &mut MountConfig) -> anyhow::Result<(Vec<DevInfo>, DevI
     {
         host_println!("using 4K-page kernel");
         config.common.kernel.path = config.common.kernel.path.parent().unwrap().join("Image-4K");
+    }
+
+    if !mnt_dev_info.media_writable() && !config.read_only {
+        config.read_only = true;
     }
 
     Ok((dev_infos, mnt_dev_info, disks))
