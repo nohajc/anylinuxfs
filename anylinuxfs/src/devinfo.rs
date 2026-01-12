@@ -6,6 +6,8 @@ use common_utils::{PathExt, path_safe_label_name};
 use libblkid_rs::{BlkidProbe, BlkidSublks, BlkidSublksFlags};
 use serde::{Deserialize, Serialize};
 
+use crate::diskutil;
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct DevInfo {
     path: BString,
@@ -16,6 +18,7 @@ pub struct DevInfo {
     uuid: Option<String>,
     vm_path: String,
     fs_driver: Option<String>, // will be auto-detected if not set
+    da_info: diskutil::DiskInfo,
 }
 
 const BUF_PREFIX: &[u8] = b"/dev/disk";
@@ -36,6 +39,7 @@ impl DevInfo {
             uuid: None,
             vm_path: vm_path.into(),
             fs_driver: None,
+            da_info: diskutil::DiskInfo::default(),
         })
     }
 
@@ -81,6 +85,9 @@ impl DevInfo {
         let fs_type = probe.lookup_value("TYPE").ok();
         let uuid = probe.lookup_value("UUID").ok();
 
+        // also get info from DiskArbitration
+        let da_info = diskutil::get_info(&path)?;
+
         Ok(DevInfo {
             path,
             rpath,
@@ -90,6 +97,7 @@ impl DevInfo {
             uuid,
             vm_path: "/dev/vda".to_owned(),
             fs_driver: None,
+            da_info,
         })
     }
 
@@ -153,5 +161,9 @@ impl DevInfo {
                     .expect("non-empty disk path")
                     .into(),
             )
+    }
+
+    pub fn media_writable(&self) -> bool {
+        self.da_info.media_writable
     }
 }
