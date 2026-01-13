@@ -176,6 +176,9 @@ Output will show the encrypted partition filesystem and label
 ```
 
 **List available drives and decrypt all LUKS or BitLocker metadata**
+```
+sudo anylinuxfs -d all
+```
 [See here for more info](docs/lvm-luks.md)
 
 **Mount LUKS-encrypted or BitLocker-encrypted partition**

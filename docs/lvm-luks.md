@@ -7,7 +7,7 @@ sudo anylinuxfs list -d all
 
 After this command, anylinuxfs will scan for any identified volume groups with the lvm: identifier. 
 
-Then, you can properly mount the volume group like the example below and use before flags as necessary, like setting it to read only, and write only. 
+Then, you can properly mount the volume group like the example below and use before flags as necessary, like setting it to read only. 
 
 After that, you should see a layout of this:
 ```
