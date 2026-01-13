@@ -4,8 +4,8 @@ set -e
 
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 
-IMAGE_ARCHIVE_NAME="linux-aarch64-Image-v6.12.34-anylinuxfs.tar.gz"
-RELEASE_URL="https://github.com/nohajc/libkrunfw/releases/download/v6.12.34-rev4"
+IMAGE_ARCHIVE_NAME="linux-aarch64-Image-v6.12.62-anylinuxfs.tar.gz"
+RELEASE_URL="https://github.com/nohajc/libkrunfw/releases/download/v6.12.62-rev1"
 IMAGE_ARCHIVE_URL="${RELEASE_URL}/${IMAGE_ARCHIVE_NAME}"
 MODULES_ARCHIVE_NAME="modules.squashfs"
 MODULES_ARCHIVE_URL="${RELEASE_URL}/${MODULES_ARCHIVE_NAME}"

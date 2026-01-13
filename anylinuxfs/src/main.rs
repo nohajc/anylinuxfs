@@ -2,11 +2,14 @@ use anyhow::{Context, anyhow};
 use bstr::{BString, ByteVec};
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use common_utils::{
-    Deferred, FromPath, OSType, PathExt, host_eprintln, host_println, log, safe_print, safe_println,
+    Deferred, FromPath, OSType, PathExt, host_eprintln, host_println, ipc, log, safe_print,
+    safe_println, vmctrl,
 };
 
 use devinfo::DevInfo;
 use nanoid::nanoid;
+use serde::Serialize;
+use serde_with::{DisplayFromStr, serde_as};
 use toml_edit::{Document, DocumentMut};
 
 use std::borrow::Cow;
@@ -42,6 +45,7 @@ use crate::settings::{
     PassphrasePromptConfig, Preferences,
 };
 use crate::utils::{ToCStringVec, ToPtrVec};
+use crate::vm_image::IsoAdd;
 
 mod api;
 #[allow(unused)]
@@ -195,15 +199,27 @@ struct CommonArgs {
     zfs_os: Option<OSType>,
 }
 
+macro_rules! disk_ident_arg {
+    ($struct_name:ident, $field_type:ty) => {
+        #[derive(Args, Clone)]
+        struct $struct_name {
+            /// File path(s), LVM identifier or RAID identifier, e.g.:
+            /// /dev/diskXsY[:/dev/diskYsZ:...]
+            /// lvm:<vg-name>:diskXsY[:diskYsZ:...]:<lv-name>
+            /// raid:diskXsY[:diskYsZ:...]
+            /// (see `list` command output for available volumes)
+            #[clap(verbatim_doc_comment)]
+            disk_ident: $field_type,
+        }
+    };
+}
+
+disk_ident_arg!(DiskIdentArg, String);
+
 #[derive(Args)]
 struct MountCmd {
-    /// File path(s), LVM identifier or RAID identifier, e.g.:
-    /// /dev/diskXsY[:/dev/diskYsZ:...]
-    /// lvm:<vg-name>:diskXsY[:diskYsZ:...]:<lv-name>
-    /// raid:diskXsY[:diskYsZ:...]
-    /// (see `list` command output for available volumes)
-    #[clap(verbatim_doc_comment)]
-    disk_ident: String,
+    #[command(flatten)]
+    d: DiskIdentArg,
     /// Custom mount path to override the default under /Volumes
     mount_point: Option<String>,
     /// Options passed to the Linux mount command (comma-separated)
@@ -231,6 +247,12 @@ struct MountCmd {
     bind_addr: String,
     #[arg(short, long)]
     verbose: bool,
+}
+
+impl MountCmd {
+    fn disk_ident(&self) -> String {
+        self.d.disk_ident.clone()
+    }
 }
 
 #[derive(Args)]
@@ -281,7 +303,9 @@ struct StopCmd {
     force: bool,
 }
 
-#[derive(Args)]
+disk_ident_arg!(DiskIdentOptionalArg, Option<String>);
+
+#[derive(Args, Clone)]
 struct ShellCmd {
     /// Command to run in the shell
     #[arg(short, long)]
@@ -294,7 +318,30 @@ struct ShellCmd {
     #[arg(short, long)]
     image: Option<String>,
     #[command(flatten)]
-    mnt: MountCmd,
+    d: DiskIdentOptionalArg,
+    /// Allow remount: proceed even if the disk is already mounted by macOS (NTFS, exFAT)
+    #[arg(short, long)]
+    remount: bool,
+}
+
+impl From<ShellCmd> for MountCmd {
+    fn from(shell_cmd: ShellCmd) -> Self {
+        MountCmd {
+            d: DiskIdentArg {
+                disk_ident: shell_cmd.d.disk_ident.unwrap_or_default(),
+            },
+            mount_point: None,
+            options: None,
+            nfs_options: None,
+            remount: shell_cmd.remount,
+            action: None,
+            fs_driver: None,
+            common: CommonArgs::default(),
+            window: false,
+            bind_addr: "127.0.0.1".into(),
+            verbose: false,
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -516,14 +563,13 @@ fn load_config(common_args: &CommonArgs) -> anyhow::Result<Config> {
     })
 }
 
-fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
+fn load_mount_config(cmd: MountCmd, allow_diskless: bool) -> anyhow::Result<MountConfig> {
     let common = load_config(&cmd.common)?;
 
-    let (disk_path, mount_options) = if !cmd.disk_ident.is_empty() {
-        (cmd.disk_ident, cmd.options)
+    let (disk_path, mount_options) = if !cmd.disk_ident().is_empty() || allow_diskless {
+        (cmd.disk_ident(), cmd.options)
     } else {
-        host_eprintln!("No disk path provided");
-        std::process::exit(1);
+        return Err(anyhow!("no disk path provided"));
     };
 
     let nfs_options = cmd.nfs_options.unwrap_or_default();
@@ -654,14 +700,20 @@ impl Default for VMOpts {
 
 static KRUN_LOG_LEVEL_INIT: Once = Once::new();
 
+#[derive(Debug, Clone, Copy)]
+struct VMContext {
+    id: u32,
+    os: OSType,
+}
+
 fn setup_vm(
     config: &Config,
     dev_info: &[DevInfo],
     use_gvproxy: bool,
     use_vsock: bool,
     opts: VMOpts,
-) -> anyhow::Result<u32> {
-    let ctx = unsafe { bindings::krun_create_ctx() }.context("Failed to create context")?;
+) -> anyhow::Result<VMContext> {
+    let ctx_id = unsafe { bindings::krun_create_ctx() }.context("Failed to create context")?;
 
     let level = config.preferences.krun_log_level_numeric();
     KRUN_LOG_LEVEL_INIT.call_once(|| {
@@ -670,35 +722,35 @@ fn setup_vm(
 
     let num_vcpus = config.preferences.krun_num_vcpus();
     let ram_mib = config.preferences.krun_ram_size_mib();
-    unsafe { bindings::krun_set_vm_config(ctx, num_vcpus, ram_mib) }
+    unsafe { bindings::krun_set_vm_config(ctx_id, num_vcpus, ram_mib) }
         .context("Failed to set VM config")?;
 
     #[cfg(feature = "freebsd")]
     if opts.legacy_console {
-        unsafe { bindings::krun_disable_implicit_console(ctx) }
+        unsafe { bindings::krun_disable_implicit_console(ctx_id) }
             .context("Failed to disable implicit console")?;
-        unsafe { bindings::krun_add_serial_console_default(ctx, 0, 1) }
+        unsafe { bindings::krun_add_serial_console_default(ctx_id, 0, 1) }
             .context("Failed to add serial console")?;
     }
 
     // run vmm as the original user if he used sudo
     if let Some(uid) = config.sudo_uid {
-        unsafe { bindings::krun_setuid(ctx, uid) }.context("Failed to set vmm uid")?;
+        unsafe { bindings::krun_setuid(ctx_id, uid) }.context("Failed to set vmm uid")?;
     }
 
     if let Some(gid) = config.sudo_gid {
-        unsafe { bindings::krun_setgid(ctx, gid) }.context("Failed to set vmm gid")?;
+        unsafe { bindings::krun_setgid(ctx_id, gid) }.context("Failed to set vmm gid")?;
     }
 
     if opts.root_device.is_none() {
-        unsafe { bindings::krun_set_root(ctx, CString::from_path(&config.root_path).as_ptr()) }
+        unsafe { bindings::krun_set_root(ctx_id, CString::from_path(&config.root_path).as_ptr()) }
             .context("Failed to set root")?;
     }
 
     for (i, di) in dev_info.iter().enumerate() {
         unsafe {
             bindings::krun_add_disk(
-                ctx,
+                ctx_id,
                 CString::new(format!("data{}", i)).unwrap().as_ptr(),
                 CString::from_path(di.rdisk()).as_ptr(),
                 opts.add_disks_ro,
@@ -710,7 +762,7 @@ fn setup_vm(
     if use_gvproxy {
         unsafe {
             bindings::krun_set_gvproxy_path(
-                ctx,
+                ctx_id,
                 CString::new(config.vfkit_sock_path.as_str())
                     .unwrap()
                     .as_ptr(),
@@ -740,7 +792,7 @@ fn setup_vm(
     if use_vsock {
         unsafe {
             bindings::krun_add_vsock_port2(
-                ctx,
+                ctx_id,
                 12700,
                 CString::new(config.vsock_path.as_str()).unwrap().as_ptr(),
                 true,
@@ -749,9 +801,11 @@ fn setup_vm(
         .context("Failed to add vsock port")?;
     }
 
-    unsafe { bindings::krun_set_workdir(ctx, c"/".as_ptr()) }.context("Failed to set workdir")?;
+    unsafe { bindings::krun_set_workdir(ctx_id, c"/".as_ptr()) }
+        .context("Failed to set workdir")?;
 
-    let cmdline = match config.kernel.os {
+    let os = config.kernel.os;
+    let cmdline = match os {
         OSType::Linux => c"reboot=k panic=-1 panic_print=0 console=hvc0 rootfstype=virtiofs rw quiet no-kvmapf init=/init.krun",
         OSType::FreeBSD => {
             match opts.root_device {
@@ -769,7 +823,7 @@ fn setup_vm(
 
     unsafe {
         bindings::krun_set_kernel(
-            ctx,
+            ctx_id,
             CString::from_path(&config.kernel.path).as_ptr(),
             0, // KRUN_KERNEL_FORMAT_RAW
             null(),
@@ -778,11 +832,11 @@ fn setup_vm(
     }
     .context("Failed to set kernel")?;
 
-    Ok(ctx)
+    Ok(VMContext { id: ctx_id, os })
 }
 
 fn start_vmproxy(
-    ctx: u32,
+    ctx: VMContext,
     config: &MountConfig,
     service_status: &ServiceStatus,
     env: &[BString],
@@ -799,78 +853,148 @@ fn start_vmproxy(
 
     let reuse_passphrase = config.common.passphrase_config == PassphrasePromptConfig::OneForAll;
 
-    let vmproxy = match config.common.kernel.os {
-        OSType::Linux => c"/vmproxy",
-        OSType::FreeBSD => c"/vmproxy-bsd",
+    let vmproxy: BString = match config.common.kernel.os {
+        OSType::Linux => "/vmproxy",
+        OSType::FreeBSD => "/vmproxy-bsd",
     }
-    .to_owned();
+    .into();
 
     let args: Vec<_> = [
         vmproxy,
-        CString::new(dev_info.vm_path()).unwrap(),
-        CString::new(dev_info.auto_mount_name()).unwrap(),
-        c"-b".to_owned(),
-        CString::new(config.bind_addr.to_string()).unwrap(),
+        dev_info.vm_path().into(),
+        dev_info.auto_mount_name().into(),
+        "-b".into(),
+        config.bind_addr.to_string().into(),
     ]
     .into_iter()
-    .chain([
-        c"-t".to_owned(),
-        CString::new(dev_info.fs_type().unwrap_or("auto")).unwrap(),
-    ])
+    .chain(["-t".into(), dev_info.fs_type().unwrap_or("auto").into()])
     .chain(
         config
             .fs_driver
             .as_deref()
             .into_iter()
-            .flat_map(|fs_driver| [c"--fs-driver".to_owned(), CString::new(fs_driver).unwrap()]),
+            .flat_map(|fs_driver| ["--fs-driver".into(), fs_driver.into()]),
     )
     .chain(
         config
             .mount_options
             .as_deref()
             .into_iter()
-            .flat_map(|opts| [c"-o".to_owned(), CString::new(opts).unwrap()]),
+            .flat_map(|opts| ["-o".into(), opts.into()]),
     )
     .chain(
         to_decrypt_arg
             .as_deref()
             .into_iter()
-            .flat_map(|d| vec![c"-d".to_owned(), CString::new(d).unwrap()]),
+            .flat_map(|d| vec!["-d".into(), d.into()]),
     )
     .chain(config.get_action().into_iter().flat_map(|action| {
         vec![
-            c"-a".to_owned(),
-            CString::new(action.percent_encode().expect("failed to serialize action")).unwrap(),
+            "-a".into(),
+            action
+                .percent_encode()
+                .expect("failed to serialize action")
+                .into(),
         ]
     }))
-    .chain(multi_device.then_some(c"-m".to_owned()).into_iter())
-    .chain(reuse_passphrase.then_some(c"-r".to_owned()).into_iter())
+    .chain(multi_device.then_some("-m".into()).into_iter())
+    .chain(reuse_passphrase.then_some("-r".into()).into_iter())
     .chain(
         service_status
             .rpcbind_running
-            .then_some(c"-h".to_owned())
+            .then_some("-h".into())
             .into_iter(),
     )
-    .chain(config.verbose.then_some(c"-v".to_owned()).into_iter())
+    .chain(config.verbose.then_some("-v".into()).into_iter())
     .collect();
 
     host_println!("vmproxy args: {:?}", &args);
-
-    let argv = args.to_ptr_vec();
-
-    let cenv = env.to_cstring_vec();
-    let envp = cenv.to_ptr_vec();
-
-    unsafe { bindings::krun_set_exec(ctx, argv[0], argv[1..].as_ptr(), envp.as_ptr()) }
-        .context("Failed to set exec")?;
+    set_vm_cmdline(ctx, &args, env)?;
 
     before_start().context("Before start callback failed")?;
-    unsafe { bindings::krun_start_enter(ctx) }.context("Failed to start VM")?;
+    unsafe { bindings::krun_start_enter(ctx.id) }.context("Failed to start VM")?;
 
     Ok(())
 }
 
-fn start_vm_forked(ctx: u32, cmdline: &[String], env: &[BString]) -> anyhow::Result<i32> {
+#[serde_as]
+#[derive(Serialize)]
+struct KrunConfigProcess<'a, 'b> {
+    #[serde_as(as = "[DisplayFromStr]")]
+    args: &'a [BString],
+    #[serde_as(as = "[DisplayFromStr]")]
+    env: &'b [BString],
+}
+
+#[derive(Serialize)]
+struct KrunConfig<'a, 'b> {
+    process: KrunConfigProcess<'a, 'b>,
+}
+
+fn set_vm_cmdline(ctx: VMContext, args: &[BString], env: &[BString]) -> anyhow::Result<()> {
+    let cargs = args.to_cstring_vec();
+    let cenv = env.to_cstring_vec();
+
+    let krun_config_tmp_dir;
+    let mut deferred = Deferred::new();
+
+    match ctx.os {
+        OSType::Linux => {
+            let argv = cargs.to_ptr_vec();
+            let envp = cenv.to_ptr_vec();
+            unsafe { bindings::krun_set_exec(ctx.id, argv[0], argv[1..].as_ptr(), envp.as_ptr()) }
+                .context("Failed to set exec")?;
+        }
+        OSType::FreeBSD => {
+            let krun_config = serde_json::to_string(&KrunConfig {
+                process: KrunConfigProcess { args, env },
+            })
+            .context("Failed to serialize krun config")?;
+
+            krun_config_tmp_dir = PathBuf::from("/tmp").join(format!("alfs-{}", rand_string(8)));
+            fs::create_dir_all(&krun_config_tmp_dir)
+                .context("Failed to create krun config temp directory")?;
+
+            let krun_config_file_name = "krun_config.json";
+            let krun_config_file = krun_config_tmp_dir.join(krun_config_file_name);
+            fs::write(&krun_config_file, krun_config.as_bytes()).with_context(|| {
+                format!(
+                    "Failed to write krun config file {}",
+                    krun_config_file.display()
+                )
+            })?;
+
+            deferred.add(|| {
+                _ = fs::remove_dir_all(&krun_config_tmp_dir);
+            });
+
+            // TODO: clean-up
+            let krun_config_iso = "/tmp/krun_config.iso";
+            vm_image::create_iso(
+                krun_config_iso,
+                &krun_config_tmp_dir,
+                &krun_config_tmp_dir,
+                IsoAdd::Files(&[&krun_config_file_name]),
+                Some("KRUN_CONFIG"),
+            )
+            .context("Failed to create ISO image for krun config")?;
+
+            unsafe {
+                bindings::krun_add_disk(
+                    ctx.id,
+                    CString::new("config").unwrap().as_ptr(),
+                    CString::new(krun_config_iso).unwrap().as_ptr(),
+                    true,
+                )
+            }
+            .context("Failed to add disk")?;
+        }
+    }
+
+    Ok(())
+}
+
+fn start_vm_forked(ctx: VMContext, cmdline: &[BString], env: &[BString]) -> anyhow::Result<i32> {
     let pid = unsafe { libc::fork() };
     if pid < 0 {
         return Err(io::Error::last_os_error()).context("Failed to fork process");
@@ -888,17 +1012,9 @@ fn start_vm_forked(ctx: u32, cmdline: &[String], env: &[BString]) -> anyhow::Res
     }
 }
 
-fn start_vm(ctx: u32, cmdline: &[String], env: &[BString]) -> anyhow::Result<()> {
-    let args = cmdline.to_cstring_vec();
-    let argv = args.to_ptr_vec();
-
-    let cenv = env.to_cstring_vec();
-    let envp = cenv.to_ptr_vec();
-
-    unsafe { bindings::krun_set_exec(ctx, argv[0], argv[1..].as_ptr(), envp.as_ptr()) }
-        .context("Failed to set exec")?;
-
-    unsafe { bindings::krun_start_enter(ctx) }.context("Failed to start VM")?;
+fn start_vm(ctx: VMContext, cmdline: &[BString], env: &[BString]) -> anyhow::Result<()> {
+    set_vm_cmdline(ctx, cmdline, env)?;
+    unsafe { bindings::krun_start_enter(ctx.id) }.context("Failed to start VM")?;
 
     Ok(())
 }
@@ -944,10 +1060,11 @@ fn run_vmcommand_short(
         let argv = args.to_ptr_vec();
         let envp = vec![std::ptr::null()];
 
-        unsafe { bindings::krun_set_exec(ctx, argv[0], argv[1..].as_ptr(), envp.as_ptr()) }
+        // this is only used with Linux so far; no need to call set_vm_cmdline
+        unsafe { bindings::krun_set_exec(ctx.id, argv[0], argv[1..].as_ptr(), envp.as_ptr()) }
             .context("Failed to set exec")?;
 
-        unsafe { bindings::krun_start_enter(ctx) }.context("Failed to start VM")?;
+        unsafe { bindings::krun_start_enter(ctx.id) }.context("Failed to start VM")?;
         unreachable!();
     } else {
         // parent process
@@ -1140,12 +1257,11 @@ fn unmount_fs(volume_path: &Path) -> anyhow::Result<()> {
 fn send_quit_cmd(config: &Config) -> anyhow::Result<()> {
     let mut stream = vm_network::connect_to_vm_ctrl_socket(config)?;
 
-    stream.write_all(b"quit\n")?;
+    ipc::Client::write_request(&mut stream, &vmctrl::Request::Quit)?;
     stream.flush()?;
 
     // we don't care about the response contents
-    let mut buf = [0; 1024];
-    _ = stream.read(&mut buf)?;
+    let _: vmctrl::Response = ipc::Client::read_response(&mut stream)?;
 
     Ok(())
 }
@@ -1332,6 +1448,9 @@ fn claim_devices(config: &MountConfig) -> anyhow::Result<(Vec<DevInfo>, DevInfo,
         let lv_info = DevInfo::lv(disk_path, None, vm_path)?;
         print_dev_info(&lv_info, DevType::LV);
         lv_info
+    } else if disk_path.is_empty() {
+        // diskless mode
+        DevInfo::default()
     } else {
         let disk_paths: Vec<_> = disk_path.split(":").collect();
 
@@ -1434,7 +1553,7 @@ impl AppRunner {
     fn run_shell(&mut self, cmd: ShellCmd) -> anyhow::Result<()> {
         let _lock_file = LockFile::new(LOCK_FILE)?.acquire_lock(FlockKind::Exclusive)?;
 
-        let config = load_mount_config(cmd.mnt)?;
+        let config = load_mount_config(cmd.clone().into(), true)?;
         #[cfg(feature = "freebsd")]
         let (config, src, root_disk_path) = match cmd.image {
             Some(image_name) => {
@@ -1507,18 +1626,18 @@ impl AppRunner {
         if os == OSType::Linux {
             let dns_server = dnsutil::get_dns_server_with_fallback();
             let vm_prelude = format!("echo nameserver {} > /etc/resolv.conf", dns_server);
-            let mut cmdline = vec!["/bin/bash".to_owned(), "-c".to_owned()];
+            let mut cmdline: Vec<BString> = vec!["/bin/bash".into(), "-c".into()];
             if let Some(command) = cmd.command {
-                cmdline.push(command);
+                cmdline.push(command.into());
             } else {
-                cmdline.push(vm_prelude + " && /bin/bash -l");
+                cmdline.push((vm_prelude + " && /bin/bash -l").into());
             }
             start_vm(ctx, &cmdline, &vm_env).context("Failed to start microVM shell")?;
         } else {
-            let cmdline = if let Some(command) = cmd.command {
-                vec!["/bin/sh".to_owned(), "-c".to_owned(), command]
+            let cmdline: Vec<BString> = if let Some(command) = cmd.command {
+                vec!["/bin/sh".into(), "-c".into(), command.into()]
             } else {
-                vec!["/start-shell.sh".to_owned()]
+                vec!["/start-shell.sh".into()]
             };
             vm_image::setup_gvproxy(&config.common, || {
                 start_vm_forked(ctx, &cmdline, &vm_env).context("Failed to start microVM shell")
@@ -1607,7 +1726,7 @@ impl AppRunner {
             }
         };
         let vm_command = format!("{vm_prelude} && {apk_command}");
-        let cmdline = vec!["/bin/bash".to_owned(), "-c".to_owned(), vm_command];
+        let cmdline: Vec<BString> = vec!["/bin/bash".into(), "-c".into(), vm_command.into()];
 
         let opts = VMOpts::new().read_only_disks(true);
         let ctx = setup_vm(&config, &[], false, false, opts).context("Failed to setup microVM")?;
@@ -1742,7 +1861,7 @@ impl AppRunner {
             service_status.rpcbind_running = true;
         }
 
-        let config = load_mount_config(cmd)?;
+        let config = load_mount_config(cmd, false)?;
         let log_file_path = &config.common.log_file_path;
 
         log::init_log_file(log_file_path).context("Failed to create log file")?;
@@ -2397,7 +2516,7 @@ impl AppRunner {
     }
 
     fn run_unmount(&mut self, cmd: UnmountCmd) -> anyhow::Result<()> {
-        let resp = api::Client::make_request(api::Request::GetConfig);
+        let resp = api::UnixClient::make_request(api::Request::GetConfig);
 
         match resp {
             Ok(api::Response::Config(rt_info)) => {
@@ -2585,7 +2704,7 @@ impl AppRunner {
     }
 
     fn run_status(&mut self) -> anyhow::Result<()> {
-        let resp = api::Client::make_request(api::Request::GetConfig);
+        let resp = api::UnixClient::make_request(api::Request::GetConfig);
 
         match resp {
             Ok(api::Response::Config(rt_info)) => {
@@ -2650,7 +2769,7 @@ impl AppRunner {
     }
 
     fn run_stop(&mut self, cmd: StopCmd) -> anyhow::Result<()> {
-        let resp = api::Client::make_request(api::Request::GetConfig);
+        let resp = api::UnixClient::make_request(api::Request::GetConfig);
 
         match resp {
             Ok(api::Response::Config(rt_info)) => {

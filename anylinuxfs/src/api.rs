@@ -1,6 +1,5 @@
 use std::{
     fs,
-    io::{Read, Write},
     os::unix::{
         fs::chown,
         net::{UnixListener, UnixStream},
@@ -10,8 +9,11 @@ use std::{
     thread,
 };
 
-use anyhow::{Context, anyhow};
-use common_utils::host_eprintln;
+use anyhow::Context;
+use common_utils::{
+    host_eprintln,
+    ipc::{Client, Handler},
+};
 use serde::{Deserialize, Serialize};
 
 use crate::{devinfo::DevInfo, settings::MountConfig};
@@ -37,7 +39,7 @@ pub fn serve_info(rt_info: Arc<Mutex<RuntimeInfo>>) {
                 host_eprintln!("Error removing socket file: {}", e);
             }
         }
-        if let Err(e) = Handler::serve(rt_info, socket_path) {
+        if let Err(e) = UnixHandler::serve(rt_info, socket_path) {
             host_eprintln!("Error in serve_config: {}", e);
         }
     });
@@ -53,9 +55,9 @@ pub enum Response {
     Config(RuntimeInfo),
 }
 
-struct Handler {}
+struct UnixHandler {}
 
-impl Handler {
+impl UnixHandler {
     fn serve(runtime_info: Arc<Mutex<RuntimeInfo>>, socket_path: &Path) -> anyhow::Result<()> {
         let listener = UnixListener::bind(socket_path).context("Failed to bind to Unix socket")?;
 
@@ -76,7 +78,7 @@ impl Handler {
             let Ok(stream) = stream else {
                 continue;
             };
-            _ = Handler::serve_to_client(stream, runtime_info.clone());
+            _ = UnixHandler::serve_to_client(stream, runtime_info.clone());
         }
 
         Ok(())
@@ -90,94 +92,19 @@ impl Handler {
         let resp = match req {
             Request::GetConfig => Response::Config(runtime_info.lock().unwrap().clone()),
         };
-        Handler::write_response(&mut stream, resp)?;
-
-        Ok(())
-    }
-
-    fn read_request(stream: &mut UnixStream) -> anyhow::Result<Request> {
-        let mut size_buf = [0u8; 4];
-        stream
-            .read_exact(&mut size_buf)
-            .context("Failed to read request size")?;
-        let size = u32::from_be_bytes(size_buf) as usize;
-        if size == 0 {
-            return Err(anyhow!("Request size is zero"));
-        }
-        if size > 65536 {
-            return Err(anyhow!("Request size is too large"));
-        }
-
-        let mut payload_buf = vec![0u8; size];
-        stream
-            .read_exact(&mut payload_buf)
-            .context("Failed to read request payload")?;
-
-        let request: Request =
-            ron::de::from_bytes(&payload_buf).context("Failed to parse request")?;
-        Ok(request)
-    }
-
-    fn write_response(stream: &mut UnixStream, response: Response) -> anyhow::Result<()> {
-        let response_str =
-            ron::ser::to_string(&response).context("Failed to serialize response")?;
-        let size = response_str.len() as u32;
-        let size_buf = size.to_be_bytes();
-        stream
-            .write_all(&size_buf)
-            .context("Failed to write response size")?;
-        stream
-            .write_all(response_str.as_bytes())
-            .context("Failed to write response payload")?;
+        Handler::write_response(&mut stream, &resp)?;
 
         Ok(())
     }
 }
 
-pub struct Client {}
+pub struct UnixClient {}
 
-impl Client {
+impl UnixClient {
     pub fn make_request(req: Request) -> anyhow::Result<Response> {
         let mut stream = UnixStream::connect(API_SOCKET).context("Failed to connect to socket")?;
-        Client::write_request(&mut stream, req)?;
+        Client::write_request(&mut stream, &req)?;
         let resp = Client::read_response(&mut stream)?;
         Ok(resp)
-    }
-
-    fn write_request(stream: &mut UnixStream, request: Request) -> anyhow::Result<()> {
-        let request_str = ron::ser::to_string(&request).context("Failed to serialize request")?;
-        let size = request_str.len() as u32;
-        let size_buf = size.to_be_bytes();
-        stream
-            .write_all(&size_buf)
-            .context("Failed to write request size")?;
-        stream
-            .write_all(request_str.as_bytes())
-            .context("Failed to write request payload")?;
-
-        Ok(())
-    }
-
-    fn read_response(stream: &mut UnixStream) -> anyhow::Result<Response> {
-        let mut size_buf = [0u8; 4];
-        stream
-            .read_exact(&mut size_buf)
-            .context("Failed to read response size")?;
-        let size = u32::from_be_bytes(size_buf) as usize;
-        if size == 0 {
-            return Err(anyhow!("Response size is zero"));
-        }
-        if size > 65536 {
-            return Err(anyhow!("Response size is too large"));
-        }
-
-        let mut payload_buf = vec![0u8; size];
-        stream
-            .read_exact(&mut payload_buf)
-            .context("Failed to read response payload")?;
-
-        let response: Response =
-            ron::de::from_bytes(&payload_buf).context("Failed to parse response")?;
-        Ok(response)
     }
 }

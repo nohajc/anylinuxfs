@@ -5,28 +5,31 @@ use clap::Parser;
 use common_utils::FromPath;
 #[cfg(target_os = "freebsd")]
 use common_utils::VM_CTRL_PORT;
-use common_utils::{CustomActionConfig, Deferred, VM_GATEWAY_IP, VM_IP, path_safe_label_name};
+use common_utils::{
+    CustomActionConfig, Deferred, VM_GATEWAY_IP, VM_IP, ipc, path_safe_label_name, vmctrl,
+};
 #[cfg(target_os = "linux")]
 use libc::VMADDR_CID_ANY;
 use serde::Serialize;
 use std::collections::{BTreeSet, HashMap};
-use std::env;
 #[cfg(target_os = "linux")]
 use std::ffi::CString;
 use std::ffi::OsStr;
-use std::io::{self, BufRead, Read, Write};
+use std::fs;
+use std::io::{self, Read, Write};
 #[cfg(target_os = "freebsd")]
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpListener;
 use std::os::unix::ffi::OsStrExt;
 #[cfg(target_os = "linux")]
 use std::path::Path;
 use std::process::{Child, Command, ExitCode, Stdio};
+use std::sync::mpsc;
 use std::time::Duration;
-use std::{fs, io::BufReader};
+use std::{env, thread};
 #[cfg(target_os = "linux")]
 use sys_mount::{UnmountFlags, unmount};
 #[cfg(target_os = "linux")]
-use vsock::{VsockAddr, VsockListener, VsockStream};
+use vsock::{VsockAddr, VsockListener};
 
 use crate::utils::{script, script_output};
 
@@ -174,60 +177,58 @@ fn setup_writable_dirs_for_nfsd() -> anyhow::Result<()> {
     Ok(())
 }
 
-trait ClonableStream: Read + Write {
-    fn try_clone(&self) -> io::Result<impl ClonableStream + 'static>;
-}
-
-#[cfg(target_os = "linux")]
-impl ClonableStream for VsockStream {
-    fn try_clone(&self) -> io::Result<impl ClonableStream + 'static> {
-        self.try_clone()
-    }
-}
-
-#[cfg(target_os = "freebsd")]
-impl ClonableStream for TcpStream {
-    fn try_clone(&self) -> io::Result<impl ClonableStream + 'static> {
-        self.try_clone()
-    }
-}
-
-trait StreamListener {
-    fn incoming(&self) -> impl Iterator<Item = io::Result<impl ClonableStream>>;
+trait StreamListener: Send + Sync + 'static {
+    fn incoming(&self) -> impl Iterator<Item = io::Result<impl Read + Write>>;
 }
 
 #[cfg(target_os = "linux")]
 impl StreamListener for VsockListener {
-    fn incoming(&self) -> impl Iterator<Item = io::Result<impl ClonableStream>> {
+    fn incoming(&self) -> impl Iterator<Item = io::Result<impl Read + Write>> {
         self.incoming()
     }
 }
 
 #[cfg(target_os = "freebsd")]
 impl StreamListener for TcpListener {
-    fn incoming(&self) -> impl Iterator<Item = io::Result<impl ClonableStream>> {
+    fn incoming(&self) -> impl Iterator<Item = io::Result<impl Read + Write>> {
         self.incoming()
     }
 }
 
-fn wait_for_quit_cmd(listener: impl StreamListener) -> anyhow::Result<()> {
-    for stream in listener.incoming() {
-        let mut stream = stream?;
-        let mut reader = BufReader::new(stream.try_clone()?);
-        let mut cmd = String::new();
-        if reader.read_line(&mut cmd).is_ok() {
-            println!("Received command: '{}'", cmd.trim());
-            if cmd == "quit\n" {
-                println!("Exiting...");
-                stream.write(b"ok\n")?;
-                stream.flush()?;
-                break;
+struct CtrlSocketServer {
+    quit_rx: mpsc::Receiver<()>,
+}
+
+impl CtrlSocketServer {
+    fn new(listener: impl StreamListener) -> Self {
+        let (quit_tx, quit_rx) = mpsc::channel();
+
+        _ = thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else {
+                    continue;
+                };
+
+                if let Ok(cmd) = ipc::Handler::read_request(&mut stream) {
+                    println!("Received command: '{:?}'", &cmd);
+                    match cmd {
+                        vmctrl::Request::Quit => {
+                            let _ = quit_tx.send(());
+                            _ = ipc::Handler::write_response(&mut stream, &vmctrl::Response::Ack);
+                            _ = stream.flush();
+                            break;
+                        }
+                    }
+                }
             }
-            stream.write(b"unknown\n")?;
-            stream.flush()?;
-        }
+        });
+
+        Self { quit_rx }
     }
-    Ok(())
+
+    fn wait_for_quit_cmd(&self) {
+        let _ = self.quit_rx.recv();
+    }
 }
 
 fn is_read_only_set<'a>(mut mount_options: impl Iterator<Item = &'a str>) -> bool {
@@ -680,6 +681,8 @@ fn run() -> anyhow::Result<()> {
         }
     }
 
+    init_network(&cli.bind_addr, cli.host_rpcbind).context("Failed to initialize network")?;
+
     custom_action
         .before_mount()
         .context("before_mount action")?;
@@ -764,7 +767,7 @@ fn run() -> anyhow::Result<()> {
             };
             while let Err(e) = umount_action() {
                 eprintln!("Failed to unmount '{}': {}", &mount_point, e);
-                std::thread::sleep(backoff);
+                thread::sleep(backoff);
                 backoff = std::cmp::min(backoff * 2, Duration::from_secs(32));
             }
             println!("Unmounted '{}' successfully.", &mount_point);
@@ -796,7 +799,15 @@ fn run() -> anyhow::Result<()> {
     .map(|s| s.to_owned())
     .collect::<Vec<String>>();
 
-    init_network(&cli.bind_addr, cli.host_rpcbind).context("Failed to initialize network")?;
+    #[cfg(target_os = "linux")]
+    let listener = {
+        let addr = VsockAddr::new(VMADDR_CID_ANY, 12700);
+        VsockListener::bind(&addr)?
+    };
+    #[cfg(target_os = "freebsd")]
+    let listener = TcpListener::bind(&format!("0.0.0.0:{}", VM_CTRL_PORT))?;
+
+    let ctrl_server = CtrlSocketServer::new(listener);
 
     // list_dir(mount_point);
 
@@ -875,16 +886,8 @@ fn run() -> anyhow::Result<()> {
         .spawn()
     {
         Ok(mut hnd) => {
-            #[cfg(target_os = "linux")]
-            let listener = {
-                let addr = VsockAddr::new(VMADDR_CID_ANY, 12700);
-                VsockListener::bind(&addr)?
-            };
-            #[cfg(target_os = "freebsd")]
-            let listener = TcpListener::bind(&format!("0.0.0.0:{}", VM_CTRL_PORT))?;
-            if let Err(e) = wait_for_quit_cmd(listener) {
-                eprintln!("Error while waiting for quit command: {:#}", e);
-            }
+            ctrl_server.wait_for_quit_cmd();
+            println!("Exiting...");
 
             if let Err(e) = terminate_child(&mut hnd, "entrypoint.sh") {
                 eprintln!("{:#}", e);

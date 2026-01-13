@@ -320,7 +320,7 @@ pub fn fork_with_pty_output(out_action: OutputAction) -> anyhow::Result<ForkOutp
     }
 }
 
-fn new_pipe() -> anyhow::Result<(libc::c_int, libc::c_int)> {
+pub fn new_pipe() -> anyhow::Result<(libc::c_int, libc::c_int)> {
     let mut fds: [libc::c_int; 2] = [0; 2];
     let res = unsafe { libc::pipe(fds.as_mut_ptr()) };
     if res < 0 {

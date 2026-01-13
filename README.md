@@ -5,8 +5,8 @@ With full write support, based on the libkrun microVM hypervisor and NFS. Doesn'
 <a href='https://ko-fi.com/Q5Q41EHAGK' target='_blank'><img height='36' style='border:0px;height:36px;' src='https://storage.ko-fi.com/cdn/kofi1.png?v=6' border='0' alt='Buy Me a Coffee at ko-fi.com' /></a>
 
 > [!IMPORTANT]
-> If anylinuxfs is suddenly freezing, you are most probably affected by a new bug in the libkrun library.
-> Please, upgrade to the latest version and read the [release notes](https://github.com/nohajc/anylinuxfs/releases/tag/v0.8.7).
+> **The VM freezing issue with low RAM has now been fixed!** Make sure you're running libkrun 1.17 or newer (`brew update && brew upgrade libkrun`).
+> Then you should have no problem running VMs with less than 1 GB RAM again (see `anylinuxfs config -r`).
 
 ## Features
 - mounts any filesystem supported by Linux (**ext4**, **btrfs**, **xfs**, ... but also **NTFS** and **exFAT**)
@@ -21,6 +21,10 @@ With full write support, based on the libkrun microVM hypervisor and NFS. Doesn'
 - supports disks with **GPT**, **MBR** or no partition table (single filesystem or LVM/LUKS container)
 - NFS share by default only reachable from localhost but can be shared across network too
 - define your own [custom actions](#custom-actions) (e.g. mount **borg backup** located on a Linux drive)
+
+## Limitations
+- Only one drive can be mounted at a time (this might be improved in the future)
+- Only Apple Silicon Macs are supported (libkrun limitation)
 
 > [!CAUTION]
 > Before using anylinuxfs with **NTFS**, please read [the notes](#ntfs)
@@ -176,6 +180,8 @@ Output will show the encrypted partition filesystem and label
 ```
 
 **List available drives and decrypt all LUKS or BitLocker metadata**
+
+May reveal encrypted LVM volume groups or additional filesystem information
 ```
 sudo anylinuxfs list -d all
 ```
@@ -305,10 +311,6 @@ You can also run `anylinuxfs init` to download a fresh copy of `alpine:latest` a
 * **ntfs3** is included in the mainline Linux kernel so it is considered stable. It was contributed by Paragon Software in [2021](https://www.paragon-software.com/paragon-software-announces-the-inclusion-of-its-ntfs3-driver-into-linux-kernel-5-15/).
 * If you trust it, want the best performance and you're OK with inconsistent permissions on Windows system drives, use **ntfs3**
 * Otherwise you're probably better of with the default and more established **ntfs-3g**
-
-## Limitations
-- Only one drive can be mounted at a time (this might be improved in the future)
-- Only Apple Silicon Macs are supported (libkrun limitation)
 
 ## Troubleshooting
 - Make sure nothing is running on ports 2049, 32765 and 32767. If there's another NFS server already running, `anylinuxfs` will not work.
