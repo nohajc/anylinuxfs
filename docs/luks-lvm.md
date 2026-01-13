@@ -17,8 +17,8 @@ lvm:<volume group name> (volume group)
 After this command, anylinuxfs will scan for any identified volume groups with the lvm: identifier. 
 
 Then, you can properly mount the volume group like the example below and use before flags as necessary, like setting it to read only. 
-[!NOTE]
-This is just an example layout, things may look different as your disk sizes and disk identifiers vary on macOS. disk7s3 is just a placeholder to show you what it might look like. 
+> [!NOTE]
+> This is just an example layout, things may look different as your disk sizes and disk identifiers vary on macOS. disk7s3 is just a placeholder to show you what it might look like. 
 
 **Example for mounting a volume group** 
 ```
