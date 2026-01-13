@@ -180,6 +180,8 @@ Output will show the encrypted partition filesystem and label
 ```
 
 **List available drives and decrypt all LUKS or BitLocker metadata**
+
+May reveal encrypted LVM volume groups or additional filesystem information
 ```
 sudo anylinuxfs list -d all
 ```
