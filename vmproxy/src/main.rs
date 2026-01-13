@@ -419,6 +419,20 @@ fn run() -> anyhow::Result<()> {
     //     println!("{} = {:?}", key, value);
     // }
 
+    let cli = Cli::parse();
+
+    init_network(&cli.bind_addr, cli.host_rpcbind).context("Failed to initialize network")?;
+
+    #[cfg(target_os = "linux")]
+    let listener = {
+        let addr = VsockAddr::new(VMADDR_CID_ANY, 12700);
+        VsockListener::bind(&addr)?
+    };
+    #[cfg(target_os = "freebsd")]
+    let listener = TcpListener::bind(&format!("0.0.0.0:{}", VM_CTRL_PORT))?;
+
+    let ctrl_server = CtrlSocketServer::new(listener);
+
     let mut deferred = Deferred::new();
 
     deferred.add(|| {
@@ -437,8 +451,6 @@ fn run() -> anyhow::Result<()> {
         }
         // TODO: on FreeBSD, we must move the log somewhere persistent where the host can access it
     });
-
-    let cli = Cli::parse();
 
     let custom_action_cfg = if let Some(action) = cli.action.as_deref() {
         Some(CustomActionConfig::percent_decode(action)?)
@@ -719,8 +731,6 @@ fn run() -> anyhow::Result<()> {
         }
     }
 
-    init_network(&cli.bind_addr, cli.host_rpcbind).context("Failed to initialize network")?;
-
     custom_action
         .before_mount()
         .context("before_mount action")?;
@@ -838,16 +848,6 @@ fn run() -> anyhow::Result<()> {
     .split(',')
     .map(|s| s.to_owned())
     .collect::<Vec<String>>();
-
-    #[cfg(target_os = "linux")]
-    let listener = {
-        let addr = VsockAddr::new(VMADDR_CID_ANY, 12700);
-        VsockListener::bind(&addr)?
-    };
-    #[cfg(target_os = "freebsd")]
-    let listener = TcpListener::bind(&format!("0.0.0.0:{}", VM_CTRL_PORT))?;
-
-    let ctrl_server = CtrlSocketServer::new(listener);
 
     // list_dir(mount_point);
 
