@@ -23,7 +23,7 @@ use std::os::unix::ffi::OsStrExt;
 #[cfg(target_os = "linux")]
 use std::path::Path;
 use std::process::{Child, Command, ExitCode, Stdio};
-use std::sync::mpsc;
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 use std::{env, thread};
 #[cfg(target_os = "linux")]
@@ -178,56 +178,87 @@ fn setup_writable_dirs_for_nfsd() -> anyhow::Result<()> {
 }
 
 trait StreamListener: Send + Sync + 'static {
-    fn incoming(&self) -> impl Iterator<Item = io::Result<impl Read + Write>>;
+    fn incoming(&self) -> impl Iterator<Item = io::Result<impl Read + Write + Send>>;
 }
 
 #[cfg(target_os = "linux")]
 impl StreamListener for VsockListener {
-    fn incoming(&self) -> impl Iterator<Item = io::Result<impl Read + Write>> {
+    fn incoming(&self) -> impl Iterator<Item = io::Result<impl Read + Write + Send>> {
         self.incoming()
     }
 }
 
 #[cfg(target_os = "freebsd")]
 impl StreamListener for TcpListener {
-    fn incoming(&self) -> impl Iterator<Item = io::Result<impl Read + Write>> {
+    fn incoming(&self) -> impl Iterator<Item = io::Result<impl Read + Write + Send>> {
         self.incoming()
     }
 }
 
 struct CtrlSocketServer {
     quit_rx: mpsc::Receiver<()>,
+    report_tx: mpsc::Sender<vmctrl::Report>,
 }
 
 impl CtrlSocketServer {
     fn new(listener: impl StreamListener) -> Self {
         let (quit_tx, quit_rx) = mpsc::channel();
+        let (report_tx, report_rx) = mpsc::channel();
 
         _ = thread::spawn(move || {
-            for stream in listener.incoming() {
-                let Ok(mut stream) = stream else {
-                    continue;
-                };
+            let quit_tx = Arc::new(Mutex::new(Some(quit_tx)));
+            let report_rx = Arc::new(Mutex::new(Some(report_rx)));
 
-                if let Ok(cmd) = ipc::Handler::read_request(&mut stream) {
-                    println!("Received command: '{:?}'", &cmd);
-                    match cmd {
-                        vmctrl::Request::Quit => {
-                            let _ = quit_tx.send(());
-                            _ = ipc::Handler::write_response(&mut stream, &vmctrl::Response::Ack);
-                            _ = stream.flush();
-                            break;
+            thread::scope(|s| {
+                for stream in listener.incoming() {
+                    let Ok(mut stream) = stream else {
+                        continue;
+                    };
+
+                    let quit_tx = Arc::clone(&quit_tx);
+                    let report_rx = Arc::clone(&report_rx);
+                    s.spawn(move || {
+                        if let Ok(cmd) = ipc::Handler::read_request(&mut stream) {
+                            println!("Received command: '{:?}'", &cmd);
+                            match cmd {
+                                vmctrl::Request::Quit => {
+                                    if let Some(quit_tx) = quit_tx.lock().unwrap().take() {
+                                        let _ = quit_tx.send(());
+                                        _ = ipc::Handler::write_response(
+                                            &mut stream,
+                                            &vmctrl::Response::Ack,
+                                        );
+                                        _ = stream.flush();
+                                        // break;
+                                    }
+                                }
+                                vmctrl::Request::WaitForReport => {
+                                    if let Some(report_rx) = report_rx.lock().unwrap().take() {
+                                        let report = report_rx.recv().unwrap_or_default();
+                                        let _ = ipc::Handler::write_response(
+                                            &mut stream,
+                                            &vmctrl::Response::Report(report),
+                                        );
+                                    }
+                                }
+                            }
                         }
-                    }
+                    });
                 }
-            }
+            });
         });
 
-        Self { quit_rx }
+        Self { quit_rx, report_tx }
     }
 
     fn wait_for_quit_cmd(&self) {
         let _ = self.quit_rx.recv();
+    }
+
+    fn send_report(&self, report: vmctrl::Report) -> anyhow::Result<()> {
+        self.report_tx
+            .send(report)
+            .context("Failed to send report to ctrl socket")
     }
 }
 
