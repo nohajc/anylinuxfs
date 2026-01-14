@@ -11,6 +11,7 @@ use common_utils::{
 #[cfg(target_os = "linux")]
 use libc::VMADDR_CID_ANY;
 use serde::Serialize;
+use std::cell::Cell;
 use std::collections::{BTreeSet, HashMap};
 #[cfg(target_os = "linux")]
 use std::ffi::CString;
@@ -198,67 +199,104 @@ impl StreamListener for TcpListener {
 struct CtrlSocketServer {
     quit_rx: mpsc::Receiver<()>,
     report_tx: mpsc::Sender<vmctrl::Report>,
+    // listener_fd: c_int,
+    thread_hnd: Cell<Option<thread::JoinHandle<()>>>,
 }
 
 impl CtrlSocketServer {
     fn new(listener: impl StreamListener) -> Self {
         let (quit_tx, quit_rx) = mpsc::channel();
         let (report_tx, report_rx) = mpsc::channel();
+        // let listener_fd = listener.as_raw_fd();
 
-        _ = thread::spawn(move || {
-            let quit_tx = Arc::new(Mutex::new(Some(quit_tx)));
+        // TODO: we must join this thread to make sure it can send the report before the main thread exits
+        let thread_hnd = Cell::new(Some(thread::spawn(move || {
+            // let quit_tx = Arc::new(Mutex::new(Some(quit_tx)));
             let report_rx = Arc::new(Mutex::new(Some(report_rx)));
 
             thread::scope(|s| {
                 for stream in listener.incoming() {
-                    let Ok(mut stream) = stream else {
-                        continue;
+                    let mut stream = match stream {
+                        Ok(s) => s,
+                        Err(e) => {
+                            eprintln!("Failed to accept vmctrl connection: {}", e);
+                            break;
+                        }
                     };
 
-                    let quit_tx = Arc::clone(&quit_tx);
+                    // let quit_tx = Arc::clone(&quit_tx);
                     let report_rx = Arc::clone(&report_rx);
-                    s.spawn(move || {
-                        if let Ok(cmd) = ipc::Handler::read_request(&mut stream) {
-                            println!("Received command: '{:?}'", &cmd);
-                            match cmd {
-                                vmctrl::Request::Quit => {
-                                    if let Some(quit_tx) = quit_tx.lock().unwrap().take() {
-                                        let _ = quit_tx.send(());
-                                        _ = ipc::Handler::write_response(
-                                            &mut stream,
-                                            &vmctrl::Response::Ack,
-                                        );
-                                        _ = stream.flush();
-                                        // break;
-                                    }
-                                }
-                                vmctrl::Request::WaitForReport => {
+
+                    if let Ok(cmd) = ipc::Handler::read_request(&mut stream) {
+                        println!("Received command: '{:?}'", &cmd);
+                        match cmd {
+                            vmctrl::Request::Quit => {
+                                // if let Some(quit_tx) = quit_tx.lock().unwrap().take() {
+                                let _ = quit_tx.send(());
+                                _ = ipc::Handler::write_response(
+                                    &mut stream,
+                                    &vmctrl::Response::Ack,
+                                );
+                                _ = stream.flush();
+                                break;
+                                // }
+                            }
+                            vmctrl::Request::WaitForReport => {
+                                s.spawn(move || {
                                     if let Some(report_rx) = report_rx.lock().unwrap().take() {
-                                        let report = report_rx.recv().unwrap_or_default();
-                                        let _ = ipc::Handler::write_response(
+                                        let report = report_rx.recv().map_or_else(
+                                            |e| vmctrl::Report {
+                                                kernel_log: e.to_string().into(),
+                                            },
+                                            |v| v,
+                                        );
+                                        println!("Sending report to vmctrl client: {:#?}", &report);
+                                        if let Err(e) = ipc::Handler::write_response(
                                             &mut stream,
                                             &vmctrl::Response::Report(report),
-                                        );
+                                        ) {
+                                            eprintln!(
+                                                "Failed to write VM report response: {:#}",
+                                                e
+                                            );
+                                            return;
+                                        }
+                                        let _ = stream.flush();
+                                        println!("Sent report to vmctrl client");
+                                    } else {
+                                        eprintln!("Report channel already taken");
                                     }
-                                }
+                                });
                             }
                         }
-                    });
+                    }
                 }
             });
-        });
+        })));
 
-        Self { quit_rx, report_tx }
+        Self {
+            quit_rx,
+            report_tx,
+            // listener_fd,
+            thread_hnd,
+        }
     }
 
     fn wait_for_quit_cmd(&self) {
         let _ = self.quit_rx.recv();
+
+        // unsafe { libc::shutdown(self.listener_fd, libc::SHUT_RD) };
     }
 
     fn send_report(&self, report: vmctrl::Report) -> anyhow::Result<()> {
         self.report_tx
             .send(report)
-            .context("Failed to send report to ctrl socket")
+            .context("Failed to send report to ctrl socket")?;
+
+        if let Some(hnd) = self.thread_hnd.take() {
+            hnd.join().unwrap();
+        }
+        Ok(())
     }
 }
 
@@ -432,6 +470,7 @@ fn run() -> anyhow::Result<()> {
     let listener = TcpListener::bind(&format!("0.0.0.0:{}", VM_CTRL_PORT))?;
 
     let ctrl_server = CtrlSocketServer::new(listener);
+    println!("<anylinuxfs-vmproxy-ready>");
 
     let mut deferred = Deferred::new();
 
@@ -450,6 +489,12 @@ fn run() -> anyhow::Result<()> {
             _ => {}
         }
         // TODO: on FreeBSD, we must move the log somewhere persistent where the host can access it
+        println!("sending VM report to vmctrl server");
+        ctrl_server
+            .send_report(vmctrl::Report {
+                kernel_log: b"example content".into(),
+            })
+            .ok();
     });
 
     let custom_action_cfg = if let Some(action) = cli.action.as_deref() {
