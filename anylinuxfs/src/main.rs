@@ -1936,7 +1936,8 @@ impl AppRunner {
         let services_to_restore: Vec<_>;
         let mut deferred = Deferred::new();
 
-        if !config.verbose {
+        let verbose = config.verbose;
+        if !verbose {
             log::disable_console_log();
         }
 
@@ -1990,13 +1991,13 @@ impl AppRunner {
             img_src = src;
         }
 
-        if !config.verbose {
+        if !verbose {
             log::enable_console_log();
         }
 
         vm_image::init(&config.common, false, &img_src)?;
 
-        if !config.verbose {
+        if !verbose {
             log::disable_console_log();
         }
 
@@ -2214,6 +2215,19 @@ impl AppRunner {
 
             let (nfs_ready_tx, nfs_ready_rx) = mpsc::channel();
             let (vm_pwd_prompt_tx, vm_pwd_prompt_rx) = mpsc::channel();
+            let (vm_report_tx, vm_report_rx) = mpsc::channel();
+
+            deferred.add(move || {
+                match vm_report_rx.recv() {
+                    Ok(report) => {
+                        // TODO: save report to a file
+                        host_println!("VM Report: {:#?}", report);
+                    }
+                    Err(e) => {
+                        host_eprintln!("Failed to receive VM report: {}", e);
+                    }
+                }
+            });
 
             let guest_prefix = match config.common.kernel.os {
                 OSType::Linux => log::Prefix::GuestLinux,
@@ -2222,94 +2236,132 @@ impl AppRunner {
 
             let pty_fd = forked.master_fd();
             // Spawn a thread to read from the pipe
-            _ = thread::spawn(move || {
-                let mut nfs_ready = false;
-                let mut fslabel: Option<String> = None;
-                let mut fstype: Option<String> = None;
-                let mut changed_to_ro = false;
-                let mut exit_code = None;
-                let mut buf_reader =
-                    PassthroughBufReader::new(unsafe { File::from_raw_fd(pty_fd) }, guest_prefix);
-                let mut line = String::new();
-                let mut exports = BTreeSet::new();
+            _ = thread::spawn({
+                let config = config.clone();
+                move || {
+                    let mut nfs_ready = false;
+                    let mut fslabel: Option<String> = None;
+                    let mut fstype: Option<String> = None;
+                    let mut changed_to_ro = false;
+                    let mut exit_code = None;
+                    let mut buf_reader = PassthroughBufReader::new(
+                        unsafe { File::from_raw_fd(pty_fd) },
+                        guest_prefix,
+                    );
+                    let mut line = String::new();
+                    let mut exports = BTreeSet::new();
 
-                loop {
-                    let bytes = match buf_reader.read_line(&mut line) {
-                        Ok(bytes) => bytes,
-                        Err(e) => {
-                            host_eprintln!("Error reading from pty: {}", e);
-                            break;
+                    loop {
+                        let bytes = match buf_reader.read_line(&mut line) {
+                            Ok(bytes) => bytes,
+                            Err(e) => {
+                                host_eprintln!("Error reading from pty: {}", e);
+                                break;
+                            }
+                        };
+                        if bytes == 0 {
+                            break; // EOF
                         }
-                    };
-                    if bytes == 0 {
-                        break; // EOF
-                    }
-                    if line.contains("READY AND WAITING FOR NFS CLIENT CONNECTIONS") {
-                        // Notify the main thread that NFS server is ready
-                        nfs_ready_tx
-                            .send(NfsStatus::Ready(NfsReadyState {
-                                fslabel: fslabel.take(),
-                                fstype: fstype.take(),
-                                changed_to_ro,
-                                exports: exports.iter().cloned().collect(),
-                            }))
-                            .unwrap();
-                        nfs_ready = true;
-                    } else if line.starts_with("<anylinuxfs-exit-code") {
-                        exit_code = line
-                            .split(':')
-                            .nth(1)
-                            .map(|pattern| {
+                        if line.contains("READY AND WAITING FOR NFS CLIENT CONNECTIONS") {
+                            // Notify the main thread that NFS server is ready
+                            nfs_ready_tx
+                                .send(NfsStatus::Ready(NfsReadyState {
+                                    fslabel: fslabel.take(),
+                                    fstype: fstype.take(),
+                                    changed_to_ro,
+                                    exports: exports.iter().cloned().collect(),
+                                }))
+                                .unwrap();
+                            nfs_ready = true;
+                        } else if line.starts_with("<anylinuxfs-vmproxy-ready>") {
+                            _ = thread::spawn({
+                                let vm_report_tx = vm_report_tx.clone();
+                                let config = config.clone();
+                                move || {
+                                    let Ok(mut stream) =
+                                        vm_network::connect_to_vm_ctrl_socket(&config.common)
+                                    else {
+                                        return;
+                                    };
+
+                                    let Ok(_) = ipc::Client::write_request(
+                                        &mut stream,
+                                        &vmctrl::Request::WaitForReport,
+                                    ) else {
+                                        return;
+                                    };
+
+                                    match ipc::Client::read_response(&mut stream) {
+                                        Ok(response) => {
+                                            if let vmctrl::Response::Report(info) = response {
+                                                vm_report_tx.send(info).unwrap();
+                                            }
+                                        }
+                                        Err(e) => {
+                                            host_eprintln!(
+                                                "Failed to read VM report from vmctrl: {:#}",
+                                                e
+                                            );
+                                        }
+                                    }
+                                }
+                            });
+                        } else if line.starts_with("<anylinuxfs-exit-code") {
+                            exit_code = line
+                                .split(':')
+                                .nth(1)
+                                .map(|pattern| {
+                                    pattern
+                                        .trim()
+                                        .strip_suffix(">")
+                                        .unwrap_or(pattern)
+                                        .parse::<i32>()
+                                        .ok()
+                                })
+                                .flatten();
+                        } else if line.starts_with("<anylinuxfs-label") {
+                            fslabel = line.split(':').nth(1).map(|pattern| {
                                 pattern
                                     .trim()
                                     .strip_suffix(">")
                                     .unwrap_or(pattern)
-                                    .parse::<i32>()
-                                    .ok()
+                                    .to_string()
                             })
-                            .flatten();
-                    } else if line.starts_with("<anylinuxfs-label") {
-                        fslabel = line.split(':').nth(1).map(|pattern| {
-                            pattern
-                                .trim()
-                                .strip_suffix(">")
-                                .unwrap_or(pattern)
-                                .to_string()
-                        })
-                    } else if line.starts_with("<anylinuxfs-type") {
-                        fstype = line.split(':').nth(1).map(|pattern| {
-                            pattern
-                                .trim()
-                                .strip_suffix(">")
-                                .unwrap_or(pattern)
-                                .to_string()
-                        })
-                    } else if line.starts_with("<anylinuxfs-mount:changed-to-ro>") {
-                        changed_to_ro = true;
-                    } else if line.starts_with("<anylinuxfs-nfs-export") {
-                        if let Some(export_path) = line.split(':').nth(1).map(|pattern| {
-                            pattern
-                                .trim()
-                                .strip_suffix(">")
-                                .unwrap_or(pattern)
-                                .to_string()
-                        }) {
-                            exports.insert(export_path);
+                        } else if line.starts_with("<anylinuxfs-type") {
+                            fstype = line.split(':').nth(1).map(|pattern| {
+                                pattern
+                                    .trim()
+                                    .strip_suffix(">")
+                                    .unwrap_or(pattern)
+                                    .to_string()
+                            })
+                        } else if line.starts_with("<anylinuxfs-mount:changed-to-ro>") {
+                            changed_to_ro = true;
+                        } else if line.starts_with("<anylinuxfs-nfs-export") {
+                            if let Some(export_path) = line.split(':').nth(1).map(|pattern| {
+                                pattern
+                                    .trim()
+                                    .strip_suffix(">")
+                                    .unwrap_or(pattern)
+                                    .to_string()
+                            }) {
+                                exports.insert(export_path);
+                            }
+                        } else if line.starts_with("<anylinuxfs-passphrase-prompt:start>") {
+                            vm_pwd_prompt_tx.send(true).unwrap();
+                        } else if line.starts_with("<anylinuxfs-passphrase-prompt:end>") {
+                            vm_pwd_prompt_tx.send(false).unwrap();
+                        } else if !verbose && line.starts_with("<anylinuxfs-force-output:off>") {
+                            log::disable_console_log();
+                        } else if !verbose && line.starts_with("<anylinuxfs-force-output:on>") {
+                            log::enable_console_log();
                         }
-                    } else if line.starts_with("<anylinuxfs-passphrase-prompt:start>") {
-                        vm_pwd_prompt_tx.send(true).unwrap();
-                    } else if line.starts_with("<anylinuxfs-passphrase-prompt:end>") {
-                        vm_pwd_prompt_tx.send(false).unwrap();
-                    } else if !config.verbose && line.starts_with("<anylinuxfs-force-output:off>") {
-                        log::disable_console_log();
-                    } else if !config.verbose && line.starts_with("<anylinuxfs-force-output:on>") {
-                        log::enable_console_log();
-                    }
 
-                    line.clear();
-                }
-                if !nfs_ready {
-                    nfs_ready_tx.send(NfsStatus::Failed(exit_code)).unwrap();
+                        line.clear();
+                    }
+                    if !nfs_ready {
+                        nfs_ready_tx.send(NfsStatus::Failed(exit_code)).unwrap();
+                    }
                 }
             });
 
@@ -2392,11 +2444,11 @@ impl AppRunner {
                 match &mount_result {
                     Ok(_) => host_println!("Requested NFS share mount"),
                     Err(e) => {
-                        if !config.verbose {
+                        if !verbose {
                             log::enable_console_log();
                         }
                         host_eprintln!("Failed to request NFS mount: {:#}", e);
-                        if !config.verbose {
+                        if !verbose {
                             log::disable_console_log();
                         }
                     }
@@ -2437,7 +2489,7 @@ impl AppRunner {
                         .filter(|&export_path| export_path != &share_path)
                         .peekable();
 
-                    if !config.verbose {
+                    if !verbose {
                         log::enable_console_log();
                     }
                     let elevate =
@@ -2456,7 +2508,7 @@ impl AppRunner {
                         Ok(_) => {}
                         Err(e) => host_eprintln!("Failed to mount additional NFS exports: {:#}", e),
                     }
-                    if !config.verbose {
+                    if !verbose {
                         log::disable_console_log();
                     }
                 }

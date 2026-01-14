@@ -1,3 +1,4 @@
+use bstr::BString;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -14,10 +15,10 @@ pub enum Response {
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Report {
-    pub kernel_log: Vec<u8>,
+    pub kernel_log: BString,
 }
 impl Report {
-    pub fn new(kernel_log: Vec<u8>) -> Self {
+    pub fn new(kernel_log: BString) -> Self {
         Self { kernel_log }
     }
 }
