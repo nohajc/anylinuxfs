@@ -239,9 +239,8 @@ impl CtrlSocketServer {
                                 );
                                 _ = stream.flush();
                                 break;
-                                // }
                             }
-                            vmctrl::Request::WaitForReport => {
+                            vmctrl::Request::SubscribeEvents => {
                                 s.spawn(move || {
                                     if let Some(report_rx) = report_rx.lock().unwrap().take() {
                                         let report = report_rx.recv().map_or_else(
@@ -250,10 +249,9 @@ impl CtrlSocketServer {
                                             },
                                             |v| v,
                                         );
-                                        println!("Sending report to vmctrl client: {:#?}", &report);
                                         if let Err(e) = ipc::Handler::write_response(
                                             &mut stream,
-                                            &vmctrl::Response::Report(report),
+                                            &vmctrl::Response::ReportEvent(report),
                                         ) {
                                             eprintln!(
                                                 "Failed to write VM report response: {:#}",
@@ -489,7 +487,6 @@ fn run() -> anyhow::Result<()> {
             _ => {}
         }
         // TODO: on FreeBSD, we must move the log somewhere persistent where the host can access it
-        println!("sending VM report to vmctrl server");
         ctrl_server
             .send_report(vmctrl::Report {
                 kernel_log: b"example content".into(),

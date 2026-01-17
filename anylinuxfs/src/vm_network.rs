@@ -76,7 +76,10 @@ pub fn start_gvproxy(config: &Config) -> anyhow::Result<Child> {
     Ok(gvproxy_process)
 }
 
-pub fn connect_to_vm_ctrl_socket(config: &Config) -> anyhow::Result<UnixStream> {
+pub fn connect_to_vm_ctrl_socket(
+    config: &Config,
+    resp_timeout: Option<Duration>,
+) -> anyhow::Result<UnixStream> {
     let sock_path = match config.kernel.os {
         OSType::Linux => {
             host_println!("Using vsock for VM control socket");
@@ -90,7 +93,7 @@ pub fn connect_to_vm_ctrl_socket(config: &Config) -> anyhow::Result<UnixStream> 
 
     let mut stream = UnixStream::connect(sock_path)?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    stream.set_read_timeout(resp_timeout)?;
 
     if config.kernel.os != OSType::Linux {
         // vsock only available for Linux VMs, use gvproxy tcp tunnel instead
