@@ -11,7 +11,6 @@ use common_utils::{
 #[cfg(target_os = "linux")]
 use libc::VMADDR_CID_ANY;
 use serde::Serialize;
-use std::cell::Cell;
 use std::collections::{BTreeSet, HashMap};
 #[cfg(target_os = "linux")]
 use std::ffi::CString;
@@ -197,17 +196,19 @@ impl StreamListener for TcpListener {
 }
 
 struct CtrlSocketServer {
+    done_rx: mpsc::Receiver<()>,
     quit_rx: mpsc::Receiver<()>,
     report_tx: mpsc::Sender<vmctrl::Report>,
-    thread_hnd: Cell<Option<thread::JoinHandle<()>>>,
 }
 
 impl CtrlSocketServer {
     fn new(listener: impl StreamListener) -> Self {
+        let (done_tx, done_rx) = mpsc::channel();
         let (quit_tx, quit_rx) = mpsc::channel();
         let (report_tx, report_rx) = mpsc::channel();
 
-        let thread_hnd = Cell::new(Some(thread::spawn(move || {
+        _ = thread::spawn(move || {
+            let done_tx = Arc::new(Mutex::new(Some(done_tx)));
             let report_rx = Arc::new(Mutex::new(Some(report_rx)));
 
             thread::scope(|s| {
@@ -220,6 +221,7 @@ impl CtrlSocketServer {
                         }
                     };
 
+                    let done_tx = Arc::clone(&done_tx);
                     let report_rx = Arc::clone(&report_rx);
 
                     if let Ok(cmd) = ipc::Handler::read_request(&mut stream) {
@@ -255,6 +257,9 @@ impl CtrlSocketServer {
                                         }
                                         let _ = stream.flush();
                                         println!("Sent report to vmctrl client");
+                                        if let Some(done_tx) = done_tx.lock().unwrap().take() {
+                                            _ = done_tx.send(());
+                                        }
                                     } else {
                                         eprintln!("Report channel already taken");
                                     }
@@ -264,17 +269,17 @@ impl CtrlSocketServer {
                     }
                 }
             });
-        })));
+        });
 
         Self {
+            done_rx,
             quit_rx,
             report_tx,
-            thread_hnd,
         }
     }
 
     fn wait_for_quit_cmd(&self) {
-        let _ = self.quit_rx.recv();
+        _ = self.quit_rx.recv();
     }
 
     fn send_report(&self, report: vmctrl::Report) -> anyhow::Result<()> {
@@ -283,9 +288,7 @@ impl CtrlSocketServer {
             .context("Failed to send report to ctrl socket")?;
 
         // wait for the thread that actually sends the data
-        if let Some(hnd) = self.thread_hnd.take() {
-            hnd.join().unwrap();
-        }
+        _ = self.done_rx.recv();
         Ok(())
     }
 }
