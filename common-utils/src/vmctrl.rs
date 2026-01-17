@@ -4,13 +4,13 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum Request {
     Quit,
-    WaitForReport,
+    SubscribeEvents,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum Response {
     Ack,
-    Report(Report),
+    ReportEvent(Report),
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

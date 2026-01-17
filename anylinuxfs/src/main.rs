@@ -1258,7 +1258,7 @@ fn unmount_fs(volume_path: &Path) -> anyhow::Result<()> {
 }
 
 fn send_quit_cmd(config: &Config) -> anyhow::Result<()> {
-    let mut stream = vm_network::connect_to_vm_ctrl_socket(config)?;
+    let mut stream = vm_network::connect_to_vm_ctrl_socket(config, Some(Duration::from_secs(5)))?;
 
     ipc::Client::write_request(&mut stream, &vmctrl::Request::Quit)?;
     stream.flush()?;
@@ -2218,7 +2218,7 @@ impl AppRunner {
             let (vm_report_tx, vm_report_rx) = mpsc::channel();
 
             deferred.add(move || {
-                match vm_report_rx.recv() {
+                match vm_report_rx.recv_timeout(Duration::from_secs(3)) {
                     Ok(report) => {
                         // TODO: save report to a file
                         host_println!("VM Report: {:#?}", report);
@@ -2279,22 +2279,22 @@ impl AppRunner {
                                 let config = config.clone();
                                 move || {
                                     let Ok(mut stream) =
-                                        vm_network::connect_to_vm_ctrl_socket(&config.common)
+                                        vm_network::connect_to_vm_ctrl_socket(&config.common, None)
                                     else {
                                         return;
                                     };
 
                                     let Ok(_) = ipc::Client::write_request(
                                         &mut stream,
-                                        &vmctrl::Request::WaitForReport,
+                                        &vmctrl::Request::SubscribeEvents,
                                     ) else {
                                         return;
                                     };
 
                                     match ipc::Client::read_response(&mut stream) {
                                         Ok(response) => {
-                                            if let vmctrl::Response::Report(info) = response {
-                                                vm_report_tx.send(info).unwrap();
+                                            if let vmctrl::Response::ReportEvent(info) = response {
+                                                _ = vm_report_tx.send(info);
                                             }
                                         }
                                         Err(e) => {
