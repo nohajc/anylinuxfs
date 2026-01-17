@@ -498,6 +498,7 @@ fn load_config(common_args: &CommonArgs) -> anyhow::Result<Config> {
     let config_file_path = home_dir.join(".anylinuxfs").join("config.toml");
     let log_dir = home_dir.join("Library").join("Logs");
     let log_file_path = log_dir.join("anylinuxfs.log");
+    let kernel_log_file_path = log_dir.join("anylinuxfs_kernel.log");
     let gvproxy_log_path = log_dir.join("gvproxy.log");
 
     let libexec_path = prefix_dir.join("libexec");
@@ -540,6 +541,7 @@ fn load_config(common_args: &CommonArgs) -> anyhow::Result<Config> {
         root_ver_file_path,
         config_file_path,
         log_file_path,
+        kernel_log_file_path,
         libexec_path,
         init_rootfs_path,
         kernel,
@@ -1667,13 +1669,14 @@ impl AppRunner {
 
     fn run_dmesg(&mut self) -> anyhow::Result<()> {
         let config = load_config(&CommonArgs::default())?;
-        let kernel_log_path = config.root_path.join("var/log/kernel.log");
+        let kernel_log_path = config.kernel_log_file_path.as_path();
 
         if !kernel_log_path.exists() {
             return Ok(());
         }
 
-        let log_file = File::open(kernel_log_path).context("Failed to open kernel.log file")?;
+        let log_file = File::open(kernel_log_path)
+            .context(format!("Failed to open {}", kernel_log_path.display()))?;
         let mut buf_reader = BufReader::new(log_file);
         let mut line = String::new();
 
@@ -1906,6 +1909,9 @@ impl AppRunner {
             "Failed to change owner of {}",
             log_file_path.display(),
         ))?;
+
+        // remove kernel log from the last run
+        _ = fs::remove_file(&config.common.kernel_log_file_path);
 
         let forked = utils::fork_with_comm_pipe()?;
         if forked.pid == 0 {
@@ -2215,13 +2221,29 @@ impl AppRunner {
 
             let (nfs_ready_tx, nfs_ready_rx) = mpsc::channel();
             let (vm_pwd_prompt_tx, vm_pwd_prompt_rx) = mpsc::channel();
-            let (vm_report_tx, vm_report_rx) = mpsc::channel();
+            let (vm_report_tx, vm_report_rx) = mpsc::channel::<vmctrl::Report>();
 
+            let kernel_log_file_path = config.common.kernel_log_file_path.as_path();
             deferred.add(move || {
                 match vm_report_rx.recv_timeout(Duration::from_secs(3)) {
                     Ok(report) => {
-                        // TODO: save report to a file
-                        host_println!("VM Report: {:#?}", report);
+                        // save report to a file
+                        host_println!("VM Report received");
+                        match fs::write(kernel_log_file_path, report.kernel_log) {
+                            Ok(_) => {
+                                host_println!(
+                                    "Kernel log saved to {}",
+                                    kernel_log_file_path.display()
+                                );
+                            }
+                            Err(e) => {
+                                host_eprintln!(
+                                    "Failed to save kernel log to {}: {}",
+                                    kernel_log_file_path.display(),
+                                    e
+                                );
+                            }
+                        }
                     }
                     Err(e) => {
                         host_eprintln!("Failed to receive VM report: {}", e);
