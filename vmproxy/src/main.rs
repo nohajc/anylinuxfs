@@ -199,7 +199,6 @@ impl StreamListener for TcpListener {
 struct CtrlSocketServer {
     quit_rx: mpsc::Receiver<()>,
     report_tx: mpsc::Sender<vmctrl::Report>,
-    // listener_fd: c_int,
     thread_hnd: Cell<Option<thread::JoinHandle<()>>>,
 }
 
@@ -207,11 +206,8 @@ impl CtrlSocketServer {
     fn new(listener: impl StreamListener) -> Self {
         let (quit_tx, quit_rx) = mpsc::channel();
         let (report_tx, report_rx) = mpsc::channel();
-        // let listener_fd = listener.as_raw_fd();
 
-        // TODO: we must join this thread to make sure it can send the report before the main thread exits
         let thread_hnd = Cell::new(Some(thread::spawn(move || {
-            // let quit_tx = Arc::new(Mutex::new(Some(quit_tx)));
             let report_rx = Arc::new(Mutex::new(Some(report_rx)));
 
             thread::scope(|s| {
@@ -224,14 +220,12 @@ impl CtrlSocketServer {
                         }
                     };
 
-                    // let quit_tx = Arc::clone(&quit_tx);
                     let report_rx = Arc::clone(&report_rx);
 
                     if let Ok(cmd) = ipc::Handler::read_request(&mut stream) {
                         println!("Received command: '{:?}'", &cmd);
                         match cmd {
                             vmctrl::Request::Quit => {
-                                // if let Some(quit_tx) = quit_tx.lock().unwrap().take() {
                                 let _ = quit_tx.send(());
                                 _ = ipc::Handler::write_response(
                                     &mut stream,
@@ -275,15 +269,12 @@ impl CtrlSocketServer {
         Self {
             quit_rx,
             report_tx,
-            // listener_fd,
             thread_hnd,
         }
     }
 
     fn wait_for_quit_cmd(&self) {
         let _ = self.quit_rx.recv();
-
-        // unsafe { libc::shutdown(self.listener_fd, libc::SHUT_RD) };
     }
 
     fn send_report(&self, report: vmctrl::Report) -> anyhow::Result<()> {
@@ -291,6 +282,7 @@ impl CtrlSocketServer {
             .send(report)
             .context("Failed to send report to ctrl socket")?;
 
+        // wait for the thread that actually sends the data
         if let Some(hnd) = self.thread_hnd.take() {
             hnd.join().unwrap();
         }
@@ -486,10 +478,17 @@ fn run() -> anyhow::Result<()> {
             }
             _ => {}
         }
-        // TODO: on FreeBSD, we must move the log somewhere persistent where the host can access it
+
+        let mut kernel_log_content = Vec::new();
+        match fs::File::open(KERNEL_LOG_PATH) {
+            Ok(mut kernel_log_file) => _ = kernel_log_file.read_to_end(&mut kernel_log_content),
+            Err(_) => {}
+        }
+        // we must move the log somewhere persistent where the host can access it;
+        // guests such as FreeBSD might not be running from a virtiofs mounted root
         ctrl_server
             .send_report(vmctrl::Report {
-                kernel_log: b"example content".into(),
+                kernel_log: kernel_log_content.into(),
             })
             .ok();
     });
