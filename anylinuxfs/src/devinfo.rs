@@ -86,7 +86,7 @@ impl DevInfo {
         let uuid = probe.lookup_value("UUID").ok();
 
         // also get info from DiskArbitration
-        let da_info = diskutil::get_info(&path)?;
+        let da_info = diskutil::get_info(&path);
 
         Ok(DevInfo {
             path,
