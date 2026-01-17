@@ -1,27 +1,31 @@
-For any LUKS drives with LVM partitions, you cannot mount them directly as said in previous commands like `sudo anylinuxfs mount (example here)`, rather you might need to find the LVM volume group name, logical volume name as well and use the lvm: identifier in order to tell anylinuxfs that you are trying to mount a lvm drive. 
+For any LUKS drives with LVM partitions, you cannot mount them directly using a `/dev/diskXsY` path, instead you will need to find the LVM volume group name, logical volume name and use the `lvm:` prefix in order to tell anylinuxfs what exactly to mount. 
 
-**Example for finding volume group** 
+**Finding volume groups** 
 ```
 sudo anylinuxfs list -d all
 ```
-Because of the `-d, --decrypt` flag, anylinuxfs will also prompt for any LUKS password here.
-After that, you should see a layout of this:
+Because of the `-d, --decrypt` flag, anylinuxfs will prompt for any LUKS passphrase needed.
+
+Then it will scan for any LUKS-encrypted volume groups and their respective logical volumes. You should see output like this:
 ```
 lvm:<volume group name> (volume group)
 #: TYPE NAME
 0: LVM2_scheme SIZE                   IDENTIFIER 
                (Size of your drive).  <name of volume group>
-                Physical Store disk7s3 
+                Physical Store diskXsY 
 1:  <file system type> <size of lvm>   <name of volume group>:diskidentifier:<name of volume>
 ```
-After this command, anylinuxfs will scan for any identified volume groups with the lvm: identifier. 
 
-Then, you can properly mount the volume group like the example below and use before flags as necessary, like setting it to read only. 
+Any of the `lvm:` identifiers shown can be used with the mount command. You can also pass flags as usual (e.g. mounting read-only, etc.). 
+
+**Mounting a logical volume** 
+```
+sudo anylinuxfs mount lvm:<vg-name>:<disk partition path>:<lv-name>
+```
+
+Running this will prompt for your LUKS passphrase once again and you should be all set. 
+
 > [!NOTE]
-> This is just an example layout, things may look different as your disk sizes and disk identifiers vary on macOS. disk7s3 is just a placeholder to show you what it might look like. 
-
-**Example for mounting a volume group** 
-```
-sudo anylinuxfs mount lvm:<vg-name>:<disk partition name>:<lv-name>
-```
-These are some basic examples, but anylinuxfs then after using this command will prompt you for your LUKS password to decrypt and you should be all set. 
+> In case your volume group spans multiple drives, you must specify all the respective `/dev/...` identifiers
+>
+> (e.g. `lvm:vg1:/dev/disk3s1:/dev/disk4s1:lv1`)
