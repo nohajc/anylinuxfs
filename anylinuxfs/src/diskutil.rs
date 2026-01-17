@@ -1097,26 +1097,30 @@ impl Default for DiskInfo {
     }
 }
 
-pub fn get_info(bsd_name: impl AsRef<BStr>) -> anyhow::Result<DiskInfo> {
+pub fn get_info(bsd_name: impl AsRef<BStr>) -> DiskInfo {
     let session = unsafe { DASession::new(None).unwrap() };
     let c_bsd_name = CString::new(bsd_name.as_ref().to_owned()).unwrap();
 
-    let disk = unsafe {
+    let media_writable = match unsafe {
         DADisk::from_bsd_name(
             None,
             &session,
             NonNull::new_unchecked(c_bsd_name.into_raw()),
         )
-    }
-    .context("failed to get DADisk by BSD name")?;
+    } {
+        Some(disk) => match unsafe { DADisk::description(disk.as_ref()) } {
+            Some(descr) => {
+                let media_writable: Option<&CFBoolean> =
+                    unsafe { cfdict_get_value(&descr, "DAMediaWritable") };
 
-    let descr = unsafe { DADisk::description(disk.as_ref()) }
-        .context("failed to get DADisk description")?;
+                media_writable.map(|b| b.value()).unwrap_or(true)
+            }
+            None => true,
+        },
+        None => true,
+    };
 
-    let media_writable: Option<&CFBoolean> = unsafe { cfdict_get_value(&descr, "DAMediaWritable") };
-    let media_writable = media_writable.map(|b| b.value()).unwrap_or(true);
-
-    Ok(DiskInfo { media_writable })
+    DiskInfo { media_writable }
 }
 
 #[derive(Debug, Deserialize)]
