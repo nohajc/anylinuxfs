@@ -2228,7 +2228,7 @@ impl AppRunner {
                 match vm_report_rx.recv_timeout(Duration::from_secs(3)) {
                     Ok(report) => {
                         // save report to a file
-                        host_println!("VM Report received");
+                        host_println!("VM report received");
                         match fs::write(kernel_log_file_path, report.kernel_log) {
                             Ok(_) => {
                                 host_println!(
@@ -2306,17 +2306,26 @@ impl AppRunner {
                                         return;
                                     };
 
-                                    let Ok(_) = ipc::Client::write_request(
+                                    if let Err(e) = ipc::Client::write_request(
                                         &mut stream,
                                         &vmctrl::Request::SubscribeEvents,
-                                    ) else {
+                                    ) {
+                                        host_eprintln!(
+                                            "Failed to send SubscribeEvents to vmctrl: {:#}",
+                                            e
+                                        );
                                         return;
                                     };
 
                                     match ipc::Client::read_response(&mut stream) {
                                         Ok(response) => {
                                             if let vmctrl::Response::ReportEvent(info) = response {
-                                                _ = vm_report_tx.send(info);
+                                                if let Err(e) = vm_report_tx.send(info) {
+                                                    host_eprintln!(
+                                                        "Failed to send VM report to channel: {:#}",
+                                                        e
+                                                    );
+                                                }
                                             }
                                         }
                                         Err(e) => {
