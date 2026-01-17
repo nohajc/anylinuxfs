@@ -23,6 +23,7 @@ use std::os::unix::ffi::OsStrExt;
 #[cfg(target_os = "linux")]
 use std::path::Path;
 use std::process::{Child, Command, ExitCode, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 use std::{env, thread};
@@ -212,6 +213,8 @@ impl CtrlSocketServer {
             let report_rx = Arc::new(Mutex::new(Some(report_rx)));
 
             thread::scope(|s| {
+                let events_subscribed = Arc::new(AtomicBool::new(false));
+
                 for stream in listener.incoming() {
                     let mut stream = match stream {
                         Ok(s) => s,
@@ -223,21 +226,30 @@ impl CtrlSocketServer {
 
                     let done_tx = Arc::clone(&done_tx);
                     let report_rx = Arc::clone(&report_rx);
+                    let events_subscribed = Arc::clone(&events_subscribed);
 
                     if let Ok(cmd) = ipc::Handler::read_request(&mut stream) {
                         println!("Received command: '{:?}'", &cmd);
                         match cmd {
                             vmctrl::Request::Quit => {
-                                let _ = quit_tx.send(());
+                                _ = quit_tx.send(());
                                 _ = ipc::Handler::write_response(
                                     &mut stream,
                                     &vmctrl::Response::Ack,
                                 );
                                 _ = stream.flush();
+
+                                if !events_subscribed.load(Ordering::Relaxed) {
+                                    if let Some(done_tx) = done_tx.lock().unwrap().take() {
+                                        _ = done_tx.send(());
+                                    }
+                                }
                                 break;
                             }
                             vmctrl::Request::SubscribeEvents => {
                                 s.spawn(move || {
+                                    events_subscribed.store(true, Ordering::Relaxed);
+
                                     if let Some(report_rx) = report_rx.lock().unwrap().take() {
                                         let report = report_rx.recv().map_or_else(
                                             |e| vmctrl::Report {
@@ -253,10 +265,10 @@ impl CtrlSocketServer {
                                                 "Failed to write VM report response: {:#}",
                                                 e
                                             );
-                                            return;
+                                        } else {
+                                            _ = stream.flush();
+                                            println!("Sent report to vmctrl client");
                                         }
-                                        let _ = stream.flush();
-                                        println!("Sent report to vmctrl client");
                                         if let Some(done_tx) = done_tx.lock().unwrap().take() {
                                             _ = done_tx.send(());
                                         }
