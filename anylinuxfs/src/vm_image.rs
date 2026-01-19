@@ -519,7 +519,7 @@ mod freebsd {
             .root_device("cd9660:/dev/vtbd0")
             .legacy_console(true);
         let ctx = setup_vm(&config, devices, true, false, opts)?;
-        let bstrap_status = start_vm_forked(ctx, &["/freebsd-bootstrap".into()], &[])
+        let bstrap_status = start_vm_forked(&ctx, &["/freebsd-bootstrap".into()], &[])
             .context("Failed to start FreeBSD bootstrap VM")?;
 
         if bstrap_status != 0 {
@@ -542,7 +542,7 @@ mod freebsd {
             .legacy_console(true);
         let ctx = setup_vm(&config, devices, use_gvproxy, false, opts)?;
         let setup_status =
-            start_vm_forked(ctx, cmdline, &[]).context("Failed to start FreeBSD VM setup")?;
+            start_vm_forked(&ctx, cmdline, &[]).context("Failed to start FreeBSD VM setup")?;
 
         if setup_status != 0 {
             return Err(anyhow::anyhow!(

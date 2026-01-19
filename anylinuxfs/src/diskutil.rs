@@ -809,11 +809,11 @@ fn get_lsblk_info(
         }
     );
     // println!("lsblk script: {}", &script);
-    let lsblk_args = vec![
-        c"/bin/busybox".to_owned(),
-        c"sh".to_owned(),
-        c"-c".to_owned(),
-        CString::new(script.as_str()).unwrap(),
+    let lsblk_args = [
+        "/bin/busybox".into(),
+        "sh".into(),
+        "-c".into(),
+        script.into(),
     ];
     let prompt_fn = enc_partitions.map(|partitions| {
         let mut passphrase_prompts = Vec::new();
@@ -841,7 +841,7 @@ fn get_lsblk_info(
         dev_info,
         false,
         VMOpts::new().read_only_disks(true),
-        lsblk_args,
+        &lsblk_args,
         prompt_fn,
     )
     .context("Failed to run command in microVM")?;
