@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
     env,
+    ffi::OsStr,
     fmt::Display,
     fs,
     net::IpAddr,
@@ -670,6 +671,12 @@ impl MountConfig {
         let mut new_config = self.clone();
         new_config.common = new_config.common.with_image_source(src);
         new_config
+    }
+
+    pub fn custom_mount_name(&self) -> Option<&OsStr> {
+        self.custom_mount_point
+            .as_deref()
+            .map(|name| name.file_name().unwrap_or(OsStr::new("root")))
     }
 }
 

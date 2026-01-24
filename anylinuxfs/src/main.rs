@@ -873,10 +873,15 @@ fn start_vmproxy(
     }
     .into();
 
+    let mount_name = match config.custom_mount_name() {
+        Some(name) => name.as_bytes().into(),
+        None => dev_info.auto_mount_name(),
+    };
+
     let args: Vec<_> = [
         vmproxy,
         dev_info.vm_path().into(),
-        dev_info.auto_mount_name().into(),
+        mount_name,
         "-b".into(),
         config.bind_addr.to_string().into(),
     ]
@@ -1356,9 +1361,14 @@ fn validated_mount_point(rt_info: &api::RuntimeInfo) -> MountStatus<'_> {
         Some(action) if !action.override_nfs_export().is_empty() => {
             BString::from(action.override_nfs_export())
         }
-        _ => [b"/mnt/", rt_info.dev_info.auto_mount_name().as_slice()]
-            .concat()
-            .into(),
+
+        _ => {
+            let share_name = match rt_info.mount_config.custom_mount_name() {
+                Some(name) => name.as_bytes().into(),
+                None => rt_info.dev_info.auto_mount_name(),
+            };
+            [b"/mnt/", share_name.as_slice()].concat().into()
+        }
     };
     let expected_mount_dev = [b"localhost:", expected_mount_point.as_slice()].concat();
     match fsutil::mounted_from(&mount_point) {
@@ -2472,7 +2482,11 @@ impl AppRunner {
                     rt_info.lock().unwrap().mount_config.mount_options = Some(new_mount_opts);
                 }
 
-                let share_name = mnt_dev_info.auto_mount_name();
+                let share_name = match config.custom_mount_name() {
+                    Some(name) => name.as_bytes().into(),
+                    None => mnt_dev_info.auto_mount_name(),
+                };
+
                 let share_path = match config.get_action() {
                     Some(action) if !action.override_nfs_export().is_empty() => {
                         BString::from(action.override_nfs_export())
