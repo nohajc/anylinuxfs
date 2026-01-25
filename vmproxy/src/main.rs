@@ -755,8 +755,9 @@ fn run() -> anyhow::Result<()> {
     //     .mount("/dev/vda", &mount_point)
     //     .context(format!("Failed to mount '/dev/vda' on '{}'", &mount_point))?;
 
-    let zfs_mountpoints = if is_zfs {
-        let (status, mountpoints) = zfs::import_all_zpools(&mount_point, specified_read_only)?;
+    let (zfs_mountpoints, zfs_pools) = if is_zfs {
+        let (status, mountpoints, zpools) =
+            zfs::import_all_zpools(&mount_point, specified_read_only)?;
         if !status.success() {
             return Err(anyhow!(
                 "Importing zpools failed with error code {}",
@@ -766,9 +767,9 @@ fn run() -> anyhow::Result<()> {
                     .unwrap_or("unknown".to_owned())
             ));
         }
-        mountpoints
+        (mountpoints, zpools)
     } else {
-        vec![]
+        (vec![], vec![])
     };
 
     #[cfg(all(feature = "freebsd", target_os = "linux"))]
@@ -854,12 +855,18 @@ fn run() -> anyhow::Result<()> {
             fs_type.unwrap_or("unknown".to_owned())
         );
 
+        let zfs_export_script = zfs_pools
+            .iter()
+            .map(|pool| format!("zpool export {}", pool))
+            .collect::<Vec<String>>()
+            .join(" && ");
+
         deferred.add({
             let mount_point = mount_point.clone();
             move || {
                 let mut backoff = Duration::from_millis(50);
                 let umount_action: &dyn Fn() -> _ = if is_zfs {
-                    &|| script("zpool export -a").status().map(|_| ())
+                    &|| script(&zfs_export_script).status().map(|_| ())
                 } else {
                     #[cfg(target_os = "linux")]
                     {

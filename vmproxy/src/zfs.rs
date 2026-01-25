@@ -146,7 +146,7 @@ fn mountpoints_from_json(text: &str) -> anyhow::Result<Vec<Mountpoint>> {
 pub fn import_all_zpools(
     mount_point_root: &str,
     read_only: bool,
-) -> anyhow::Result<(ExitStatus, Vec<Mountpoint>)> {
+) -> anyhow::Result<(ExitStatus, Vec<Mountpoint>, Vec<String>)> {
     let opts = if read_only { "-o readonly=on" } else { "" };
     let res = script(&format!(
         "zpool import {} -faNR {}",
@@ -156,11 +156,21 @@ pub fn import_all_zpools(
     .context("Failed to run zpool import command")?;
 
     if !res.success() {
-        return Ok((res, Vec::new()));
+        return Ok((res, Vec::new(), Vec::new()));
     }
 
     let zfs_mountpoints = mountpoints().context("Failed to get ZFS mountpoints after import")?;
-    Ok((res, zfs_mountpoints))
+
+    let mut unique_pools = vec![];
+    let mut pool_set = HashSet::new();
+    for mp in &zfs_mountpoints {
+        if !pool_set.contains(mp.pool.as_str()) {
+            unique_pools.push(mp.pool.clone());
+            pool_set.insert(mp.pool.as_str());
+        }
+    }
+
+    Ok((res, zfs_mountpoints, unique_pools))
 }
 
 pub fn mount_datasets(
