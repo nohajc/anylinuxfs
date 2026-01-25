@@ -1,7 +1,7 @@
 use anyhow::{Context, anyhow};
 use bstr::{BStr, BString, ByteSlice};
 use clap::ValueEnum;
-use percent_encoding::{AsciiSet, CONTROLS, percent_decode_str, utf8_percent_encode};
+use percent_encoding::{NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
 use serde::{Deserialize, Serialize};
 use std::{ffi::CString, io, os::unix::ffi::OsStrExt, path::Path, process::Child, time::Duration};
 use wait_timeout::ChildExt;
@@ -190,11 +190,9 @@ impl CustomActionConfig {
         self.required_os
     }
 
-    const PERCENT_ENCODE_SET: &AsciiSet = &CONTROLS.add(b' ');
-
     pub fn percent_encode(&self) -> anyhow::Result<String> {
         let ron_encoded = ron::ser::to_string(&self)?;
-        Ok(utf8_percent_encode(&ron_encoded, Self::PERCENT_ENCODE_SET).to_string())
+        Ok(utf8_percent_encode(&ron_encoded, NON_ALPHANUMERIC).to_string())
     }
 
     pub fn percent_decode(encoded: &str) -> anyhow::Result<Self> {
