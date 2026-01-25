@@ -44,7 +44,6 @@ use crate::settings::{
     Config, CustomActionEnvironment, ImageSource, KernelConfig, KernelPage, KrunLogLevel,
     MountConfig, PassphrasePromptConfig, Preferences,
 };
-use crate::utils::{ToCStringVec, ToPtrVec};
 use crate::vm_image::IsoAdd;
 
 mod api;
@@ -698,10 +697,11 @@ impl Default for VMOpts {
 
 static KRUN_LOG_LEVEL_INIT: Once = Once::new();
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct VMContext {
     id: u32,
     os: OSType,
+    root_path: Option<PathBuf>,
 }
 
 fn setup_vm(
@@ -830,11 +830,20 @@ fn setup_vm(
     }
     .context("Failed to set kernel")?;
 
-    Ok(VMContext { id: ctx_id, os })
+    let root_path = match os {
+        OSType::Linux => Some(config.root_path.clone()),
+        OSType::FreeBSD => None, // no virtiofs => no root path
+    };
+
+    Ok(VMContext {
+        id: ctx_id,
+        os,
+        root_path,
+    })
 }
 
 fn start_vmproxy(
-    ctx: VMContext,
+    ctx: &VMContext,
     config: &MountConfig,
     service_status: &ServiceStatus,
     env: &[BString],
@@ -937,26 +946,27 @@ struct KrunConfig<'a, 'b> {
     process: KrunConfigProcess<'a, 'b>,
 }
 
-fn set_vm_cmdline(ctx: VMContext, args: &[BString], env: &[BString]) -> anyhow::Result<()> {
-    let cargs = args.to_cstring_vec();
-    let cenv = env.to_cstring_vec();
-
+fn set_vm_cmdline(ctx: &VMContext, args: &[BString], env: &[BString]) -> anyhow::Result<()> {
     let krun_config_tmp_dir;
     let mut deferred = Deferred::new();
 
+    let krun_config = serde_json::to_string(&KrunConfig {
+        process: KrunConfigProcess { args, env },
+    })
+    .context("Failed to serialize krun config")?;
+
     match ctx.os {
         OSType::Linux => {
-            let argv = cargs.to_ptr_vec();
-            let envp = cenv.to_ptr_vec();
-            unsafe { bindings::krun_set_exec(ctx.id, argv[0], argv[1..].as_ptr(), envp.as_ptr()) }
-                .context("Failed to set exec")?;
+            let krun_config_file_name = ".krun_config.json";
+            let krun_config_file = ctx.root_path.as_ref().unwrap().join(krun_config_file_name);
+            fs::write(&krun_config_file, krun_config.as_bytes()).with_context(|| {
+                format!(
+                    "Failed to write krun config file {}",
+                    krun_config_file.display()
+                )
+            })?;
         }
         OSType::FreeBSD => {
-            let krun_config = serde_json::to_string(&KrunConfig {
-                process: KrunConfigProcess { args, env },
-            })
-            .context("Failed to serialize krun config")?;
-
             krun_config_tmp_dir = PathBuf::from("/tmp").join(format!("alfs-{}", rand_string(8)));
             fs::create_dir_all(&krun_config_tmp_dir)
                 .context("Failed to create krun config temp directory")?;
@@ -1004,7 +1014,7 @@ fn set_vm_cmdline(ctx: VMContext, args: &[BString], env: &[BString]) -> anyhow::
     Ok(())
 }
 
-fn start_vm_forked(ctx: VMContext, cmdline: &[BString], env: &[BString]) -> anyhow::Result<i32> {
+fn start_vm_forked(ctx: &VMContext, cmdline: &[BString], env: &[BString]) -> anyhow::Result<i32> {
     let pid = unsafe { libc::fork() };
     if pid < 0 {
         return Err(io::Error::last_os_error()).context("Failed to fork process");
@@ -1022,7 +1032,7 @@ fn start_vm_forked(ctx: VMContext, cmdline: &[BString], env: &[BString]) -> anyh
     }
 }
 
-fn start_vm(ctx: VMContext, cmdline: &[BString], env: &[BString]) -> anyhow::Result<()> {
+fn start_vm(ctx: &VMContext, cmdline: &[BString], env: &[BString]) -> anyhow::Result<()> {
     set_vm_cmdline(ctx, cmdline, env)?;
     unsafe { bindings::krun_start_enter(ctx.id) }.context("Failed to start VM")?;
 
@@ -1059,22 +1069,14 @@ fn run_vmcommand_short(
     dev_info: &[DevInfo],
     use_gvproxy: bool,
     opts: VMOpts,
-    args: Vec<CString>,
+    args: &[BString],
     process_stdin: Option<impl FnOnce(libc::c_int) -> anyhow::Result<()>>,
 ) -> anyhow::Result<VMOutput> {
     let forked = utils::fork_with_piped_output()?;
     if forked.pid == 0 {
         // child process
         let ctx = setup_vm(config, dev_info, use_gvproxy, false, opts)?;
-
-        let argv = args.to_ptr_vec();
-        let envp = vec![std::ptr::null()];
-
-        // this is only used with Linux so far; no need to call set_vm_cmdline
-        unsafe { bindings::krun_set_exec(ctx.id, argv[0], argv[1..].as_ptr(), envp.as_ptr()) }
-            .context("Failed to set exec")?;
-
-        unsafe { bindings::krun_start_enter(ctx.id) }.context("Failed to start VM")?;
+        start_vm(&ctx, &args, &[])?;
         unreachable!();
     } else {
         // parent process
@@ -1665,7 +1667,7 @@ impl AppRunner {
             } else {
                 cmdline.push((vm_prelude + " && /bin/bash -l").into());
             }
-            start_vm(ctx, &cmdline, &vm_env).context("Failed to start microVM shell")?;
+            start_vm(&ctx, &cmdline, &vm_env).context("Failed to start microVM shell")?;
         } else {
             let cmdline: Vec<BString> = if let Some(command) = cmd.command {
                 vec!["/bin/sh".into(), "-c".into(), command.into()]
@@ -1673,7 +1675,7 @@ impl AppRunner {
                 vec!["/start-shell.sh".into()]
             };
             vm_image::setup_gvproxy(&config.common, || {
-                start_vm_forked(ctx, &cmdline, &vm_env).context("Failed to start microVM shell")
+                start_vm_forked(&ctx, &cmdline, &vm_env).context("Failed to start microVM shell")
             })?;
         }
 
@@ -1765,7 +1767,7 @@ impl AppRunner {
         let opts = VMOpts::new().read_only_disks(true);
         let ctx = setup_vm(&config, &[], false, false, opts).context("Failed to setup microVM")?;
         let status =
-            start_vm_forked(ctx, &cmdline, &[]).context("Failed to start microVM shell")?;
+            start_vm_forked(&ctx, &cmdline, &[]).context("Failed to start microVM shell")?;
 
         if status != 0 {
             return Err(anyhow::anyhow!(
@@ -2139,7 +2141,7 @@ impl AppRunner {
                 .collect();
 
             start_vmproxy(
-                ctx,
+                &ctx,
                 &config,
                 &service_status,
                 &vm_env,
