@@ -702,8 +702,6 @@ struct VMContext {
     id: u32,
     os: OSType,
     root_path: Option<PathBuf>,
-    invoker_uid: libc::uid_t,
-    invoker_gid: libc::gid_t,
 }
 
 fn setup_vm(
@@ -837,15 +835,10 @@ fn setup_vm(
         OSType::FreeBSD => None, // no virtiofs => no root path
     };
 
-    let invoker_uid = config.invoker_uid;
-    let invoker_gid = config.invoker_gid;
-
     Ok(VMContext {
         id: ctx_id,
         os,
         root_path,
-        invoker_uid,
-        invoker_gid,
     })
 }
 
@@ -972,12 +965,6 @@ fn set_vm_cmdline(ctx: &VMContext, args: &[BString], env: &[BString]) -> anyhow:
                     krun_config_file.display()
                 )
             })?;
-            chown(
-                &krun_config_file,
-                Some(ctx.invoker_uid),
-                Some(ctx.invoker_gid),
-            )
-            .with_context(|| format!("Failed to change owner of {}", krun_config_file.display()))?;
         }
         OSType::FreeBSD => {
             krun_config_tmp_dir = PathBuf::from("/tmp").join(format!("alfs-{}", rand_string(8)));
