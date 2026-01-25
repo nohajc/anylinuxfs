@@ -2,7 +2,7 @@ use std::{
     cell::Cell,
     collections::HashSet,
     error::Error,
-    ffi::c_void,
+    ffi::{CString, c_void},
     fs::{File, Permissions},
     io::{self, BufRead, BufReader, Read, Write},
     mem::ManuallyDrop,
@@ -595,38 +595,38 @@ pub fn inspect_cf_dictionary_values(dict: &CFDictionary) {
     }
 }
 
-// pub trait ToPtrVec {
-//     fn to_ptr_vec(self) -> Vec<*const libc::c_char>;
-// }
+pub trait ToPtrVec {
+    fn to_ptr_vec(self) -> Vec<*const libc::c_char>;
+}
 
-// impl ToPtrVec for &[CString] {
-//     fn to_ptr_vec(self) -> Vec<*const libc::c_char> {
-//         self.iter()
-//             .map(|s| s.as_ptr())
-//             .chain([std::ptr::null()])
-//             .collect()
-//     }
-// }
+impl ToPtrVec for &[CString] {
+    fn to_ptr_vec(self) -> Vec<*const libc::c_char> {
+        self.iter()
+            .map(|s| s.as_ptr())
+            .chain([std::ptr::null()])
+            .collect()
+    }
+}
 
-// pub trait ToCStringVec {
-//     fn to_cstring_vec(self) -> Vec<CString>;
-// }
+pub trait ToCStringVec {
+    fn to_cstring_vec(self) -> Vec<CString>;
+}
 
-// impl ToCStringVec for &[String] {
-//     fn to_cstring_vec(self) -> Vec<CString> {
-//         self.iter()
-//             .map(|s| CString::new(s.as_str()).unwrap())
-//             .collect()
-//     }
-// }
+impl ToCStringVec for &[String] {
+    fn to_cstring_vec(self) -> Vec<CString> {
+        self.iter()
+            .map(|s| CString::new(s.as_str()).unwrap())
+            .collect()
+    }
+}
 
-// impl ToCStringVec for &[BString] {
-//     fn to_cstring_vec(self) -> Vec<CString> {
-//         self.iter()
-//             .map(|s| CString::new(s.as_slice()).unwrap())
-//             .collect()
-//     }
-// }
+impl ToCStringVec for &[BString] {
+    fn to_cstring_vec(self) -> Vec<CString> {
+        self.iter()
+            .map(|s| CString::new(s.as_slice()).unwrap())
+            .collect()
+    }
+}
 
 pub fn find_env_vars(expression: impl AsRef<BStr>) -> HashSet<BString> {
     let mut vars = HashSet::new();
