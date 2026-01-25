@@ -174,6 +174,7 @@ pub fn mount_datasets(
     // }
 
     for (i, mp) in mountpoints.iter().enumerate() {
+        println!("Mounting {:?}", mp);
         let mut cmd = script(&format!("zfs mount -l {}", mp.name));
 
         let status = if let Some(pwd) = env_pwds.get(&(i + 1)) {
