@@ -7,8 +7,8 @@ os_type = "Linux"
 
 [images."freebsd-15.0"]
 base_dir = "freebsd-15.0"
-iso_url = "https://download.freebsd.org/snapshots/ISO-IMAGES/15.0/FreeBSD-15.0-STABLE-arm64-aarch64-20260101-785d429c2b93-281645-bootonly.iso"
-oci_url = "https://download.freebsd.org/snapshots/OCI-IMAGES/15.0-STABLE/aarch64/20260101/FreeBSD-15.0-STABLE-arm64-aarch64-container-image-20260101-785d429c2b93-281645-runtime.txz"
+iso_url = "https://download.freebsd.org/releases/ISO-IMAGES/15.0/FreeBSD-15.0-RELEASE-arm64-aarch64-bootonly.iso"
+oci_url = "https://download.freebsd.org/releases/OCI-IMAGES/15.0-RELEASE/aarch64/Latest/FreeBSD-15.0-RELEASE-arm64-aarch64-container-image-runtime.txz"
 kernel.bundle_url = "https://github.com/nohajc/freebsd/releases/download/alfs%2F15.0/kernel.txz"
 os_type = "FreeBSD"
 
