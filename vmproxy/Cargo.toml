@@ -24,4 +24,5 @@ sys-mount = { version = "3.0.1", default-features = false }
 vsock = "0.5.1"
 
 [features]
+default = ["freebsd"]
 freebsd = []

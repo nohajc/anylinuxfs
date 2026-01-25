@@ -27,3 +27,6 @@ default_image = "alpine-latest"
 
 [freebsd]
 default_image = "freebsd-15.0"
+
+[misc]
+zfs_os = "FreeBSD"
