@@ -857,6 +857,7 @@ fn run() -> anyhow::Result<()> {
 
         let zfs_export_script = zfs_pools
             .iter()
+            .rev()
             .map(|pool| format!("zpool export {}", pool))
             .collect::<Vec<String>>()
             .join(" && ");

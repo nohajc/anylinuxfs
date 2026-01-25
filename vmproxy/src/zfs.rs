@@ -177,14 +177,8 @@ pub fn mount_datasets(
     mountpoints: &[Mountpoint],
     env_pwds: &HashMap<usize, BString>,
 ) -> anyhow::Result<ExitStatus> {
-    // println!("ZFS mountpoints");
-
-    // for mp in &zfs_mountpoints {
-    //     println!("  {:?}", mp);
-    // }
-
     for (i, mp) in mountpoints.iter().enumerate() {
-        println!("Mounting {}", mp.name);
+        // println!("Mounting {}", mp.name);
         let mut cmd = script(&format!("zfs mount -l {}", mp.name));
 
         let status = if let Some(pwd) = env_pwds.get(&(i + 1)) {
