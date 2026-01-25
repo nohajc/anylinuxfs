@@ -44,6 +44,8 @@ mod zfs;
 struct Cli {
     disk_path: String,
     mount_name: String,
+    #[arg(short, long)]
+    custom_mount_point: bool, // if true, mount_name is not a hint but override
     #[arg(short = 't', long = "types")]
     fs_type: Option<String>,
     #[arg(long = "fs-driver")]
@@ -647,35 +649,37 @@ fn run() -> anyhow::Result<()> {
     let is_logical = disk_path.starts_with("/dev/mapper") || is_raid;
     let is_zfs = fs_type.as_deref() == Some("zfs_member");
 
-    let name = cli.mount_name;
-    let mount_name = if !is_logical {
-        if is_zfs {
-            #[cfg(target_os = "linux")]
-            script("modprobe zfs")
-                .status()
-                .context("Failed to load zfs module")?;
-            let label = "zfs_root".to_owned();
-            println!("<anylinuxfs-label:{}>", &label);
-            label
+    let mut mount_name = cli.mount_name;
+    if !cli.custom_mount_point {
+        if !is_logical {
+            if is_zfs {
+                #[cfg(target_os = "linux")]
+                script("modprobe zfs")
+                    .status()
+                    .context("Failed to load zfs module")?;
+                let label = "zfs_root".to_owned();
+                println!("<anylinuxfs-label:{}>", &label);
+                mount_name = label;
+            }
         } else {
-            name
-        }
-    } else {
-        let label = Command::new("/sbin/blkid")
-            .arg(&disk_path)
-            .arg("-s")
-            .arg("LABEL")
-            .arg("-o")
-            .arg("value")
-            .output()
-            .context("Failed to run blkid command")?
-            .stdout;
+            let label = Command::new("/sbin/blkid")
+                .arg(&disk_path)
+                .arg("-s")
+                .arg("LABEL")
+                .arg("-o")
+                .arg("value")
+                .output()
+                .context("Failed to run blkid command")?
+                .stdout;
 
-        let label = path_safe_label_name(&String::from_utf8_lossy(&label).trim().to_owned())
-            .unwrap_or(name.to_owned());
-        println!("<anylinuxfs-label:{}>", &label);
-        label
-    };
+            if let Some(label) =
+                path_safe_label_name(&String::from_utf8_lossy(&label).trim().to_owned())
+            {
+                println!("<anylinuxfs-label:{}>", &label);
+                mount_name = label;
+            }
+        }
+    }
 
     if !disk_path.is_empty() {
         match fs_type.as_deref() {

@@ -878,6 +878,8 @@ fn start_vmproxy(
         None => dev_info.auto_mount_name(),
     };
 
+    let custom_mount_point = config.custom_mount_point.is_some();
+
     let args: Vec<_> = [
         vmproxy,
         dev_info.vm_path().into(),
@@ -886,6 +888,7 @@ fn start_vmproxy(
         config.bind_addr.to_string().into(),
     ]
     .into_iter()
+    .chain(custom_mount_point.then_some("-c".into()).into_iter())
     .chain(["-t".into(), dev_info.fs_type().unwrap_or("auto").into()])
     .chain(
         config
