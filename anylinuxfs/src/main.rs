@@ -1631,9 +1631,14 @@ impl AppRunner {
                 let freebsd_base_path = config.common.profile_path.join(&src.base_dir);
                 let vm_disk_image = "freebsd-microvm-disk.img";
                 let disk_path = freebsd_base_path.join(vm_disk_image);
+                host_println!("root_disk: {}", disk_path.display());
+
                 (config.with_image_source(src), src, Some(disk_path))
             }
-            None => (config, &ImageSource::default(), None),
+            None => {
+                host_println!("root_path: {}", config.common.root_path.display());
+                (config, &ImageSource::default(), None)
+            }
         };
         #[cfg(not(feature = "freebsd"))]
         let src = &ImageSource::default();
@@ -1645,7 +1650,6 @@ impl AppRunner {
         let (vm_env, _) = prepare_vm_environment(&config)?;
 
         // host_println!("disk_path: {}", config.disk_path);
-        host_println!("root_path: {}", config.common.root_path.display());
         host_println!("num_vcpus: {}", config.common.preferences.krun_num_vcpus());
         host_println!(
             "ram_size_mib: {}",
@@ -2022,6 +2026,7 @@ impl AppRunner {
             let freebsd_base_path = config.common.profile_path.join(&src.base_dir);
             let vm_disk_image = "freebsd-microvm-disk.img";
             let root_disk_path = freebsd_base_path.join(vm_disk_image);
+            host_println!("root_disk: {}", root_disk_path.display());
 
             opts = opts.root_device("ufs:/dev/gpt/rootfs").legacy_console(true);
             dev_info = [DevInfo::pv(root_disk_path.as_bytes())?]
@@ -2031,6 +2036,8 @@ impl AppRunner {
                 .collect();
 
             img_src = src;
+        } else {
+            host_println!("root_path: {}", config.common.root_path.display());
         }
 
         if !verbose {
@@ -2046,7 +2053,6 @@ impl AppRunner {
         let (vm_env, env_has_passphrase) = prepare_vm_environment(&config)?;
 
         // host_println!("disk_path: {}", config.disk_path);
-        host_println!("root_path: {}", config.common.root_path.display());
         host_println!("num_vcpus: {}", config.common.preferences.krun_num_vcpus());
         host_println!(
             "ram_size_mib: {}",
