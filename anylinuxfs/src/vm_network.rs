@@ -1,7 +1,7 @@
 use std::{
     fs::{self, File},
     io::{self, Read, Write},
-    os::unix::{net::UnixStream, process::CommandExt},
+    os::unix::{fs::chown, net::UnixStream, process::CommandExt},
     process::{Child, Command},
     time::Duration,
 };
@@ -58,6 +58,18 @@ pub fn start_gvproxy(config: &Config) -> anyhow::Result<Child> {
         File::create(&config.gvproxy_log_path).context("Failed to create gvproxy.log file")?;
     let gvproxy_err =
         File::try_clone(&gvproxy_out).context("Failed to clone gvproxy.log file handle")?;
+
+    chown(
+        &config.gvproxy_log_path,
+        Some(config.invoker_uid),
+        Some(config.invoker_gid),
+    )
+    .with_context(|| {
+        format!(
+            "Failed to change owner of {}",
+            config.gvproxy_log_path.display()
+        )
+    })?;
 
     gvproxy_cmd
         .args(&gvproxy_args)
