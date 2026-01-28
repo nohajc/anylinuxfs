@@ -37,7 +37,7 @@ brew install anylinuxfs
 ```
 
 > [!TIP]
-> This is a CLI utility. If you prefer a GUI, [there is one](https://github.com/fenio/anylinuxfs-gui) under development.
+> This is a CLI utility. If you prefer GUI, [there is one](https://github.com/fenio/anylinuxfs-gui) under development.
 
 ## Demo
 https://github.com/user-attachments/assets/6ec6ce46-ce08-45b9-9fa4-e3d6d078d811
