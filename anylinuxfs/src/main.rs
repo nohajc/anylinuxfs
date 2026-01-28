@@ -1,6 +1,6 @@
 use anyhow::{Context, anyhow};
 use bstr::{BString, ByteVec};
-use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
+use clap::{ArgGroup, Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use common_utils::{
     Deferred, FromPath, OSType, PathExt, host_eprintln, host_println, ipc, log, safe_print,
     safe_println, vmctrl,
@@ -281,11 +281,19 @@ struct ConfigCmd {
 }
 
 #[derive(Args)]
+#[clap(group(
+    ArgGroup::new("part_types")
+        .required(false)
+        .args(&["linux", "microsoft"]),
+))]
 struct ListCmd {
     /// Decrypt LUKS partitions: comma-separated list of paths or "all"
     #[arg(short, long, value_delimiter = ',', num_args = 1..)]
     decrypt: Option<Vec<String>>,
-    /// Show Microsoft filesystems (NTFS, exFAT) instead of Linux filesystems
+    /// Only show Linux partitions
+    #[arg(short, long)]
+    linux: bool,
+    /// Only show Microsoft partitions (NTFS, exFAT, ...)
     #[arg(short, long)]
     microsoft: bool,
     #[command(flatten)]
@@ -2776,10 +2784,13 @@ impl AppRunner {
             ensure_enough_ram_for_luks(&mut config);
         }
 
-        let labels = match cmd.microsoft {
-            true => diskutil::WINDOWS_LABELS,
-            false => diskutil::LINUX_LABELS,
-        };
+        let mut labels = diskutil::ALL_LABELS;
+        if cmd.linux {
+            labels = diskutil::LINUX_LABELS;
+        } else if cmd.microsoft {
+            labels = diskutil::WINDOWS_LABELS;
+        }
+
         println!(
             "{}",
             diskutil::list_partitions(config, cmd.decrypt.as_deref(), labels)?

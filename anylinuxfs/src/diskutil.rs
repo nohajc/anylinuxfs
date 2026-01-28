@@ -151,8 +151,38 @@ pub struct Labels {
     pub fs_types: FsTypes,
 }
 
-pub const LINUX_LABELS: Labels = Labels {
-    part_types: PartTypes(&[
+// Macro to define const string arrays without manually specifying the size
+macro_rules! str_array {
+    ($name:ident, [$($item:expr),* $(,)?]) => {
+        const $name: [&str; { const COUNT: usize = [$(stringify!($item),)*].len(); COUNT }] = [
+            $($item,)*
+        ];
+    };
+}
+
+// Const function to concatenate two arrays at compile time
+const fn concat_str_arrays<'a, const N1: usize, const N2: usize, const OUT: usize>(
+    arr1: &[&'a str; N1],
+    arr2: &[&'a str; N2],
+) -> [&'a str; OUT] {
+    let mut result = [""; OUT];
+    let mut i = 0;
+    while i < N1 {
+        result[i] = arr1[i];
+        i += 1;
+    }
+    let mut j = 0;
+    while j < N2 {
+        result[i + j] = arr2[j];
+        j += 1;
+    }
+    result
+}
+
+// Individual label lists defined once
+str_array!(
+    LINUX_PART_TYPES,
+    [
         "Linux Filesystem",
         "Linux LVM",
         "Linux_LVM",
@@ -160,8 +190,12 @@ pub const LINUX_LABELS: Labels = Labels {
         "Linux",
         "ZFS",
         "516E7CBA-6ECF-11D6-8FF8-00022D09712B", // FreeBSD ZFS
-    ]),
-    fs_types: FsTypes(&[
+    ]
+);
+
+str_array!(
+    LINUX_FS_TYPES,
+    [
         "btrfs",
         "erofs",
         "ext2",
@@ -173,14 +207,37 @@ pub const LINUX_LABELS: Labels = Labels {
         "crypto_LUKS",
         "LVM2_member",
         "zfs_member",
-    ]),
-};
+    ]
+);
 
 // GPT - Microsoft Basic Data (any Windows filesystem)
 // MBR - Windows_NTFS         (both NTFS and exFAT)
+str_array!(
+    WINDOWS_PART_TYPES,
+    ["Microsoft Basic Data", "Windows_NTFS", "Windows_FAT_32"]
+);
+
+str_array!(WINDOWS_FS_TYPES, ["ntfs", "exfat", "BitLocker"]);
+
+const ALL_PART_TYPES: [&str; LINUX_PART_TYPES.len() + WINDOWS_PART_TYPES.len()] =
+    concat_str_arrays(&LINUX_PART_TYPES, &WINDOWS_PART_TYPES);
+
+const ALL_FS_TYPES: [&str; LINUX_FS_TYPES.len() + WINDOWS_FS_TYPES.len()] =
+    concat_str_arrays(&LINUX_FS_TYPES, &WINDOWS_FS_TYPES);
+
+pub const LINUX_LABELS: Labels = Labels {
+    part_types: PartTypes(&LINUX_PART_TYPES),
+    fs_types: FsTypes(&LINUX_FS_TYPES),
+};
+
 pub const WINDOWS_LABELS: Labels = Labels {
-    part_types: PartTypes(&["Microsoft Basic Data", "Windows_NTFS", "Windows_FAT_32"]),
-    fs_types: FsTypes(&["ntfs", "exfat", "BitLocker"]),
+    part_types: PartTypes(&WINDOWS_PART_TYPES),
+    fs_types: FsTypes(&WINDOWS_FS_TYPES),
+};
+
+pub const ALL_LABELS: Labels = Labels {
+    part_types: PartTypes(&ALL_PART_TYPES),
+    fs_types: FsTypes(&ALL_FS_TYPES),
 };
 
 fn partitions_with_part_type(plist: &Plist, part_types: PartTypes) -> Vec<String> {
