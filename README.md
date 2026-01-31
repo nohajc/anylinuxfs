@@ -341,7 +341,7 @@ brew install util-linux slp/krun/libkrun # Libblkid library and the hypervisor -
 git clone https://github.com/nohajc/anylinuxfs.git
 cd anylinuxfs
 rustup target add aarch64-unknown-linux-musl
-rustup +nightly component add rust-src
+rustup +nightly-2026-01-25 component add rust-src
 ./download-dependencies.sh
 ./build-app.sh             # debug build
 ./build-app.sh --release   # release build

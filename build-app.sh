@@ -42,5 +42,5 @@ SYSROOT=freebsd-sysroot
     || (mkdir $SYSROOT && cd $SYSROOT \
         && curl -LO http://ftp.cz.freebsd.org/pub/FreeBSD/releases/arm64/14.3-RELEASE/base.txz \
         && tar xJf base.txz 2>/dev/null || true && rm base.txz) \
-    && cargo +nightly build -Z build-std --target aarch64-unknown-freebsd $BUILD_ARGS)
+    && cargo +nightly-2026-01-25 build -Z build-std --target aarch64-unknown-freebsd $BUILD_ARGS)
 cp "vmproxy/target/aarch64-unknown-freebsd/$BUILD_DIR/vmproxy" libexec/vmproxy-bsd
