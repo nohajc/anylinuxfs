@@ -60,7 +60,7 @@ This one is just a stripped down version of Linux, there's not even a UEFI firmw
 Most often, you will probably use the following commands:
 * `anylinuxfs mount` - mount a filesystem; this is the default command, so the `mount` keyword can be omitted
 * `anylinuxfs unmount` - safe unmount, useful in case of multiple mounts (typically ZFS datasets) which need to be ejected in a particular order
-* `anylinuxfs list` - show available Linux filesystems (alternatively, `anylinuxfs list -m` shows Microsoft filesystems)
+* `anylinuxfs list` - show available filesystems (`-m`/`-l` shows Microsoft/Linux partitions only)
 * `anylinuxfs status` - show what is currently mounted
 * `anylinuxfs log` - show details about the current (or last) run, useful for troubleshooting
 
