@@ -89,7 +89,7 @@ Arguments:
 
 ## Examples
 
-**List available drives with Linux filesystems**
+**List available drives with compatible filesystems**
 ```
 sudo anylinuxfs list
 ```
@@ -137,11 +137,6 @@ lvm:vg1 (volume group):
    1:                       ext4 lvol0                   15.4 GB    vg1:disk7s1:lvol0
    2:                        xfs lvol1                   7.7 GB     vg1:disk7s1:lvol1
    3:                      btrfs lvol2                   11.9 GB    vg1:disk7s1:disk8s1:lvol2
-```
-
-**List available drives with Microsoft filesystems (NTFS, exFAT, FAT32)**
-```
-sudo anylinuxfs list -m
 ```
 
 **Mount partition read/write**
