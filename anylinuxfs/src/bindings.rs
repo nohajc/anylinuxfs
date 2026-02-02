@@ -16,6 +16,14 @@ unsafe extern "C" {
     pub fn krun_set_mapped_volumes(ctx: u32, mapped_volumes: *const *const c_char) -> i32;
     pub fn krun_add_virtiofs(ctx_id: u32, c_tag: *const c_char, c_path: *const c_char) -> i32;
     pub fn krun_set_gvproxy_path(ctx: u32, c_path: *const c_char) -> i32;
+    pub fn krun_add_net_unixgram(
+        ctx_id: u32,
+        c_path: *const c_char,
+        fd: c_int,
+        c_mac: *const u8,
+        features: u32,
+        flags: u32,
+    ) -> i32;
     pub fn krun_set_port_map(ctx: u32, port_map: *const *const c_char) -> i32;
     pub fn krun_set_workdir(ctx: u32, workdir_path: *const c_char) -> i32;
     pub fn krun_disable_implicit_console(ctx_id: u32) -> i32;

@@ -20,6 +20,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, SocketAddrV4, TcpStream};
 use std::os::fd::{FromRawFd, IntoRawFd};
 use std::os::unix::fs::chown;
+use std::os::unix::net::UnixDatagram;
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 use std::ptr::null;
@@ -726,10 +727,25 @@ struct VMContext {
     invoker_gid: libc::gid_t,
 }
 
+enum NetworkMode {
+    Default,
+    GvProxy,
+    VmNet(UnixDatagram),
+}
+
+impl NetworkMode {
+    fn default_for_os(os: OSType) -> Self {
+        match os {
+            OSType::FreeBSD => NetworkMode::GvProxy,
+            OSType::Linux => NetworkMode::Default,
+        }
+    }
+}
+
 fn setup_vm(
     config: &Config,
     dev_info: &[DevInfo],
-    use_gvproxy: bool,
+    net_mode: NetworkMode,
     use_vsock: bool,
     opts: VMOpts,
 ) -> anyhow::Result<VMContext> {
@@ -779,16 +795,20 @@ fn setup_vm(
         .context("Failed to add disk")?;
     }
 
-    if use_gvproxy {
-        unsafe {
-            bindings::krun_set_gvproxy_path(
-                ctx_id,
-                CString::new(config.vfkit_sock_path.as_str())
-                    .unwrap()
-                    .as_ptr(),
-            )
+    match net_mode {
+        NetworkMode::GvProxy => {
+            unsafe {
+                bindings::krun_set_gvproxy_path(
+                    ctx_id,
+                    CString::new(config.vfkit_sock_path.as_str())
+                        .unwrap()
+                        .as_ptr(),
+                )
+            }
+            .context("Failed to set gvproxy path")?;
         }
-        .context("Failed to set gvproxy path")?;
+        NetworkMode::VmNet(sock) => todo!(),
+        NetworkMode::Default => (),
     }
 
     // let ports = vec![
@@ -1113,7 +1133,7 @@ fn read_all_from_fd(fd: i32) -> anyhow::Result<Vec<u8>> {
 fn run_vmcommand_short(
     config: &Config,
     dev_info: &[DevInfo],
-    use_gvproxy: bool,
+    net_mode: NetworkMode,
     opts: VMOpts,
     args: &[BString],
     process_stdin: Option<impl FnOnce(libc::c_int) -> anyhow::Result<()>>,
@@ -1121,7 +1141,7 @@ fn run_vmcommand_short(
     let forked = utils::fork_with_piped_output()?;
     if forked.pid == 0 {
         // child process
-        let ctx = setup_vm(config, dev_info, use_gvproxy, false, opts)?;
+        let ctx = setup_vm(config, dev_info, net_mode, false, opts)?;
         start_vm(&ctx, &args, &[])?;
         unreachable!();
     } else {
@@ -1707,7 +1727,7 @@ impl AppRunner {
         let ctx = setup_vm(
             &config.common,
             &dev_info,
-            os == OSType::FreeBSD,
+            NetworkMode::default_for_os(os),
             false,
             opts,
         )
@@ -1820,7 +1840,8 @@ impl AppRunner {
         let cmdline: Vec<BString> = vec!["/bin/bash".into(), "-c".into(), vm_command.into()];
 
         let opts = VMOpts::new().read_only_disks(true);
-        let ctx = setup_vm(&config, &[], false, false, opts).context("Failed to setup microVM")?;
+        let ctx = setup_vm(&config, &[], NetworkMode::Default, false, opts)
+            .context("Failed to setup microVM")?;
         let status =
             start_vm_forked(&ctx, &cmdline, &[]).context("Failed to start microVM shell")?;
 
@@ -2184,7 +2205,7 @@ impl AppRunner {
             // Child process
             deferred.remove_all(); // deferred actions must be only called in the parent process
 
-            let ctx = setup_vm(&config.common, &dev_info, true, true, opts)
+            let ctx = setup_vm(&config.common, &dev_info, NetworkMode::GvProxy, true, opts)
                 .context("Failed to setup microVM")?;
 
             let to_decrypt: Vec<_> = iter::zip(dev_info.iter(), 'a'..='z')
