@@ -114,7 +114,7 @@ mod freebsd {
     };
 
     use crate::{
-        VMOpts,
+        NetworkMode, VMOpts,
         devinfo::DevInfo,
         settings::{Config, ImageSource},
         setup_vm, start_vm_forked,
@@ -198,7 +198,7 @@ mod freebsd {
                         DevInfo::pv(upgrade_iso_image_path.as_bytes())?,
                     ];
                     let cmdline = &["/upgrade-binaries.sh".into()];
-                    start_freebsd_vm(&config, devices, cmdline, false)
+                    start_freebsd_vm(&config, devices, cmdline, NetworkMode::Default)
                         .context("Failed to start FreeBSD VM for upgrade")?;
 
                     write_mtime_files(
@@ -398,7 +398,7 @@ mod freebsd {
         let setup_status = setup_gvproxy(&config, || {
             let devices = &[DevInfo::pv(vm_disk_image_path.as_bytes())?];
             let cmdline = &["/usr/local/bin/vm-setup.sh".into()];
-            start_freebsd_vm(&config, devices, cmdline, true)
+            start_freebsd_vm(&config, devices, cmdline, NetworkMode::GvProxy)
         })?;
         if setup_status != 0 {
             return Err(anyhow!(
@@ -518,7 +518,7 @@ mod freebsd {
         let opts = VMOpts::new()
             .root_device("cd9660:/dev/vtbd0")
             .legacy_console(true);
-        let ctx = setup_vm(&config, devices, true, false, opts)?;
+        let ctx = setup_vm(&config, devices, NetworkMode::GvProxy, false, opts)?;
         let bstrap_status = start_vm_forked(&ctx, &["/freebsd-bootstrap".into()], &[])
             .context("Failed to start FreeBSD bootstrap VM")?;
 
@@ -535,12 +535,12 @@ mod freebsd {
         config: &Config,
         devices: &[DevInfo],
         cmdline: &[BString],
-        use_gvproxy: bool,
+        net_mode: NetworkMode,
     ) -> anyhow::Result<i32> {
         let opts = VMOpts::new()
             .root_device("ufs:/dev/gpt/rootfs")
             .legacy_console(true);
-        let ctx = setup_vm(&config, devices, use_gvproxy, false, opts)?;
+        let ctx = setup_vm(&config, devices, net_mode, false, opts)?;
         let setup_status =
             start_vm_forked(&ctx, cmdline, &[]).context("Failed to start FreeBSD VM setup")?;
 

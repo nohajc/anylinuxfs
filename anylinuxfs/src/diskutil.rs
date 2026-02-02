@@ -29,7 +29,7 @@ use std::{
 use url::Url;
 
 use crate::{
-    VMOpts,
+    NetworkMode, VMOpts,
     devinfo::DevInfo,
     fsutil,
     pubsub::Subscription,
@@ -903,7 +903,7 @@ fn get_lsblk_info(
     let lsblk_cmd = crate::run_vmcommand_short(
         config,
         dev_info,
-        false,
+        NetworkMode::Default,
         VMOpts::new().read_only_disks(true),
         &lsblk_args,
         prompt_fn,
