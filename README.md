@@ -347,7 +347,7 @@ bin/anylinuxfs list
 
 ## Acknowledgements
 This project was made possible by
-- [libkrun](https://github.com/containers/libkrun) the microVM hypervisor for Linux anc Mac
+- [libkrun](https://github.com/containers/libkrun) the microVM hypervisor for Linux and Mac
 - [libkrunfw](https://github.com/containers/libkrunfw) - Linux kernel bundled for libkrun as a dynamic library
 - [gvproxy](https://github.com/containers/gvisor-tap-vsock) - user space networking for virtual machines (also used by podman)
 - [docker-nfs-server](https://github.com/ehough/docker-nfs-server) - launcher for NFS server in a container
