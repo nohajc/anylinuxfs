@@ -20,7 +20,6 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, SocketAddrV4, TcpStream};
 use std::os::fd::{FromRawFd, IntoRawFd};
 use std::os::unix::fs::chown;
-use std::os::unix::net::UnixDatagram;
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 use std::ptr::null;
@@ -519,11 +518,12 @@ fn load_config(common_args: &CommonArgs) -> anyhow::Result<Config> {
     let init_rootfs_path = libexec_path.join("init-rootfs").to_owned();
     let kernel_path = libexec_path.join("Image").to_owned();
     let gvproxy_path = libexec_path.join("gvproxy").to_owned();
+    let vmnet_helper_path = libexec_path.join("vmnet-helper").to_owned();
     let vmproxy_host_path = libexec_path.join("vmproxy").to_owned();
 
     let gvproxy_net_sock_path = format!("/tmp/network-{}.sock", rand_string(8));
     let vsock_path = format!("/tmp/anylinuxfs-{}-vsock", rand_string(8));
-    let vfkit_sock_path = format!("/tmp/vfkit-{}.sock", rand_string(8));
+    let unixgram_sock_path = format!("/tmp/vfkit-{}.sock", rand_string(8));
 
     let global_prefix_dir = if prefix_dir.starts_with("/opt/homebrew") {
         PathBuf::from("/opt/homebrew")
@@ -562,9 +562,10 @@ fn load_config(common_args: &CommonArgs) -> anyhow::Result<Config> {
         gvproxy_net_sock_path,
         gvproxy_path,
         gvproxy_log_path,
+        vmnet_helper_path,
         vmproxy_host_path,
         vsock_path,
-        vfkit_sock_path,
+        unixgram_sock_path,
         invoker_uid,
         invoker_gid,
         sudo_uid,
@@ -730,17 +731,35 @@ struct VMContext {
 enum NetworkMode {
     Default,
     GvProxy,
-    VmNet(UnixDatagram),
+    VmNet,
 }
 
 impl NetworkMode {
     fn default_for_os(os: OSType) -> Self {
         match os {
-            OSType::FreeBSD => NetworkMode::GvProxy,
+            OSType::FreeBSD => NetworkMode::VmNet,
             OSType::Linux => NetworkMode::Default,
         }
     }
 }
+
+/// Taken from https://github.com/containers/libkrun/blob/7116644749c7b1028a970c9e8bd2d0163745a225/include/libkrun.h#L269
+const NET_FEATURE_CSUM: u32 = 1 << 0;
+const NET_FEATURE_GUEST_CSUM: u32 = 1 << 1;
+const NET_FEATURE_GUEST_TSO4: u32 = 1 << 7;
+// const NET_FEATURE_GUEST_TSO6: u32 = 1 << 8;
+const NET_FEATURE_GUEST_UFO: u32 = 1 << 10;
+const NET_FEATURE_HOST_TSO4: u32 = 1 << 11;
+// const NET_FEATURE_HOST_TSO6: u32 = 1 << 12;
+const NET_FEATURE_HOST_UFO: u32 = 1 << 14;
+
+/// These are the features enabled by krun_set_passt_fd and krun_set_gvproxy_path.
+const COMPAT_NET_FEATURES: u32 = NET_FEATURE_CSUM
+    | NET_FEATURE_GUEST_CSUM
+    | NET_FEATURE_GUEST_TSO4
+    | NET_FEATURE_GUEST_UFO
+    | NET_FEATURE_HOST_TSO4
+    | NET_FEATURE_HOST_UFO;
 
 fn setup_vm(
     config: &Config,
@@ -800,14 +819,26 @@ fn setup_vm(
             unsafe {
                 bindings::krun_set_gvproxy_path(
                     ctx_id,
-                    CString::new(config.vfkit_sock_path.as_str())
+                    CString::new(config.unixgram_sock_path.as_str())
                         .unwrap()
                         .as_ptr(),
                 )
             }
             .context("Failed to set gvproxy path")?;
         }
-        NetworkMode::VmNet(sock) => todo!(),
+        NetworkMode::VmNet => {
+            unsafe {
+                bindings::krun_add_net_unixgram(
+                    ctx_id,
+                    CString::from_path(&config.unixgram_sock_path).as_ptr(),
+                    -1,
+                    vm_network::random_mac_address().as_ptr(),
+                    COMPAT_NET_FEATURES,
+                    0,
+                )
+            }
+            .context("Failed to add vmnet socket")?;
+        }
         NetworkMode::Default => (),
     }
 
@@ -1749,7 +1780,7 @@ impl AppRunner {
             } else {
                 vec!["/start-shell.sh".into()]
             };
-            vm_image::setup_gvproxy(&config.common, || {
+            vm_image::setup_vmnet_helper(&config.common, || {
                 start_vm_forked(&ctx, &cmdline, &vm_env).context("Failed to start microVM shell")
             })?;
         }
@@ -2164,12 +2195,12 @@ impl AppRunner {
 
         let mut gvproxy = vm_network::start_gvproxy(&config.common)?;
         let gvproxy_pid = gvproxy.id() as libc::pid_t;
-        fsutil::wait_for_file(&config.common.vfkit_sock_path)?;
+        fsutil::wait_for_file(&config.common.unixgram_sock_path)?;
 
         _ = deferred.add({
-            let vfkit_sock_path = config.common.vfkit_sock_path.clone();
+            let vfkit_sock_path = config.common.unixgram_sock_path.clone();
             move || {
-                if let Err(e) = vm_network::gvproxy_cleanup(&vfkit_sock_path) {
+                if let Err(e) = vm_network::vfkit_sock_cleanup(&vfkit_sock_path) {
                     host_eprintln!("{:#}", e);
                 }
             }
@@ -3065,7 +3096,9 @@ impl AppRunner {
                         }
                     }
                     _ = vm_network::vsock_cleanup(&rt_info.mount_config.common.vsock_path);
-                    _ = vm_network::gvproxy_cleanup(&rt_info.mount_config.common.vfkit_sock_path);
+                    _ = vm_network::vfkit_sock_cleanup(
+                        &rt_info.mount_config.common.unixgram_sock_path,
+                    );
                 }
             }
             Err(err) => {

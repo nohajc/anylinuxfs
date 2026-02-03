@@ -1,16 +1,31 @@
 use std::{
     fs::{self, File},
-    io::{self, Read, Write},
+    io::{self, BufReader, Read, Write},
     os::unix::{fs::chown, net::UnixStream, process::CommandExt},
-    process::{Child, Command},
+    process::{Child, Command, Stdio},
     time::Duration,
 };
 
 use crate::settings::{Config, Preferences};
 use anyhow::{Context, anyhow};
 use common_utils::{OSType, VM_CTRL_PORT, VM_IP, host_println};
+use rand::prelude::*;
+use serde::Deserialize;
+use serde_json::Deserializer;
 
-pub fn gvproxy_cleanup(vfkit_sock_path: &str) -> anyhow::Result<()> {
+pub fn random_mac_address() -> [u8; 6] {
+    let mut rng = rand::rng();
+    return [
+        0x00,
+        0x16,
+        0x3e,
+        rng.random_range(0x00..=0x7f),
+        rng.random_range(0x00..=0xff),
+        rng.random_range(0x00..=0xff),
+    ];
+}
+
+pub fn vfkit_sock_cleanup(vfkit_sock_path: &str) -> anyhow::Result<()> {
     let sock_krun_path = vfkit_sock_path.replace(".sock", ".sock-krun.sock");
     match fs::remove_file(&sock_krun_path) {
         Ok(_) => {}
@@ -34,11 +49,71 @@ pub fn vsock_cleanup(vsock_path: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[allow(unused)]
+#[derive(Debug, Deserialize)]
+pub struct VmnetConfig {
+    pub vmnet_write_max_packets: u32,
+    pub vmnet_read_max_packets: u32,
+    pub vmnet_subnet_mask: String,
+    pub vmnet_mtu: u32,
+    pub vmnet_end_address: String,
+    pub vmnet_start_address: String,
+    pub vmnet_interface_id: String,
+    pub vmnet_max_packet_size: u32,
+    pub vmnet_nat66_prefix: String,
+    pub vmnet_mac_address: String,
+}
+
+pub fn start_vmnet_helper(config: &Config) -> anyhow::Result<(Child, VmnetConfig)> {
+    vfkit_sock_cleanup(&config.unixgram_sock_path)?;
+
+    let mut vmnet_helper_cmd = Command::new(&config.vmnet_helper_path);
+
+    // TODO: change to vmnet_helper_log_path
+    let vmnet_helper_err =
+        File::create(&config.gvproxy_log_path).context("Failed to create vmnet-helper.log file")?;
+
+    chown(
+        &config.gvproxy_log_path,
+        Some(config.invoker_uid),
+        Some(config.invoker_gid),
+    )
+    .with_context(|| {
+        format!(
+            "Failed to change owner of {}",
+            config.gvproxy_log_path.display()
+        )
+    })?;
+
+    vmnet_helper_cmd
+        .arg("--socket")
+        .arg(&config.unixgram_sock_path)
+        .stdout(Stdio::piped())
+        .stderr(vmnet_helper_err);
+
+    if let (Some(uid), Some(gid)) = (config.sudo_uid, config.sudo_gid) {
+        // run vmnet-helper with dropped privileges
+        vmnet_helper_cmd.uid(uid).gid(gid);
+    }
+
+    let mut vmnet_helper_process = vmnet_helper_cmd
+        .spawn()
+        .context("Failed to start vmnet-helper process")?;
+
+    let child_out = BufReader::new(vmnet_helper_process.stdout.take().unwrap());
+    host_println!("Waiting for vmnet-helper to output config...");
+    let mut config_de = Deserializer::from_reader(child_out);
+    let vmnet_config =
+        VmnetConfig::deserialize(&mut config_de).context("Failed to parse vmnet-helper config")?;
+
+    Ok((vmnet_helper_process, vmnet_config))
+}
+
 pub fn start_gvproxy(config: &Config) -> anyhow::Result<Child> {
-    gvproxy_cleanup(&config.vfkit_sock_path)?;
+    vfkit_sock_cleanup(&config.unixgram_sock_path)?;
 
     let net_sock_uri = format!("unix://{}", &config.gvproxy_net_sock_path);
-    let vfkit_sock_uri = format!("unixgram://{}", &config.vfkit_sock_path);
+    let vfkit_sock_uri = format!("unixgram://{}", &config.unixgram_sock_path);
     let mut gvproxy_args = vec![
         "--listen",
         &net_sock_uri,
