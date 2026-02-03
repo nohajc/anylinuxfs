@@ -16,6 +16,9 @@ INIT_BSD_URL="https://github.com/nohajc/libkrun/releases/download/v1.17.0-init-b
 GVPROXY_VERSION="0.8.7"
 GVPROXY_URL="https://github.com/containers/gvisor-tap-vsock/releases/download/v${GVPROXY_VERSION}/gvproxy-darwin"
 
+VMNET_HELPER_VERSION="0.9.0"
+VMNET_HELPER_URL="https://github.com/nirs/vmnet-helper/releases/download/v${VMNET_HELPER_VERSION}/vmnet-helper.tar.gz"
+
 cd "$SCRIPT_DIR"
 curl -L -o "$IMAGE_ARCHIVE_NAME" "$IMAGE_ARCHIVE_URL"
 mkdir -p "libexec"
@@ -32,3 +35,7 @@ chmod +x "libexec/$INIT_BSD"
 
 curl -L -o libexec/gvproxy "$GVPROXY_URL"
 chmod +x libexec/gvproxy
+
+curl -LO "$VMNET_HELPER_URL"
+tar xzf vmnet-helper.tar.gz -C libexec --strip-components=4 ./opt/vmnet-helper/bin/vmnet-helper
+rm vmnet-helper.tar.gz
