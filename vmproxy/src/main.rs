@@ -69,6 +69,8 @@ struct Cli {
     #[arg(short, long)]
     host_rpcbind: bool,
     #[arg(short, long)]
+    native_ip: bool,
+    #[arg(short, long)]
     verbose: bool,
 }
 
@@ -91,7 +93,7 @@ fn expose_port(client: &reqwest::blocking::Client, port_def: &PortDef) -> anyhow
     Ok(())
 }
 
-fn init_network(bind_addr: &str, host_rpcbind: bool) -> anyhow::Result<()> {
+fn init_network(bind_addr: &str, host_rpcbind: bool, has_native_ip: bool) -> anyhow::Result<()> {
     // resolv.conf is already initialized and always the same on FreeBSD
     #[cfg(target_os = "linux")]
     fs::write("/etc/resolv.conf", format!("nameserver {VM_GATEWAY_IP}\n"))
@@ -123,38 +125,40 @@ fn init_network(bind_addr: &str, host_rpcbind: bool) -> anyhow::Result<()> {
 
     let client = reqwest::blocking::Client::new();
 
-    if !host_rpcbind {
-        expose_port(
-            &client,
-            &PortDef {
-                local: ":111",
-                remote: &format!("{VM_IP}:111"),
-            },
-        )?;
-    }
+    if !has_native_ip {
+        if !host_rpcbind {
+            expose_port(
+                &client,
+                &PortDef {
+                    local: ":111",
+                    remote: &format!("{VM_IP}:111"),
+                },
+            )?;
+        }
 
-    for addr in bind_addr_list {
-        expose_port(
-            &client,
-            &PortDef {
-                local: &format!("{addr}:2049"),
-                remote: &format!("{VM_IP}:2049"),
-            },
-        )?;
-        expose_port(
-            &client,
-            &PortDef {
-                local: &format!("{addr}:32765"),
-                remote: &format!("{VM_IP}:32765"),
-            },
-        )?;
-        expose_port(
-            &client,
-            &PortDef {
-                local: &format!("{addr}:32767"),
-                remote: &format!("{VM_IP}:32767"),
-            },
-        )?;
+        for addr in bind_addr_list {
+            expose_port(
+                &client,
+                &PortDef {
+                    local: &format!("{addr}:2049"),
+                    remote: &format!("{VM_IP}:2049"),
+                },
+            )?;
+            expose_port(
+                &client,
+                &PortDef {
+                    local: &format!("{addr}:32765"),
+                    remote: &format!("{VM_IP}:32765"),
+                },
+            )?;
+            expose_port(
+                &client,
+                &PortDef {
+                    local: &format!("{addr}:32767"),
+                    remote: &format!("{VM_IP}:32767"),
+                },
+            )?;
+        }
     }
 
     Ok(())
@@ -482,7 +486,8 @@ fn run() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
-    init_network(&cli.bind_addr, cli.host_rpcbind).context("Failed to initialize network")?;
+    init_network(&cli.bind_addr, cli.host_rpcbind, cli.native_ip)
+        .context("Failed to initialize network")?;
 
     #[cfg(target_os = "linux")]
     let listener = {

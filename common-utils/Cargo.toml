@@ -16,3 +16,4 @@ wait-timeout = "0.2.1"
 [features]
 default = ["freebsd"]
 freebsd = []
+vmnet = []

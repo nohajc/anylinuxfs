@@ -1,5 +1,5 @@
 use anyhow::{Context, anyhow};
-use bstr::{BString, ByteVec};
+use bstr::{BString, ByteSlice, ByteVec};
 use clap::{ArgGroup, Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use common_utils::{
     Deferred, FromPath, OSType, PathExt, host_eprintln, host_println, ipc, log, safe_print,
@@ -17,12 +17,13 @@ use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{Ipv4Addr, SocketAddrV4, TcpStream};
+use std::net::{Ipv4Addr, SocketAddr, TcpStream};
 use std::os::fd::{FromRawFd, IntoRawFd};
 use std::os::unix::fs::chown;
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 use std::ptr::null;
+use std::str::FromStr;
 use std::time::Duration;
 use std::{
     env,
@@ -730,36 +731,51 @@ struct VMContext {
 
 enum NetworkMode {
     Default,
+    #[cfg(not(feature = "vmnet"))]
     GvProxy,
+    #[cfg(feature = "vmnet")]
     VmNet,
 }
 
 impl NetworkMode {
     fn default_for_os(os: OSType) -> Self {
         match os {
+            #[cfg(not(feature = "vmnet"))]
+            OSType::FreeBSD => NetworkMode::GvProxy,
+            #[cfg(feature = "vmnet")]
             OSType::FreeBSD => NetworkMode::VmNet,
             OSType::Linux => NetworkMode::Default,
         }
     }
+
+    #[cfg(not(feature = "vmnet"))]
+    fn default_nfs_compatible() -> Self {
+        NetworkMode::GvProxy
+    }
+
+    #[cfg(feature = "vmnet")]
+    fn default_nfs_compatible() -> Self {
+        NetworkMode::VmNet
+    }
 }
 
 /// Taken from https://github.com/containers/libkrun/blob/7116644749c7b1028a970c9e8bd2d0163745a225/include/libkrun.h#L269
-const NET_FEATURE_CSUM: u32 = 1 << 0;
-const NET_FEATURE_GUEST_CSUM: u32 = 1 << 1;
-const NET_FEATURE_GUEST_TSO4: u32 = 1 << 7;
+// const NET_FEATURE_CSUM: u32 = 1 << 0;
+// const NET_FEATURE_GUEST_CSUM: u32 = 1 << 1;
+// const NET_FEATURE_GUEST_TSO4: u32 = 1 << 7;
 // const NET_FEATURE_GUEST_TSO6: u32 = 1 << 8;
-const NET_FEATURE_GUEST_UFO: u32 = 1 << 10;
-const NET_FEATURE_HOST_TSO4: u32 = 1 << 11;
+// const NET_FEATURE_GUEST_UFO: u32 = 1 << 10;
+// const NET_FEATURE_HOST_TSO4: u32 = 1 << 11;
 // const NET_FEATURE_HOST_TSO6: u32 = 1 << 12;
-const NET_FEATURE_HOST_UFO: u32 = 1 << 14;
+// const NET_FEATURE_HOST_UFO: u32 = 1 << 14;
 
 /// These are the features enabled by krun_set_passt_fd and krun_set_gvproxy_path.
-const COMPAT_NET_FEATURES: u32 = NET_FEATURE_CSUM
-    | NET_FEATURE_GUEST_CSUM
-    | NET_FEATURE_GUEST_TSO4
-    | NET_FEATURE_GUEST_UFO
-    | NET_FEATURE_HOST_TSO4
-    | NET_FEATURE_HOST_UFO;
+// const COMPAT_NET_FEATURES: u32 = NET_FEATURE_CSUM
+//     | NET_FEATURE_GUEST_CSUM
+//     | NET_FEATURE_GUEST_TSO4
+//     | NET_FEATURE_GUEST_UFO
+//     | NET_FEATURE_HOST_TSO4
+//     | NET_FEATURE_HOST_UFO;
 
 fn setup_vm(
     config: &Config,
@@ -815,6 +831,7 @@ fn setup_vm(
     }
 
     match net_mode {
+        #[cfg(not(feature = "vmnet"))]
         NetworkMode::GvProxy => {
             unsafe {
                 bindings::krun_set_gvproxy_path(
@@ -826,6 +843,7 @@ fn setup_vm(
             }
             .context("Failed to set gvproxy path")?;
         }
+        #[cfg(feature = "vmnet")]
         NetworkMode::VmNet => {
             unsafe {
                 bindings::krun_add_net_unixgram(
@@ -961,6 +979,7 @@ fn start_vmproxy(
     ]
     .into_iter()
     .chain(custom_mount_point.then_some("-c".into()).into_iter())
+    .chain(cfg!(feature = "vmnet").then_some("-n".into()).into_iter())
     .chain(["-t".into(), dev_info.fs_type().unwrap_or("auto").into()])
     .chain(
         assemble_raid
@@ -1217,6 +1236,7 @@ impl NfsStatus {
 }
 
 fn wait_for_nfs_server(
+    vm_host: &[u8],
     port: u16,
     nfs_notify_rx: mpsc::Receiver<NfsStatus>,
 ) -> anyhow::Result<NfsStatus> {
@@ -1225,8 +1245,8 @@ fn wait_for_nfs_server(
 
     if nfs_ready.ok() {
         // also check if the port is open
-        let addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, port);
-        match TcpStream::connect_timeout(&addr.into(), Duration::from_secs(10)) {
+        let addr = SocketAddr::from_str(&format!("{}:{}", vm_host.as_bstr(), port))?;
+        match TcpStream::connect_timeout(&addr, Duration::from_secs(10)) {
             Ok(_) => {
                 return Ok(nfs_ready);
             }
@@ -1241,6 +1261,7 @@ fn wait_for_nfs_server(
 }
 
 fn mount_nfs(
+    vm_host: &[u8],
     share_path: &[u8],
     config: &MountConfig,
     nfs_opts: &fsutil::NfsOptions,
@@ -1291,7 +1312,9 @@ fn mount_nfs(
     let shell_script = [
         b"mount -t nfs -o ",
         nfs_opts.to_list().as_slice(),
-        b" \"localhost:",
+        b" \"",
+        vm_host,
+        b":",
         share_path,
         b"\" \"",
         mount_point.as_bytes(),
@@ -1457,7 +1480,12 @@ fn validated_mount_point(rt_info: &api::RuntimeInfo) -> MountStatus<'_> {
             [b"/mnt/", share_name.as_slice()].concat().into()
         }
     };
-    let expected_mount_dev = [b"localhost:", expected_mount_point.as_slice()].concat();
+    let expected_mount_dev = [
+        rt_info.vm_host.as_slice(),
+        b":",
+        expected_mount_point.as_slice(),
+    ]
+    .concat();
     match fsutil::mounted_from(&mount_point) {
         Ok(mount_dev) if mount_dev == Path::from_bytes(&expected_mount_dev) => {
             MountStatus::Mounted(mount_point)
@@ -1780,6 +1808,13 @@ impl AppRunner {
             } else {
                 vec!["/start-shell.sh".into()]
             };
+
+            #[cfg(not(feature = "vmnet"))]
+            vm_image::setup_gvproxy(&config.common, || {
+                start_vm_forked(&ctx, &cmdline, &vm_env).context("Failed to start microVM shell")
+            })?;
+
+            #[cfg(feature = "vmnet")]
             vm_image::setup_vmnet_helper(&config.common, || {
                 start_vm_forked(&ctx, &cmdline, &vm_env).context("Failed to start microVM shell")
             })?;
@@ -2193,8 +2228,18 @@ impl AppRunner {
             can_detach = false;
         }
 
-        let mut gvproxy = vm_network::start_gvproxy(&config.common)?;
-        let gvproxy_pid = gvproxy.id() as libc::pid_t;
+        #[cfg(not(feature = "vmnet"))]
+        let mut net_helper = vm_network::start_gvproxy(&config.common)?;
+        #[cfg(feature = "vmnet")]
+        let (mut net_helper, _) = vm_network::start_vmnet_helper(&config.common)?;
+
+        let (net_helper_name, vm_host): (&str, &[u8]) = if cfg!(feature = "vmnet") {
+            ("vmnet-helper", b"192.168.127.2")
+        } else {
+            ("gvproxy", b"localhost")
+        };
+
+        let net_helper_pid = net_helper.id() as libc::pid_t;
         fsutil::wait_for_file(&config.common.unixgram_sock_path)?;
 
         _ = deferred.add({
@@ -2206,7 +2251,7 @@ impl AppRunner {
             }
         });
 
-        if let Some(status) = gvproxy.try_wait().ok().flatten() {
+        if let Some(status) = net_helper.try_wait().ok().flatten() {
             return Err(anyhow!(
                 "gvproxy failed with exit code: {}",
                 status
@@ -2217,7 +2262,7 @@ impl AppRunner {
         }
 
         _ = deferred.add(move || {
-            if let Err(e) = terminate_child(&mut gvproxy, "gvproxy") {
+            if let Err(e) = terminate_child(&mut net_helper, net_helper_name) {
                 host_eprintln!("{:#}", e);
             }
         });
@@ -2236,8 +2281,14 @@ impl AppRunner {
             // Child process
             deferred.remove_all(); // deferred actions must be only called in the parent process
 
-            let ctx = setup_vm(&config.common, &dev_info, NetworkMode::GvProxy, true, opts)
-                .context("Failed to setup microVM")?;
+            let ctx = setup_vm(
+                &config.common,
+                &dev_info,
+                NetworkMode::default_nfs_compatible(),
+                true,
+                opts,
+            )
+            .context("Failed to setup microVM")?;
 
             let to_decrypt: Vec<_> = iter::zip(dev_info.iter(), 'a'..='z')
                 .filter_map(|(di, letter)| {
@@ -2274,13 +2325,14 @@ impl AppRunner {
                 dev_info: mnt_dev_info.clone(),
                 session_pgid,
                 vmm_pid: child_pid,
-                gvproxy_pid,
+                net_helper_pid,
+                vm_host: vm_host.to_vec(),
                 mount_point: None,
             }));
 
             api::serve_info(rt_info.clone());
 
-            if service_status.rpcbind_running {
+            if cfg!(not(feature = "vmnet")) && service_status.rpcbind_running {
                 services_to_restore = rpcbind::services::list()?
                     .into_iter()
                     .filter(|entry| {
@@ -2540,7 +2592,7 @@ impl AppRunner {
             stdin_forwarder.echo_newline(false);
 
             let nfs_status =
-                wait_for_nfs_server(2049, nfs_ready_rx).unwrap_or(NfsStatus::Failed(None));
+                wait_for_nfs_server(vm_host, 2049, nfs_ready_rx).unwrap_or(NfsStatus::Failed(None));
 
             if let NfsStatus::Ready(NfsReadyState {
                 fslabel,
@@ -2599,7 +2651,7 @@ impl AppRunner {
                     None => (s.as_bytes().into(), b"".into()),
                 }));
 
-                let mount_result = mount_nfs(&share_path, &config, &nfs_opts);
+                let mount_result = mount_nfs(vm_host, &share_path, &config, &nfs_opts);
                 match &mount_result {
                     Ok(_) => host_println!("Requested NFS share mount"),
                     Err(e) => {
@@ -2614,7 +2666,7 @@ impl AppRunner {
                 };
 
                 let mount_point_opt = if mount_result.is_ok() {
-                    let nfs_path = PathBuf::from(format!("localhost:{}", share_path));
+                    let nfs_path = PathBuf::from(format!("{}:{}", vm_host.as_bstr(), share_path));
                     event_session.wait_for_mount(&nfs_path)
                 } else {
                     None
@@ -2658,6 +2710,7 @@ impl AppRunner {
                         host_println!("need to use sudo to mount additional NFS exports");
                     }
                     match fsutil::mount_nfs_subdirs(
+                        &vm_host,
                         &share_path,
                         additional_exports.into_iter(),
                         mount_point.display(),
@@ -3082,9 +3135,9 @@ impl AppRunner {
                     } else {
                         println!("Killing anylinuxfs processes...");
                     }
-                    if unsafe { libc::kill(rt_info.gvproxy_pid, libc::SIGTERM) } == 0 {
+                    if unsafe { libc::kill(rt_info.net_helper_pid, libc::SIGTERM) } == 0 {
                         // gvproxy could still terminate gracefully
-                        if wait_for_proc_exit(rt_info.gvproxy_pid).is_ok() {
+                        if wait_for_proc_exit(rt_info.net_helper_pid).is_ok() {
                             println!("gvproxy exited gracefully");
                         }
                     }

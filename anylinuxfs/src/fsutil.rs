@@ -202,6 +202,7 @@ mod dirtrie {
 }
 
 fn parallel_mount_recursive(
+    vm_host: &[u8],
     mnt_point_base: PathBuf,
     trie: &dirtrie::Node,
     nfs_opts: &BStr,
@@ -211,7 +212,9 @@ fn parallel_mount_recursive(
         let shell_script = [
             b"mount -t nfs -o ",
             nfs_opts.as_bytes(),
-            b" \"localhost:",
+            b" \"",
+            vm_host,
+            b":",
             nfs_path.as_bytes(),
             b"\" \"",
             mnt_point_base.join(rel_path).as_bytes(),
@@ -240,13 +243,14 @@ fn parallel_mount_recursive(
         );
     }
     trie.children.par_iter().try_for_each(|(_, child)| {
-        parallel_mount_recursive(mnt_point_base.clone(), child, nfs_opts, elevate)
+        parallel_mount_recursive(vm_host, mnt_point_base.clone(), child, nfs_opts, elevate)
     })?;
 
     Ok(())
 }
 
 pub fn mount_nfs_subdirs<'a>(
+    vm_host: &[u8],
     share_path_base: &[u8],
     subdirs: impl Iterator<Item = &'a str>,
     mnt_point_base: impl AsRef<Path>,
@@ -265,6 +269,7 @@ pub fn mount_nfs_subdirs<'a>(
     }
 
     parallel_mount_recursive(
+        vm_host,
         mnt_point_base.as_ref().into(),
         &trie,
         nfs_opts.to_list().as_bstr(),
