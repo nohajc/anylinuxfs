@@ -1,7 +1,7 @@
 use crate::{Config, ImageSource, fsutil, vm_network};
 use anyhow::{Context, anyhow};
 
-use common_utils::{Deferred, host_eprintln, host_println};
+use common_utils::{Deferred, host_eprintln};
 use std::{fs, path::Path, process::Command};
 
 #[cfg(feature = "freebsd")]
@@ -121,7 +121,7 @@ mod freebsd {
     };
     use anyhow::{Context, anyhow};
     use bstr::{BStr, BString};
-    use common_utils::{Deferred, PathExt, host_eprintln, host_println};
+    use common_utils::{Deferred, OSType, PathExt, host_eprintln, host_println};
     use serde::Serialize;
 
     pub const ENTRYPOINT_SCRIPT_URL: &str = "https://raw.githubusercontent.com/nohajc/docker-nfs-server/refs/heads/freebsd/entrypoint.sh";
@@ -398,7 +398,12 @@ mod freebsd {
         let setup_status = setup_gvproxy(&config, || {
             let devices = &[DevInfo::pv(vm_disk_image_path.as_bytes())?];
             let cmdline = &["/usr/local/bin/vm-setup.sh".into()];
-            start_freebsd_vm(&config, devices, cmdline, NetworkMode::GvProxy)
+            start_freebsd_vm(
+                &config,
+                devices,
+                cmdline,
+                NetworkMode::default_for_os(OSType::FreeBSD),
+            )
         })?;
         if setup_status != 0 {
             return Err(anyhow!(
@@ -518,7 +523,13 @@ mod freebsd {
         let opts = VMOpts::new()
             .root_device("cd9660:/dev/vtbd0")
             .legacy_console(true);
-        let ctx = setup_vm(&config, devices, NetworkMode::GvProxy, false, opts)?;
+        let ctx = setup_vm(
+            &config,
+            devices,
+            NetworkMode::default_for_os(OSType::FreeBSD),
+            false,
+            opts,
+        )?;
         let bstrap_status = start_vm_forked(&ctx, &["/freebsd-bootstrap".into()], &[])
             .context("Failed to start FreeBSD bootstrap VM")?;
 
@@ -667,14 +678,15 @@ fn rootfs_version_matches(root_ver_file_path: &Path, current_version: &str) -> b
     true
 }
 
+#[cfg(feature = "vmnet")]
 pub fn setup_vmnet_helper(
     config: &Config,
     start_vm_fn: impl FnOnce() -> anyhow::Result<i32>,
 ) -> anyhow::Result<i32> {
     let mut deferred = Deferred::new();
 
-    let (mut vmnet_helper, vmnet_config) = vm_network::start_vmnet_helper(&config)?;
-    host_println!("vmnet-helper started with config: {:?}", vmnet_config);
+    let (mut vmnet_helper, _vmnet_config) = vm_network::start_vmnet_helper(&config)?;
+    // host_println!("vmnet-helper started with config: {:?}", _vmnet_config);
     fsutil::wait_for_file(&config.unixgram_sock_path)?;
 
     _ = deferred.add(|| {

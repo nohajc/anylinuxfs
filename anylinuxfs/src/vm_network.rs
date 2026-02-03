@@ -1,18 +1,24 @@
 use std::{
     fs::{self, File},
-    io::{self, BufReader, Read, Write},
+    io::{self, Read, Write},
     os::unix::{fs::chown, net::UnixStream, process::CommandExt},
-    process::{Child, Command, Stdio},
+    process::{Child, Command},
     time::Duration,
 };
+
+#[cfg(feature = "vmnet")]
+use std::{io::BufReader, process::Stdio};
 
 use crate::settings::{Config, Preferences};
 use anyhow::{Context, anyhow};
 use common_utils::{OSType, VM_CTRL_PORT, VM_IP, host_println};
+#[cfg(feature = "vmnet")]
 use rand::prelude::*;
 use serde::Deserialize;
+#[cfg(feature = "vmnet")]
 use serde_json::Deserializer;
 
+#[cfg(feature = "vmnet")]
 pub fn random_mac_address() -> [u8; 6] {
     let mut rng = rand::rng();
     return [
@@ -64,6 +70,7 @@ pub struct VmnetConfig {
     pub vmnet_mac_address: String,
 }
 
+#[cfg(feature = "vmnet")]
 pub fn start_vmnet_helper(config: &Config) -> anyhow::Result<(Child, VmnetConfig)> {
     vfkit_sock_cleanup(&config.unixgram_sock_path)?;
 
@@ -91,6 +98,8 @@ pub fn start_vmnet_helper(config: &Config) -> anyhow::Result<(Child, VmnetConfig
         .args([
             // "--enable-tso",
             // "--enable-checksum-offload",
+            "--start-address=192.168.127.1",
+            "--end-address=192.168.127.254",
             "--operation-mode=shared",
         ])
         .stdout(Stdio::piped())
@@ -106,7 +115,7 @@ pub fn start_vmnet_helper(config: &Config) -> anyhow::Result<(Child, VmnetConfig
         .context("Failed to start vmnet-helper process")?;
 
     let child_out = BufReader::new(vmnet_helper_process.stdout.take().unwrap());
-    host_println!("Waiting for vmnet-helper to output config...");
+    // host_println!("Waiting for vmnet-helper to output config...");
     let mut config_de = Deserializer::from_reader(child_out);
     let vmnet_config =
         VmnetConfig::deserialize(&mut config_de).context("Failed to parse vmnet-helper config")?;
@@ -168,6 +177,7 @@ pub fn start_gvproxy(config: &Config) -> anyhow::Result<Child> {
     Ok(gvproxy_process)
 }
 
+// TODO: adjust for FreeBSD with vmnet-helper (normal TCP socket instead of the gvproxy tunnel)
 pub fn connect_to_vm_ctrl_socket(
     config: &Config,
     resp_timeout: Option<Duration>,
