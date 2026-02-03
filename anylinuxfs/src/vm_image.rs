@@ -1,7 +1,7 @@
 use crate::{Config, ImageSource, fsutil, vm_network};
 use anyhow::{Context, anyhow};
 
-use common_utils::{Deferred, host_eprintln};
+use common_utils::{Deferred, host_eprintln, host_println};
 use std::{fs, path::Path, process::Command};
 
 #[cfg(feature = "freebsd")]
@@ -667,6 +667,41 @@ fn rootfs_version_matches(root_ver_file_path: &Path, current_version: &str) -> b
     true
 }
 
+pub fn setup_vmnet_helper(
+    config: &Config,
+    start_vm_fn: impl FnOnce() -> anyhow::Result<i32>,
+) -> anyhow::Result<i32> {
+    let mut deferred = Deferred::new();
+
+    let (mut vmnet_helper, vmnet_config) = vm_network::start_vmnet_helper(&config)?;
+    host_println!("vmnet-helper started with config: {:?}", vmnet_config);
+    fsutil::wait_for_file(&config.unixgram_sock_path)?;
+
+    _ = deferred.add(|| {
+        if let Err(e) = vm_network::vfkit_sock_cleanup(&config.unixgram_sock_path) {
+            host_eprintln!("{:#}", e);
+        }
+    });
+
+    if let Some(status) = vmnet_helper.try_wait().ok().flatten() {
+        return Err(anyhow!(
+            "vmnet-helper failed with exit code: {}",
+            status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or("unknown".to_owned())
+        ));
+    }
+
+    _ = deferred.add(move || {
+        if let Err(e) = common_utils::terminate_child(&mut vmnet_helper, "vmnet-helper", None) {
+            host_eprintln!("{:#}", e);
+        }
+    });
+
+    start_vm_fn()
+}
+
 pub fn setup_gvproxy(
     config: &Config,
     start_vm_fn: impl FnOnce() -> anyhow::Result<i32>,
@@ -674,10 +709,10 @@ pub fn setup_gvproxy(
     let mut deferred = Deferred::new();
 
     let mut gvproxy = vm_network::start_gvproxy(&config)?;
-    fsutil::wait_for_file(&config.vfkit_sock_path)?;
+    fsutil::wait_for_file(&config.unixgram_sock_path)?;
 
     _ = deferred.add(|| {
-        if let Err(e) = vm_network::gvproxy_cleanup(&config.vfkit_sock_path) {
+        if let Err(e) = vm_network::vfkit_sock_cleanup(&config.unixgram_sock_path) {
             host_eprintln!("{:#}", e);
         }
     });
