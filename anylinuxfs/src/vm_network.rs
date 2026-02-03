@@ -88,6 +88,11 @@ pub fn start_vmnet_helper(config: &Config) -> anyhow::Result<(Child, VmnetConfig
     vmnet_helper_cmd
         .arg("--socket")
         .arg(&config.unixgram_sock_path)
+        .args([
+            // "--enable-tso",
+            // "--enable-checksum-offload",
+            "--operation-mode=shared",
+        ])
         .stdout(Stdio::piped())
         .stderr(vmnet_helper_err);
 

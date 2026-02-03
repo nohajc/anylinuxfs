@@ -833,7 +833,7 @@ fn setup_vm(
                     CString::from_path(&config.unixgram_sock_path).as_ptr(),
                     -1,
                     vm_network::random_mac_address().as_ptr(),
-                    COMPAT_NET_FEATURES,
+                    0, // COMPAT_NET_FEATURES,
                     0,
                 )
             }
