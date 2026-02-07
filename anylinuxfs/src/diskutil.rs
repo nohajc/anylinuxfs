@@ -273,9 +273,10 @@ fn augment_line(line: &str, part_type: &str, dev_info: Option<&DevInfo>, fs_type
     // - part_type must be replaced with fs_type in any case
     // - label might already be there (for fs_types supported by macOS)
     let part_type_width = cmp::max(27, part_type.len());
+    let width_diff = part_type_width - 27;
     line.replace(
         &format!("{part_type:>part_type_width$}"),
-        &format!("{fs_type:>part_type_width$}"),
+        &format!("{fs_type:>27}{:<width_diff$}", ""),
     )
     .replace(
         &format!("{:>27} {:<23}", fs_type, ""),
