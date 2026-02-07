@@ -645,6 +645,7 @@ pub struct MountConfig {
     pub allow_remount: bool,
     pub custom_mount_point: Option<PathBuf>,
     pub fs_driver: Option<String>,
+    pub assemble_raid: bool,
     pub bind_addr: IpAddr,
     pub verbose: bool,
     pub open_finder: bool,

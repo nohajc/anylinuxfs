@@ -630,6 +630,9 @@ fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
         None
     };
 
+    // this is set dynamically later
+    let assemble_raid = false;
+
     Ok(MountConfig {
         disk_path,
         read_only,
@@ -638,6 +641,7 @@ fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
         allow_remount,
         custom_mount_point,
         fs_driver,
+        assemble_raid,
         bind_addr,
         verbose,
         open_finder,
@@ -887,6 +891,7 @@ fn start_vmproxy(
     };
 
     let custom_mount_point = config.custom_mount_point.is_some();
+    let assemble_raid = config.assemble_raid;
 
     let args: Vec<_> = [
         vmproxy,
@@ -898,6 +903,11 @@ fn start_vmproxy(
     .into_iter()
     .chain(custom_mount_point.then_some("-c".into()).into_iter())
     .chain(["-t".into(), dev_info.fs_type().unwrap_or("auto").into()])
+    .chain(
+        assemble_raid
+            .then_some("--assemble-raid".into())
+            .into_iter(),
+    )
     .chain(
         config
             .fs_driver
@@ -1452,6 +1462,10 @@ fn claim_devices(config: &mut MountConfig) -> anyhow::Result<(Vec<DevInfo>, DevI
                 FlockKind::Exclusive
             })?;
 
+            if dev_info.fs_type() == Some("linux_raid_member") {
+                config.assemble_raid = true;
+            }
+
             print_dev_info(&dev_info, DevType::PV);
 
             dev_infos.push(dev_info);
@@ -1470,6 +1484,7 @@ fn claim_devices(config: &mut MountConfig) -> anyhow::Result<(Vec<DevInfo>, DevI
         }
 
         let vm_path = "/dev/md127";
+        config.assemble_raid = true;
 
         for (_, &di) in disk_ident.iter().skip(1).enumerate() {
             let pv_path = format!("/dev/{}", di);

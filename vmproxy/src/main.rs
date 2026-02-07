@@ -54,6 +54,8 @@ struct Cli {
     mount_options: Option<String>,
     #[arg(short, long)]
     decrypt: Option<String>,
+    #[arg(long)]
+    assemble_raid: bool,
     #[arg(short, long)]
     action: Option<String>,
     #[arg(short, long, default_value = LOCALHOST)]
@@ -523,6 +525,7 @@ fn run() -> anyhow::Result<()> {
     let mut disk_path = cli.disk_path;
     let mut fs_type = cli.fs_type;
     let fs_driver = cli.fs_driver;
+    let assemble_raid = cli.assemble_raid;
     let mount_options = cli.mount_options;
     let verbose = cli.verbose;
 
@@ -609,7 +612,7 @@ fn run() -> anyhow::Result<()> {
     }
 
     // activate RAID volumes if any
-    let is_raid = disk_path.starts_with("/dev/md");
+    let is_raid = assemble_raid || disk_path.starts_with("/dev/md");
     if is_raid {
         let _mdadm_assemble_result = Command::new("/sbin/mdadm")
             .arg("--assemble")
