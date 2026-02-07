@@ -275,7 +275,7 @@ fn augment_line(line: &str, part_type: &str, dev_info: Option<&DevInfo>, fs_type
     let part_type_width = cmp::max(27, part_type.len());
     line.replace(
         &format!("{part_type:>part_type_width$}"),
-        &format!("{:>27}", fs_type),
+        &format!("{fs_type:>part_type_width$}"),
     )
     .replace(
         &format!("{:>27} {:<23}", fs_type, ""),
