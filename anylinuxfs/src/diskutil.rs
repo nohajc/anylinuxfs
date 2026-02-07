@@ -189,6 +189,7 @@ str_array!(
         "Linux_RAID",
         "Linux",
         "ZFS",
+        "CA7D7CCB-63ED-4C53-861C-1742536059CC", // LUKS partition
         "516E7CBA-6ECF-11D6-8FF8-00022D09712B", // FreeBSD ZFS
     ]
 );
