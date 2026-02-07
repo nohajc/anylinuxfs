@@ -13,6 +13,7 @@ use objc2_disk_arbitration::{
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::{
+    cmp,
     ffi::{CString, c_void},
     fmt::Display,
     hash::{Hash, Hasher},
@@ -271,11 +272,15 @@ fn augment_line(line: &str, part_type: &str, dev_info: Option<&DevInfo>, fs_type
     // replace in two steps
     // - part_type must be replaced with fs_type in any case
     // - label might already be there (for fs_types supported by macOS)
-    line.replace(&format!("{:>27}", part_type), &format!("{:>27}", fs_type))
-        .replace(
-            &format!("{:>27} {:<23}", fs_type, ""),
-            &format!("{:>27} {:<23}", fs_type, label),
-        )
+    let part_type_width = cmp::max(27, part_type.len());
+    line.replace(
+        &format!("{part_type:>part_type_width$}"),
+        &format!("{:>27}", fs_type),
+    )
+    .replace(
+        &format!("{:>27} {:<23}", fs_type, ""),
+        &format!("{:>27} {:<23}", fs_type, label),
+    )
 }
 
 fn lv_size_split_val_and_units(size: &str) -> (&str, String) {
