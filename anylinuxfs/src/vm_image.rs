@@ -18,7 +18,7 @@ mod alpine {
         process::{Command, Stdio},
     };
 
-    pub const ROOTFS_CURRENT_VERSION: &str = "1.2.1";
+    pub const ROOTFS_CURRENT_VERSION: &str = include_str!("../../share/alpine/rootfs.ver");
 
     pub fn init_rootfs(config: &Config, force: bool) -> anyhow::Result<()> {
         if !force {
@@ -130,7 +130,7 @@ mod freebsd {
     pub const INIT_EXEC: &str = "init-freebsd";
     pub const VMPROXY_EXEC: &str = "vmproxy-bsd";
 
-    pub const ROOTFS_CURRENT_VERSION: &str = "1.0.0";
+    pub const ROOTFS_CURRENT_VERSION: &str = include_str!("../../share/freebsd/rootfs.ver");
 
     pub const VM_DISK_IMAGE: &str = "freebsd-microvm-disk.img";
 
