@@ -324,7 +324,7 @@ You can also run `anylinuxfs init` to download a fresh copy of `alpine:latest` a
 ```
 # build dependencies
 brew install go rustup   # Skip if not relevant. You need Go and Rust toolchains but not necessarily installed via homebrew
-brew install lld pkgconf # These are for cross-compiling the Linux helper running in the VM
+brew install lld llvm pkgconf # These are for cross-compiling the Linux helper running in the VM
 
 # if you just installed rustup from homebrew
 rustup default stable
