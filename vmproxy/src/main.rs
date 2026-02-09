@@ -58,6 +58,8 @@ struct Cli {
     assemble_raid: bool,
     #[arg(short, long)]
     action: Option<String>,
+    #[arg(long = "nfs-export-args")]
+    nfs_export_args: Option<String>,
     #[arg(short, long, default_value = LOCALHOST)]
     bind_addr: String,
     #[arg(short, long)]
@@ -404,14 +406,24 @@ fn statfs(path: impl AsRef<Path>) -> io::Result<libc::statfs> {
     Ok(buf)
 }
 
-fn export_args_for_path(_path: &str, export_mode: &str, _fsid: usize) -> anyhow::Result<String> {
+fn export_args_for_path(_path: &str, export_mode: &str, _fsid: usize, export_args_override: Option<&str>,) -> anyhow::Result<String> {
     #[cfg(target_os = "linux")]
-    let mut export_args = format!("{export_mode},no_subtree_check,no_root_squash,insecure");
+    let mut export_args = if let Some(override_args) = export_args_override {
+        override_args.to_owned()
+    } else {
+        format!(
+            "{export_mode},no_subtree_check,no_root_squash,insecure"
+        )
+    };
     #[cfg(target_os = "freebsd")]
-    let export_args = format!(
-        "{}-maproot=root",
-        if export_mode == "ro" { "-ro " } else { "" }
-    );
+    let export_args = if let Some(override_args) = export_args_override {
+        override_args.to_owned()
+    } else {
+        format!(
+            "{}-maproot=root",
+            if export_mode == "ro" { "-ro " } else { "" }
+        )
+    };
 
     #[cfg(target_os = "linux")]
     if statfs(_path)
@@ -420,7 +432,9 @@ fn export_args_for_path(_path: &str, export_mode: &str, _fsid: usize) -> anyhow:
         == 0x65735546
     {
         // exporting FUSE requires fsid
-        export_args += &format!(",fsid={}", _fsid)
+        if !export_args.contains("fsid=") {
+            export_args += &format!(",fsid={}", _fsid)
+        }
     }
     Ok(export_args)
 }
@@ -520,6 +534,7 @@ fn run() -> anyhow::Result<()> {
     let nfs_export_override = custom_action_cfg
         .as_ref()
         .map(|cfg| cfg.override_nfs_export().to_owned());
+    let export_args_override = cli.nfs_export_args.as_deref();
     let mut custom_action = CustomActionRunner::new(custom_action_cfg);
 
     let mut disk_path = cli.disk_path;
@@ -951,13 +966,13 @@ fn run() -> anyhow::Result<()> {
 
         let mut exports = vec![];
         for (i, p) in paths.into_iter().enumerate() {
-            let a = export_args_for_path(&p, export_mode, i)?;
+            let a = export_args_for_path(&p, export_mode, i, export_args_override)?;
             exports.push((p, a));
         }
         exports
     } else {
         // single export
-        let export_args = export_args_for_path(&export_path, export_mode, 0)?;
+        let export_args = export_args_for_path(&export_path, export_mode, 0, export_args_override)?;
         vec![(export_path, export_args)]
     };
     let mut exports_content = String::new();
