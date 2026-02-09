@@ -642,6 +642,7 @@ pub struct MountConfig {
     pub read_only: bool,
     pub mount_options: Option<String>,
     pub nfs_options: Vec<String>,
+    pub nfs_export_args: Option<String>,
     pub allow_remount: bool,
     pub custom_mount_point: Option<PathBuf>,
     pub fs_driver: Option<String>,
