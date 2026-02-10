@@ -625,7 +625,8 @@ fn run() -> anyhow::Result<()> {
             .trim()
             .to_owned();
 
-        if !md_path.is_empty() {
+        if !md_path.is_empty() && !disk_path.starts_with("/dev/mapper") {
+            // set disk_path to the real /dev/md* path unless it was already set to a /dev/mapper path (LVM on RAID)
             disk_path = md_path;
         }
     }
