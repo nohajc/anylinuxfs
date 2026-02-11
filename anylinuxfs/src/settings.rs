@@ -510,7 +510,7 @@ impl KrunConfig {
     }
 
     fn default_ram_size() -> u32 {
-        1152
+        512
     }
 
     fn merge_with(&self, other: &KrunConfig) -> KrunConfig {

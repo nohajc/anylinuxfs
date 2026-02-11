@@ -29,7 +29,7 @@ error setup_and_start_vm(const char *kernel_path, const char *root_path,
     return krun_error(ctx, "configuration context error");
   }
 
-  int res = krun_set_vm_config(ctx, 1, 1152);
+  int res = krun_set_vm_config(ctx, 1, 512);
   if (is_error(res)) {
     return krun_error(res, "vm configuration error");
   }
