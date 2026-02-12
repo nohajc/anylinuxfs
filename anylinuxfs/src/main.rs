@@ -221,9 +221,10 @@ struct MountCmd {
     /// NFS options passed to the macOS mount command (comma-separated)
     #[arg(short, long, value_delimiter = ',', num_args = 1..)]
     nfs_options: Option<Vec<String>>,
-    /// Override NFS export args passed to vmproxy (Linux VM)
-    #[arg(long = "nfs-export-args")]
-    nfs_export_args: Option<String>,
+    /// Override **ALL** NFS export options for the mounted drive (/etc/exports in the VM).
+    /// Defaults to "{rw/ro},no_subtree_check,no_root_squash,insecure" when not specified
+    #[arg(long = "nfs-export-opts")]
+    nfs_export_opts: Option<String>,
     /// Allow remount: proceed even if the disk is already mounted by macOS (NTFS, exFAT)
     #[arg(short, long)]
     remount: bool,
@@ -339,7 +340,7 @@ impl From<ShellCmd> for MountCmd {
             mount_point: None,
             options: None,
             nfs_options: None,
-            nfs_export_args: None,
+            nfs_export_opts: None,
             remount: shell_cmd.remount,
             action: None,
             fs_driver: None,
@@ -580,7 +581,7 @@ fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
     let mount_options = cmd.options;
 
     let nfs_options = cmd.nfs_options.unwrap_or_default();
-    let nfs_export_args = cmd.nfs_export_args;
+    let nfs_export_opts = cmd.nfs_export_opts;
 
     let allow_remount = cmd.remount;
     let custom_mount_point = match cmd.mount_point {
@@ -643,7 +644,7 @@ fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
         read_only,
         mount_options,
         nfs_options,
-        nfs_export_args,
+        nfs_export_opts,
         allow_remount,
         custom_mount_point,
         fs_driver,
@@ -945,10 +946,10 @@ fn start_vmproxy(
     }))
     .chain(
         config
-            .nfs_export_args
+            .nfs_export_opts
             .as_deref()
             .into_iter()
-            .flat_map(|args| ["--nfs-export-args".into(), args.into()]),
+            .flat_map(|opts| ["--nfs-export-opts".into(), opts.into()]),
     )
     .chain(multi_device.then_some("-m".into()).into_iter())
     .chain(reuse_passphrase.then_some("-r".into()).into_iter())
