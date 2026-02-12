@@ -58,8 +58,8 @@ struct Cli {
     assemble_raid: bool,
     #[arg(short, long)]
     action: Option<String>,
-    #[arg(long = "nfs-export-args")]
-    nfs_export_args: Option<String>,
+    #[arg(long = "nfs-export-opts")]
+    nfs_export_opts: Option<String>,
     #[arg(short, long, default_value = LOCALHOST)]
     bind_addr: String,
     #[arg(short, long)]
@@ -534,7 +534,7 @@ fn run() -> anyhow::Result<()> {
     let nfs_export_override = custom_action_cfg
         .as_ref()
         .map(|cfg| cfg.override_nfs_export().to_owned());
-    let export_args_override = cli.nfs_export_args.as_deref();
+    let export_args_override = cli.nfs_export_opts.as_deref();
     let mut custom_action = CustomActionRunner::new(custom_action_cfg);
 
     let mut disk_path = cli.disk_path;
