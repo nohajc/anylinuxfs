@@ -221,8 +221,9 @@ struct MountCmd {
     /// NFS options passed to the macOS mount command (comma-separated)
     #[arg(short, long, value_delimiter = ',', num_args = 1..)]
     nfs_options: Option<Vec<String>>,
-    /// Override **ALL** NFS export options for the mounted drive (/etc/exports in the VM).
-    /// Defaults to "{rw/ro},no_subtree_check,no_root_squash,insecure" when not specified
+    /// Override **ALL** NFS export options for the mounted drive (/etc/exports in the VM),
+    /// defaults to "{rw/ro},no_subtree_check,no_root_squash,insecure" when not specified
+    #[clap(verbatim_doc_comment)]
     #[arg(long = "nfs-export-opts")]
     nfs_export_opts: Option<String>,
     /// Allow remount: proceed even if the disk is already mounted by macOS (NTFS, exFAT)
