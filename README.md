@@ -64,10 +64,10 @@ Most often, you will probably use the following commands:
 
 From `anylinuxfs mount --help`:
 ```
-Usage: anylinuxfs [mount] [OPTIONS] <DISK_IDENT> [MOUNT_POINT]
+Usage: anylinuxfs [mount] [OPTIONS] [DISK_IDENT] [MOUNT_POINT]
 
 Arguments:
-  <DISK_IDENT>   File path(s), LVM identifier or RAID identifier, e.g.:
+  [DISK_IDENT]   File path(s), LVM identifier or RAID identifier, e.g.:
                  /dev/diskXsY[:/dev/diskYsZ:...]
                  lvm:<vg-name>:diskXsY[:diskYsZ:...]:<lv-name>
                  raid:diskXsY[:diskYsZ:...]
@@ -75,7 +75,7 @@ Arguments:
   [MOUNT_POINT]  Custom mount path to override the default under /Volumes
 ```
 
-* The only required parameter is the disk identifier.
+* The only argument you usually have to provide is the disk identifier (unless you use a "diskless" custom action).
 * It must always refer to one or more partitions or logical volumes (not whole disks).
 * Basic syntax of an identifier is `/dev/diskXsY` - based on how `anylinuxfs list` or `diskutil list` identifies your drives.
 * If your filesystem is on a logical volume, you will usually need a special prefixed identifier starting with `lvm` or `raid` (for mdadm Linux RAID).
@@ -221,6 +221,8 @@ anylinuxfs stop
 With custom actions, you're able to define sets of scripts which will run inside the virtual machine at specific points.
 Currently supported actions: `before_mount`, `after_mount`, `before_unmount` (typically to do cleanup).
 You can also override the path inside the virtual machine which gets shared with macOS via NFS. This is useful for mounting nested filesystems (from disk images, etc.).
+
+The path override even makes it possible to run a mount action without any device identifier. We call that a diskless custom action - let's say your script connects to a remote server and mounts a disk image from there for example.
 
 Your custom actions can also depend on additional packages not included in the base Linux installation by default. `anylinuxfs` exposes the Alpine package manager for that purpose. That means it can maintain a list of extra packages installed by the user and reinstall them again when you reinit your Linux image (or when reinit is forced by `anylinuxfs` upgrade).
 
