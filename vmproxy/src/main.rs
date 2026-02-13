@@ -11,7 +11,7 @@ use common_utils::{
 #[cfg(target_os = "linux")]
 use libc::VMADDR_CID_ANY;
 use serde::Serialize;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 #[cfg(target_os = "linux")]
 use std::ffi::CString;
 use std::ffi::OsStr;
@@ -81,6 +81,7 @@ struct PortDef<'a> {
 }
 
 const LOCALHOST: &str = "127.0.0.1";
+const LOCALHOST_V6: &str = "[::1]";
 
 fn expose_port(client: &reqwest::blocking::Client, port_def: &PortDef) -> anyhow::Result<()> {
     client
@@ -118,10 +119,8 @@ fn init_network(bind_addr: &str, host_rpcbind: bool, has_native_ip: bool) -> any
         .status()
         .context("Failed to configure network interface")?;
 
-    let mut bind_addr_list = vec![bind_addr];
-    if bind_addr != LOCALHOST {
-        bind_addr_list.push(LOCALHOST);
-    }
+    let mut bind_addr_set = HashSet::from([LOCALHOST, LOCALHOST_V6]);
+    bind_addr_set.insert(bind_addr);
 
     let client = reqwest::blocking::Client::new();
 
@@ -136,7 +135,7 @@ fn init_network(bind_addr: &str, host_rpcbind: bool, has_native_ip: bool) -> any
             )?;
         }
 
-        for addr in bind_addr_list {
+        for addr in bind_addr_set {
             expose_port(
                 &client,
                 &PortDef {
@@ -410,14 +409,17 @@ fn statfs(path: impl AsRef<Path>) -> io::Result<libc::statfs> {
     Ok(buf)
 }
 
-fn export_args_for_path(_path: &str, export_mode: &str, _fsid: usize, export_args_override: Option<&str>,) -> anyhow::Result<String> {
+fn export_args_for_path(
+    _path: &str,
+    export_mode: &str,
+    _fsid: usize,
+    export_args_override: Option<&str>,
+) -> anyhow::Result<String> {
     #[cfg(target_os = "linux")]
     let mut export_args = if let Some(override_args) = export_args_override {
         override_args.to_owned()
     } else {
-        format!(
-            "{export_mode},no_subtree_check,no_root_squash,insecure"
-        )
+        format!("{export_mode},no_subtree_check,no_root_squash,insecure")
     };
     #[cfg(target_os = "freebsd")]
     let export_args = if let Some(override_args) = export_args_override {

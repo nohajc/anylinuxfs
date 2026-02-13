@@ -17,13 +17,12 @@ use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{Ipv4Addr, SocketAddr, TcpStream};
+use std::net::{Ipv4Addr, TcpStream, ToSocketAddrs};
 use std::os::fd::{FromRawFd, IntoRawFd};
 use std::os::unix::fs::chown;
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 use std::ptr::null;
-use std::str::FromStr;
 use std::time::Duration;
 use std::{
     env,
@@ -1245,7 +1244,12 @@ fn wait_for_nfs_server(
 
     if nfs_ready.ok() {
         // also check if the port is open
-        let addr = SocketAddr::from_str(&format!("{}:{}", vm_host.as_bstr(), port))?;
+        let addr = format!("{}:{}", vm_host.as_bstr(), port)
+            .to_socket_addrs()?
+            .next()
+            .context("Failed to resolve VM host address")?;
+        host_println!("Checking NFS server on {:?}...", addr);
+
         match TcpStream::connect_timeout(&addr, Duration::from_secs(10)) {
             Ok(_) => {
                 return Ok(nfs_ready);
@@ -2591,8 +2595,11 @@ impl AppRunner {
             }
             stdin_forwarder.echo_newline(false);
 
-            let nfs_status =
-                wait_for_nfs_server(vm_host, 2049, nfs_ready_rx).unwrap_or(NfsStatus::Failed(None));
+            let nfs_status = wait_for_nfs_server(vm_host, 2049, nfs_ready_rx)
+                .inspect_err(|e| {
+                    host_eprintln!("Error waiting for NFS server: {:#}", e);
+                })
+                .unwrap_or(NfsStatus::Failed(None));
 
             if let NfsStatus::Ready(NfsReadyState {
                 fslabel,
