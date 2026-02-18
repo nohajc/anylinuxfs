@@ -9,7 +9,7 @@ pub const KERNEL_IMAGE: &str = "kernel/kernel.bin";
 
 mod alpine {
     use super::*;
-    use crate::{Config, dnsutil, fsutil, utils};
+    use crate::{Config, fsutil, netutil, utils};
     use anyhow::{Context, anyhow};
     use common_utils::{host_eprintln, host_println};
     use std::{
@@ -70,7 +70,7 @@ mod alpine {
             init_rootfs_cmd.uid(uid).gid(gid);
         }
 
-        let dns_server = dnsutil::get_dns_server_with_fallback();
+        let dns_server = netutil::get_dns_server_with_fallback();
 
         let mut hnd = init_rootfs_cmd
             .stdin(Stdio::piped())

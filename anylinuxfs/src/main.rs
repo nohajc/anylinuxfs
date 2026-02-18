@@ -51,8 +51,8 @@ mod api;
 mod bindings;
 mod devinfo;
 mod diskutil;
-mod dnsutil;
 mod fsutil;
+mod netutil;
 mod pubsub;
 mod rpcbind;
 mod settings;
@@ -1797,7 +1797,7 @@ impl AppRunner {
         .context("Failed to setup microVM")?;
 
         if os == OSType::Linux {
-            let dns_server = dnsutil::get_dns_server_with_fallback();
+            let dns_server = netutil::get_dns_server_with_fallback();
             let vm_prelude = format!("echo nameserver {} > /etc/resolv.conf", dns_server);
             let mut cmdline: Vec<BString> = vec!["/bin/bash".into(), "-c".into()];
             if let Some(command) = cmd.command {
@@ -1859,7 +1859,7 @@ impl AppRunner {
         let alpine_packages = config.preferences.alpine_custom_packages();
         let default_packages = get_default_packages();
 
-        let dns_server = dnsutil::get_dns_server_with_fallback();
+        let dns_server = netutil::get_dns_server_with_fallback();
         let vm_prelude = format!("echo nameserver {} > /etc/resolv.conf", dns_server);
         let apk_command = match cmd {
             ApkCmd::Info => {
