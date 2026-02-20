@@ -1,6 +1,13 @@
-use std::{borrow::Cow, net::IpAddr, ptr::null_mut};
+use std::{
+    borrow::Cow,
+    cmp,
+    net::{IpAddr, Ipv4Addr},
+    ptr::null_mut,
+};
 
 use anyhow::Context;
+use getifaddrs::{InterfaceFilter, InterfaceFlags};
+use ipnet::Ipv4Net;
 use objc2_core_foundation::{CFArray, CFDictionary, CFString};
 use objc2_system_configuration::SCDynamicStore;
 
@@ -42,4 +49,176 @@ pub fn get_dns_server_with_fallback<'a>() -> Cow<'a, str> {
     get_configured_dns_server()
         .map(Cow::from)
         .unwrap_or_else(|_| DEFAULT_DNS_SERVER.into())
+}
+
+pub fn get_interface_networks() -> anyhow::Result<Vec<Ipv4Net>> {
+    let mut networks = Vec::new();
+    for iface in InterfaceFilter::new().v4().get()? {
+        if iface.flags.contains(InterfaceFlags::LOOPBACK) {
+            continue;
+        }
+        if let Some(ip) = iface.address.ip_addr() {
+            let IpAddr::V4(ip) = ip else {
+                return Err(anyhow::anyhow!("unexpected non-IPv4 address: {}", ip));
+            };
+
+            let netmask = iface.address.netmask().unwrap();
+            let IpAddr::V4(netmask) = netmask else {
+                return Err(anyhow::anyhow!("unexpected non-IPv4 netmask: {}", netmask));
+            };
+
+            let net = Ipv4Net::with_netmask(ip, netmask)?.trunc();
+            networks.push(net);
+        }
+    }
+
+    Ok(networks)
+}
+
+pub fn pick_available_network(
+    prefix_len: u8,
+    used_networks: &[Ipv4Net],
+) -> anyhow::Result<Ipv4Net> {
+    if prefix_len <= 12 {
+        return Err(anyhow::anyhow!(
+            "invalid prefix length: {}, must be greater than 12",
+            prefix_len
+        ));
+    }
+    let candidate_base = Ipv4Net::new(Ipv4Addr::new(172, 27, 1, 0), prefix_len)?;
+    let mut search_prefix_len = prefix_len - 1;
+    let mut candidate = candidate_base;
+
+    loop {
+        let mut conflicting = Vec::new();
+        for net in used_networks {
+            if candidate.contains(net) || net.contains(&candidate) {
+                conflicting.push(*net);
+            }
+        }
+        if conflicting.is_empty() {
+            break;
+        }
+
+        conflicting.push(candidate);
+        let aggregated = Ipv4Net::aggregate(&conflicting)[0];
+
+        search_prefix_len = cmp::min(search_prefix_len, aggregated.prefix_len() - 1);
+        let mut supernet = Ipv4Net::new(aggregated.network(), search_prefix_len)?;
+        // println!("current supernet: {}", supernet);
+        loop {
+            let siblings = supernet.subnets(aggregated.prefix_len()).unwrap();
+            if let Some(next_candidate) = siblings
+                .skip_while(|it| it <= &candidate)
+                .next()
+                .or(siblings.take_while(|it| it < &candidate).next())
+            {
+                candidate = Ipv4Net::new(next_candidate.network(), prefix_len)?;
+                // println!("next candidate: {}", candidate);
+                if candidate == candidate_base {
+                    if supernet.prefix_len() > 12 {
+                        // broaden the search space
+                        supernet = supernet.supernet().unwrap();
+                        search_prefix_len = supernet.prefix_len();
+                        // println!("broadened search space to: {}", supernet);
+                    } else {
+                        return Err(anyhow::anyhow!("exhausted candidate IP ranges for VMs"));
+                    }
+                } else {
+                    break;
+                }
+            } else {
+                return Err(anyhow::anyhow!("failed to autoconfigure IP range for VMs"));
+            }
+        }
+    }
+
+    Ok(candidate)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_aggregation() {
+        let nets = vec![
+            "172.27.1.0/26".parse::<Ipv4Net>().unwrap(),
+            "172.27.1.64/26".parse().unwrap(),
+            "172.27.1.128/26".parse().unwrap(),
+            "172.27.1.0/24".parse().unwrap(),
+        ];
+
+        assert_eq!(
+            Ipv4Net::aggregate(&nets),
+            vec!["172.27.1.0/24".parse::<Ipv4Net>().unwrap(),]
+        );
+    }
+
+    #[test]
+    fn test_pick_available_network_no_conflicts() {
+        let result = pick_available_network(24, &[]).unwrap();
+        assert_eq!(result, "172.27.1.0/24".parse::<Ipv4Net>().unwrap());
+    }
+
+    #[test]
+    fn test_pick_available_network_avoids_exact_conflict() {
+        let used = vec!["172.27.1.0/24".parse::<Ipv4Net>().unwrap()];
+        let result = pick_available_network(24, &used).unwrap();
+        assert_eq!(result, "172.27.0.0/24".parse::<Ipv4Net>().unwrap());
+    }
+
+    #[test]
+    fn test_pick_available_network_avoids_multiple_conflicts() {
+        let used = vec![
+            "172.27.0.0/24".parse::<Ipv4Net>().unwrap(),
+            "172.27.1.0/24".parse().unwrap(),
+        ];
+        let result = pick_available_network(24, &used).unwrap();
+        assert_eq!(result, "172.27.2.0/24".parse::<Ipv4Net>().unwrap());
+    }
+
+    #[test]
+    fn test_pick_available_network_avoids_multiple_conflicts_extended() {
+        let used = vec![
+            "172.27.0.0/24".parse::<Ipv4Net>().unwrap(),
+            "172.27.1.0/24".parse().unwrap(),
+            "172.27.2.0/24".parse().unwrap(),
+            "172.27.3.0/24".parse().unwrap(),
+        ];
+        let result = pick_available_network(24, &used).unwrap();
+        assert_eq!(result, "172.27.4.0/24".parse::<Ipv4Net>().unwrap());
+    }
+
+    #[test]
+    fn test_pick_available_network_avoids_supernet_conflict() {
+        // A broader network that covers the default candidate
+        let used = vec![
+            "172.27.0.0/16".parse::<Ipv4Net>().unwrap(),
+            "172.26.0.0/24".parse().unwrap(),
+        ];
+        let result = pick_available_network(24, &used).unwrap();
+        assert_eq!(result, "172.26.1.0/24".parse::<Ipv4Net>().unwrap());
+    }
+
+    #[test]
+    fn test_pick_available_network_avoids_subnet_conflict() {
+        // A smaller subnet within the default candidate range
+        let used = vec!["172.27.1.128/26".parse::<Ipv4Net>().unwrap()];
+        let result = pick_available_network(24, &used).unwrap();
+        assert_eq!(result, "172.27.0.0/24".parse::<Ipv4Net>().unwrap());
+    }
+
+    #[test]
+    fn test_pick_available_network_different_prefix_len() {
+        let result = pick_available_network(26, &[]).unwrap();
+        assert_eq!(result, "172.27.1.0/26".parse::<Ipv4Net>().unwrap());
+    }
+
+    #[test]
+    fn test_pick_available_network_short_prefix_len() {
+        let used = vec!["172.27.1.128/26".parse::<Ipv4Net>().unwrap()];
+        let result = pick_available_network(16, &used).unwrap();
+        assert_eq!(result, "172.26.0.0/16".parse::<Ipv4Net>().unwrap());
+    }
 }

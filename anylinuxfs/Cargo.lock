@@ -86,9 +86,11 @@ dependencies = [
  "common_utils",
  "crossterm",
  "derive_more",
+ "getifaddrs",
  "homedir",
  "if-addrs",
  "indexmap 2.13.0",
+ "ipnet",
  "libblkid-rs",
  "libc",
  "nanoid",
@@ -523,6 +525,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "getifaddrs"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "06f770241660efeeedb30b48ccbe0a8e6f649322148237539e71f3ccd14a4461"
+dependencies = [
+ "bitflags 2.10.0",
+ "libc",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
 name = "getrandom"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -771,6 +784,12 @@ checksum = "e05c02b5e89bff3b946cedeca278abc628fe811e604f027c45a8aa3cf793d0eb"
 dependencies = [
  "libc",
 ]
+
+[[package]]
+name = "ipnet"
+version = "2.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "469fb0b9cefa57e3ef31275ee7cacb78f2fdca44e4765491884a2b119d4eb130"
 
 [[package]]
 name = "is_terminal_polyfill"
