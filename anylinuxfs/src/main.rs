@@ -332,6 +332,9 @@ struct ShellCmd {
     /// Linux kernel page size
     #[arg(long)]
     kernel_page_size: Option<KernelPage>,
+    /// Use virtio-net instead of TSI for Linux shell
+    #[arg(long)]
+    no_tsi: bool,
 }
 
 impl From<ShellCmd> for MountCmd {
@@ -748,12 +751,12 @@ impl NetworkMode {
     }
 
     #[cfg(not(feature = "vmnet"))]
-    fn default_nfs_compatible() -> Self {
+    fn default_virtio_net() -> Self {
         NetworkMode::GvProxy
     }
 
     #[cfg(feature = "vmnet")]
-    fn default_nfs_compatible() -> Self {
+    fn default_virtio_net() -> Self {
         NetworkMode::VmNet
     }
 }
@@ -1787,14 +1790,12 @@ impl AppRunner {
                 .cloned()
                 .collect();
         }
-        let ctx = setup_vm(
-            &config.common,
-            &dev_info,
-            NetworkMode::default_for_os(os),
-            false,
-            opts,
-        )
-        .context("Failed to setup microVM")?;
+        let net_mode = match cmd.no_tsi {
+            true => NetworkMode::default_virtio_net(),
+            false => NetworkMode::default_for_os(os),
+        };
+        let ctx = setup_vm(&config.common, &dev_info, net_mode, false, opts)
+            .context("Failed to setup microVM")?;
 
         if os == OSType::Linux {
             let dns_server = netutil::get_dns_server_with_fallback();
@@ -1805,7 +1806,14 @@ impl AppRunner {
             } else {
                 cmdline.push((vm_prelude + " && /bin/bash -l").into());
             }
-            start_vm(&ctx, &cmdline, &vm_env).context("Failed to start microVM shell")?;
+            if cmd.no_tsi {
+                vm_image::setup_net_helper(&config.common, || {
+                    start_vm_forked(&ctx, &cmdline, &vm_env)
+                        .context("Failed to start microVM shell")
+                })?;
+            } else {
+                start_vm(&ctx, &cmdline, &vm_env).context("Failed to start microVM shell")?;
+            }
         } else {
             let cmdline: Vec<BString> = if let Some(command) = cmd.command {
                 vec!["/bin/sh".into(), "-c".into(), command.into()]
@@ -1813,13 +1821,7 @@ impl AppRunner {
                 vec!["/start-shell.sh".into()]
             };
 
-            #[cfg(not(feature = "vmnet"))]
-            vm_image::setup_gvproxy(&config.common, || {
-                start_vm_forked(&ctx, &cmdline, &vm_env).context("Failed to start microVM shell")
-            })?;
-
-            #[cfg(feature = "vmnet")]
-            vm_image::setup_vmnet_helper(&config.common, || {
+            vm_image::setup_net_helper(&config.common, || {
                 start_vm_forked(&ctx, &cmdline, &vm_env).context("Failed to start microVM shell")
             })?;
         }
@@ -2288,7 +2290,7 @@ impl AppRunner {
             let ctx = setup_vm(
                 &config.common,
                 &dev_info,
-                NetworkMode::default_nfs_compatible(),
+                NetworkMode::default_virtio_net(),
                 true,
                 opts,
             )

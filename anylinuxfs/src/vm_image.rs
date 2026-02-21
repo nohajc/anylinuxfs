@@ -678,6 +678,20 @@ fn rootfs_version_matches(root_ver_file_path: &Path, current_version: &str) -> b
     true
 }
 
+pub fn setup_net_helper(
+    config: &Config,
+    start_vm_fn: impl FnOnce() -> anyhow::Result<i32>,
+) -> anyhow::Result<i32> {
+    #[cfg(feature = "vmnet")]
+    {
+        setup_vmnet_helper(config, start_vm_fn)
+    }
+    #[cfg(not(feature = "vmnet"))]
+    {
+        setup_gvproxy(config, start_vm_fn)
+    }
+}
+
 #[cfg(feature = "vmnet")]
 pub fn setup_vmnet_helper(
     config: &Config,
