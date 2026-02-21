@@ -46,4 +46,3 @@ ipnet = "2.11.0"
 [features]
 default = ["freebsd"]
 freebsd = []
-vmnet = []

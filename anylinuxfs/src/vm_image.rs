@@ -1,7 +1,7 @@
 use crate::{Config, ImageSource, fsutil, vm_network};
 use anyhow::{Context, anyhow};
 
-use common_utils::{Deferred, host_eprintln};
+use common_utils::{Deferred, NetHelper, host_eprintln};
 use std::{fs, path::Path, process::Command};
 
 #[cfg(feature = "freebsd")]
@@ -121,7 +121,7 @@ mod freebsd {
     };
     use anyhow::{Context, anyhow};
     use bstr::{BStr, BString};
-    use common_utils::{Deferred, OSType, PathExt, host_eprintln, host_println};
+    use common_utils::{Deferred, NetHelper, OSType, PathExt, host_eprintln, host_println};
     use serde::Serialize;
 
     pub const ENTRYPOINT_SCRIPT_URL: &str = "https://raw.githubusercontent.com/nohajc/docker-nfs-server/refs/heads/freebsd/entrypoint.sh";
@@ -402,7 +402,7 @@ mod freebsd {
                 &config,
                 devices,
                 cmdline,
-                NetworkMode::default_for_os(OSType::FreeBSD),
+                NetworkMode::default_for_os(OSType::FreeBSD, NetHelper::GvProxy),
             )
         })?;
         if setup_status != 0 {
@@ -526,7 +526,7 @@ mod freebsd {
         let ctx = setup_vm(
             &config,
             devices,
-            NetworkMode::default_for_os(OSType::FreeBSD),
+            NetworkMode::default_for_os(OSType::FreeBSD, NetHelper::GvProxy),
             false,
             opts,
         )?;
@@ -682,17 +682,12 @@ pub fn setup_net_helper(
     config: &Config,
     start_vm_fn: impl FnOnce() -> anyhow::Result<i32>,
 ) -> anyhow::Result<i32> {
-    #[cfg(feature = "vmnet")]
-    {
-        setup_vmnet_helper(config, start_vm_fn)
-    }
-    #[cfg(not(feature = "vmnet"))]
-    {
-        setup_gvproxy(config, start_vm_fn)
+    match config.net_helper {
+        NetHelper::GvProxy => setup_gvproxy(config, start_vm_fn),
+        NetHelper::VmNet => setup_vmnet_helper(config, start_vm_fn),
     }
 }
 
-#[cfg(feature = "vmnet")]
 pub fn setup_vmnet_helper(
     config: &Config,
     start_vm_fn: impl FnOnce() -> anyhow::Result<i32>,

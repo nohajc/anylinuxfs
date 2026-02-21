@@ -26,4 +26,3 @@ vsock = "0.5.1"
 [features]
 default = ["freebsd"]
 freebsd = []
-vmnet = []

@@ -6,19 +6,15 @@ use std::{
     time::Duration,
 };
 
-#[cfg(feature = "vmnet")]
 use std::{io::BufReader, process::Stdio};
 
 use crate::settings::{Config, Preferences};
 use anyhow::{Context, anyhow};
 use common_utils::{OSType, VM_CTRL_PORT, VM_IP, host_println};
-#[cfg(feature = "vmnet")]
 use rand::prelude::*;
 use serde::Deserialize;
-#[cfg(feature = "vmnet")]
 use serde_json::Deserializer;
 
-#[cfg(feature = "vmnet")]
 pub fn random_mac_address() -> [u8; 6] {
     let mut rng = rand::rng();
     return [
@@ -70,7 +66,6 @@ pub struct VmnetConfig {
     pub vmnet_mac_address: String,
 }
 
-#[cfg(feature = "vmnet")]
 pub fn start_vmnet_helper(config: &Config) -> anyhow::Result<(Child, VmnetConfig)> {
     vfkit_sock_cleanup(&config.unixgram_sock_path)?;
 

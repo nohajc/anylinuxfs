@@ -3,7 +3,10 @@ use bstr::{BStr, BString, ByteSlice};
 use clap::ValueEnum;
 use percent_encoding::{NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
 use serde::{Deserialize, Serialize};
-use std::{ffi::CString, io, os::unix::ffi::OsStrExt, path::Path, process::Child, time::Duration};
+use std::{
+    ffi::CString, fmt::Display, io, os::unix::ffi::OsStrExt, path::Path, process::Child,
+    time::Duration,
+};
 use wait_timeout::ChildExt;
 
 pub mod ipc;
@@ -130,6 +133,28 @@ pub enum OSType {
     Linux,
     #[clap(name = "freebsd")]
     FreeBSD,
+}
+
+#[derive(
+    Clone, Copy, ValueEnum, Debug, PartialEq, Eq, PartialOrd, Ord, Default, Deserialize, Serialize,
+)]
+pub enum NetHelper {
+    #[clap(name = "gvproxy")]
+    #[serde(rename = "gvproxy")]
+    #[default]
+    GvProxy,
+    #[clap(name = "vmnet")]
+    #[serde(rename = "vmnet")]
+    VmNet,
+}
+
+impl Display for NetHelper {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NetHelper::GvProxy => write!(f, "gvproxy"),
+            NetHelper::VmNet => write!(f, "vmnet"),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

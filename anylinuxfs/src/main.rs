@@ -2,8 +2,8 @@ use anyhow::{Context, anyhow};
 use bstr::{BString, ByteSlice, ByteVec};
 use clap::{ArgGroup, Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use common_utils::{
-    Deferred, FromPath, OSType, PathExt, host_eprintln, host_println, ipc, log, safe_print,
-    safe_println, vmctrl,
+    Deferred, FromPath, NetHelper, OSType, PathExt, host_eprintln, host_println, ipc, log,
+    safe_print, safe_println, vmctrl,
 };
 
 use devinfo::DevInfo;
@@ -196,6 +196,8 @@ struct CommonArgs {
     #[cfg(feature = "freebsd")]
     #[arg(long)]
     zfs_os: Option<OSType>,
+    #[arg(long)]
+    net_helper: Option<NetHelper>,
 }
 
 #[derive(Args, Clone)]
@@ -545,6 +547,10 @@ fn load_config(common_args: &CommonArgs) -> anyhow::Result<Config> {
     #[cfg(feature = "freebsd")]
     let zfs_os = common_args.zfs_os.unwrap_or(preferences.zfs_os());
 
+    let net_helper = common_args
+        .net_helper
+        .unwrap_or(preferences.network_helper());
+
     let kernel = KernelConfig {
         os: OSType::Linux,
         path: kernel_path,
@@ -576,6 +582,7 @@ fn load_config(common_args: &CommonArgs) -> anyhow::Result<Config> {
         passphrase_config,
         #[cfg(feature = "freebsd")]
         zfs_os,
+        net_helper,
         preferences,
     })
 }
@@ -733,31 +740,26 @@ struct VMContext {
 
 enum NetworkMode {
     Default,
-    #[cfg(not(feature = "vmnet"))]
     GvProxy,
-    #[cfg(feature = "vmnet")]
     VmNet,
 }
 
 impl NetworkMode {
-    fn default_for_os(os: OSType) -> Self {
+    fn default_for_os(os: OSType, net_helper: NetHelper) -> Self {
         match os {
-            #[cfg(not(feature = "vmnet"))]
-            OSType::FreeBSD => NetworkMode::GvProxy,
-            #[cfg(feature = "vmnet")]
-            OSType::FreeBSD => NetworkMode::VmNet,
+            OSType::FreeBSD => match net_helper {
+                NetHelper::GvProxy => NetworkMode::GvProxy,
+                NetHelper::VmNet => NetworkMode::VmNet,
+            },
             OSType::Linux => NetworkMode::Default,
         }
     }
 
-    #[cfg(not(feature = "vmnet"))]
-    fn default_virtio_net() -> Self {
-        NetworkMode::GvProxy
-    }
-
-    #[cfg(feature = "vmnet")]
-    fn default_virtio_net() -> Self {
-        NetworkMode::VmNet
+    fn default_virtio_net(net_helper: NetHelper) -> Self {
+        match net_helper {
+            NetHelper::GvProxy => NetworkMode::GvProxy,
+            NetHelper::VmNet => NetworkMode::VmNet,
+        }
     }
 }
 
@@ -833,7 +835,6 @@ fn setup_vm(
     }
 
     match net_mode {
-        #[cfg(not(feature = "vmnet"))]
         NetworkMode::GvProxy => {
             unsafe {
                 bindings::krun_set_gvproxy_path(
@@ -845,7 +846,6 @@ fn setup_vm(
             }
             .context("Failed to set gvproxy path")?;
         }
-        #[cfg(feature = "vmnet")]
         NetworkMode::VmNet => {
             unsafe {
                 bindings::krun_add_net_unixgram(
@@ -972,6 +972,8 @@ fn start_vmproxy(
     let custom_mount_point = config.custom_mount_point.is_some();
     let assemble_raid = config.assemble_raid;
 
+    let vmnet_helper_used = config.common.net_helper == NetHelper::VmNet;
+
     let args: Vec<_> = [
         vmproxy,
         dev_info.vm_path().into(),
@@ -981,7 +983,7 @@ fn start_vmproxy(
     ]
     .into_iter()
     .chain(custom_mount_point.then_some("-c".into()).into_iter())
-    .chain(cfg!(feature = "vmnet").then_some("-n".into()).into_iter())
+    .chain(vmnet_helper_used.then_some("-n".into()).into_iter())
     .chain(["-t".into(), dev_info.fs_type().unwrap_or("auto").into()])
     .chain(
         assemble_raid
@@ -1791,8 +1793,8 @@ impl AppRunner {
                 .collect();
         }
         let net_mode = match cmd.no_tsi {
-            true => NetworkMode::default_virtio_net(),
-            false => NetworkMode::default_for_os(os),
+            true => NetworkMode::default_virtio_net(config.common.net_helper),
+            false => NetworkMode::default_for_os(os, config.common.net_helper),
         };
         let ctx = setup_vm(&config.common, &dev_info, net_mode, false, opts)
             .context("Failed to setup microVM")?;
@@ -2234,12 +2236,14 @@ impl AppRunner {
             can_detach = false;
         }
 
-        #[cfg(not(feature = "vmnet"))]
-        let mut net_helper = vm_network::start_gvproxy(&config.common)?;
-        #[cfg(feature = "vmnet")]
-        let (mut net_helper, _) = vm_network::start_vmnet_helper(&config.common)?;
+        let mut net_helper;
+        match config.common.net_helper {
+            NetHelper::GvProxy => net_helper = vm_network::start_gvproxy(&config.common)?,
+            NetHelper::VmNet => (net_helper, _) = vm_network::start_vmnet_helper(&config.common)?,
+        }
 
-        let (net_helper_name, vm_host): (&str, &[u8]) = if cfg!(feature = "vmnet") {
+        let vmnet_helper_used = config.common.net_helper == NetHelper::VmNet;
+        let (net_helper_name, vm_host): (&str, &[u8]) = if vmnet_helper_used {
             ("vmnet-helper", b"192.168.127.2")
         } else {
             ("gvproxy", b"localhost")
@@ -2290,7 +2294,7 @@ impl AppRunner {
             let ctx = setup_vm(
                 &config.common,
                 &dev_info,
-                NetworkMode::default_virtio_net(),
+                NetworkMode::default_virtio_net(config.common.net_helper),
                 true,
                 opts,
             )
@@ -2338,7 +2342,7 @@ impl AppRunner {
 
             api::serve_info(rt_info.clone());
 
-            if cfg!(not(feature = "vmnet")) && service_status.rpcbind_running {
+            if config.common.net_helper == NetHelper::GvProxy && service_status.rpcbind_running {
                 services_to_restore = rpcbind::services::list()?
                     .into_iter()
                     .filter(|entry| {
@@ -2917,6 +2921,11 @@ impl AppRunner {
         #[cfg(feature = "freebsd")]
         if let Some(zfs_os) = cmd.common.zfs_os {
             misc_config.zfs_os = Some(zfs_os);
+        }
+
+        let network_config = &mut config.preferences.user_mut().network;
+        if let Some(net_helper) = cmd.common.net_helper {
+            network_config.helper = Some(net_helper);
         }
 
         println!("{}", &config.preferences.merged());

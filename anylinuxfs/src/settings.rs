@@ -12,7 +12,7 @@ use std::{
 use anyhow::{Context, anyhow};
 use bstr::{BString, ByteSlice, ByteVec};
 use clap::ValueEnum;
-use common_utils::{CustomActionConfig, CustomActionConfigOld, OSType};
+use common_utils::{CustomActionConfig, CustomActionConfigOld, NetHelper, OSType};
 use serde::{Deserialize, Serialize};
 use toml_edit::{Document, DocumentMut, Item};
 
@@ -54,6 +54,7 @@ pub struct Config {
     pub passphrase_config: PassphrasePromptConfig,
     #[cfg(feature = "freebsd")]
     pub zfs_os: OSType,
+    pub net_helper: NetHelper,
     pub preferences: [PrefsObject; 2],
 }
 
@@ -86,6 +87,8 @@ pub trait Preferences {
     #[cfg(feature = "freebsd")]
     fn zfs_os(&self) -> OSType;
 
+    fn network_helper(&self) -> NetHelper;
+
     fn user<'a>(&'a self) -> &'a PrefsObject;
     fn user_mut<'a>(&'a mut self) -> &'a mut PrefsObject;
     // fn global<'a>(&'a self) -> &'a PrefsObject;
@@ -108,6 +111,8 @@ pub struct PrefsObject {
     pub krun: KrunConfig,
     #[serde(default)]
     pub misc: MiscConfig,
+    #[serde(default)]
+    pub network: NetworkConfig,
     #[serde(default)]
     pub linux: OSConfig,
     #[serde(default)]
@@ -205,6 +210,14 @@ impl Preferences for [PrefsObject; 2] {
             .unwrap_or_default()
     }
 
+    fn network_helper(&self) -> NetHelper {
+        self[1]
+            .network
+            .helper
+            .or(self[0].network.helper)
+            .unwrap_or_default()
+    }
+
     fn user<'a>(&'a self) -> &'a PrefsObject {
         &self[1]
     }
@@ -242,6 +255,7 @@ impl PrefsObject {
             gvproxy: self.gvproxy.merge_with(&other.gvproxy),
             krun: self.krun.merge_with(&other.krun),
             misc: self.misc.merge_with(&other.misc),
+            network: self.network.merge_with(&other.network),
             linux: self.linux.merge_with(&other.linux),
             freebsd: self.freebsd.merge_with(&other.freebsd),
             log_level_numeric: other.log_level_numeric.or(self.log_level_numeric),
@@ -255,6 +269,7 @@ impl Display for PrefsObject {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "[krun]\n{}", self.krun)?;
         write!(f, "\n\n[misc]\n{}", self.misc)?;
+        write!(f, "\n\n[network]\n{}", self.network)?;
         Ok(())
     }
 }
@@ -306,6 +321,7 @@ impl From<PrefsObjectOld> for PrefsObject {
             gvproxy: value.gvproxy,
             krun: value.krun,
             misc: value.misc,
+            network: NetworkConfig::default(),
             linux: OSConfig::default(),
             freebsd: OSConfig::default(),
             log_level_numeric: value.log_level_numeric,
@@ -613,6 +629,25 @@ impl Display for MiscConfig {
             self.passphrase_config(),
             self.zfs_os.unwrap_or_default()
         )
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct NetworkConfig {
+    pub helper: Option<NetHelper>,
+}
+
+impl NetworkConfig {
+    fn merge_with(&self, other: &NetworkConfig) -> NetworkConfig {
+        NetworkConfig {
+            helper: other.helper.or(self.helper),
+        }
+    }
+}
+
+impl Display for NetworkConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "helper = {}", self.helper.unwrap_or_default())
     }
 }
 

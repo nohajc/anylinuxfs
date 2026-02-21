@@ -16,10 +16,6 @@ cd "$SCRIPT_DIR"
 
 FEATURES="freebsd"
 
-if [[ "$VMNET" == "1" ]]; then
-    FEATURES="$FEATURES,vmnet"
-fi
-
 FEATURE_ARG=""
 if [ -n "$FEATURES" ]; then
     FEATURE_ARG="-F $FEATURES"
