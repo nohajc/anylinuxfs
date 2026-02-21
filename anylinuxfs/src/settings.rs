@@ -42,7 +42,7 @@ pub struct Config {
     pub kernel: KernelConfig,
     pub gvproxy_net_sock_path: String,
     pub gvproxy_path: PathBuf,
-    pub gvproxy_log_path: PathBuf,
+    pub nethelper_log_path: PathBuf,
     pub vmnet_helper_path: PathBuf,
     pub vmproxy_host_path: PathBuf,
     pub vsock_path: String,

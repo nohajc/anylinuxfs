@@ -519,7 +519,7 @@ fn load_config(common_args: &CommonArgs) -> anyhow::Result<Config> {
     let log_dir = home_dir.join("Library").join("Logs");
     let log_file_path = log_dir.join("anylinuxfs.log");
     let kernel_log_file_path = log_dir.join("anylinuxfs_kernel.log");
-    let gvproxy_log_path = log_dir.join("gvproxy.log");
+    let nethelper_log_path = log_dir.join("anylinuxfs_nethelper.log");
 
     let libexec_path = prefix_dir.join("libexec");
     let init_rootfs_path = libexec_path.join("init-rootfs").to_owned();
@@ -572,7 +572,7 @@ fn load_config(common_args: &CommonArgs) -> anyhow::Result<Config> {
         kernel,
         gvproxy_net_sock_path,
         gvproxy_path,
-        gvproxy_log_path,
+        nethelper_log_path,
         vmnet_helper_path,
         vmproxy_host_path,
         vsock_path,

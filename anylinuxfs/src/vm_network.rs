@@ -86,19 +86,18 @@ pub fn start_vmnet_helper(config: &Config) -> anyhow::Result<(Child, VmnetConfig
 
     let mut vmnet_helper_cmd = Command::new(&config.vmnet_helper_path);
 
-    // TODO: change to vmnet_helper_log_path
-    let vmnet_helper_err =
-        File::create(&config.gvproxy_log_path).context("Failed to create vmnet-helper.log file")?;
+    let vmnet_helper_err = File::create(&config.nethelper_log_path)
+        .context("Failed to create vmnet-helper.log file")?;
 
     chown(
-        &config.gvproxy_log_path,
+        &config.nethelper_log_path,
         Some(config.invoker_uid),
         Some(config.invoker_gid),
     )
     .with_context(|| {
         format!(
             "Failed to change owner of {}",
-            config.gvproxy_log_path.display()
+            config.nethelper_log_path.display()
         )
     })?;
 
@@ -160,19 +159,19 @@ pub fn start_gvproxy(config: &Config) -> anyhow::Result<Child> {
     let mut gvproxy_cmd = Command::new(&config.gvproxy_path);
 
     let gvproxy_out =
-        File::create(&config.gvproxy_log_path).context("Failed to create gvproxy.log file")?;
+        File::create(&config.nethelper_log_path).context("Failed to create nethelper log file")?;
     let gvproxy_err =
-        File::try_clone(&gvproxy_out).context("Failed to clone gvproxy.log file handle")?;
+        File::try_clone(&gvproxy_out).context("Failed to clone nethelper log file handle")?;
 
     chown(
-        &config.gvproxy_log_path,
+        &config.nethelper_log_path,
         Some(config.invoker_uid),
         Some(config.invoker_gid),
     )
     .with_context(|| {
         format!(
             "Failed to change owner of {}",
-            config.gvproxy_log_path.display()
+            config.nethelper_log_path.display()
         )
     })?;
 
