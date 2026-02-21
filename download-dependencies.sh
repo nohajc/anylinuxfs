@@ -13,7 +13,7 @@ MODULES_ARCHIVE_URL="${RELEASE_URL}/${MODULES_ARCHIVE_NAME}"
 INIT_BSD="init-freebsd"
 INIT_BSD_URL="https://github.com/nohajc/libkrun/releases/download/v1.17.0-init-bsd/${INIT_BSD}"
 
-GVPROXY_VERSION="0.8.7"
+GVPROXY_VERSION="0.8.8"
 GVPROXY_URL="https://github.com/containers/gvisor-tap-vsock/releases/download/v${GVPROXY_VERSION}/gvproxy-darwin"
 
 VMNET_HELPER_VERSION="0.9.0"
