@@ -16,6 +16,7 @@ pub mod vmctrl;
 pub const VM_GATEWAY_IP: &str = "192.168.127.1";
 pub const VM_IP: &str = "192.168.127.2";
 pub const VM_CTRL_PORT: u16 = 7350;
+pub const VMNET_PREFIX_LEN: u8 = 30;
 
 pub fn path_safe_label_name(name: &str) -> Option<String> {
     let name_subst = name.replace("/", "-").replace(" ", "_").replace(":", "_");

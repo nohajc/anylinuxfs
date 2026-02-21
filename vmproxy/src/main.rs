@@ -8,6 +8,7 @@ use common_utils::VM_CTRL_PORT;
 use common_utils::{
     CustomActionConfig, Deferred, VM_GATEWAY_IP, VM_IP, ipc, path_safe_label_name, vmctrl,
 };
+use ipnet::Ipv4Net;
 #[cfg(target_os = "linux")]
 use libc::VMADDR_CID_ANY;
 use serde::Serialize;
@@ -69,7 +70,7 @@ struct Cli {
     #[arg(short, long)]
     host_rpcbind: bool,
     #[arg(short, long)]
-    native_ip: bool,
+    native_network: Option<Ipv4Net>,
     #[arg(short, long)]
     verbose: bool,
 }
@@ -94,22 +95,42 @@ fn expose_port(client: &reqwest::blocking::Client, port_def: &PortDef) -> anyhow
     Ok(())
 }
 
-fn init_network(bind_addr: &str, host_rpcbind: bool, has_native_ip: bool) -> anyhow::Result<()> {
+fn init_network(
+    bind_addr: &str,
+    host_rpcbind: bool,
+    native_network: Option<Ipv4Net>,
+) -> anyhow::Result<()> {
     // resolv.conf is already initialized and always the same on FreeBSD
     #[cfg(target_os = "linux")]
     fs::write("/etc/resolv.conf", format!("nameserver {VM_GATEWAY_IP}\n"))
         .context("Failed to write /etc/resolv.conf")?;
 
+    let vm_gateway_ip = native_network
+        .map(|net| net.hosts().next())
+        .flatten()
+        .unwrap_or(
+            VM_GATEWAY_IP
+                .parse()
+                .context("Failed to parse VM_GATEWAY_IP")?,
+        );
+
+    let vm_ip = native_network
+        .map(|net| net.hosts().nth(1))
+        .flatten()
+        .unwrap_or(VM_IP.parse().context("Failed to parse VM_IP")?);
+
+    let net_prefix_len = native_network.map(|net| net.prefix_len()).unwrap_or(24);
+
     #[cfg(target_os = "linux")]
     let script = format!(
-        "ip addr add {VM_IP}/24 dev eth0 \
+        "ip addr add {vm_ip}/{net_prefix_len} dev eth0 \
             && ip link set eth0 up \
-            && ip route add default via {VM_GATEWAY_IP} dev eth0",
+            && ip route add default via {vm_gateway_ip} dev eth0",
     );
     #[cfg(target_os = "freebsd")]
     let script = format!(
-        "ifconfig vtnet0 inet {VM_IP}/24 \
-            && route add default {VM_GATEWAY_IP} \
+        "ifconfig vtnet0 inet {vm_ip}/{net_prefix_len} \
+            && route add default {vm_gateway_ip} \
             && ifconfig lo0 up",
     );
 
@@ -124,7 +145,7 @@ fn init_network(bind_addr: &str, host_rpcbind: bool, has_native_ip: bool) -> any
 
     let client = reqwest::blocking::Client::new();
 
-    if !has_native_ip {
+    if native_network.is_none() {
         if !host_rpcbind {
             expose_port(
                 &client,
@@ -488,7 +509,7 @@ fn run() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
-    init_network(&cli.bind_addr, cli.host_rpcbind, cli.native_ip)
+    init_network(&cli.bind_addr, cli.host_rpcbind, cli.native_network)
         .context("Failed to initialize network")?;
 
     #[cfg(target_os = "linux")]

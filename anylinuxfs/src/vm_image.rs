@@ -402,7 +402,7 @@ mod freebsd {
                 &config,
                 devices,
                 cmdline,
-                NetworkMode::default_for_os(OSType::FreeBSD, NetHelper::GvProxy),
+                NetworkMode::default_for_os(OSType::FreeBSD, NetHelper::GvProxy, None),
             )
         })?;
         if setup_status != 0 {
@@ -526,7 +526,7 @@ mod freebsd {
         let ctx = setup_vm(
             &config,
             devices,
-            NetworkMode::default_for_os(OSType::FreeBSD, NetHelper::GvProxy),
+            NetworkMode::default_for_os(OSType::FreeBSD, NetHelper::GvProxy, None),
             false,
             opts,
         )?;

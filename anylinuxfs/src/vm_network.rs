@@ -8,9 +8,13 @@ use std::{
 
 use std::{io::BufReader, process::Stdio};
 
-use crate::settings::{Config, Preferences};
+use crate::{
+    netutil,
+    settings::{Config, Preferences},
+};
 use anyhow::{Context, anyhow};
-use common_utils::{OSType, VM_CTRL_PORT, VM_IP, host_println};
+use common_utils::{OSType, VM_CTRL_PORT, VM_IP, VMNET_PREFIX_LEN, host_println};
+use ipnet::Ipv4Net;
 use rand::prelude::*;
 use serde::Deserialize;
 use serde_json::Deserializer;
@@ -53,7 +57,7 @@ pub fn vsock_cleanup(vsock_path: &str) -> anyhow::Result<()> {
 
 #[allow(unused)]
 #[derive(Debug, Deserialize)]
-pub struct VmnetConfig {
+pub struct VmnetConfigJson {
     pub vmnet_write_max_packets: u32,
     pub vmnet_read_max_packets: u32,
     pub vmnet_subnet_mask: String,
@@ -66,8 +70,19 @@ pub struct VmnetConfig {
     pub vmnet_mac_address: String,
 }
 
+pub struct VmnetConfig {
+    pub _helper_output: VmnetConfigJson,
+    pub vmnet_cidr: Ipv4Net,
+}
+
 pub fn start_vmnet_helper(config: &Config) -> anyhow::Result<(Child, VmnetConfig)> {
     vfkit_sock_cleanup(&config.unixgram_sock_path)?;
+
+    let known_networks =
+        netutil::get_interface_networks().context("Failed to get interface networks")?;
+
+    let vmnet_cidr = netutil::pick_available_network(VMNET_PREFIX_LEN, &known_networks)
+        .context("Failed to find available network for vmnet-helper")?;
 
     let mut vmnet_helper_cmd = Command::new(&config.vmnet_helper_path);
 
@@ -93,8 +108,9 @@ pub fn start_vmnet_helper(config: &Config) -> anyhow::Result<(Child, VmnetConfig
         .args([
             // "--enable-tso",
             // "--enable-checksum-offload",
-            "--start-address=192.168.127.1",
-            "--end-address=192.168.127.254",
+            &format!("--start-address={}", vmnet_cidr.hosts().next().unwrap()),
+            &format!("--end-address={}", vmnet_cidr.hosts().last().unwrap()),
+            &format!("--subnet-mask={}", vmnet_cidr.netmask()),
             "--operation-mode=shared",
         ])
         .stdout(Stdio::piped())
@@ -112,8 +128,13 @@ pub fn start_vmnet_helper(config: &Config) -> anyhow::Result<(Child, VmnetConfig
     let child_out = BufReader::new(vmnet_helper_process.stdout.take().unwrap());
     // host_println!("Waiting for vmnet-helper to output config...");
     let mut config_de = Deserializer::from_reader(child_out);
-    let vmnet_config =
-        VmnetConfig::deserialize(&mut config_de).context("Failed to parse vmnet-helper config")?;
+    let _helper_output = VmnetConfigJson::deserialize(&mut config_de)
+        .context("Failed to parse vmnet-helper config")?;
+
+    let vmnet_config = VmnetConfig {
+        _helper_output,
+        vmnet_cidr,
+    };
 
     Ok((vmnet_helper_process, vmnet_config))
 }

@@ -1175,6 +1175,7 @@ dependencies = [
  "bstr",
  "clap",
  "common_utils",
+ "ipnet",
  "libc",
  "procfs",
  "reqwest",

@@ -221,4 +221,17 @@ mod tests {
         let result = pick_available_network(16, &used).unwrap();
         assert_eq!(result, "172.26.0.0/16".parse::<Ipv4Net>().unwrap());
     }
+
+    #[test]
+    fn test_pick_available_network_long_prefix_len() {
+        let used = vec![
+            "172.27.1.0/30".parse::<Ipv4Net>().unwrap(),
+            "172.27.1.4/30".parse().unwrap(),
+            "172.27.1.8/30".parse().unwrap(),
+            "172.27.1.12/30".parse().unwrap(),
+            "172.27.1.16/30".parse().unwrap(),
+        ];
+        let result = pick_available_network(30, &used).unwrap();
+        assert_eq!(result, "172.27.1.20/30".parse::<Ipv4Net>().unwrap());
+    }
 }

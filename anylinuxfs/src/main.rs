@@ -2,11 +2,12 @@ use anyhow::{Context, anyhow};
 use bstr::{BString, ByteSlice, ByteVec};
 use clap::{ArgGroup, Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use common_utils::{
-    Deferred, FromPath, NetHelper, OSType, PathExt, host_eprintln, host_println, ipc, log,
+    Deferred, FromPath, NetHelper, OSType, PathExt, VM_IP, host_eprintln, host_println, ipc, log,
     safe_print, safe_println, vmctrl,
 };
 
 use devinfo::DevInfo;
+use ipnet::Ipv4Net;
 use nanoid::nanoid;
 use serde::Serialize;
 use serde_with::{DisplayFromStr, serde_as};
@@ -45,6 +46,7 @@ use crate::settings::{
     MountConfig, PassphrasePromptConfig, Preferences,
 };
 use crate::vm_image::IsoAdd;
+use crate::vm_network::VmnetConfig;
 
 mod api;
 #[allow(unused)]
@@ -736,29 +738,30 @@ struct VMContext {
     root_path: Option<PathBuf>,
     invoker_uid: libc::uid_t,
     invoker_gid: libc::gid_t,
+    vmnet_cidr: Option<Ipv4Net>,
 }
 
 enum NetworkMode {
     Default,
     GvProxy,
-    VmNet,
+    VmNet(Option<Ipv4Net>),
 }
 
 impl NetworkMode {
-    fn default_for_os(os: OSType, net_helper: NetHelper) -> Self {
+    fn default_for_os(os: OSType, net_helper: NetHelper, cfg: Option<VmnetConfig>) -> Self {
         match os {
             OSType::FreeBSD => match net_helper {
                 NetHelper::GvProxy => NetworkMode::GvProxy,
-                NetHelper::VmNet => NetworkMode::VmNet,
+                NetHelper::VmNet => NetworkMode::VmNet(cfg.map(|c| c.vmnet_cidr)),
             },
             OSType::Linux => NetworkMode::Default,
         }
     }
 
-    fn default_virtio_net(net_helper: NetHelper) -> Self {
+    fn default_virtio_net(net_helper: NetHelper, cfg: Option<VmnetConfig>) -> Self {
         match net_helper {
             NetHelper::GvProxy => NetworkMode::GvProxy,
-            NetHelper::VmNet => NetworkMode::VmNet,
+            NetHelper::VmNet => NetworkMode::VmNet(cfg.map(|c| c.vmnet_cidr)),
         }
     }
 }
@@ -834,7 +837,7 @@ fn setup_vm(
         .context("Failed to add disk")?;
     }
 
-    match net_mode {
+    let vmnet_cidr = match net_mode {
         NetworkMode::GvProxy => {
             unsafe {
                 bindings::krun_set_gvproxy_path(
@@ -845,8 +848,9 @@ fn setup_vm(
                 )
             }
             .context("Failed to set gvproxy path")?;
+            None
         }
-        NetworkMode::VmNet => {
+        NetworkMode::VmNet(vmnet_cidr) => {
             unsafe {
                 bindings::krun_add_net_unixgram(
                     ctx_id,
@@ -858,9 +862,10 @@ fn setup_vm(
                 )
             }
             .context("Failed to add vmnet socket")?;
+            vmnet_cidr
         }
-        NetworkMode::Default => (),
-    }
+        NetworkMode::Default => None,
+    };
 
     // let ports = vec![
     //     // CString::new("8000:8000").unwrap(),
@@ -937,6 +942,7 @@ fn setup_vm(
         root_path,
         invoker_uid,
         invoker_gid,
+        vmnet_cidr,
     })
 }
 
@@ -972,8 +978,6 @@ fn start_vmproxy(
     let custom_mount_point = config.custom_mount_point.is_some();
     let assemble_raid = config.assemble_raid;
 
-    let vmnet_helper_used = config.common.net_helper == NetHelper::VmNet;
-
     let args: Vec<_> = [
         vmproxy,
         dev_info.vm_path().into(),
@@ -983,7 +987,12 @@ fn start_vmproxy(
     ]
     .into_iter()
     .chain(custom_mount_point.then_some("-c".into()).into_iter())
-    .chain(vmnet_helper_used.then_some("-n".into()).into_iter())
+    .chain(
+        ctx.vmnet_cidr
+            .as_ref()
+            .into_iter()
+            .flat_map(|cidr| ["-n".into(), cidr.to_string().into()]),
+    )
     .chain(["-t".into(), dev_info.fs_type().unwrap_or("auto").into()])
     .chain(
         assemble_raid
@@ -1793,8 +1802,8 @@ impl AppRunner {
                 .collect();
         }
         let net_mode = match cmd.no_tsi {
-            true => NetworkMode::default_virtio_net(config.common.net_helper),
-            false => NetworkMode::default_for_os(os, config.common.net_helper),
+            true => NetworkMode::default_virtio_net(config.common.net_helper, None),
+            false => NetworkMode::default_for_os(os, config.common.net_helper, None),
         };
         let ctx = setup_vm(&config.common, &dev_info, net_mode, false, opts)
             .context("Failed to setup microVM")?;
@@ -2236,15 +2245,22 @@ impl AppRunner {
             can_detach = false;
         }
 
-        let mut net_helper;
-        match config.common.net_helper {
-            NetHelper::GvProxy => net_helper = vm_network::start_gvproxy(&config.common)?,
-            NetHelper::VmNet => (net_helper, _) = vm_network::start_vmnet_helper(&config.common)?,
-        }
+        let (mut net_helper, vmnet_config) = match config.common.net_helper {
+            NetHelper::GvProxy => (vm_network::start_gvproxy(&config.common)?, None),
+            NetHelper::VmNet => {
+                let (child, vmnet_cfg) = vm_network::start_vmnet_helper(&config.common)?;
+                (child, Some(vmnet_cfg))
+            }
+        };
 
         let vmnet_helper_used = config.common.net_helper == NetHelper::VmNet;
+        let vm_ip = vmnet_config
+            .as_ref()
+            .map(|cfg| cfg.vmnet_cidr.hosts().nth(1).unwrap().to_string())
+            .unwrap_or(VM_IP.into());
+
         let (net_helper_name, vm_host): (&str, &[u8]) = if vmnet_helper_used {
-            ("vmnet-helper", b"192.168.127.2")
+            ("vmnet-helper", vm_ip.as_bytes())
         } else {
             ("gvproxy", b"localhost")
         };
@@ -2294,7 +2310,7 @@ impl AppRunner {
             let ctx = setup_vm(
                 &config.common,
                 &dev_info,
-                NetworkMode::default_virtio_net(config.common.net_helper),
+                NetworkMode::default_virtio_net(config.common.net_helper, vmnet_config),
                 true,
                 opts,
             )
