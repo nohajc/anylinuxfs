@@ -1,6 +1,7 @@
 use std::{
     fs::{self, File},
     io::{self, Read, Write},
+    net::{Ipv4Addr, TcpStream},
     os::unix::{fs::chown, net::UnixStream, process::CommandExt},
     process::{Child, Command},
     time::Duration,
@@ -73,6 +74,12 @@ pub struct VmnetConfigJson {
 pub struct VmnetConfig {
     pub _helper_output: VmnetConfigJson,
     pub vmnet_cidr: Ipv4Net,
+}
+
+impl VmnetConfig {
+    pub fn vm_ip(&self) -> Ipv4Addr {
+        self.vmnet_cidr.hosts().nth(1).unwrap()
+    }
 }
 
 pub fn start_vmnet_helper(config: &Config) -> anyhow::Result<(Child, VmnetConfig)> {
@@ -192,27 +199,62 @@ pub fn start_gvproxy(config: &Config) -> anyhow::Result<Child> {
     Ok(gvproxy_process)
 }
 
-// TODO: adjust for FreeBSD with vmnet-helper (normal TCP socket instead of the gvproxy tunnel)
+trait NetStream: Read + Write {
+    fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()>;
+    fn set_write_timeout(&self, timeout: Option<Duration>) -> io::Result<()>;
+}
+
+impl NetStream for UnixStream {
+    fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+        self.set_read_timeout(timeout)
+    }
+
+    fn set_write_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+        self.set_write_timeout(timeout)
+    }
+}
+
+impl NetStream for TcpStream {
+    fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+        self.set_read_timeout(timeout)
+    }
+
+    fn set_write_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+        self.set_write_timeout(timeout)
+    }
+}
+
 pub fn connect_to_vm_ctrl_socket(
     config: &Config,
+    vm_native_ip: Option<Ipv4Addr>,
     resp_timeout: Option<Duration>,
-) -> anyhow::Result<UnixStream> {
-    let sock_path = match config.kernel.os {
-        OSType::Linux => {
-            host_println!("Using vsock for VM control socket");
-            &config.vsock_path
-        }
-        _ => {
-            host_println!("Using gvproxy tunnel for VM control socket");
-            &config.gvproxy_net_sock_path
-        }
+) -> anyhow::Result<impl Read + Write> {
+    let mut stream: Box<dyn NetStream> = if let Some(ip) = vm_native_ip
+        && config.kernel.os != OSType::Linux
+    {
+        host_println!("Using TCP for VM control socket");
+        Box::new(
+            TcpStream::connect((ip, VM_CTRL_PORT))
+                .context("Failed to connect to VM control socket")?,
+        )
+    } else {
+        let sock_path = match config.kernel.os {
+            OSType::Linux => {
+                host_println!("Using vsock for VM control socket");
+                &config.vsock_path
+            }
+            _ => {
+                host_println!("Using gvproxy tunnel for VM control socket");
+                &config.gvproxy_net_sock_path
+            }
+        };
+        Box::new(UnixStream::connect(sock_path).context("Failed to connect to VM control socket")?)
     };
 
-    let mut stream = UnixStream::connect(sock_path)?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
     stream.set_read_timeout(resp_timeout)?;
 
-    if config.kernel.os != OSType::Linux {
+    if vm_native_ip.is_none() && config.kernel.os != OSType::Linux {
         // vsock only available for Linux VMs, use gvproxy tcp tunnel instead
         let tunnel_req = format!(
             "POST /tunnel?ip={VM_IP}&port={VM_CTRL_PORT} HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n"

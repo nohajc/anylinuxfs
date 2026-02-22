@@ -2,7 +2,7 @@ use anyhow::{Context, anyhow};
 use bstr::{BString, ByteSlice, ByteVec};
 use clap::{ArgGroup, Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use common_utils::{
-    Deferred, FromPath, NetHelper, OSType, PathExt, VM_IP, host_eprintln, host_println, ipc, log,
+    Deferred, FromPath, NetHelper, OSType, PathExt, host_eprintln, host_println, ipc, log,
     safe_print, safe_println, vmctrl,
 };
 
@@ -1407,8 +1407,9 @@ fn unmount_fs(volume_path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn send_quit_cmd(config: &Config) -> anyhow::Result<()> {
-    let mut stream = vm_network::connect_to_vm_ctrl_socket(config, Some(Duration::from_secs(5)))?;
+fn send_quit_cmd(config: &Config, vm_native_ip: Option<Ipv4Addr>) -> anyhow::Result<()> {
+    let mut stream =
+        vm_network::connect_to_vm_ctrl_socket(config, vm_native_ip, Some(Duration::from_secs(5)))?;
 
     ipc::Client::write_request(&mut stream, &vmctrl::Request::Quit)?;
     stream.flush()?;
@@ -2114,6 +2115,7 @@ impl AppRunner {
         // pre-declare so it can be referenced in a deferred action
         let stdin_forwarder;
         let services_to_restore: Vec<_>;
+        let vm_native_ip;
         let mut deferred = Deferred::new();
 
         let verbose = config.verbose;
@@ -2245,25 +2247,23 @@ impl AppRunner {
             can_detach = false;
         }
 
-        let (mut net_helper, vmnet_config) = match config.common.net_helper {
-            NetHelper::GvProxy => (vm_network::start_gvproxy(&config.common)?, None),
-            NetHelper::VmNet => {
-                let (child, vmnet_cfg) = vm_network::start_vmnet_helper(&config.common)?;
-                (child, Some(vmnet_cfg))
-            }
-        };
+        let (mut net_helper, net_helper_name, vmnet_config, vm_host) =
+            match config.common.net_helper {
+                NetHelper::GvProxy => (
+                    vm_network::start_gvproxy(&config.common)?,
+                    "gvproxy",
+                    None,
+                    "localhost".into(),
+                ),
+                NetHelper::VmNet => {
+                    let (child, vmnet_cfg) = vm_network::start_vmnet_helper(&config.common)?;
+                    let vm_ip = vmnet_cfg.vm_ip().to_string();
+                    (child, "vmnet-helper", Some(vmnet_cfg), vm_ip)
+                }
+            };
 
-        let vmnet_helper_used = config.common.net_helper == NetHelper::VmNet;
-        let vm_ip = vmnet_config
-            .as_ref()
-            .map(|cfg| cfg.vmnet_cidr.hosts().nth(1).unwrap().to_string())
-            .unwrap_or(VM_IP.into());
-
-        let (net_helper_name, vm_host): (&str, &[u8]) = if vmnet_helper_used {
-            ("vmnet-helper", vm_ip.as_bytes())
-        } else {
-            ("gvproxy", b"localhost")
-        };
+        let vm_host = vm_host.as_bytes();
+        vm_native_ip = vmnet_config.as_ref().map(|cfg| cfg.vm_ip());
 
         let net_helper_pid = net_helper.id() as libc::pid_t;
         fsutil::wait_for_file(&config.common.unixgram_sock_path)?;
@@ -2353,6 +2353,7 @@ impl AppRunner {
                 vmm_pid: child_pid,
                 net_helper_pid,
                 vm_host: vm_host.to_vec(),
+                vm_native_ip,
                 mount_point: None,
             }));
 
@@ -2502,9 +2503,11 @@ impl AppRunner {
                                 let vm_report_tx = vm_report_tx.clone();
                                 let config = config.clone();
                                 move || {
-                                    let Ok(mut stream) =
-                                        vm_network::connect_to_vm_ctrl_socket(&config.common, None)
-                                    else {
+                                    let Ok(mut stream) = vm_network::connect_to_vm_ctrl_socket(
+                                        &config.common,
+                                        vm_native_ip,
+                                        None,
+                                    ) else {
                                         return;
                                     };
 
@@ -2634,7 +2637,7 @@ impl AppRunner {
 
                 // from now on, if anything fails, we need to send quit command to the VM
                 let quit_action = deferred.add(|| {
-                    _ = send_quit_cmd(&config.common);
+                    _ = send_quit_cmd(&config.common, vm_native_ip);
                 });
 
                 // once the NFS server is ready, we need to change how termination signals are handled
@@ -2775,7 +2778,7 @@ impl AppRunner {
                     host_println!("Share {} was unmounted", mount_point.display());
                 }
                 deferred.remove(quit_action);
-                send_quit_cmd(&config.common)?;
+                send_quit_cmd(&config.common, vm_native_ip)?;
             } else {
                 host_println!("NFS server not ready");
 
@@ -3120,7 +3123,9 @@ impl AppRunner {
                         MountStatus::NotYet => {
                             let mut vm_exited_gracefully = false;
                             println!("Trying to shutdown anylinuxfs VM directly...");
-                            if send_quit_cmd(&rt_info.mount_config.common).is_ok() {
+                            if send_quit_cmd(&rt_info.mount_config.common, rt_info.vm_native_ip)
+                                .is_ok()
+                            {
                                 // wait for vmm process to exit or become zombie
                                 vm_exited_gracefully = wait_for_proc_exit(rt_info.vmm_pid).is_ok();
                             }
@@ -3160,7 +3165,7 @@ impl AppRunner {
                     }
                     println!("Trying to shutdown anylinuxfs VM directly...");
                     let mut vm_exited_gracefully = false;
-                    if send_quit_cmd(&rt_info.mount_config.common).is_ok() {
+                    if send_quit_cmd(&rt_info.mount_config.common, rt_info.vm_native_ip).is_ok() {
                         // wait for vmm process to exit or become zombie
                         vm_exited_gracefully = wait_for_proc_exit(rt_info.vmm_pid).is_ok();
                     }
