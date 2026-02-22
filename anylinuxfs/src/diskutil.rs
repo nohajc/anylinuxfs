@@ -16,8 +16,9 @@ use std::{
     cmp,
     ffi::{CString, c_void},
     fmt::Display,
+    fs::File,
     hash::{Hash, Hasher},
-    io::{self, Write},
+    io::{self, Read, Seek, SeekFrom, Write},
     iter,
     marker::PhantomData,
     path::{Path, PathBuf},
@@ -1334,6 +1335,42 @@ impl Hash for LsBlkDevice {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.uuid.hash(state);
     }
+}
+
+/// Offset to the nvlist within the first vdev label
+const ZFS_VDEV_LABEL_NVLIST_OFFSET: u64 = 16 * 1024;
+/// Size of the nvlist area in the vdev label
+const ZFS_VDEV_LABEL_NVLIST_SIZE: usize = 112 * 1024;
+
+/// ZFS encryption feature flags (active = at least one dataset is encrypted)
+const ZFS_ENCRYPTION_FEATURES: &[&[u8]] = &[b"com.datto:encryption", b"org.openzfs:encryption"];
+
+/// Check if a ZFS vdev label indicates active encryption.
+///
+/// This reads the raw vdev label nvlist from disk. The label only contains
+/// `features_for_read` and `features_for_write` — both of which list
+/// **active** features only. "Enabled but not active" features are stored
+/// in the MOS (inside the pool) and do NOT appear in the label.
+///
+/// Therefore, a simple byte-string search is sufficient: if an encryption
+/// feature string appears anywhere in the label, encryption is active.
+pub fn zfs_has_active_encryption<'a>(
+    paths: impl Iterator<Item = &'a Path>,
+) -> anyhow::Result<bool> {
+    use aho_corasick::AhoCorasick;
+
+    for path in paths {
+        let ac = AhoCorasick::new(ZFS_ENCRYPTION_FEATURES)?;
+        let mut f = File::open(path)?;
+
+        f.seek(SeekFrom::Start(ZFS_VDEV_LABEL_NVLIST_OFFSET))?;
+        let reader = f.take(ZFS_VDEV_LABEL_NVLIST_SIZE as u64);
+
+        if ac.stream_find_iter(reader).next().is_some() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 #[cfg(test)]

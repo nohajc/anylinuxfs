@@ -2132,6 +2132,13 @@ impl AppRunner {
         #[allow(unused_mut)]
         let mut img_src = ImageSource::default();
 
+        // check if we can detect ZFS encryption
+        if diskutil::zfs_has_active_encryption(dev_info.iter().map(|di| di.rdisk()))? {
+            host_println!("ZFS is encrypted");
+        } else {
+            host_println!("ZFS is not encrypted");
+        }
+
         // pick FreeBSD for ZFS if preferred and if there
         // isn't any incompatible custom action specified
         #[cfg(feature = "freebsd")]

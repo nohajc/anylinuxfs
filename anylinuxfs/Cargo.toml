@@ -42,6 +42,7 @@ serde_with = "3.16.1"
 rand = "0.9.2"
 getifaddrs = "0.6.0"
 ipnet = "2.11.0"
+aho-corasick = "1.1.4"
 
 [features]
 default = ["freebsd"]
