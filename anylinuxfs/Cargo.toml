@@ -44,6 +44,7 @@ getifaddrs = "0.6.0"
 ipnet = "2.11.0"
 os-version = "0.2.1"
 versions = "7.0.0"
+aho-corasick = "1.1.4"
 
 [features]
 default = ["freebsd"]
