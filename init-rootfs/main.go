@@ -320,7 +320,7 @@ apk --update --no-cache add %s
 MOD_PATH="modules/$(uname -r)"
 cd /lib
 mkdir -p $MOD_PATH
-unsquashfs -d $MOD_PATH modules.squashfs
+unsquashfs -mem 32M -d $MOD_PATH modules.squashfs
 rm modules.squashfs
 depmod -a
 rm -v /etc/idmapd.conf /etc/exports
