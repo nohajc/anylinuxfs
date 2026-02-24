@@ -1,7 +1,7 @@
 <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://github.com/user-attachments/assets/0c89308c-7374-4378-ad38-9ee53bcfbf25">
-   <source media="(prefers-color-scheme: light)" srcset="https://github.com/user-attachments/assets/cec1c149-6b1c-4017-b70b-55a34f5aaf08">
-   <img alt="anylinuxfs logo" src="https://github.com/user-attachments/assets/cec1c149-6b1c-4017-b70b-55a34f5aaf08">
+   <source media="(prefers-color-scheme: dark)" srcset="https://github.com/user-attachments/assets/352661ce-c05a-4454-8087-0c489139eb36">
+   <source media="(prefers-color-scheme: light)" srcset="https://github.com/user-attachments/assets/8b78948d-3751-4b41-a9f1-6fc85afb4121">
+   <img alt="anylinuxfs logo" src="https://github.com/user-attachments/assets/8b78948d-3751-4b41-a9f1-6fc85afb4121">
 </picture>
 
 An easy way to mount ext4, btrfs or in fact any linux-supported filesystem on a Mac.
