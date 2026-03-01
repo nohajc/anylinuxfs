@@ -150,6 +150,16 @@ sudo anylinuxfs /dev/disk0s6
 sudo anylinuxfs /dev/disk0s6 -o ro
 ```
 
+**Recover (fsck) a filesystem**
+
+Replace e2fsprogs with relevant fsck package for your filesystem
+
+```
+anylinuxfs shell /dev/rdisk6s2
+apk add e2fsprogs
+e2fsck /dev/vda
+```
+
 **Mount logical volume from group vg1 backed by disk7s1**
 ```
 sudo anylinuxfs lvm:vg1:disk7s1:lvol0
