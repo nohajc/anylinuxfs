@@ -155,8 +155,8 @@ sudo anylinuxfs /dev/disk0s6 -o ro
 Replace e2fsprogs with relevant fsck package for your filesystem
 
 ```
+anylinuxfs apk add e2fsprogs
 anylinuxfs shell /dev/rdisk6s2
-apk add e2fsprogs
 e2fsck /dev/vda
 ```
 
