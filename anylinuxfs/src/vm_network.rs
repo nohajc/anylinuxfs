@@ -16,9 +16,11 @@ use crate::{
 use anyhow::{Context, anyhow};
 use common_utils::{OSType, VM_CTRL_PORT, VM_IP, VMNET_PREFIX_LEN, host_println};
 use ipnet::Ipv4Net;
+use os_version::{MacOS, OsVersion};
 use rand::prelude::*;
 use serde::Deserialize;
 use serde_json::Deserializer;
+use versions::{SemVer, Versioning};
 
 pub fn random_mac_address() -> [u8; 6] {
     let mut rng = rand::rng();
@@ -82,8 +84,23 @@ impl VmnetConfig {
     }
 }
 
+const MACOS_TAHOE_MIN_VER: Versioning = Versioning::Ideal(SemVer {
+    major: 26,
+    minor: 0,
+    patch: 0,
+    pre_rel: None,
+    meta: None,
+});
+
 pub fn start_vmnet_helper(config: &Config) -> anyhow::Result<(Child, VmnetConfig)> {
     vfkit_sock_cleanup(&config.unixgram_sock_path)?;
+
+    let rootless = if let OsVersion::MacOS(MacOS { version }) = os_version::detect()? {
+        Versioning::new(version).unwrap_or_default() >= MACOS_TAHOE_MIN_VER
+    } else {
+        false
+    };
+    host_println!("vmnet-helper rootless mode: {}", rootless);
 
     let known_networks =
         netutil::get_interface_networks().context("Failed to get interface networks")?;
@@ -122,7 +139,10 @@ pub fn start_vmnet_helper(config: &Config) -> anyhow::Result<(Child, VmnetConfig
         .stdout(Stdio::piped())
         .stderr(vmnet_helper_err);
 
-    if let (Some(uid), Some(gid)) = (config.sudo_uid, config.sudo_gid) {
+    // TODO: elevate if not rootless and not running with sudo
+    if let (Some(uid), Some(gid)) = (config.sudo_uid, config.sudo_gid)
+        && rootless
+    {
         // run vmnet-helper with dropped privileges
         vmnet_helper_cmd.uid(uid).gid(gid);
     }
