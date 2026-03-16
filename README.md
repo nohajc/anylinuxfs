@@ -361,6 +361,8 @@ bin/anylinuxfs list
 ```
 
 ## Acknowledgements
+Logo designed by [Junaid Iqbal](https://www.fiverr.com/junaidiqbal39).
+
 This project was made possible by
 - [libkrun](https://github.com/containers/libkrun) the microVM hypervisor for Linux and Mac
 - [libkrunfw](https://github.com/containers/libkrunfw) - Linux kernel bundled for libkrun as a dynamic library
