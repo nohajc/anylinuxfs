@@ -35,7 +35,9 @@ brew install anylinuxfs
 ## Limitations
 - Only one drive can be mounted at a time (this might be improved in the future)
 - Only Apple Silicon Macs are supported (libkrun limitation)
-- Some disks with non-ASCII labels might fail to mount unless a custom mount point with "safe" characters is used (this is a macOS bug) 
+- Some disks with non-ASCII labels might fail to mount unless a custom mount point with "safe" characters is used (this is a macOS bug)
+- By design, any mounted volume is seen by macOS as a network drive shared by our virtual machine.
+- Microsoft Word cannot edit files directly on a mounted drive. This is a known issue with Word and network filesystems.
 
 > [!CAUTION]
 > Before using anylinuxfs with **NTFS**, please read [the notes](#ntfs)
