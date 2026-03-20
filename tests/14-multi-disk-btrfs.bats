@@ -19,7 +19,8 @@ setup_file() {
 
   # Colon-separated syntax passes both images to the VM as /dev/vda and /dev/vdb
   vm_exec "${BATS_FILE_TMPDIR}/btrfs0.img:${BATS_FILE_TMPDIR}/btrfs1.img" \
-    "mkfs.btrfs -L ${LABEL} -d raid1 -m raid1 /dev/vda /dev/vdb && \
+    "mkfs.btrfs -b \$(( \$(blockdev --getsize64 /dev/vda) - 65536 )) \
+     -L ${LABEL} -d raid1 -m raid1 /dev/vda /dev/vdb && \
      mount /dev/vda /mnt && \
      chown $(id -u):$(id -g) /mnt && \
      umount /mnt"
