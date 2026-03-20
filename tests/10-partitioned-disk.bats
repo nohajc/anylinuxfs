@@ -44,7 +44,7 @@ teardown() {
 # ---------------------------------------------------------------------------
 
 @test "partitioned: GPT ext4 — direct image path mount" {
-  "$ANYLINUXFS" "$GPT_IMG" &
+  "$ANYLINUXFS" "$GPT_IMG" -w false &
   wait_for_mount "$GPT_LABEL"
 
   assert_file_roundtrip "$(get_mount_point "$GPT_LABEL")"
@@ -57,7 +57,7 @@ teardown() {
   whole_dev="$(hdiutil_attach "$GPT_IMG")"
   local part_dev="${whole_dev}s1"
 
-  "$ANYLINUXFS" "$part_dev" &
+  "$ANYLINUXFS" "$part_dev" -w false &
   wait_for_mount "$GPT_LABEL"
 
   assert_file_roundtrip "$(get_mount_point "$GPT_LABEL")"
@@ -68,7 +68,7 @@ teardown() {
 }
 
 @test "partitioned: MBR first partition (ext4)" {
-  "$ANYLINUXFS" "$MBR_IMG" &
+  "$ANYLINUXFS" "$MBR_IMG" -w false &
   wait_for_mount "$MBR1_LABEL"
 
   assert_file_roundtrip "$(get_mount_point "$MBR1_LABEL")"
@@ -85,7 +85,7 @@ teardown() {
   whole_dev="$(hdiutil_attach "$MBR_IMG")"
   local part_dev="${whole_dev}s2"
 
-  "$ANYLINUXFS" "$part_dev" &
+  "$ANYLINUXFS" "$part_dev" -w false &
   wait_for_mount "$MBR2_LABEL"
 
   assert_file_roundtrip "$(get_mount_point "$MBR2_LABEL")"

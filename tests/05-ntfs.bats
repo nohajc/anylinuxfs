@@ -26,7 +26,7 @@ teardown() {
 
 @test "ntfs: mount with ntfs3 driver, file roundtrip, unmount" {
   local img="${BATS_FILE_TMPDIR}/ntfs.img"
-  "$ANYLINUXFS" -t ntfs3 "$img" 
+  "$ANYLINUXFS" -t ntfs3 "$img" -w false
 
   assert_file_roundtrip "$(get_mount_point "$LABEL")"
 
@@ -35,7 +35,7 @@ teardown() {
 
 @test "ntfs: mount with ntfs-3g driver, file roundtrip, unmount" {
   local img="${BATS_FILE_TMPDIR}/ntfs.img"
-  "$ANYLINUXFS" -t ntfs-3g "$img" 
+  "$ANYLINUXFS" -t ntfs-3g "$img" -w false
 
   assert_file_roundtrip "$(get_mount_point "$LABEL")"
 

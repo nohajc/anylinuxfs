@@ -10,9 +10,9 @@ LABEL="alfsexfat"
 
 setup_file() {
   create_sparse_image "${BATS_FILE_TMPDIR}/exfat.img" 512M
-  # Subtract 16 blocks (64 KiB) to match the device size seen in mount mode.
+  # exfat auto-detects device size; no need to specify it.
   vm_exec "${BATS_FILE_TMPDIR}/exfat.img" \
-    "mkfs.exfat -L ${LABEL} -s 4096 \$(( \$(blockdev --getsz /dev/vda) - 128 )) /dev/vda"
+    "mkfs.exfat -L ${LABEL} /dev/vda"
 }
 
 teardown() {
@@ -23,7 +23,7 @@ teardown() {
 
 @test "exfat: mount raw image, file roundtrip, unmount" {
   local img="${BATS_FILE_TMPDIR}/exfat.img"
-  "$ANYLINUXFS" "$img" 
+  "$ANYLINUXFS" "$img" -w false
 
   assert_file_roundtrip "$(get_mount_point "$LABEL")"
 
