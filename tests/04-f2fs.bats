@@ -16,7 +16,10 @@ setup_file() {
   vm_exec "${BATS_FILE_TMPDIR}/f2fs.img" \
     "SECTORS=\$(blockdev --getsz /dev/vda); \
      dd if=/dev/zero of=/dev/vda bs=512 seek=\$(( SECTORS - 128 )) count=128 2>/dev/null; \
-     mkfs.f2fs -l ${LABEL} /dev/vda"
+     mkfs.f2fs -l ${LABEL} /dev/vda && \
+     mount /dev/vda /mnt && \
+     chown $(id -u):$(id -g) /mnt && \
+     umount /mnt"
 }
 
 teardown() {
