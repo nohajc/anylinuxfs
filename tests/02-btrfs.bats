@@ -12,7 +12,8 @@ LABEL="alfsbtrfs"
 setup_file() {
   create_sparse_image "${BATS_FILE_TMPDIR}/btrfs.img" 512M
   vm_exec "${BATS_FILE_TMPDIR}/btrfs.img" \
-    "mkfs.btrfs -L ${LABEL} /dev/vda && \
+    "mkfs.btrfs -b \$(( \$(blockdev --getsize64 /dev/vda) - 65536 )) \
+     -L ${LABEL} /dev/vda && \
      mount /dev/vda /mnt && \
      chown $(id -u):$(id -g) /mnt && \
      umount /mnt"
@@ -26,7 +27,7 @@ teardown() {
 
 @test "btrfs: mount raw image, file roundtrip, unmount" {
   local img="${BATS_FILE_TMPDIR}/btrfs.img"
-  "$ANYLINUXFS" "$img" 
+  "$ANYLINUXFS" "$img" -w false
 
   assert_file_roundtrip "$(get_mount_point "$LABEL")"
 
@@ -35,7 +36,7 @@ teardown() {
 
 @test "btrfs: mount with compress=zstd option" {
   local img="${BATS_FILE_TMPDIR}/btrfs.img"
-  "$ANYLINUXFS" "$img" -o compress=zstd 
+  "$ANYLINUXFS" "$img" -w false -o compress=zstd
 
   assert_file_roundtrip "$(get_mount_point "$LABEL")"
 
