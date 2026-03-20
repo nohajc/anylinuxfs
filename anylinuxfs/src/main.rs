@@ -265,6 +265,9 @@ struct UnmountCmd {
     /// Disk identifier or mount point (unmounts all if not specified)
     #[arg(id = "DISK_IDENT|MOUNT_POINT")]
     path: Option<String>,
+    /// Wait for VM to exit after unmounting
+    #[arg(short, long)]
+    wait_for_vm: bool,
 }
 
 #[derive(Args)]
@@ -2887,6 +2890,10 @@ impl AppRunner {
                     .filter(|&mpt| mpt.as_bytes().starts_with(mount_point.as_bytes()));
 
                 fsutil::unmount_nfs_subdirs(our_mount_points, mount_point)?;
+
+                if cmd.wait_for_vm {
+                    wait_for_proc_exit(rt_info.session_pgid)?;
+                }
             }
             Err(err) => {
                 if let Some(err) = err.downcast_ref::<io::Error>() {
