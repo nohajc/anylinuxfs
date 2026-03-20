@@ -48,7 +48,6 @@ APK_PACKAGES=(
   exfatprogs      # mkfs.exfat
   f2fs-tools      # mkfs.f2fs
   ntfs-3g-progs   # mount.ntfs-3g
-  ntfsprogs       # mkfs.ntfs, ntfsfix
   cryptsetup      # LUKS encryption
   lvm2            # pvcreate, vgcreate, lvcreate
 )
