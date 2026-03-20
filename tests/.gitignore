@@ -1,0 +1,4 @@
+# Generated test artifacts — never commit these.
+*.img
+*.hdd
+/tmp/
