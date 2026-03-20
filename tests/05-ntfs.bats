@@ -15,7 +15,7 @@ setup_file() {
   # within the device that mount mode exposes.
   vm_exec "${BATS_FILE_TMPDIR}/ntfs.img" \
     "mkfs.ntfs -f -L ${LABEL} --sectors-per-track 63 \
-      --number-of-sectors \$(( \$(blockdev --getsz /dev/vda) - 128 )) /dev/vda"
+      /dev/vda \$(( \$(blockdev --getsz /dev/vda) - 128 ))"
 }
 
 teardown() {
@@ -26,7 +26,7 @@ teardown() {
 
 @test "ntfs: mount with ntfs3 driver, file roundtrip, unmount" {
   local img="${BATS_FILE_TMPDIR}/ntfs.img"
-  "$ANYLINUXFS" -t ntfs3 "$img" -w false
+  "$ANYLINUXFS" "$img" -t ntfs3 -w false
 
   assert_file_roundtrip "$(get_mount_point "$LABEL")"
 
@@ -35,7 +35,7 @@ teardown() {
 
 @test "ntfs: mount with ntfs-3g driver, file roundtrip, unmount" {
   local img="${BATS_FILE_TMPDIR}/ntfs.img"
-  "$ANYLINUXFS" -t ntfs-3g "$img" -w false
+  "$ANYLINUXFS" "$img" -t ntfs-3g -w false
 
   assert_file_roundtrip "$(get_mount_point "$LABEL")"
 
