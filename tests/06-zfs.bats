@@ -31,7 +31,7 @@ teardown() {
 
 @test "zfs: mount with FreeBSD kernel, file roundtrip, unmount" {
   local img="${BATS_FILE_TMPDIR}/zfs.img"
-  "$ANYLINUXFS" --zfs-os freebsd "$img" &
+  "$ANYLINUXFS" --zfs-os freebsd "$img" -w false &
   wait_for_mount "$POOL"
 
   assert_file_roundtrip "$(get_mount_point "$POOL")"
@@ -43,7 +43,7 @@ teardown() {
 
 @test "zfs: mount with Linux kernel, file roundtrip, unmount" {
   local img="${BATS_FILE_TMPDIR}/zfs.img"
-  "$ANYLINUXFS" --zfs-os linux "$img" &
+  "$ANYLINUXFS" --zfs-os linux "$img" -w false &
   wait_for_mount "$POOL"
 
   assert_file_roundtrip "$(get_mount_point "$POOL")"
