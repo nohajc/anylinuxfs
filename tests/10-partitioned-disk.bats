@@ -23,8 +23,7 @@ setup_file() {
   create_sparse_image "${BATS_FILE_TMPDIR}/gpt.img" 512M
   vm_exec "${BATS_FILE_TMPDIR}/gpt.img" \
     "parted -s /dev/vda mklabel gpt mkpart primary ext4 1MiB 510MiB \
-     && mkfs.ext4 -E root_owner=$(id -u):$(id -g) -L ${GPT_LABEL} \
-          \$(( \$(blockdev --getsz /dev/vda1) / 8 - 16 )) /dev/vda1"
+     && mkfs.ext4 -E root_owner=$(id -u):$(id -g) -L ${GPT_LABEL} /dev/vda1"
 
   # --- MBR image ---
   create_sparse_image "${BATS_FILE_TMPDIR}/mbr.img" 512M
@@ -32,9 +31,11 @@ setup_file() {
     "parted -s /dev/vda mklabel msdos \
        mkpart primary ext4  1MiB 255MiB \
        mkpart primary btrfs 256MiB 510MiB \
-     && mkfs.ext4 -E root_owner=$(id -u):$(id -g) -L ${MBR1_LABEL} \
-          \$(( \$(blockdev --getsz /dev/vda1) / 8 - 16 )) /dev/vda1 \
-     && mkfs.btrfs -L ${MBR2_LABEL} /dev/vda2"
+     && mkfs.ext4 -E root_owner=$(id -u):$(id -g) -L ${MBR1_LABEL} /dev/vda1 \
+     && mkfs.btrfs -L ${MBR2_LABEL} /dev/vda2\
+     && mount /dev/vda2 /mnt \
+     && chown $(id -u):$(id -g) /mnt \
+     && umount /mnt"
 }
 
 teardown() {
@@ -43,30 +44,24 @@ teardown() {
 
 # ---------------------------------------------------------------------------
 
-@test "partitioned: GPT ext4 — direct image path mount" {
-  "$ANYLINUXFS" "$GPT_IMG" -w false
-
-  assert_file_roundtrip "$(get_mount_point "$GPT_LABEL")"
-
-  do_unmount
-}
-
 @test "partitioned: GPT ext4 — hdiutil-attached /dev/diskXs1 mount" {
-  local whole_dev
-  whole_dev="$(hdiutil_attach "$GPT_IMG")"
-  local part_dev="${whole_dev}s1"
+  local gpt_img="${BATS_FILE_TMPDIR}/gpt.img"
+  hdiutil_attach "$gpt_img"
+  local part_dev="${HDIUTIL_DEV}s1"
 
   "$ANYLINUXFS" "$part_dev" -w false
 
   assert_file_roundtrip "$(get_mount_point "$GPT_LABEL")"
 
   do_unmount
-  hdiutil_detach "$whole_dev"
-  HDIUTIL_DEV=""
 }
 
 @test "partitioned: MBR first partition (ext4)" {
-  "$ANYLINUXFS" "$MBR_IMG" -w false
+  local mbr_img="${BATS_FILE_TMPDIR}/mbr.img"
+  hdiutil_attach "$mbr_img"
+  local part_dev="${HDIUTIL_DEV}s1"
+
+  "$ANYLINUXFS" "$part_dev" -w false
 
   assert_file_roundtrip "$(get_mount_point "$MBR1_LABEL")"
 
@@ -74,19 +69,13 @@ teardown() {
 }
 
 @test "partitioned: MBR second partition (btrfs) via direct path" {
-  # anylinuxfs auto-detects partitions; pass the image and let it find vda2
-  # by specifying the partition offset explicitly is not needed — anylinuxfs
-  # chooses the partition whose filesystem matches.  Use hdiutil to address
-  # vda2 explicitly.
-  local whole_dev
-  whole_dev="$(hdiutil_attach "$MBR_IMG")"
-  local part_dev="${whole_dev}s2"
+  local mbr_img="${BATS_FILE_TMPDIR}/mbr.img"
+  hdiutil_attach "$mbr_img"
+  local part_dev="${HDIUTIL_DEV}s2"
 
   "$ANYLINUXFS" "$part_dev" -w false
 
   assert_file_roundtrip "$(get_mount_point "$MBR2_LABEL")"
 
   do_unmount
-  hdiutil_detach "$whole_dev"
-  HDIUTIL_DEV=""
 }

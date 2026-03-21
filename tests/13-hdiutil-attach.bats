@@ -40,28 +40,22 @@ teardown() {
 # ---------------------------------------------------------------------------
 
 @test "hdiutil: attach raw image, mount whole-disk device, unmount, detach" {
-  local dev
-  dev="$(hdiutil_attach "${BATS_FILE_TMPDIR}/hdi-raw.img")"
+  hdiutil_attach "${BATS_FILE_TMPDIR}/hdi-raw.img"
 
-  "$ANYLINUXFS" "$dev" -w false
+  "$ANYLINUXFS" "$HDIUTIL_DEV" -w false
 
   assert_file_roundtrip "$(get_mount_point "$RAW_LABEL")"
 
   do_unmount
-  hdiutil_detach "$dev"
-  HDIUTIL_DEV=""
 }
 
 @test "hdiutil: attach GPT image, mount partition slice /dev/diskXs1, unmount, detach" {
-  local whole_dev
-  whole_dev="$(hdiutil_attach "${BATS_FILE_TMPDIR}/hdi-gpt.img")"
-  local part_dev="${whole_dev}s1"
+  hdiutil_attach "${BATS_FILE_TMPDIR}/hdi-gpt.img"
+  local part_dev="${HDIUTIL_DEV}s1"
 
   "$ANYLINUXFS" "$part_dev" -w false
 
   assert_file_roundtrip "$(get_mount_point "$GPT_LABEL")"
 
   do_unmount
-  hdiutil_detach "$whole_dev"
-  HDIUTIL_DEV=""
 }
