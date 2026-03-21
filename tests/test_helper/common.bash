@@ -67,57 +67,6 @@ vm_exec_freebsd() {
   "$ANYLINUXFS" shell -i freebsd -c "$cmd" "$disk_arg"
 }
 
-# ---------------------------------------------------------------------------
-# Mount detection via diskutil activity
-# ---------------------------------------------------------------------------
-# wait_for_mount <volume_name> [timeout_seconds]
-#   Blocks until diskutil activity reports a DiskAppeared event for the NFS
-#   volume at /Volumes/<volume_name>, or until the timeout (default 90s).
-#
-#   Example log line we match:
-#   ***DiskAppeared (..., DAVolumePath = 'file:///Volumes/myfs/', DAVolumeKind = 'nfs', ...)
-#
-# Sets global MOUNTED_PATH to the resolved mount point on success.
-wait_for_mount() {
-  local volume_name="$1"
-  local timeout="${2:-90}"
-  local fifo
-  fifo="$(mktemp -u /tmp/anylinuxfs-da.XXXXXX)"
-  mkfifo "$fifo"
-
-  # Start diskutil activity feeding into the fifo in the background.
-  diskutil activity > "$fifo" &
-  local da_pid=$!
-
-  local matched=0
-  local deadline=$(( $(date +%s) + timeout ))
-
-  while IFS= read -r line; do
-    if [[ "$line" == *"***DiskAppeared"* ]] \
-        && [[ "$line" == *"DAVolumePath = 'file://${HOME}/Volumes/${volume_name}/'"* ]] \
-        && [[ "$line" == *"DAVolumeKind = 'nfs'"* ]]; then
-      matched=1
-      break
-    fi
-    if (( $(date +%s) >= deadline )); then
-      break
-    fi
-  done < "$fifo"
-
-  kill "$da_pid" 2>/dev/null
-  wait "$da_pid" 2>/dev/null
-  rm -f "$fifo"
-
-  if (( matched )); then
-    MOUNTED_PATH="${HOME}/Volumes/${volume_name}"
-    export MOUNTED_PATH
-    return 0
-  else
-    echo "TIMEOUT: volume '${volume_name}' did not appear within ${timeout}s" >&2
-    return 1
-  fi
-}
-
 # get_mount_point <label>
 #   Returns the expected macOS mount path for a volume with the given label.
 get_mount_point() {

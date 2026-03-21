@@ -68,9 +68,7 @@ teardown() {
       \"Enter passphrase\" { send \"${PASSPHRASE}\r\"; exp_continue }
       eof
     }
-  " &
-
-  wait_for_mount "$LUKS_LABEL"
+  "
 
   assert_file_roundtrip "$(get_mount_point "$LUKS_LABEL")"
 
