@@ -1607,7 +1607,11 @@ fn claim_devices(config: &mut MountConfig) -> anyhow::Result<(Vec<DevInfo>, DevI
         config.assemble_raid = true;
 
         for (_, &di) in disk_ident.iter().skip(1).enumerate() {
-            let pv_path = format!("/dev/{}", di);
+            let pv_path = if di.starts_with("/") || di.starts_with("./") {
+                di.to_string()
+            } else {
+                format!("/dev/{}", di)
+            };
             if mount_table.is_mounted(&pv_path) {
                 return Err(anyhow!("{} is already mounted", &pv_path));
             }
