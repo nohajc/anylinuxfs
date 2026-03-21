@@ -22,15 +22,14 @@ setup_file() {
   # device size.
   create_sparse_image "${BATS_FILE_TMPDIR}/hdi-raw.img" 512M
   vm_exec "${BATS_FILE_TMPDIR}/hdi-raw.img" \
-    "mkfs.ext4 -E root_owner=$(id -u):$(id -g) -L ${RAW_LABEL} \$(( \$(blockdev --getsz /dev/vda) / 8 - 16 )) /dev/vda"
+    "mkfs.ext4 -E root_owner=$(id -u):$(id -g) -L ${RAW_LABEL} /dev/vda \$(( \$(blockdev --getsz /dev/vda) / 8 - 16 ))"
 
   # GPT with single ext4 partition — end at 510MiB to keep the partition
   # away from the 64 KiB that mount mode trims from the raw device.
   create_sparse_image "${BATS_FILE_TMPDIR}/hdi-gpt.img" 512M
   vm_exec "${BATS_FILE_TMPDIR}/hdi-gpt.img" \
     "parted -s /dev/vda mklabel gpt mkpart primary ext4 1MiB 510MiB \
-     && mkfs.ext4 -E root_owner=$(id -u):$(id -g) -L ${GPT_LABEL} \
-          \$(( \$(blockdev --getsz /dev/vda1) / 8 - 16 )) /dev/vda1"
+     && mkfs.ext4 -E root_owner=$(id -u):$(id -g) -L ${GPT_LABEL} /dev/vda1"
 }
 
 teardown() {
