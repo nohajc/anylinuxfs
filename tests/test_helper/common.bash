@@ -121,7 +121,11 @@ wait_for_mount() {
 # get_mount_point <label>
 #   Returns the expected macOS mount path for a volume with the given label.
 get_mount_point() {
-  echo "${HOME}/Volumes/${1}"
+  if [[ $(id -u) -eq 0 ]]; then
+    echo "/Volumes/${1}"
+  else
+     echo "${HOME}/Volumes/${1}"
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -133,6 +137,9 @@ assert_file_roundtrip() {
   local mount_point="$1"
   local test_file="${mount_point}/alfs_test_$(date +%s%N).txt"
   local content="anylinuxfs-test-$(uname -n)-$$-$(date +%s)"
+
+  echo "MOUNT_POINT:"
+  ls -ld "$mount_point"
 
   echo "$content" > "$test_file"
   local readback

@@ -43,8 +43,7 @@ teardown() {
   local dev
   dev="$(hdiutil_attach "${BATS_FILE_TMPDIR}/hdi-raw.img")"
 
-  "$ANYLINUXFS" "$dev" -w false &
-  wait_for_mount "$RAW_LABEL"
+  "$ANYLINUXFS" "$dev" -w false
 
   assert_file_roundtrip "$(get_mount_point "$RAW_LABEL")"
 
@@ -58,8 +57,7 @@ teardown() {
   whole_dev="$(hdiutil_attach "${BATS_FILE_TMPDIR}/hdi-gpt.img")"
   local part_dev="${whole_dev}s1"
 
-  "$ANYLINUXFS" "$part_dev" -w false &
-  wait_for_mount "$GPT_LABEL"
+  "$ANYLINUXFS" "$part_dev" -w false
 
   assert_file_roundtrip "$(get_mount_point "$GPT_LABEL")"
 

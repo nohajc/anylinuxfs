@@ -17,9 +17,10 @@ POOL="alfszfspool"
 setup_file() {
   create_sparse_image "${BATS_FILE_TMPDIR}/zfs.img" 1G
   # Create and immediately export pool so it can be imported fresh each test.
-  vm_exec_freebsd "${BATS_FILE_TMPDIR}/zfs.img" \
-    "zpool create -f ${POOL} /dev/vda \
+  vm_exec "${BATS_FILE_TMPDIR}/zfs.img" \
+    "modprobe zfs && zpool create -f ${POOL} /dev/vda \
      && zfs create ${POOL}/data \
+     && chown -R $(id -u):$(id -g) /${POOL} \
      && zpool export ${POOL}"
 }
 
@@ -31,22 +32,24 @@ teardown() {
 
 @test "zfs: mount with FreeBSD kernel, file roundtrip, unmount" {
   local img="${BATS_FILE_TMPDIR}/zfs.img"
-  "$ANYLINUXFS" --zfs-os freebsd "$img" -w false &
-  wait_for_mount "$POOL"
+  hdiutil_attach "$img"
+  local part_dev="${HDIUTIL_DEV}s1"
 
-  assert_file_roundtrip "$(get_mount_point "$POOL")"
+  "$ANYLINUXFS" "$part_dev" --zfs-os freebsd -w false
+
+  assert_file_roundtrip "$(get_mount_point "zfs_root/$POOL")"
 
   do_unmount
-  # Give the VM time to export the pool before the next test imports it.
-  sleep 2
 }
 
 @test "zfs: mount with Linux kernel, file roundtrip, unmount" {
   local img="${BATS_FILE_TMPDIR}/zfs.img"
-  "$ANYLINUXFS" --zfs-os linux "$img" -w false &
-  wait_for_mount "$POOL"
+  hdiutil_attach "$img"
+  local part_dev="${HDIUTIL_DEV}s1"
 
-  assert_file_roundtrip "$(get_mount_point "$POOL")"
+  "$ANYLINUXFS" "$part_dev" --zfs-os linux -w false
+
+  assert_file_roundtrip "$(get_mount_point "zfs_root/$POOL")"
 
   do_unmount
 }
