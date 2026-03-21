@@ -35,8 +35,7 @@ teardown() {
 
 @test "lvm: mount first logical volume, file roundtrip, unmount" {
   local disk_id="lvm:${VG}:${BATS_FILE_TMPDIR}/lvm.img:${LV1}"
-  "$ANYLINUXFS" "$disk_id" -w false &
-  wait_for_mount "$LV1_LABEL"
+  "$ANYLINUXFS" "$disk_id" -w false
 
   assert_file_roundtrip "$(get_mount_point "$LV1_LABEL")"
 
@@ -45,8 +44,7 @@ teardown() {
 
 @test "lvm: mount second logical volume, file roundtrip, unmount" {
   local disk_id="lvm:${VG}:${BATS_FILE_TMPDIR}/lvm.img:${LV2}"
-  "$ANYLINUXFS" "$disk_id" -w false &
-  wait_for_mount "$LV2_LABEL"
+  "$ANYLINUXFS" "$disk_id" -w false
 
   assert_file_roundtrip "$(get_mount_point "$LV2_LABEL")"
 
