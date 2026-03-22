@@ -524,12 +524,18 @@ fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     #[cfg(target_os = "linux")]
-    mount_tmpfs(&["/tmp", "/run", "/var/lib/nfs"])?;
+    mount_tmpfs(&[
+        "/tmp",
+        "/run",
+        "/var/lib/nfs",
+        "/etc/lvm/archive",
+        "/etc/lvm/backup",
+    ])?;
 
     #[cfg(target_os = "linux")]
-    script("mkdir -p /var/lib/nfs/rpc_pipefs /var/lib/nfs/sm")
-        .status()
-        .context("Failed to create /var/lib/nfs/{rpc_pipefs,sm} directories")?;
+    for dir in ["/var/lib/nfs/rpc_pipefs", "/var/lib/nfs/sm"] {
+        fs::create_dir_all(dir).with_context(|| format!("Failed to create directory '{}'", dir))?;
+    }
 
     init_network(&cli.bind_addr, cli.host_rpcbind, cli.native_network)
         .context("Failed to initialize network")?;

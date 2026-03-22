@@ -53,10 +53,20 @@ create_sparse_image() {
 # vm_exec <disk_arg> <shell_command>
 #   Runs <shell_command> inside the Alpine Linux microVM with <disk_arg> as the
 #   disk identifier (file path or colon-separated multi-disk).
+#   Mounts tmpfs at specified directories before executing the command.
 vm_exec() {
   local disk_arg="$1"
   local cmd="$2"
-  "$ANYLINUXFS" shell -c "mount -t tmpfs tmpfs /tmp && $cmd" "$disk_arg"
+  local tmpfs_dirs=("/tmp" "/run" "/etc/lvm/archive" "/etc/lvm/backup")
+
+  # Build mount script from directory list
+  local mount_script=""
+  for dir in "${tmpfs_dirs[@]}"; do
+    mount_script+="mount -t tmpfs tmpfs $dir && "
+  done
+
+  echo "Running VM shell command: ${mount_script}$cmd"
+  "$ANYLINUXFS" shell -c "${mount_script}$cmd" "$disk_arg"
 }
 
 # vm_exec_freebsd <disk_arg> <shell_command>
