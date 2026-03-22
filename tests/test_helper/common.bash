@@ -56,7 +56,7 @@ create_sparse_image() {
 vm_exec() {
   local disk_arg="$1"
   local cmd="$2"
-  "$ANYLINUXFS" shell -c "$cmd" "$disk_arg"
+  "$ANYLINUXFS" shell -c "mount -t tmpfs tmpfs /tmp && $cmd" "$disk_arg"
 }
 
 # vm_exec_freebsd <disk_arg> <shell_command>

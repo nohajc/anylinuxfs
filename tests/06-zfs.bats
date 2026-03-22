@@ -18,9 +18,9 @@ setup_file() {
   create_sparse_image "${BATS_FILE_TMPDIR}/zfs.img" 1G
   # Create and immediately export pool so it can be imported fresh each test.
   vm_exec "${BATS_FILE_TMPDIR}/zfs.img" \
-    "modprobe zfs && zpool create -f ${POOL} /dev/vda \
+    "modprobe zfs && zpool create -R /tmp -f ${POOL} /dev/vda \
      && zfs create ${POOL}/data \
-     && chown -R $(id -u):$(id -g) /${POOL} \
+     && chown -R $(id -u):$(id -g) /tmp/${POOL} \
      && zpool export ${POOL}"
 }
 
