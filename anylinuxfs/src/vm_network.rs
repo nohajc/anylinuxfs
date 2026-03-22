@@ -102,6 +102,13 @@ pub fn start_vmnet_helper(config: &Config) -> anyhow::Result<(Child, VmnetConfig
     };
     // host_println!("vmnet-helper rootless mode: {}", rootless);
 
+    let need_elevation = !rootless && config.sudo_uid.is_none() && config.invoker_uid != 0;
+    if need_elevation {
+        return Err(anyhow!(
+            "anylinuxfs is configured to use vmnet-helper which needs sudo unless you're on macOS Tahoe or later"
+        ));
+    }
+
     let known_networks =
         netutil::get_interface_networks().context("Failed to get interface networks")?;
 
@@ -139,7 +146,6 @@ pub fn start_vmnet_helper(config: &Config) -> anyhow::Result<(Child, VmnetConfig
         .stdout(Stdio::piped())
         .stderr(vmnet_helper_err);
 
-    // TODO: elevate if not rootless and not running with sudo
     if let (Some(uid), Some(gid)) = (config.sudo_uid, config.sudo_gid)
         && rootless
     {
