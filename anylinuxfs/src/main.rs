@@ -694,6 +694,7 @@ fn drop_privileges(
 struct VMOpts {
     add_disks_ro: bool,
     root_device: Option<String>,
+    read_only_root: bool,
     #[cfg(feature = "freebsd")]
     legacy_console: bool,
 }
@@ -703,6 +704,7 @@ impl VMOpts {
         Self {
             add_disks_ro: false,
             root_device: None,
+            read_only_root: true,
             #[cfg(feature = "freebsd")]
             legacy_console: false,
         }
@@ -710,6 +712,11 @@ impl VMOpts {
 
     fn read_only_disks(mut self, value: bool) -> Self {
         self.add_disks_ro = value;
+        self
+    }
+
+    fn read_only_root(mut self, value: bool) -> Self {
+        self.read_only_root = value;
         self
     }
 
@@ -904,21 +911,25 @@ fn setup_vm(
         .context("Failed to set workdir")?;
 
     let os = config.kernel.os;
-    let cmdline = match os {
-        OSType::Linux => c"reboot=k panic=-1 panic_print=0 console=hvc0 rootfstype=virtiofs rw quiet no-kvmapf init=/init.krun",
-        OSType::FreeBSD => {
-            match opts.root_device {
-                Some(root_device) => {
-                    let cmdline_str = format!("FreeBSD:vfs.root.mountfrom={root_device} \
-                        -mq init_path=/init-freebsd");
-                    &CString::new(cmdline_str).unwrap()
-                }
-                None => {
-                    return Err(anyhow!("root device must be specified for FreeBSD"));
-                }
-            }
+    let cmdline = &CString::new(match os {
+        OSType::Linux => {
+            format!(
+                "reboot=k panic=-1 panic_print=0 console=hvc0 rootfstype=virtiofs {} quiet no-kvmapf init=/init.krun",
+                if opts.read_only_root { "ro" } else { "rw" }
+            )
         }
-    };
+        OSType::FreeBSD => match opts.root_device {
+            Some(root_device) => {
+                format!(
+                    "FreeBSD:vfs.root.mountfrom={root_device} \
+                        -mq init_path=/init-freebsd"
+                )
+            }
+            None => {
+                return Err(anyhow!("root device must be specified for FreeBSD"));
+            }
+        },
+    }).unwrap();
 
     unsafe {
         bindings::krun_set_kernel(
@@ -1822,7 +1833,10 @@ impl AppRunner {
 
         if os == OSType::Linux {
             let dns_server = netutil::get_dns_server_with_fallback();
-            let vm_prelude = format!("echo nameserver {} > /etc/resolv.conf", dns_server);
+            let vm_prelude = format!(
+                "mount -t tmpfs tmpfs /tmp && echo nameserver {} > /tmp/resolv.conf",
+                dns_server
+            );
             let mut cmdline: Vec<BString> = vec!["/bin/bash".into(), "-c".into()];
             if let Some(command) = cmd.command {
                 cmdline.push(command.into());
@@ -1885,7 +1899,10 @@ impl AppRunner {
         let default_packages = get_default_packages();
 
         let dns_server = netutil::get_dns_server_with_fallback();
-        let vm_prelude = format!("echo nameserver {} > /etc/resolv.conf", dns_server);
+        let vm_prelude = format!(
+            "mount -t tmpfs tmpfs /tmp && echo nameserver {} > /tmp/resolv.conf",
+            dns_server
+        );
         let apk_command = match cmd {
             ApkCmd::Info => {
                 // Show information about custom packages
@@ -1934,7 +1951,7 @@ impl AppRunner {
         let vm_command = format!("{vm_prelude} && {apk_command}");
         let cmdline: Vec<BString> = vec!["/bin/bash".into(), "-c".into(), vm_command.into()];
 
-        let opts = VMOpts::new().read_only_disks(true);
+        let opts = VMOpts::new().read_only_disks(true).read_only_root(false);
         let ctx = setup_vm(&config, &[], NetworkMode::Default, false, opts)
             .context("Failed to setup microVM")?;
         let status =

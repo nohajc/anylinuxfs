@@ -100,7 +100,7 @@ pub fn start_vmnet_helper(config: &Config) -> anyhow::Result<(Child, VmnetConfig
     } else {
         false
     };
-    host_println!("vmnet-helper rootless mode: {}", rootless);
+    // host_println!("vmnet-helper rootless mode: {}", rootless);
 
     let known_networks =
         netutil::get_interface_networks().context("Failed to get interface networks")?;

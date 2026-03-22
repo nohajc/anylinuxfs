@@ -102,8 +102,8 @@ fn init_network(
 ) -> anyhow::Result<()> {
     // resolv.conf is already initialized and always the same on FreeBSD
     #[cfg(target_os = "linux")]
-    fs::write("/etc/resolv.conf", format!("nameserver {VM_GATEWAY_IP}\n"))
-        .context("Failed to write /etc/resolv.conf")?;
+    fs::write("/tmp/resolv.conf", format!("nameserver {VM_GATEWAY_IP}\n"))
+        .context("Failed to write /tmp/resolv.conf")?;
 
     let vm_gateway_ip = native_network
         .map(|net| net.hosts().next())
@@ -494,7 +494,21 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-const KERNEL_LOG_PATH: &str = "/var/log/kernel.log";
+#[cfg(target_os = "linux")]
+fn mount_tmpfs(paths: &[&str]) -> anyhow::Result<()> {
+    for path in paths {
+        let status = script(&format!("mount -t tmpfs tmpfs {}", path))
+            .status()
+            .context(format!("Failed to mount tmpfs on {path}"))?;
+
+        if !status.success() {
+            return Err(anyhow!("Failed to mount tmpfs on {path}"));
+        }
+    }
+    Ok(())
+}
+
+const KERNEL_LOG_PATH: &str = "/tmp/kernel.log";
 
 fn run() -> anyhow::Result<()> {
     // println!("vmproxy started");
@@ -508,6 +522,14 @@ fn run() -> anyhow::Result<()> {
     // }
 
     let cli = Cli::parse();
+
+    #[cfg(target_os = "linux")]
+    mount_tmpfs(&["/tmp", "/run", "/var/lib/nfs"])?;
+
+    #[cfg(target_os = "linux")]
+    script("mkdir -p /var/lib/nfs/rpc_pipefs /var/lib/nfs/sm")
+        .status()
+        .context("Failed to create /var/lib/nfs/{rpc_pipefs,sm} directories")?;
 
     init_network(&cli.bind_addr, cli.host_rpcbind, cli.native_network)
         .context("Failed to initialize network")?;
@@ -764,14 +786,14 @@ fn run() -> anyhow::Result<()> {
     #[cfg(target_os = "freebsd")]
     {
         setup_writable_dirs_for_nfsd().context("Failed to setup writable dirs for nfsd")?;
+    }
 
-        let mnt_tmp_status = script("mount -t tmpfs tmpfs /mnt")
-            .status()
-            .context("Failed to mount tmpfs on /mnt")?;
+    let mnt_tmp_status = script("mount -t tmpfs tmpfs /mnt")
+        .status()
+        .context("Failed to mount tmpfs on /mnt")?;
 
-        if !mnt_tmp_status.success() {
-            return Err(anyhow!("Failed to mount tmpfs on /mnt"));
-        }
+    if !mnt_tmp_status.success() {
+        return Err(anyhow!("Failed to mount tmpfs on /mnt"));
     }
 
     common_utils::fail_for_known_nonmountable_types(fs_type.as_deref())?;
@@ -1017,8 +1039,15 @@ fn run() -> anyhow::Result<()> {
         }
     }
 
-    fs::write("/etc/exports", exports_content).context("Failed to write to /etc/exports")?;
-    println!("Successfully initialized /etc/exports.");
+    let nfs_exports_path = if cfg!(target_os = "freebsd") {
+        "/etc/exports"
+    } else {
+        "/tmp/exports"
+    };
+
+    fs::write(nfs_exports_path, exports_content)
+        .context(format!("Failed to write to {}", nfs_exports_path))?;
+    println!("Successfully initialized {}.", nfs_exports_path);
 
     // let curl_result = Command::new("curl")
     //     .arg("ifconfig.co")

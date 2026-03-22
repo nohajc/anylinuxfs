@@ -323,7 +323,9 @@ mkdir -p $MOD_PATH
 unsquashfs -mem 32M -d $MOD_PATH modules.squashfs
 rm modules.squashfs
 depmod -a
+ln -sf /tmp/resolv.conf /etc/resolv.conf
 rm -v /etc/idmapd.conf /etc/exports
+ln -sf /tmp/exports /etc/exports
 `, packagesStr)
 
 	err := os.WriteFile(vmSetupScriptPath, []byte(vmSetupScriptContent), 0755)
