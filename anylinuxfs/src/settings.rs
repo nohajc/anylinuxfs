@@ -52,6 +52,7 @@ pub struct Config {
     pub sudo_uid: Option<libc::uid_t>,
     pub sudo_gid: Option<libc::gid_t>,
     pub passphrase_config: PassphrasePromptConfig,
+    pub rw_rootfs: bool,
     #[cfg(feature = "freebsd")]
     pub zfs_os: OSType,
     pub net_helper: NetHelper,

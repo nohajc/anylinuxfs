@@ -864,8 +864,10 @@ fn get_lsblk_info(
     enc_partitions: Option<&[String]>,
     assemble_raid: bool,
 ) -> anyhow::Result<LsBlk> {
+    let prelude = "mount -t tmpfs tmpfs /tmp && \
+        mount -t tmpfs tmpfs /run && ";
     let script = format!(
-        "{}{}/sbin/vgchange -ay >/dev/null; /bin/lsblk -O --json",
+        "{prelude}{}{}/sbin/vgchange -ay >/dev/null; /bin/lsblk -O --json",
         decrypt_script(dev_info, enc_partitions)?,
         if assemble_raid {
             "/sbin/mdadm --assemble --scan 2>/dev/null; "
@@ -905,7 +907,9 @@ fn get_lsblk_info(
         config,
         dev_info,
         NetworkMode::Default,
-        VMOpts::new().read_only_disks(true),
+        VMOpts::new()
+            .read_only_disks(true)
+            .read_only_root(!config.rw_rootfs),
         &lsblk_args,
         prompt_fn,
     )

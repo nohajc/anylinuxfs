@@ -202,6 +202,13 @@ struct CommonArgs {
     net_helper: Option<NetHelper>,
 }
 
+#[derive(Args, Default, Clone, PartialEq, Eq)]
+struct DebugArgs {
+    /// Use read-write root filesystem for the VM (only for troubleshooting)
+    #[arg(long)]
+    rw_rootfs: bool,
+}
+
 #[derive(Args, Clone)]
 struct DiskIdentArg {
     /// File path(s), LVM identifier or RAID identifier, e.g.:
@@ -250,6 +257,8 @@ struct MountCmd {
     /// Linux kernel page size
     #[arg(long)]
     kernel_page_size: Option<KernelPage>,
+    #[command(flatten)]
+    debug: DebugArgs,
     #[arg(short, long)]
     verbose: bool,
 }
@@ -310,6 +319,8 @@ struct ListCmd {
     microsoft: bool,
     #[command(flatten)]
     common: CommonArgs,
+    #[command(flatten)]
+    debug: DebugArgs,
 }
 
 #[derive(Args)]
@@ -342,6 +353,8 @@ struct ShellCmd {
     /// Use virtio-net instead of TSI for Linux shell
     #[arg(long)]
     no_tsi: bool,
+    #[command(flatten)]
+    debug: DebugArgs,
 }
 
 impl From<ShellCmd> for MountCmd {
@@ -359,6 +372,7 @@ impl From<ShellCmd> for MountCmd {
             window: false,
             bind_addr: "127.0.0.1".into(),
             kernel_page_size: shell_cmd.kernel_page_size,
+            debug: shell_cmd.debug,
             verbose: false,
         }
     }
@@ -464,7 +478,7 @@ fn is_read_only_set(mount_options: Option<&str>) -> bool {
     }
 }
 
-fn load_config(common_args: &CommonArgs) -> anyhow::Result<Config> {
+fn load_config(common_args: &CommonArgs, debug_args: &DebugArgs) -> anyhow::Result<Config> {
     let sudo_uid = env::var("SUDO_UID")
         .map_err(anyhow::Error::from)
         .and_then(|s| Ok(s.parse::<libc::uid_t>()?))
@@ -561,6 +575,8 @@ fn load_config(common_args: &CommonArgs) -> anyhow::Result<Config> {
         path: kernel_path,
     };
 
+    let rw_rootfs = debug_args.rw_rootfs;
+
     Ok(Config {
         home_dir,
         profile_path,
@@ -585,6 +601,7 @@ fn load_config(common_args: &CommonArgs) -> anyhow::Result<Config> {
         sudo_uid,
         sudo_gid,
         passphrase_config,
+        rw_rootfs,
         #[cfg(feature = "freebsd")]
         zfs_os,
         net_helper,
@@ -593,7 +610,7 @@ fn load_config(common_args: &CommonArgs) -> anyhow::Result<Config> {
 }
 
 fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
-    let common = load_config(&cmd.common)?;
+    let common = load_config(&cmd.common, &cmd.debug)?;
 
     let disk_path = cmd.disk_ident();
     let mount_options = cmd.options;
@@ -1810,7 +1827,9 @@ impl AppRunner {
         let (mut dev_info, _, _disks) = claim_devices(&mut config)?;
 
         #[allow(unused_mut)]
-        let mut opts = VMOpts::new().read_only_disks(config.read_only);
+        let mut opts = VMOpts::new()
+            .read_only_disks(config.read_only)
+            .read_only_root(!config.common.rw_rootfs);
         let os = config.common.kernel.os;
 
         #[cfg(feature = "freebsd")]
@@ -1867,7 +1886,7 @@ impl AppRunner {
     }
 
     fn run_dmesg(&mut self) -> anyhow::Result<()> {
-        let config = load_config(&CommonArgs::default())?;
+        let config = load_config(&CommonArgs::default(), &DebugArgs::default())?;
         let kernel_log_path = config.kernel_log_file_path.as_path();
 
         if !kernel_log_path.exists() {
@@ -1892,7 +1911,7 @@ impl AppRunner {
     }
 
     fn run_apk(&mut self, cmd: ApkCmd) -> anyhow::Result<()> {
-        let mut config = load_config(&CommonArgs::default())?;
+        let mut config = load_config(&CommonArgs::default(), &DebugArgs::default())?;
         let config_file_path = &config.config_file_path;
 
         let alpine_packages = config.preferences.alpine_custom_packages();
@@ -1971,7 +1990,7 @@ impl AppRunner {
 
     #[cfg(feature = "freebsd")]
     fn run_image(&mut self, cmd: ImageCmd) -> anyhow::Result<()> {
-        let config = load_config(&CommonArgs::default())?;
+        let config = load_config(&CommonArgs::default(), &DebugArgs::default())?;
         let images = config.preferences.images();
 
         match cmd {
@@ -2155,7 +2174,9 @@ impl AppRunner {
         let (mut dev_info, mut mnt_dev_info, _disks) = claim_devices(&mut config)?;
 
         #[allow(unused_mut)]
-        let mut opts = VMOpts::new().read_only_disks(config.read_only);
+        let mut opts = VMOpts::new()
+            .read_only_disks(config.read_only)
+            .read_only_root(!config.common.rw_rootfs);
 
         #[allow(unused_mut)]
         let mut img_src = ImageSource::default();
@@ -2937,14 +2958,14 @@ impl AppRunner {
 
     fn run_init(&mut self) -> anyhow::Result<()> {
         let _lock_file = LockFile::new(LOCK_FILE)?.acquire_lock(FlockKind::Exclusive)?;
-        let config = load_config(&CommonArgs::default())?;
+        let config = load_config(&CommonArgs::default(), &DebugArgs::default())?;
         vm_image::init(&config, true, &ImageSource::default())?;
 
         Ok(())
     }
 
     fn run_config(&mut self, cmd: ConfigCmd) -> anyhow::Result<()> {
-        let mut config = load_config(&cmd.common)?;
+        let mut config = load_config(&cmd.common, &DebugArgs::default())?;
         let config_file_path = &config.config_file_path;
 
         let krun_config = &mut config.preferences.user_mut().krun;
@@ -2987,7 +3008,7 @@ impl AppRunner {
     }
 
     fn run_list(&mut self, cmd: ListCmd) -> anyhow::Result<()> {
-        let mut config = load_config(&cmd.common)?;
+        let mut config = load_config(&cmd.common, &cmd.debug)?;
         vm_image::init(&config, false, &ImageSource::default())?;
 
         if cmd.decrypt.is_some() && !cmd.microsoft {
@@ -3009,7 +3030,7 @@ impl AppRunner {
     }
 
     fn run_actions(&mut self) -> anyhow::Result<()> {
-        let config = load_config(&CommonArgs::default())?;
+        let config = load_config(&CommonArgs::default(), &DebugArgs::default())?;
         for (action, config) in config.preferences.custom_actions() {
             safe_println!("{}: {}", action, config.description())?;
         }
@@ -3017,7 +3038,7 @@ impl AppRunner {
     }
 
     fn run_log(&mut self, cmd: LogCmd) -> anyhow::Result<()> {
-        let config = load_config(&CommonArgs::default())?;
+        let config = load_config(&CommonArgs::default(), &DebugArgs::default())?;
         let log_file_path = &config.log_file_path;
 
         if !log_file_path.exists() {
