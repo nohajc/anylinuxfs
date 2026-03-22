@@ -77,6 +77,7 @@ impl Default for NfsOptions {
         opts.insert("deadtimeout".into(), "45".into()); // this if what Finder uses
         opts.insert("nfc".into(), "".into());
         opts.insert("vers".into(), "3".into());
+        opts.insert("nolocks".into(), "".into());
         NfsOptions(opts)
     }
 }
