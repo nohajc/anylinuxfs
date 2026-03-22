@@ -13,7 +13,7 @@ load 'test_helper/common'
 
 PASSPHRASE="alfs-test-pass"
 LUKS_LABEL="alfsluksfs"
-LVM_ON_LUKS_VG="alfslukvg"
+LVM_ON_LUKS_VG="alfsluksvg"
 LVM_ON_LUKS_LV="alfslukslv"
 LVM_ON_LUKS_LABEL="alfslukslvm"
 
@@ -33,15 +33,16 @@ setup_file() {
   # --- LVM-on-LUKS ---
   # The LV is explicitly sized (-L 200M) and sits well within the container,
   # so it is unaffected by the 64 KiB device size discrepancy.
-  # create_sparse_image "${BATS_FILE_TMPDIR}/lvm-luks.img" 512M
-  # vm_exec "${BATS_FILE_TMPDIR}/lvm-luks.img" \
-  #   "echo -n '${PASSPHRASE}' | cryptsetup luksFormat --batch-mode /dev/vda - \
-  #    && echo -n '${PASSPHRASE}' | cryptsetup open /dev/vda alfslukslvm - \
-  #    && pvcreate /dev/mapper/alfslukslvm \
-  #    && vgcreate ${LVM_ON_LUKS_VG} /dev/mapper/alfslukslvm \
-  #    && lvcreate -L 200M -n ${LVM_ON_LUKS_LV} ${LVM_ON_LUKS_VG} \
-  #    && mkfs.ext4 -E root_owner=$(id -u):$(id -g) -L ${LVM_ON_LUKS_LABEL} /dev/${LVM_ON_LUKS_VG}/${LVM_ON_LUKS_LV} \
-  #    && cryptsetup close alfslukslvm"
+  create_sparse_image "${BATS_FILE_TMPDIR}/lvm-luks.img" 512M
+  vm_exec "${BATS_FILE_TMPDIR}/lvm-luks.img" \
+    "echo -n '${PASSPHRASE}' | cryptsetup luksFormat --batch-mode /dev/vda - \
+     && echo -n '${PASSPHRASE}' | cryptsetup open /dev/vda ${LVM_ON_LUKS_LABEL} - \
+     && pvcreate /dev/mapper/${LVM_ON_LUKS_LABEL} \
+     && vgcreate ${LVM_ON_LUKS_VG} /dev/mapper/${LVM_ON_LUKS_LABEL} \
+     && lvcreate -L 200M -n ${LVM_ON_LUKS_LV} ${LVM_ON_LUKS_VG} \
+     && mkfs.ext4 -E root_owner=$(id -u):$(id -g) -L ${LVM_ON_LUKS_LABEL} /dev/${LVM_ON_LUKS_VG}/${LVM_ON_LUKS_LV} \
+     && vgchange -an ${LVM_ON_LUKS_VG} \
+     && cryptsetup close ${LVM_ON_LUKS_LABEL}"
 }
 
 teardown() {
@@ -76,11 +77,11 @@ teardown() {
 #   do_unmount
 # }
 
-# @test "luks: LVM-on-LUKS mount with env var, file roundtrip, unmount" {
-#   local disk_id="lvm:${LVM_ON_LUKS_VG}:${BATS_FILE_TMPDIR}/lvm-luks.img:${LVM_ON_LUKS_LV}"
-#   ALFS_PASSPHRASE="$PASSPHRASE" "$ANYLINUXFS" "$disk_id" -w false
+@test "luks: LVM-on-LUKS mount with env var, file roundtrip, unmount" {
+  local disk_id="lvm:${LVM_ON_LUKS_VG}:${BATS_FILE_TMPDIR}/lvm-luks.img:${LVM_ON_LUKS_LV}"
+  ALFS_PASSPHRASE="$PASSPHRASE" "$ANYLINUXFS" "$disk_id" -w false
 
-#   assert_file_roundtrip "$(get_mount_point "$LVM_ON_LUKS_LABEL")"
+  assert_file_roundtrip "$(get_mount_point "$LVM_ON_LUKS_LABEL")"
 
-#   do_unmount
-# }
+  do_unmount
+}
