@@ -149,6 +149,15 @@ pub enum NetHelper {
     VmNet,
 }
 
+impl NetHelper {
+    pub fn os_override(self, os: OSType) -> Self {
+        match os {
+            OSType::FreeBSD => NetHelper::GvProxy,
+            OSType::Linux => self,
+        }
+    }
+}
+
 impl Display for NetHelper {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

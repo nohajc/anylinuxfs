@@ -198,6 +198,7 @@ struct CommonArgs {
     #[cfg(feature = "freebsd")]
     #[arg(long)]
     zfs_os: Option<OSType>,
+    /// Preferred network helper
     #[arg(long)]
     net_helper: Option<NetHelper>,
 }
@@ -775,20 +776,20 @@ enum NetworkMode {
 }
 
 impl NetworkMode {
-    fn default_for_os(os: OSType, net_helper: NetHelper, cfg: Option<VmnetConfig>) -> Self {
+    fn default_for_os(os: OSType) -> Self {
         match os {
-            OSType::FreeBSD => match net_helper {
-                NetHelper::GvProxy => NetworkMode::GvProxy,
-                NetHelper::VmNet => NetworkMode::VmNet(cfg.map(|c| c.vmnet_cidr)),
-            },
+            OSType::FreeBSD => NetworkMode::GvProxy,
             OSType::Linux => NetworkMode::Default,
         }
     }
 
-    fn default_virtio_net(net_helper: NetHelper, cfg: Option<VmnetConfig>) -> Self {
-        match net_helper {
-            NetHelper::GvProxy => NetworkMode::GvProxy,
-            NetHelper::VmNet => NetworkMode::VmNet(cfg.map(|c| c.vmnet_cidr)),
+    fn default_virtio_net(os: OSType, net_helper: NetHelper, cfg: Option<VmnetConfig>) -> Self {
+        match os {
+            OSType::FreeBSD => NetworkMode::GvProxy,
+            OSType::Linux => match net_helper {
+                NetHelper::GvProxy => NetworkMode::GvProxy,
+                NetHelper::VmNet => NetworkMode::VmNet(cfg.map(|c| c.vmnet_cidr)),
+            },
         }
     }
 }
@@ -1844,8 +1845,8 @@ impl AppRunner {
                 .collect();
         }
         let net_mode = match cmd.no_tsi {
-            true => NetworkMode::default_virtio_net(config.common.net_helper, None),
-            false => NetworkMode::default_for_os(os, config.common.net_helper, None),
+            true => NetworkMode::default_virtio_net(os, config.common.net_helper, None),
+            false => NetworkMode::default_for_os(os),
         };
         let ctx = setup_vm(&config.common, &dev_info, net_mode, false, opts)
             .context("Failed to setup microVM")?;
@@ -2296,8 +2297,9 @@ impl AppRunner {
             can_detach = false;
         }
 
+        let os = config.common.kernel.os;
         let (mut net_helper, net_helper_name, vmnet_config, vm_host) =
-            match config.common.net_helper {
+            match config.common.net_helper.os_override(os) {
                 NetHelper::GvProxy => (
                     vm_network::start_gvproxy(&config.common)?,
                     "gvproxy",
@@ -2359,7 +2361,7 @@ impl AppRunner {
             let ctx = setup_vm(
                 &config.common,
                 &dev_info,
-                NetworkMode::default_virtio_net(config.common.net_helper, vmnet_config),
+                NetworkMode::default_virtio_net(os, config.common.net_helper, vmnet_config),
                 true,
                 opts,
             )
