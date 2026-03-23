@@ -1775,7 +1775,7 @@ impl Default for AppRunner {
 
 impl AppRunner {
     fn run_shell(&mut self, cmd: ShellCmd) -> anyhow::Result<()> {
-        let _lock_file = LockFile::new(LOCK_FILE)?.acquire_lock(FlockKind::Exclusive)?;
+        let _lock_file = LockFile::new(LOCK_FILE)?.acquire_lock(FlockKind::Shared)?;
 
         let config = load_mount_config(cmd.clone().into())?;
         #[cfg(feature = "freebsd")]
@@ -2096,7 +2096,7 @@ impl AppRunner {
     }
 
     fn run_mount(&mut self, cmd: MountCmd) -> anyhow::Result<()> {
-        let _lock_file = LockFile::new(LOCK_FILE)?.acquire_lock(FlockKind::Exclusive)?;
+        let _lock_file = LockFile::new(LOCK_FILE)?.acquire_lock(FlockKind::Shared)?;
         let mut service_status = ServiceStatus::default();
 
         for port in [2049, 32765, 32767] {
@@ -3013,7 +3013,7 @@ impl AppRunner {
     }
 
     fn run_list(&mut self, cmd: ListCmd) -> anyhow::Result<()> {
-        let _lock_file = LockFile::new(LOCK_FILE)?.acquire_lock(FlockKind::Exclusive)?;
+        let _lock_file = LockFile::new(LOCK_FILE)?.acquire_lock(FlockKind::Shared)?;
 
         let mut config = load_config(&cmd.common, &cmd.debug)?;
         vm_image::init(&config, false, &ImageSource::default())?;
