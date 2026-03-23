@@ -1912,6 +1912,8 @@ impl AppRunner {
     }
 
     fn run_apk(&mut self, cmd: ApkCmd) -> anyhow::Result<()> {
+        let _lock_file = LockFile::new(LOCK_FILE)?.acquire_lock(FlockKind::Exclusive)?;
+
         let mut config = load_config(&CommonArgs::default(), &DebugArgs::default())?;
         let config_file_path = &config.config_file_path;
 
@@ -1991,6 +1993,7 @@ impl AppRunner {
 
     #[cfg(feature = "freebsd")]
     fn run_image(&mut self, cmd: ImageCmd) -> anyhow::Result<()> {
+        let _lock_file = LockFile::new(LOCK_FILE)?.acquire_lock(FlockKind::Exclusive)?;
         let config = load_config(&CommonArgs::default(), &DebugArgs::default())?;
         let images = config.preferences.images();
 
@@ -3010,6 +3013,8 @@ impl AppRunner {
     }
 
     fn run_list(&mut self, cmd: ListCmd) -> anyhow::Result<()> {
+        let _lock_file = LockFile::new(LOCK_FILE)?.acquire_lock(FlockKind::Exclusive)?;
+
         let mut config = load_config(&cmd.common, &cmd.debug)?;
         vm_image::init(&config, false, &ImageSource::default())?;
 
