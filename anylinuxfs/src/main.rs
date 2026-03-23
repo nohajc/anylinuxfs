@@ -326,6 +326,8 @@ struct ListCmd {
 
 #[derive(Args)]
 struct StopCmd {
+    /// Disk identifier or mount point to stop (e.g., /dev/diskXsY or /Volumes/MountPoint)
+    path: Option<String>,
     /// Force stop the VM
     #[arg(short, long)]
     force: bool,
@@ -1759,6 +1761,32 @@ struct ServiceStatus {
     rpcbind_running: bool,
 }
 
+fn discover_api_sockets() -> anyhow::Result<Vec<String>> {
+    let mut sockets = Vec::new();
+
+    if let Ok(entries) = fs::read_dir("/tmp") {
+        for entry in entries.flatten() {
+            if let Some(filename) = entry.file_name().to_str() {
+                if filename.starts_with("anylinuxfs-") && filename.ends_with(".sock") {
+                    if let Ok(path) = entry.path().into_os_string().into_string() {
+                        sockets.push(path);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(sockets)
+}
+
+fn get_runtime_info_from_socket(socket_path: &str) -> anyhow::Result<api::RuntimeInfo> {
+    api::UnixClient::make_request(socket_path, api::Request::GetConfig).and_then(
+        |resp| match resp {
+            api::Response::Config(rt_info) => Ok(rt_info),
+        },
+    )
+}
+
 struct AppRunner {
     is_child: bool,
     print_log: bool,
@@ -2167,6 +2195,7 @@ impl AppRunner {
         let stdin_forwarder;
         let services_to_restore: Vec<_>;
         let vm_native_ip;
+        let api_socket_path: String;
         let mut deferred = Deferred::new();
 
         let verbose = config.verbose;
@@ -2400,6 +2429,9 @@ impl AppRunner {
 
             let signal_hub = utils::start_signal_publisher()?;
 
+            // Generate unique API socket path for this instance
+            api_socket_path = format!("/tmp/anylinuxfs-{}.sock", rand_string(8));
+
             let rt_info = Arc::new(Mutex::new(api::RuntimeInfo {
                 mount_config: config.clone(),
                 dev_info: mnt_dev_info.clone(),
@@ -2411,7 +2443,18 @@ impl AppRunner {
                 mount_point: None,
             }));
 
-            api::serve_info(rt_info.clone());
+            api::serve_info(rt_info.clone(), api_socket_path.clone());
+
+            _ = deferred.add({
+                let sock_path = api_socket_path.clone();
+                move || {
+                    if let Err(e) = fs::remove_file(&sock_path) {
+                        if e.kind() != io::ErrorKind::NotFound {
+                            host_eprintln!("Error removing API socket file {}: {}", sock_path, e);
+                        }
+                    }
+                }
+            });
 
             if config.common.net_helper == NetHelper::GvProxy && service_status.rpcbind_running {
                 services_to_restore = rpcbind::services::list()?
@@ -2896,65 +2939,67 @@ impl AppRunner {
     }
 
     fn run_unmount(&mut self, cmd: UnmountCmd) -> anyhow::Result<()> {
-        let resp = api::UnixClient::make_request(api::Request::GetConfig);
+        let sockets = discover_api_sockets()?;
 
-        match resp {
-            Ok(api::Response::Config(rt_info)) => {
-                let mount_point = match validated_mount_point(&rt_info) {
-                    MountStatus::Mounted(mount_point) => mount_point,
-                    MountStatus::NoLonger => {
-                        eprintln!(
-                            "Drive {} no longer mounted but anylinuxfs is still running; try `anylinuxfs stop`.",
-                            &rt_info.mount_config.disk_path
-                        );
-                        return Err(StatusError::new("Mount point is not valid", 1).into());
-                    }
-                    MountStatus::NotYet => {
-                        eprintln!(
-                            "Drive {} not mounted yet, please wait",
-                            &rt_info.mount_config.disk_path
-                        );
-                        return Ok(());
-                    }
-                };
+        for socket_path in sockets {
+            let Ok(rt_info) = get_runtime_info_from_socket(&socket_path) else {
+                continue;
+            };
 
-                if let Some(path) = &cmd.path {
-                    let path = fs::canonicalize(path).unwrap_or(PathBuf::from(path));
-                    if path != Path::new(&rt_info.mount_config.disk_path)
-                        && path != mount_point
-                        && !rt_info
-                            .mount_config
-                            .disk_path
-                            .split(':')
-                            .any(|p| OsStr::new(p) == path.as_os_str())
-                    {
-                        println!("The specified path was not mounted by anylinuxfs.");
-                        return Ok(());
-                    }
-                }
+            // If a path was specified, check if this instance matches
+            if let Some(ref target_path) = cmd.path {
+                let target_path =
+                    fs::canonicalize(target_path).unwrap_or_else(|_| PathBuf::from(target_path));
+                let matches_disk = target_path == Path::new(&rt_info.mount_config.disk_path);
+                let matches_mount_point = rt_info
+                    .mount_point
+                    .as_ref()
+                    .map(|mp| target_path == Path::new(mp))
+                    .unwrap_or(false);
+                let matches_disk_part = rt_info
+                    .mount_config
+                    .disk_path
+                    .split(':')
+                    .any(|p| OsStr::new(p) == target_path.as_os_str());
 
-                let mount_table = fsutil::MountTable::new()?;
-
-                let our_mount_points = mount_table
-                    .mount_points()
-                    .map(|item| item.as_os_str())
-                    .filter(|&mpt| mpt.as_bytes().starts_with(mount_point.as_bytes()));
-
-                fsutil::unmount_nfs_subdirs(our_mount_points, mount_point)?;
-
-                if cmd.wait_for_vm {
-                    wait_for_proc_exit(rt_info.session_pgid)?;
+                if !matches_disk && !matches_mount_point && !matches_disk_part {
+                    continue;
                 }
             }
-            Err(err) => {
-                if let Some(err) = err.downcast_ref::<io::Error>() {
-                    match err.kind() {
-                        io::ErrorKind::ConnectionRefused => return Ok(()),
-                        io::ErrorKind::NotFound => return Ok(()),
-                        _ => (),
-                    }
+
+            let mount_point = match validated_mount_point(&rt_info) {
+                MountStatus::Mounted(mount_point) => mount_point,
+                MountStatus::NoLonger => {
+                    eprintln!(
+                        "Drive {} no longer mounted but anylinuxfs is still running; try `anylinuxfs stop`.",
+                        &rt_info.mount_config.disk_path
+                    );
+                    continue;
                 }
-                return Err(err);
+                MountStatus::NotYet => {
+                    eprintln!(
+                        "Drive {} not mounted yet, please wait",
+                        &rt_info.mount_config.disk_path
+                    );
+                    continue;
+                }
+            };
+
+            let mount_table = fsutil::MountTable::new()?;
+            let our_mount_points = mount_table
+                .mount_points()
+                .map(|item| item.as_os_str())
+                .filter(|&mpt| mpt.as_bytes().starts_with(mount_point.as_bytes()));
+
+            fsutil::unmount_nfs_subdirs(our_mount_points, &mount_point)?;
+
+            if cmd.wait_for_vm {
+                wait_for_proc_exit(rt_info.session_pgid)?;
+            }
+
+            // If a specific path was requested, we're done
+            if cmd.path.is_some() {
+                break;
             }
         }
 
@@ -3098,69 +3143,69 @@ impl AppRunner {
     }
 
     fn run_status(&mut self) -> anyhow::Result<()> {
-        let resp = api::UnixClient::make_request(api::Request::GetConfig);
+        let sockets = discover_api_sockets()?;
 
-        match resp {
-            Ok(api::Response::Config(rt_info)) => {
-                let mount_point = match validated_mount_point(&rt_info) {
-                    MountStatus::Mounted(mount_point) => mount_point,
-                    MountStatus::NoLonger => {
-                        eprintln!(
-                            "Drive {} no longer mounted but anylinuxfs is still running; try `anylinuxfs stop`.",
-                            &rt_info.mount_config.disk_path
-                        );
-                        return Err(StatusError::new("Mount point is not valid", 1).into());
+        if sockets.is_empty() {
+            return Ok(());
+        }
+
+        for socket_path in sockets {
+            match get_runtime_info_from_socket(&socket_path) {
+                Ok(rt_info) => {
+                    let mount_point = match validated_mount_point(&rt_info) {
+                        MountStatus::Mounted(mount_point) => mount_point,
+                        MountStatus::NoLonger => {
+                            eprintln!(
+                                "Drive {} no longer mounted but anylinuxfs is still running; try `anylinuxfs stop`.",
+                                &rt_info.mount_config.disk_path
+                            );
+                            continue;
+                        }
+                        MountStatus::NotYet => {
+                            eprintln!(
+                                "Drive {} not mounted yet, please wait",
+                                &rt_info.mount_config.disk_path
+                            );
+                            continue;
+                        }
+                    };
+
+                    let user_name =
+                        utils::user_name_from_uid(rt_info.mount_config.common.invoker_uid)
+                            .unwrap_or("<unknown>".into());
+                    let mounted_by = format!("mounted by {}", &user_name);
+
+                    let info: Vec<_> = rt_info
+                        .dev_info
+                        .fs_driver()
+                        .into_iter()
+                        .chain(
+                            rt_info
+                                .mount_config
+                                .mount_options
+                                .iter()
+                                .flat_map(|opts| opts.split(',')),
+                        )
+                        .chain([mounted_by.as_str()])
+                        .collect();
+
+                    let mut disk = rt_info.mount_config.disk_path.as_str();
+                    if disk.is_empty() {
+                        disk = "<unknown>";
                     }
-                    MountStatus::NotYet => {
-                        eprintln!(
-                            "Drive {} not mounted yet, please wait",
-                            &rt_info.mount_config.disk_path
-                        );
-                        return Ok(());
-                    }
-                };
-
-                let user_name = utils::user_name_from_uid(rt_info.mount_config.common.invoker_uid)
-                    .unwrap_or("<unknown>".into());
-                let mounted_by = format!("mounted by {}", &user_name);
-
-                let info: Vec<_> = rt_info
-                    .dev_info
-                    .fs_driver()
-                    .into_iter()
-                    .chain(
-                        rt_info
-                            .mount_config
-                            .mount_options
-                            .iter()
-                            .flat_map(|opts| opts.split(',')),
-                    )
-                    .chain([mounted_by.as_str()])
-                    .collect();
-
-                let mut disk = rt_info.mount_config.disk_path.as_str();
-                if disk.is_empty() {
-                    disk = "<unknown>";
+                    println!(
+                        "{} on {} ({}) VM[cpus: {}, ram: {} MiB]",
+                        disk,
+                        mount_point.display(),
+                        info.join(", "),
+                        rt_info.mount_config.common.preferences.krun_num_vcpus(),
+                        rt_info.mount_config.common.preferences.krun_ram_size_mib(),
+                    );
                 }
-                println!(
-                    "{} on {} ({}) VM[cpus: {}, ram: {} MiB]",
-                    disk,
-                    mount_point.display(),
-                    info.join(", "),
-                    rt_info.mount_config.common.preferences.krun_num_vcpus(),
-                    rt_info.mount_config.common.preferences.krun_ram_size_mib(),
-                );
-                // println!("mount_config: {:#?}", &rt_info.mount_config);
-            }
-            Err(err) => {
-                if let Some(err) = err.downcast_ref::<io::Error>() {
-                    match err.kind() {
-                        io::ErrorKind::ConnectionRefused => return Ok(()),
-                        io::ErrorKind::NotFound => return Ok(()),
-                        _ => (),
-                    }
+                Err(_) => {
+                    // Skip sockets that can't be reached (stale or in transition)
+                    continue;
                 }
-                return Err(err);
             }
         }
 
@@ -3168,40 +3213,59 @@ impl AppRunner {
     }
 
     fn run_stop(&mut self, cmd: StopCmd) -> anyhow::Result<()> {
-        let resp = api::UnixClient::make_request(api::Request::GetConfig);
+        // Require a path to identify which instance to stop
+        let Some(target_path_str) = &cmd.path else {
+            return Err(anyhow!(
+                "Please specify the disk identifier or mount point to stop. Example: anylinuxfs stop /dev/diskXsY"
+            ));
+        };
 
-        match resp {
-            Ok(api::Response::Config(rt_info)) => {
-                if !cmd.force {
-                    match validated_mount_point(&rt_info) {
-                        MountStatus::Mounted(mount_point) => {
-                            // try to trigger normal shutdown
-                            println!("Unmounting {}...", mount_point.display());
-                            unmount_fs(&mount_point)?;
-                            return Ok(());
+        let target_path =
+            fs::canonicalize(target_path_str).unwrap_or_else(|_| PathBuf::from(target_path_str));
+
+        let sockets = discover_api_sockets()?;
+
+        for socket_path in sockets {
+            let Ok(rt_info) = get_runtime_info_from_socket(&socket_path) else {
+                continue;
+            };
+
+            // Check if this instance matches the target path
+            let matches_disk = target_path == Path::new(&rt_info.mount_config.disk_path);
+            let matches_mount_point = rt_info
+                .mount_point
+                .as_ref()
+                .map(|mp| target_path == Path::new(mp))
+                .unwrap_or(false);
+            let matches_disk_part = rt_info
+                .mount_config
+                .disk_path
+                .split(':')
+                .any(|p| OsStr::new(p) == target_path.as_os_str());
+
+            if !matches_disk && !matches_mount_point && !matches_disk_part {
+                continue;
+            }
+
+            // Found matching instance, now perform the stop
+            if !cmd.force {
+                match validated_mount_point(&rt_info) {
+                    MountStatus::Mounted(mount_point) => {
+                        // try to trigger normal shutdown
+                        println!("Unmounting {}...", mount_point.display());
+                        unmount_fs(&mount_point)?;
+                        return Ok(());
+                    }
+                    MountStatus::NotYet => {
+                        let mut vm_exited_gracefully = false;
+                        println!("Trying to shutdown anylinuxfs VM directly...");
+                        if send_quit_cmd(&rt_info.mount_config.common, rt_info.vm_native_ip).is_ok()
+                        {
+                            // wait for vmm process to exit or become zombie
+                            vm_exited_gracefully = wait_for_proc_exit(rt_info.vmm_pid).is_ok();
                         }
-                        MountStatus::NotYet => {
-                            let mut vm_exited_gracefully = false;
-                            println!("Trying to shutdown anylinuxfs VM directly...");
-                            if send_quit_cmd(&rt_info.mount_config.common, rt_info.vm_native_ip)
-                                .is_ok()
-                            {
-                                // wait for vmm process to exit or become zombie
-                                vm_exited_gracefully = wait_for_proc_exit(rt_info.vmm_pid).is_ok();
-                            }
-                            if !vm_exited_gracefully {
-                                println!("Sending quit command didn't work, try SIGTERM...");
-                                // not killing the whole process group, just the session leader;
-                                // this should trigger graceful shutdown of the VMM and its parent
-                                if unsafe { libc::kill(rt_info.session_pgid, libc::SIGTERM) } < 0 {
-                                    return Err(io::Error::last_os_error())
-                                        .context(format!("Failed to send SIGTERM to anylinuxfs"));
-                                }
-                            }
-                            println!("VM exited gracefully");
-                        }
-                        MountStatus::NoLonger => {
-                            println!("Already unmounted, shutting down...");
+                        if !vm_exited_gracefully {
+                            println!("Sending quit command didn't work, try SIGTERM...");
                             // not killing the whole process group, just the session leader;
                             // this should trigger graceful shutdown of the VMM and its parent
                             if unsafe { libc::kill(rt_info.session_pgid, libc::SIGTERM) } < 0 {
@@ -3209,63 +3273,68 @@ impl AppRunner {
                                     .context(format!("Failed to send SIGTERM to anylinuxfs"));
                             }
                         }
+                        println!("VM exited gracefully");
+                        return Ok(());
                     }
-                } else {
-                    if let MountStatus::Mounted(mount_point) = validated_mount_point(&rt_info) {
-                        print!(
-                            "This action will force kill anylinuxfs. You should first unmount {} if possible.\nDo you want to proceed anyway? [y/N] ",
-                            mount_point.display()
-                        );
-                        io::stdout().flush()?;
-                        let mut input = String::new();
-                        io::stdin().read_line(&mut input)?;
-                        if !matches!(input.trim().to_lowercase().as_str(), "y" | "yes") {
-                            return Ok(());
+                    MountStatus::NoLonger => {
+                        println!("Already unmounted, shutting down...");
+                        // not killing the whole process group, just the session leader;
+                        // this should trigger graceful shutdown of the VMM and its parent
+                        if unsafe { libc::kill(rt_info.session_pgid, libc::SIGTERM) } < 0 {
+                            return Err(io::Error::last_os_error())
+                                .context(format!("Failed to send SIGTERM to anylinuxfs"));
                         }
+                        return Ok(());
                     }
-                    println!("Trying to shutdown anylinuxfs VM directly...");
-                    let mut vm_exited_gracefully = false;
-                    if send_quit_cmd(&rt_info.mount_config.common, rt_info.vm_native_ip).is_ok() {
-                        // wait for vmm process to exit or become zombie
-                        vm_exited_gracefully = wait_for_proc_exit(rt_info.vmm_pid).is_ok();
-                    }
-                    if vm_exited_gracefully {
-                        println!("VM exited gracefully, killing the remaining processes...");
-                    } else {
-                        println!("Killing anylinuxfs processes...");
-                    }
-                    if unsafe { libc::kill(rt_info.net_helper_pid, libc::SIGTERM) } == 0 {
-                        // gvproxy could still terminate gracefully
-                        if wait_for_proc_exit(rt_info.net_helper_pid).is_ok() {
-                            println!("gvproxy exited gracefully");
-                        }
-                    }
-                    if unsafe { libc::killpg(rt_info.session_pgid, libc::SIGKILL) } < 0 {
-                        let last_error = io::Error::last_os_error();
-                        if last_error.raw_os_error().unwrap() != libc::ESRCH {
-                            return Err(last_error)
-                                .context(format!("Failed to send SIGKILL to anylinuxfs"));
-                        }
-                    }
-                    _ = vm_network::vsock_cleanup(&rt_info.mount_config.common.vsock_path);
-                    _ = vm_network::vfkit_sock_cleanup(
-                        &rt_info.mount_config.common.unixgram_sock_path,
+                }
+            } else {
+                if let MountStatus::Mounted(mount_point) = validated_mount_point(&rt_info) {
+                    print!(
+                        "This action will force kill anylinuxfs. You should first unmount {} if possible.\nDo you want to proceed anyway? [y/N] ",
+                        mount_point.display()
                     );
-                }
-            }
-            Err(err) => {
-                if let Some(err) = err.downcast_ref::<io::Error>() {
-                    match err.kind() {
-                        io::ErrorKind::ConnectionRefused => return Ok(()),
-                        io::ErrorKind::NotFound => return Ok(()),
-                        _ => (),
+                    io::stdout().flush()?;
+                    let mut input = String::new();
+                    io::stdin().read_line(&mut input)?;
+                    if !matches!(input.trim().to_lowercase().as_str(), "y" | "yes") {
+                        return Ok(());
                     }
                 }
-                return Err(err);
+                println!("Trying to shutdown anylinuxfs VM directly...");
+                let mut vm_exited_gracefully = false;
+                if send_quit_cmd(&rt_info.mount_config.common, rt_info.vm_native_ip).is_ok() {
+                    // wait for vmm process to exit or become zombie
+                    vm_exited_gracefully = wait_for_proc_exit(rt_info.vmm_pid).is_ok();
+                }
+                if vm_exited_gracefully {
+                    println!("VM exited gracefully, killing the remaining processes...");
+                } else {
+                    println!("Killing anylinuxfs processes...");
+                }
+                if unsafe { libc::kill(rt_info.net_helper_pid, libc::SIGTERM) } == 0 {
+                    // gvproxy could still terminate gracefully
+                    if wait_for_proc_exit(rt_info.net_helper_pid).is_ok() {
+                        println!("gvproxy exited gracefully");
+                    }
+                }
+                if unsafe { libc::killpg(rt_info.session_pgid, libc::SIGKILL) } < 0 {
+                    let last_error = io::Error::last_os_error();
+                    if last_error.raw_os_error().unwrap() != libc::ESRCH {
+                        return Err(last_error)
+                            .context(format!("Failed to send SIGKILL to anylinuxfs"));
+                    }
+                }
+                _ = vm_network::vsock_cleanup(&rt_info.mount_config.common.vsock_path);
+                _ = vm_network::vfkit_sock_cleanup(&rt_info.mount_config.common.unixgram_sock_path);
+                return Ok(());
             }
         }
 
-        Ok(())
+        // No matching instance found
+        Err(anyhow!(
+            "No anylinuxfs instance found for: {}",
+            target_path_str
+        ))
     }
 
     fn run(&mut self) -> anyhow::Result<()> {

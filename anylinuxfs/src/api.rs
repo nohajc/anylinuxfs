@@ -1,5 +1,4 @@
 use std::{
-    fs,
     net::Ipv4Addr,
     os::unix::{
         fs::chown,
@@ -19,8 +18,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::{devinfo::DevInfo, settings::MountConfig};
 
-const API_SOCKET: &str = "/tmp/anylinuxfs.sock";
-
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RuntimeInfo {
     pub mount_config: MountConfig,
@@ -33,16 +30,10 @@ pub struct RuntimeInfo {
     pub mount_point: Option<String>,
 }
 
-pub fn serve_info(rt_info: Arc<Mutex<RuntimeInfo>>) {
+pub fn serve_info(rt_info: Arc<Mutex<RuntimeInfo>>, socket_path: String) {
     _ = thread::spawn(move || {
-        let socket_path = Path::new(API_SOCKET);
-        // Remove the socket file if it exists
-        if socket_path.exists() {
-            if let Err(e) = fs::remove_file(socket_path) {
-                host_eprintln!("Error removing socket file: {}", e);
-            }
-        }
-        if let Err(e) = UnixHandler::serve(rt_info, socket_path) {
+        let path = Path::new(&socket_path);
+        if let Err(e) = UnixHandler::serve(rt_info, path) {
             host_eprintln!("Error in serve_config: {}", e);
         }
     });
@@ -104,8 +95,8 @@ impl UnixHandler {
 pub struct UnixClient {}
 
 impl UnixClient {
-    pub fn make_request(req: Request) -> anyhow::Result<Response> {
-        let mut stream = UnixStream::connect(API_SOCKET).context("Failed to connect to socket")?;
+    pub fn make_request(socket_path: &str, req: Request) -> anyhow::Result<Response> {
+        let mut stream = UnixStream::connect(socket_path).context("Failed to connect to socket")?;
         Client::write_request(&mut stream, &req)?;
         let resp = Client::read_response(&mut stream)?;
         Ok(resp)
