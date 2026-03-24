@@ -3262,6 +3262,7 @@ impl AppRunner {
             return Ok(());
         }
 
+        let mut status_list = Vec::new();
         for socket_path in sockets {
             match get_runtime_info_from_socket(&socket_path) {
                 Ok(rt_info) => {
@@ -3306,20 +3307,25 @@ impl AppRunner {
                     if disk.is_empty() {
                         disk = "<unknown>";
                     }
-                    println!(
+                    status_list.push(format!(
                         "{} on {} ({}) VM[cpus: {}, ram: {} MiB]",
                         disk,
                         mount_point.display(),
                         info.join(", "),
                         rt_info.mount_config.common.preferences.krun_num_vcpus(),
                         rt_info.mount_config.common.preferences.krun_ram_size_mib(),
-                    );
+                    ));
                 }
                 Err(_) => {
                     // Skip sockets that can't be reached (stale or in transition)
                     continue;
                 }
             }
+        }
+
+        status_list.sort();
+        for status in status_list {
+            println!("{}", status);
         }
 
         Ok(())
