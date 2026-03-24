@@ -530,6 +530,9 @@ fn load_config(common_args: &CommonArgs, debug_args: &DebugArgs) -> anyhow::Resu
         .parent()
         .context("Failed to get prefix directory")?;
 
+    // Generate unique log file ID for this instance
+    let log_file_id = rand_string(8);
+
     // ~/.anylinuxfs/alpine/rootfs
     let profile_path = home_dir.join(".anylinuxfs");
     let alpine_path = profile_path.join("alpine");
@@ -537,9 +540,9 @@ fn load_config(common_args: &CommonArgs, debug_args: &DebugArgs) -> anyhow::Resu
     let root_ver_file_path = alpine_path.join("rootfs.ver");
     let config_file_path = home_dir.join(".anylinuxfs").join("config.toml");
     let log_dir = home_dir.join("Library").join("Logs");
-    let log_file_path = log_dir.join("anylinuxfs.log");
-    let kernel_log_file_path = log_dir.join("anylinuxfs_kernel.log");
-    let nethelper_log_path = log_dir.join("anylinuxfs_nethelper.log");
+    let log_file_path = log_dir.join(format!("anylinuxfs-{}.log", log_file_id));
+    let kernel_log_file_path = log_dir.join(format!("anylinuxfs_kernel-{}.log", log_file_id));
+    let nethelper_log_path = log_dir.join(format!("anylinuxfs_nethelper-{}.log", log_file_id));
 
     let libexec_path = prefix_dir.join("libexec");
     let init_rootfs_path = libexec_path.join("init-rootfs").to_owned();
@@ -1787,6 +1790,79 @@ fn get_runtime_info_from_socket(socket_path: &str) -> anyhow::Result<api::Runtim
     )
 }
 
+const LOG_RETENTION_COUNT: usize = 10;
+
+fn cleanup_old_logs(log_dir: &Path) -> anyhow::Result<()> {
+    // Discover all active instances and get their log file paths
+    let mut active_log_paths = std::collections::HashSet::new();
+    if let Ok(sockets) = discover_api_sockets() {
+        for socket in sockets {
+            if let Ok(rt_info) = get_runtime_info_from_socket(&socket) {
+                active_log_paths.insert(rt_info.mount_config.common.log_file_path);
+            }
+        }
+    }
+
+    // Calculate retention count
+    let active_count = active_log_paths.len();
+    let retention_count = std::cmp::max(active_count, LOG_RETENTION_COUNT - 1);
+
+    // Collect all log files with their metadata
+    let mut log_files: Vec<(PathBuf, std::time::SystemTime)> = Vec::new();
+    if let Ok(entries) = fs::read_dir(log_dir) {
+        for entry in entries.flatten() {
+            if let Ok(metadata) = entry.metadata() {
+                let path = entry.path();
+                if let Some(filename) = path.file_name() {
+                    if let Some(fname_str) = filename.to_str() {
+                        if (fname_str.starts_with("anylinuxfs-")
+                            || fname_str.starts_with("anylinuxfs."))
+                            && fname_str.ends_with(".log")
+                        {
+                            if let Ok(modified) = metadata.modified() {
+                                log_files.push((path, modified));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Sort by modification time (newest first)
+    log_files.sort_by(|a, b| b.1.cmp(&a.1));
+
+    // Delete old files, keeping only the newest ones
+    for (idx, (path, _)) in log_files.iter().enumerate() {
+        if idx >= retention_count {
+            // Only delete if it's not an active instance's log
+            if !active_log_paths.contains(path) {
+                let _ = fs::remove_file(path);
+
+                // Also delete corresponding kernel and nethelper logs
+                if let Some(filename) = path.file_name() {
+                    if let Some(fname_str) = filename.to_str() {
+                        // Extract log_file_id from filename: "anylinuxfs-{ID}.log" -> "{ID}"
+                        if let Some(id_part) = fname_str
+                            .strip_prefix("anylinuxfs")
+                            .and_then(|s| s.strip_suffix(".log"))
+                        {
+                            let kernel_log =
+                                log_dir.join(format!("anylinuxfs_kernel{}.log", id_part));
+                            let nethelper_log =
+                                log_dir.join(format!("anylinuxfs_nethelper{}.log", id_part));
+                            let _ = fs::remove_file(&kernel_log);
+                            let _ = fs::remove_file(&nethelper_log);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 struct AppRunner {
     is_child: bool,
     print_log: bool,
@@ -2150,6 +2226,11 @@ impl AppRunner {
         }
 
         let log_file_path = &config.common.log_file_path;
+
+        // Clean up old log files before initializing new log
+        if let Some(log_dir) = log_file_path.parent() {
+            _ = cleanup_old_logs(log_dir);
+        }
 
         log::init_log_file(log_file_path).context("Failed to create log file")?;
         // Change owner to invoker_uid and invoker_gid
@@ -3091,10 +3172,40 @@ impl AppRunner {
 
     fn run_log(&mut self, cmd: LogCmd) -> anyhow::Result<()> {
         let config = load_config(&CommonArgs::default(), &DebugArgs::default())?;
-        let log_file_path = &config.log_file_path;
+        let log_dir = config.home_dir.join("Library").join("Logs");
+
+        // Scan for all anylinuxfs-*.log files
+        let mut log_files: Vec<(PathBuf, std::time::SystemTime)> = Vec::new();
+        if let Ok(entries) = fs::read_dir(&log_dir) {
+            for entry in entries.flatten() {
+                if let Ok(metadata) = entry.metadata() {
+                    let path = entry.path();
+                    if let Some(filename) = path.file_name() {
+                        if let Some(fname_str) = filename.to_str() {
+                            if fname_str.starts_with("anylinuxfs-") && fname_str.ends_with(".log") {
+                                if let Ok(modified) = metadata.modified() {
+                                    log_files.push((path, modified));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if log_files.is_empty() {
+            return Err(anyhow!("No log files found in {}", log_dir.display()));
+        }
+
+        // Sort by modification time (newest first) and get the latest
+        log_files.sort_by(|a, b| b.1.cmp(&a.1));
+        let log_file_path = &log_files[0].0;
 
         if !log_file_path.exists() {
-            return Ok(());
+            return Err(anyhow!(
+                "Log file {} does not exist",
+                log_file_path.display()
+            ));
         }
 
         let log_file = File::open(log_file_path).context("Failed to open log file")?;
