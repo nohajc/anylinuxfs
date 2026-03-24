@@ -14,7 +14,7 @@ use serde_with::{DisplayFromStr, serde_as};
 use toml_edit::{Document, DocumentMut};
 
 use std::borrow::Cow;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -24,7 +24,7 @@ use std::os::unix::fs::chown;
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 use std::ptr::null;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::{
     env,
     ffi::CString,
@@ -1478,7 +1478,7 @@ fn wait_for_vm_status(pid: libc::pid_t) -> anyhow::Result<Option<i32>> {
 
 // when the process isn't a child
 fn wait_for_proc_exit(pid: libc::pid_t) -> anyhow::Result<()> {
-    let start = std::time::Instant::now();
+    let start = Instant::now();
     loop {
         if start.elapsed() > Duration::from_secs(5) {
             return Err(anyhow!("Timeout waiting for process exit"));
@@ -1764,16 +1764,14 @@ struct ServiceStatus {
     rpcbind_running: bool,
 }
 
-fn discover_api_sockets() -> anyhow::Result<Vec<String>> {
+fn discover_api_sockets() -> anyhow::Result<Vec<PathBuf>> {
     let mut sockets = Vec::new();
 
     if let Ok(entries) = fs::read_dir("/tmp") {
         for entry in entries.flatten() {
             if let Some(filename) = entry.file_name().to_str() {
-                if filename.starts_with("anylinuxfs-") && filename.ends_with(".sock") {
-                    if let Ok(path) = entry.path().into_os_string().into_string() {
-                        sockets.push(path);
-                    }
+                if filename.starts_with("anylinuxfs") && filename.ends_with(".sock") {
+                    sockets.push(entry.path());
                 }
             }
         }
@@ -1782,7 +1780,7 @@ fn discover_api_sockets() -> anyhow::Result<Vec<String>> {
     Ok(sockets)
 }
 
-fn get_runtime_info_from_socket(socket_path: &str) -> anyhow::Result<api::RuntimeInfo> {
+fn get_runtime_info_from_socket(socket_path: &Path) -> anyhow::Result<api::RuntimeInfo> {
     api::UnixClient::make_request(socket_path, api::Request::GetConfig).and_then(
         |resp| match resp {
             api::Response::Config(rt_info) => Ok(rt_info),
@@ -1792,13 +1790,16 @@ fn get_runtime_info_from_socket(socket_path: &str) -> anyhow::Result<api::Runtim
 
 const LOG_RETENTION_COUNT: usize = 10;
 
-fn cleanup_old_logs(log_dir: &Path) -> anyhow::Result<()> {
+fn cleanup_old_logs_and_sockets(log_dir: &Path) -> anyhow::Result<()> {
     // Discover all active instances and get their log file paths
-    let mut active_log_paths = std::collections::HashSet::new();
+    let mut active_log_paths = HashSet::new();
     if let Ok(sockets) = discover_api_sockets() {
         for socket in sockets {
             if let Ok(rt_info) = get_runtime_info_from_socket(&socket) {
                 active_log_paths.insert(rt_info.mount_config.common.log_file_path);
+            } else {
+                // If we can't get runtime info, the socket is likely stale
+                let _ = fs::remove_file(socket);
             }
         }
     }
@@ -1808,7 +1809,7 @@ fn cleanup_old_logs(log_dir: &Path) -> anyhow::Result<()> {
     let retention_count = std::cmp::max(active_count, LOG_RETENTION_COUNT - 1);
 
     // Collect all log files with their metadata
-    let mut log_files: Vec<(PathBuf, std::time::SystemTime)> = Vec::new();
+    let mut log_files = Vec::new();
     if let Ok(entries) = fs::read_dir(log_dir) {
         for entry in entries.flatten() {
             if let Ok(metadata) = entry.metadata() {
@@ -2229,7 +2230,7 @@ impl AppRunner {
 
         // Clean up old log files before initializing new log
         if let Some(log_dir) = log_file_path.parent() {
-            _ = cleanup_old_logs(log_dir);
+            _ = cleanup_old_logs_and_sockets(log_dir);
         }
 
         log::init_log_file(log_file_path).context("Failed to create log file")?;
@@ -2526,13 +2527,14 @@ impl AppRunner {
 
             api::serve_info(rt_info.clone(), api_socket_path.clone());
 
-            _ = deferred.add({
-                let sock_path = api_socket_path.clone();
-                move || {
-                    if let Err(e) = fs::remove_file(&sock_path) {
-                        if e.kind() != io::ErrorKind::NotFound {
-                            host_eprintln!("Error removing API socket file {}: {}", sock_path, e);
-                        }
+            _ = deferred.add(move || {
+                if let Err(e) = fs::remove_file(&api_socket_path) {
+                    if e.kind() != io::ErrorKind::NotFound {
+                        host_eprintln!(
+                            "Error removing API socket file {}: {}",
+                            &api_socket_path,
+                            e
+                        );
                     }
                 }
             });
@@ -3175,7 +3177,7 @@ impl AppRunner {
         let log_dir = config.home_dir.join("Library").join("Logs");
 
         // Scan for all anylinuxfs-*.log files
-        let mut log_files: Vec<(PathBuf, std::time::SystemTime)> = Vec::new();
+        let mut log_files = Vec::new();
         if let Ok(entries) = fs::read_dir(&log_dir) {
             for entry in entries.flatten() {
                 if let Ok(metadata) = entry.metadata() {

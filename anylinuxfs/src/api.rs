@@ -95,7 +95,7 @@ impl UnixHandler {
 pub struct UnixClient {}
 
 impl UnixClient {
-    pub fn make_request(socket_path: &str, req: Request) -> anyhow::Result<Response> {
+    pub fn make_request(socket_path: &Path, req: Request) -> anyhow::Result<Response> {
         let mut stream = UnixStream::connect(socket_path).context("Failed to connect to socket")?;
         Client::write_request(&mut stream, &req)?;
         let resp = Client::read_response(&mut stream)?;
