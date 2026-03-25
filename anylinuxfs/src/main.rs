@@ -24,7 +24,7 @@ use std::os::unix::fs::chown;
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 use std::ptr::null;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use std::{
     env,
     ffi::CString,
@@ -1790,6 +1790,31 @@ fn get_runtime_info_from_socket(socket_path: &Path) -> anyhow::Result<api::Runti
 
 const LOG_RETENTION_COUNT: usize = 10;
 
+/// Collect files with their mtimes that match a given predicate
+fn collect_files_with_mtime<F>(dir: &Path, predicate: F) -> Vec<(PathBuf, SystemTime)>
+where
+    F: Fn(&str) -> bool,
+{
+    let mut log_files = Vec::new();
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            if let Ok(metadata) = entry.metadata() {
+                let path = entry.path();
+                if let Some(filename) = path.file_name() {
+                    if let Some(fname_str) = filename.to_str() {
+                        if predicate(fname_str) {
+                            if let Ok(modified) = metadata.modified() {
+                                log_files.push((path, modified));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    log_files
+}
+
 fn cleanup_old_logs_and_sockets(log_dir: &Path) -> anyhow::Result<()> {
     // Discover all active instances and get their log file paths
     let mut active_log_paths = HashSet::new();
@@ -1808,27 +1833,11 @@ fn cleanup_old_logs_and_sockets(log_dir: &Path) -> anyhow::Result<()> {
     let active_count = active_log_paths.len();
     let retention_count = std::cmp::max(active_count, LOG_RETENTION_COUNT - 1);
 
-    // Collect all log files with their metadata
-    let mut log_files = Vec::new();
-    if let Ok(entries) = fs::read_dir(log_dir) {
-        for entry in entries.flatten() {
-            if let Ok(metadata) = entry.metadata() {
-                let path = entry.path();
-                if let Some(filename) = path.file_name() {
-                    if let Some(fname_str) = filename.to_str() {
-                        if (fname_str.starts_with("anylinuxfs-")
-                            || fname_str.starts_with("anylinuxfs."))
-                            && fname_str.ends_with(".log")
-                        {
-                            if let Ok(modified) = metadata.modified() {
-                                log_files.push((path, modified));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
+    // Collect all log files matching the cleanup pattern
+    let mut log_files = collect_files_with_mtime(log_dir, |fname| {
+        (fname.starts_with("anylinuxfs-") || fname.starts_with("anylinuxfs."))
+            && fname.ends_with(".log")
+    });
 
     // Sort by modification time (newest first)
     log_files.sort_by(|a, b| b.1.cmp(&a.1));
@@ -1862,6 +1871,21 @@ fn cleanup_old_logs_and_sockets(log_dir: &Path) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+/// Find the most recently modified log file matching a pattern in a directory
+fn find_latest_log(log_dir: &Path, pattern_start: &str, pattern_end: &str) -> Option<PathBuf> {
+    let mut log_files = collect_files_with_mtime(log_dir, |fname| {
+        fname.starts_with(pattern_start) && fname.ends_with(pattern_end)
+    });
+
+    if log_files.is_empty() {
+        return None;
+    }
+
+    // Sort by modification time (newest first) and get the latest
+    log_files.sort_by(|a, b| b.1.cmp(&a.1));
+    Some(log_files[0].0.clone())
 }
 
 struct AppRunner {
@@ -1993,13 +2017,18 @@ impl AppRunner {
 
     fn run_dmesg(&mut self) -> anyhow::Result<()> {
         let config = load_config(&CommonArgs::default(), &DebugArgs::default())?;
-        let kernel_log_path = config.kernel_log_file_path.as_path();
+        let log_dir = config.home_dir.join("Library").join("Logs");
+
+        // Find the most recently modified kernel log file (if it exists)
+        let Some(kernel_log_path) = find_latest_log(&log_dir, "anylinuxfs_kernel-", ".log") else {
+            return Ok(());
+        };
 
         if !kernel_log_path.exists() {
             return Ok(());
         }
 
-        let log_file = File::open(kernel_log_path)
+        let log_file = File::open(&kernel_log_path)
             .context(format!("Failed to open {}", kernel_log_path.display()))?;
         let mut buf_reader = BufReader::new(log_file);
         let mut line = String::new();
@@ -3176,41 +3205,16 @@ impl AppRunner {
         let config = load_config(&CommonArgs::default(), &DebugArgs::default())?;
         let log_dir = config.home_dir.join("Library").join("Logs");
 
-        // Scan for all anylinuxfs-*.log files
-        let mut log_files = Vec::new();
-        if let Ok(entries) = fs::read_dir(&log_dir) {
-            for entry in entries.flatten() {
-                if let Ok(metadata) = entry.metadata() {
-                    let path = entry.path();
-                    if let Some(filename) = path.file_name() {
-                        if let Some(fname_str) = filename.to_str() {
-                            if fname_str.starts_with("anylinuxfs-") && fname_str.ends_with(".log") {
-                                if let Ok(modified) = metadata.modified() {
-                                    log_files.push((path, modified));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        if log_files.is_empty() {
-            return Err(anyhow!("No log files found in {}", log_dir.display()));
-        }
-
-        // Sort by modification time (newest first) and get the latest
-        log_files.sort_by(|a, b| b.1.cmp(&a.1));
-        let log_file_path = &log_files[0].0;
+        // Find the most recently modified log file
+        let Some(log_file_path) = find_latest_log(&log_dir, "anylinuxfs-", ".log") else {
+            return Ok(());
+        };
 
         if !log_file_path.exists() {
-            return Err(anyhow!(
-                "Log file {} does not exist",
-                log_file_path.display()
-            ));
+            return Ok(());
         }
 
-        let log_file = File::open(log_file_path).context("Failed to open log file")?;
+        let log_file = File::open(&log_file_path).context("Failed to open log file")?;
         let mut buf_reader = BufReader::new(log_file);
         let mut line = String::new();
 
@@ -3229,7 +3233,7 @@ impl AppRunner {
             let (tx, rx) = mpsc::channel();
             let mut watcher = notify::recommended_watcher(tx)?;
             watcher
-                .watch(log_file_path, RecursiveMode::NonRecursive)
+                .watch(&log_file_path, RecursiveMode::NonRecursive)
                 .context("Failed to watch log file")?;
 
             loop {
