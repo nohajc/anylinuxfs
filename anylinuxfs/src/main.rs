@@ -18,7 +18,7 @@ use std::collections::{BTreeSet, HashSet};
 use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{Ipv4Addr, TcpStream, ToSocketAddrs};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, TcpStream};
 use std::os::fd::{FromRawFd, IntoRawFd};
 use std::os::unix::fs::chown;
 use std::os::unix::process::CommandExt;
@@ -41,6 +41,7 @@ use utils::{
     OutputAction, PassthroughBufReader, StatusError, write_to_pipe,
 };
 
+use crate::netutil::ScopedIP;
 use crate::settings::{
     Config, CustomActionEnvironment, ImageSource, KernelConfig, KernelPage, KrunLogLevel,
     MountConfig, PassphrasePromptConfig, Preferences,
@@ -252,9 +253,9 @@ struct MountCmd {
     /// Open Finder window with the mounted drive
     #[arg(short, long, default_value = "true")]
     window: std::primitive::bool,
-    /// Override this to share the mount to a different machine
-    #[arg(short, long, default_value = "127.0.0.1")]
-    bind_addr: String,
+    /// Set this to share the mount to a different machine
+    #[arg(short, long)]
+    bind_addr: Option<String>,
     /// Linux kernel page size
     #[arg(long)]
     kernel_page_size: Option<KernelPage>,
@@ -373,7 +374,7 @@ impl From<ShellCmd> for MountCmd {
             fs_driver: None,
             common: CommonArgs::default(),
             window: false,
-            bind_addr: "127.0.0.1".into(),
+            bind_addr: None,
             kernel_page_size: shell_cmd.kernel_page_size,
             debug: shell_cmd.debug,
             verbose: false,
@@ -642,26 +643,36 @@ fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
         None => None,
     };
 
-    let bind_addr = cmd
-        .bind_addr
-        .parse()
-        .with_context(|| format!("invalid IP address given: {}", &cmd.bind_addr))?;
+    let bind_addr = match cmd.bind_addr {
+        Some(ref addr) => {
+            let bind_addr = addr
+                .parse()
+                .with_context(|| format!("invalid IP address given: {}", addr))?;
+
+            if bind_addr != Ipv4Addr::UNSPECIFIED
+                && bind_addr != Ipv4Addr::LOCALHOST
+                && bind_addr != Ipv6Addr::LOCALHOST
+            {
+                // check if the given bind address is assigned to any interface
+                if let Ok(interfaces) = if_addrs::get_if_addrs() {
+                    if !interfaces.iter().any(|iface| iface.ip() == bind_addr) {
+                        return Err(anyhow::anyhow!(
+                            "Bind address {} is not assigned to any interface",
+                            bind_addr
+                        ));
+                    }
+                }
+            }
+
+            Some(bind_addr)
+        }
+        None => None,
+    };
+
     let read_only = is_read_only_set(mount_options.as_deref());
     let verbose = cmd.verbose;
 
     let fs_driver = cmd.fs_driver;
-
-    if bind_addr != Ipv4Addr::UNSPECIFIED && bind_addr != Ipv4Addr::LOCALHOST {
-        // check if the given bind address is assigned to any interface
-        if let Ok(interfaces) = if_addrs::get_if_addrs() {
-            if !interfaces.iter().any(|iface| iface.ip() == bind_addr) {
-                return Err(anyhow::anyhow!(
-                    "Bind address {} is not assigned to any interface",
-                    bind_addr
-                ));
-            }
-        }
-    }
 
     let open_finder = cmd.window;
     let kernel_page_size = cmd.kernel_page_size;
@@ -986,7 +997,7 @@ fn setup_vm(
 fn start_vmproxy(
     ctx: &VMContext,
     config: &MountConfig,
-    service_status: &ServiceStatus,
+    network_env: &NetworkEnv,
     env: &[BString],
     dev_info: &DevInfo,
     multi_device: bool,
@@ -1015,12 +1026,22 @@ fn start_vmproxy(
     let custom_mount_point = config.custom_mount_point.is_some();
     let assemble_raid = config.assemble_raid;
 
+    let mut bind_addrs = HashSet::new();
+
+    if let Some(addr) = config.bind_addr {
+        bind_addrs.insert(addr.to_string());
+    }
+
+    if let Some(addr) = network_env.usable_loopback_ip.as_ref() {
+        bind_addrs.insert(addr.to_string());
+    }
+
     let args: Vec<_> = [
         vmproxy,
         dev_info.vm_path().into(),
         mount_name,
         "-b".into(),
-        config.bind_addr.to_string().into(),
+        Vec::from_iter(bind_addrs).join(",").into(),
     ]
     .into_iter()
     .chain(custom_mount_point.then_some("-c".into()).into_iter())
@@ -1075,7 +1096,7 @@ fn start_vmproxy(
     .chain(multi_device.then_some("-m".into()).into_iter())
     .chain(reuse_passphrase.then_some("-r".into()).into_iter())
     .chain(
-        service_status
+        network_env
             .rpcbind_running
             .then_some("-h".into())
             .into_iter(),
@@ -1286,7 +1307,7 @@ impl NfsStatus {
 }
 
 fn wait_for_nfs_server(
-    vm_host: &[u8],
+    vm_host: &ScopedIP,
     port: u16,
     nfs_notify_rx: mpsc::Receiver<NfsStatus>,
 ) -> anyhow::Result<NfsStatus> {
@@ -1295,8 +1316,8 @@ fn wait_for_nfs_server(
 
     if nfs_ready.ok() {
         // also check if the port is open
-        let addr = format!("{}:{}", vm_host.as_bstr(), port)
-            .to_socket_addrs()?
+        let addr = vm_host
+            .with_port(port)?
             .next()
             .context("Failed to resolve VM host address")?;
         host_println!("Checking NFS server on {:?}...", addr);
@@ -1760,8 +1781,9 @@ fn prepare_vm_environment(config: &MountConfig) -> anyhow::Result<(Vec<BString>,
 }
 
 #[derive(Default)]
-struct ServiceStatus {
+struct NetworkEnv {
     rpcbind_running: bool,
+    usable_loopback_ip: Option<ScopedIP>,
 }
 
 fn discover_api_sockets() -> anyhow::Result<Vec<PathBuf>> {
@@ -2231,15 +2253,14 @@ impl AppRunner {
 
     fn run_mount(&mut self, cmd: MountCmd) -> anyhow::Result<()> {
         let _lock_file = LockFile::new(LOCK_FILE)?.acquire_lock(FlockKind::Shared)?;
-        let mut service_status = ServiceStatus::default();
+        let mut network_env = NetworkEnv::default();
 
-        for port in [2049, 32765, 32767] {
-            utils::check_port_availability([127, 0, 0, 1], port)?;
-        }
-        if let Err(e) = utils::try_port([0, 0, 0, 0], 111)
+        network_env.usable_loopback_ip = netutil::pick_usable_loopback_ip(&[2049, 32765, 32767])?;
+
+        if let Err(e) = netutil::try_port((Ipv4Addr::from([0, 0, 0, 0]), 111))
             && e.kind() == io::ErrorKind::AddrInUse
         {
-            service_status.rpcbind_running = true;
+            network_env.rpcbind_running = true;
         }
 
         let config = load_mount_config(cmd)?;
@@ -2282,7 +2303,7 @@ impl AppRunner {
         if forked.pid == 0 {
             self.is_child = true;
             let verbose = config.verbose;
-            let res = self.run_mount_child(config, service_status, forked.comm_fd());
+            let res = self.run_mount_child(config, network_env, forked.comm_fd());
             if res.is_err() {
                 if !verbose {
                     self.print_log = true;
@@ -2299,7 +2320,7 @@ impl AppRunner {
     fn run_mount_child(
         &mut self,
         mut config: MountConfig,
-        service_status: ServiceStatus,
+        network_env: NetworkEnv,
         comm_write_fd: libc::c_int,
     ) -> anyhow::Result<()> {
         // pre-declare so it can be referenced in a deferred action
@@ -2443,20 +2464,32 @@ impl AppRunner {
         let os = config.common.kernel.os;
         let (mut net_helper, net_helper_name, vmnet_config, vm_host) =
             match config.common.net_helper.os_override(os) {
-                NetHelper::GvProxy => (
-                    vm_network::start_gvproxy(&config.common)?,
-                    "gvproxy",
-                    None,
-                    "localhost".into(),
-                ),
+                NetHelper::GvProxy => {
+                    let Some(loopback_ip) = network_env.usable_loopback_ip.clone() else {
+                        return Err(anyhow!(
+                            "You can only mount up to three drives with gvproxy"
+                        ));
+                    };
+                    (
+                        vm_network::start_gvproxy(&config.common)?,
+                        "gvproxy",
+                        None,
+                        loopback_ip,
+                    )
+                }
                 NetHelper::VmNet => {
                     let (child, vmnet_cfg) = vm_network::start_vmnet_helper(&config.common)?;
-                    let vm_ip = vmnet_cfg.vm_ip().to_string();
-                    (child, "vmnet-helper", Some(vmnet_cfg), vm_ip)
+                    let vm_ip = vmnet_cfg.vm_ip();
+                    (
+                        child,
+                        "vmnet-helper",
+                        Some(vmnet_cfg),
+                        ScopedIP::new(IpAddr::V4(vm_ip), None),
+                    )
                 }
             };
 
-        let vm_host = vm_host.as_bytes();
+        let vm_host_b = vm_host.to_string().into_bytes();
         vm_native_ip = vmnet_config.as_ref().map(|cfg| cfg.vm_ip());
 
         let net_helper_pid = net_helper.id() as libc::pid_t;
@@ -2523,7 +2556,7 @@ impl AppRunner {
             start_vmproxy(
                 &ctx,
                 &config,
-                &service_status,
+                &network_env,
                 &vm_env,
                 &mnt_dev_info,
                 dev_info.len() > 1,
@@ -2549,7 +2582,7 @@ impl AppRunner {
                 session_pgid,
                 vmm_pid: child_pid,
                 net_helper_pid,
-                vm_host: vm_host.to_vec(),
+                vm_host: vm_host_b.to_vec(),
                 vm_native_ip,
                 mount_point: None,
             }));
@@ -2568,7 +2601,7 @@ impl AppRunner {
                 }
             });
 
-            if config.common.net_helper == NetHelper::GvProxy && service_status.rpcbind_running {
+            if config.common.net_helper == NetHelper::GvProxy && network_env.rpcbind_running {
                 services_to_restore = rpcbind::services::list()?
                     .into_iter()
                     .filter(|entry| {
@@ -2829,7 +2862,7 @@ impl AppRunner {
             }
             stdin_forwarder.echo_newline(false);
 
-            let nfs_status = wait_for_nfs_server(vm_host, 2049, nfs_ready_rx)
+            let nfs_status = wait_for_nfs_server(&vm_host, 2049, nfs_ready_rx)
                 .inspect_err(|e| {
                     host_eprintln!("Error waiting for NFS server: {:#}", e);
                 })
@@ -2892,7 +2925,7 @@ impl AppRunner {
                     None => (s.as_bytes().into(), b"".into()),
                 }));
 
-                let mount_result = mount_nfs(vm_host, &share_path, &config, &nfs_opts);
+                let mount_result = mount_nfs(&vm_host_b, &share_path, &config, &nfs_opts);
                 match &mount_result {
                     Ok(_) => host_println!("Requested NFS share mount"),
                     Err(e) => {
@@ -2907,7 +2940,7 @@ impl AppRunner {
                 };
 
                 let mount_point_opt = if mount_result.is_ok() {
-                    let nfs_path = PathBuf::from(format!("{}:{}", vm_host.as_bstr(), share_path));
+                    let nfs_path = PathBuf::from(format!("{}:{}", vm_host_b.as_bstr(), share_path));
                     event_session.wait_for_mount(&nfs_path)
                 } else {
                     None
@@ -2951,7 +2984,7 @@ impl AppRunner {
                         host_println!("need to use sudo to mount additional NFS exports");
                     }
                     match fsutil::mount_nfs_subdirs(
-                        &vm_host,
+                        &vm_host_b,
                         &share_path,
                         additional_exports.into_iter(),
                         mount_point.display(),

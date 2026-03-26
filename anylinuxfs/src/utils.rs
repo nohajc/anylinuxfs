@@ -6,7 +6,6 @@ use std::{
     fs::{File, Permissions},
     io::{self, BufRead, BufReader, Read, Write},
     mem::ManuallyDrop,
-    net::IpAddr,
     os::{
         fd::{AsRawFd, FromRawFd},
         unix::fs::PermissionsExt,
@@ -545,20 +544,6 @@ impl AcquireLock for File {
         acquire_lock(&self, lock_kind, "file already locked")?;
         Ok(self)
     }
-}
-
-pub fn try_port(ip: impl Into<IpAddr>, port: u16) -> io::Result<()> {
-    std::net::TcpListener::bind((ip.into(), port)).map(|_| ())
-}
-
-pub fn check_port_availability(ip: impl Into<IpAddr>, port: u16) -> anyhow::Result<()> {
-    try_port(ip.into(), port).map_err(|e| {
-        if e.kind() == io::ErrorKind::AddrInUse {
-            anyhow!("port {port} already in use")
-        } else {
-            anyhow!("unexpected error checking port {port}: {e}")
-        }
-    })
 }
 
 pub unsafe fn cfdict_get_value<'a, T>(dict: &'a CFDictionary, key: &str) -> Option<&'a T> {

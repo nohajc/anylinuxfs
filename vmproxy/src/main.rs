@@ -61,8 +61,8 @@ struct Cli {
     action: Option<String>,
     #[arg(long = "nfs-export-opts")]
     nfs_export_opts: Option<String>,
-    #[arg(short, long, default_value = LOCALHOST)]
-    bind_addr: String,
+    #[arg(short, long, value_delimiter = ',', num_args = 0..)]
+    bind_addrs: Vec<String>,
     #[arg(short, long)]
     multi_device: bool,
     #[arg(short, long)]
@@ -81,9 +81,6 @@ struct PortDef<'a> {
     remote: &'a str,
 }
 
-const LOCALHOST: &str = "127.0.0.1";
-const LOCALHOST_V6: &str = "[::1]";
-
 fn expose_port(client: &reqwest::blocking::Client, port_def: &PortDef) -> anyhow::Result<()> {
     client
         .post(&format!("http://{VM_GATEWAY_IP}/services/forwarder/expose"))
@@ -96,7 +93,7 @@ fn expose_port(client: &reqwest::blocking::Client, port_def: &PortDef) -> anyhow
 }
 
 fn init_network(
-    bind_addr: &str,
+    bind_addrs: &[String],
     host_rpcbind: bool,
     native_network: Option<Ipv4Net>,
 ) -> anyhow::Result<()> {
@@ -140,12 +137,10 @@ fn init_network(
         .status()
         .context("Failed to configure network interface")?;
 
-    let mut bind_addr_set = HashSet::from([LOCALHOST, LOCALHOST_V6]);
-    bind_addr_set.insert(bind_addr);
-
-    let client = reqwest::blocking::Client::new();
-
     if native_network.is_none() {
+        let bind_addr_set: HashSet<_> = bind_addrs.iter().collect();
+        let client = reqwest::blocking::Client::new();
+
         if !host_rpcbind {
             expose_port(
                 &client,
@@ -537,7 +532,7 @@ fn run() -> anyhow::Result<()> {
         fs::create_dir_all(dir).with_context(|| format!("Failed to create directory '{}'", dir))?;
     }
 
-    init_network(&cli.bind_addr, cli.host_rpcbind, cli.native_network)
+    init_network(&cli.bind_addrs, cli.host_rpcbind, cli.native_network)
         .context("Failed to initialize network")?;
 
     #[cfg(target_os = "linux")]

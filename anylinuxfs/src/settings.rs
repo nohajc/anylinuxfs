@@ -684,7 +684,7 @@ pub struct MountConfig {
     pub custom_mount_point: Option<PathBuf>,
     pub fs_driver: Option<String>,
     pub assemble_raid: bool,
-    pub bind_addr: IpAddr,
+    pub bind_addr: Option<IpAddr>,
     pub verbose: bool,
     pub open_finder: bool,
     pub kernel_page_size: Option<KernelPage>,

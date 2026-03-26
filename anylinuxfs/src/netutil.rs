@@ -1,11 +1,14 @@
 use std::{
     borrow::Cow,
     cmp,
-    net::{IpAddr, Ipv4Addr},
+    fmt::Display,
+    io,
+    net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs},
     ptr::null_mut,
+    vec,
 };
 
-use anyhow::Context;
+use anyhow::{Context, anyhow};
 use getifaddrs::{InterfaceFilter, InterfaceFlags};
 use ipnet::Ipv4Net;
 use objc2_core_foundation::{CFArray, CFDictionary, CFString};
@@ -134,6 +137,98 @@ pub fn pick_available_network(
     }
 
     Ok(candidate)
+}
+
+pub fn try_port(addr: impl ToSocketAddrs) -> io::Result<()> {
+    std::net::TcpListener::bind(addr).map(|_| ())
+}
+
+#[derive(Debug, Clone)]
+pub enum ScopedIP {
+    IPv4(String),
+    IPv6(String),
+}
+
+impl ScopedIP {
+    pub fn new(ip: IpAddr, scope_id: Option<u32>) -> Self {
+        match ip {
+            IpAddr::V4(addr) => ScopedIP::IPv4(addr.to_string()),
+            IpAddr::V6(addr) => {
+                if let Some(id) = scope_id
+                    && id != 0
+                {
+                    ScopedIP::IPv6(format!("{}%{}", addr, id))
+                } else {
+                    ScopedIP::IPv6(addr.to_string())
+                }
+            }
+        }
+    }
+
+    pub fn with_port(&self, port: u16) -> io::Result<vec::IntoIter<SocketAddr>> {
+        let addr = match self {
+            ScopedIP::IPv4(addr) => addr,
+            ScopedIP::IPv6(addr) => addr,
+        };
+        (addr.as_str(), port).to_socket_addrs()
+    }
+}
+
+impl Display for ScopedIP {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ScopedIP::IPv4(addr) => write!(f, "{}", addr),
+            ScopedIP::IPv6(addr) => write!(f, "[{}]", addr),
+        }
+    }
+}
+
+pub fn pick_usable_loopback_ip(required_ports: &[u16]) -> anyhow::Result<Option<ScopedIP>> {
+    for addr in ["127.0.0.1", "::1", "fe80::1%lo0"] {
+        let mut ip_candidate = None;
+        let mut ipv6_scope = None;
+        for port in required_ports.iter().cloned() {
+            if let Some(sock) = (addr, port).to_socket_addrs()?.next() {
+                if let SocketAddr::V6(sock) = sock {
+                    ipv6_scope = Some(sock.scope_id());
+                }
+                match try_port(sock) {
+                    Ok(()) => {
+                        ip_candidate = Some(sock.ip());
+                    }
+                    Err(e) if e.kind() == io::ErrorKind::AddrInUse => {
+                        ip_candidate = None;
+                        break;
+                    }
+                    Err(e) => {
+                        return Err(
+                            anyhow!("unexpected error checking port {}: {}", port, e).into()
+                        );
+                    }
+                }
+            }
+        }
+        if let Some(ip) = ip_candidate {
+            if let Some(scope_id) = ipv6_scope {
+                return Ok(Some(ScopedIP::new(ip, Some(scope_id))));
+            } else {
+                return Ok(Some(ScopedIP::new(ip, None)));
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+#[allow(unused)]
+pub fn check_port_availability(ip: impl Into<IpAddr>, port: u16) -> anyhow::Result<()> {
+    try_port((ip.into(), port)).map_err(|e| {
+        if e.kind() == io::ErrorKind::AddrInUse {
+            anyhow!("port {port} already in use")
+        } else {
+            anyhow!("unexpected error checking port {port}: {e}")
+        }
+    })
 }
 
 #[cfg(test)]
