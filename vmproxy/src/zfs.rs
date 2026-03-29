@@ -213,6 +213,7 @@ mod tests {
                     "createtxg": "1",
                     "properties": {
                         "mountpoint": { "value": "/mnt/foo", "source": { "type": "LOCAL", "data": "-" } },
+                        "canmount": { "value": "on", "source": { "type": "LOCAL", "data": "-" } },
                         "used": { "value": "1K", "source": { "type": "NONE", "data": "-" } }
                     }
                 },
@@ -222,7 +223,8 @@ mod tests {
                     "pool": "pool",
                     "createtxg": "2",
                     "properties": {
-                        "mountpoint": { "value": "none", "source": { "type": "LOCAL", "data": "-" } }
+                        "mountpoint": { "value": "none", "source": { "type": "LOCAL", "data": "-" } },
+                        "canmount": { "value": "on", "source": { "type": "LOCAL", "data": "-" } }
                     }
                 }
             }

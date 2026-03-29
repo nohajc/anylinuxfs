@@ -3,7 +3,7 @@ use bstr::{BString, ByteSlice};
 use clap::Parser;
 #[cfg(target_os = "linux")]
 use common_utils::FromPath;
-#[cfg(target_os = "freebsd")]
+#[cfg(any(target_os = "freebsd", target_os = "macos"))]
 use common_utils::VM_CTRL_PORT;
 use common_utils::{
     CustomActionConfig, Deferred, VM_GATEWAY_IP, VM_IP, ipc, path_safe_label_name, vmctrl,
@@ -18,7 +18,7 @@ use std::ffi::CString;
 use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, Read, Write};
-#[cfg(target_os = "freebsd")]
+#[cfg(any(target_os = "freebsd", target_os = "macos"))]
 use std::net::TcpListener;
 use std::os::unix::ffi::OsStrExt;
 #[cfg(target_os = "linux")]
@@ -124,7 +124,7 @@ fn init_network(
             && ip link set eth0 up \
             && ip route add default via {vm_gateway_ip} dev eth0",
     );
-    #[cfg(target_os = "freebsd")]
+    #[cfg(any(target_os = "freebsd", target_os = "macos"))]
     let script = format!(
         "ifconfig vtnet0 inet {vm_ip}/{net_prefix_len} \
             && route add default {vm_gateway_ip} \
@@ -214,7 +214,7 @@ impl StreamListener for VsockListener {
     }
 }
 
-#[cfg(target_os = "freebsd")]
+#[cfg(any(target_os = "freebsd", target_os = "macos"))]
 impl StreamListener for TcpListener {
     fn incoming(&self) -> impl Iterator<Item = io::Result<impl Read + Write + Send>> {
         self.incoming()
@@ -437,7 +437,7 @@ fn export_args_for_path(
     } else {
         format!("{export_mode},no_subtree_check,no_root_squash,insecure")
     };
-    #[cfg(target_os = "freebsd")]
+    #[cfg(any(target_os = "freebsd", target_os = "macos"))]
     let export_args = if let Some(override_args) = export_args_override {
         override_args.to_owned()
     } else {
@@ -540,7 +540,7 @@ fn run() -> anyhow::Result<()> {
         let addr = VsockAddr::new(VMADDR_CID_ANY, 12700);
         VsockListener::bind(&addr)?
     };
-    #[cfg(target_os = "freebsd")]
+    #[cfg(any(target_os = "freebsd", target_os = "macos"))]
     let listener = TcpListener::bind(&format!("0.0.0.0:{}", VM_CTRL_PORT))?;
 
     let ctrl_server = CtrlSocketServer::new(listener);
@@ -1034,7 +1034,7 @@ fn run() -> anyhow::Result<()> {
         {
             exports_content += &format!("\"{}\"      *({})\n", export_path, export_args);
         }
-        #[cfg(target_os = "freebsd")]
+        #[cfg(any(target_os = "freebsd", target_os = "macos"))]
         {
             exports_content += &format!("{} {},network 0.0.0.0/0\n", export_path, export_args);
         }
