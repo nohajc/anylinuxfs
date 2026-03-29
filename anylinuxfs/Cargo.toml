@@ -45,7 +45,6 @@ ipnet = "2.11.0"
 os-version = "0.2.1"
 versions = "7.0.0"
 dns-sd = "0.1.3"
-sysinfo = "0.38.4"
 
 [features]
 default = ["freebsd"]

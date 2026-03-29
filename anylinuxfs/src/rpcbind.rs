@@ -197,8 +197,8 @@ pub mod services {
     /// List registered RPC services by querying rpcbind.
     pub fn list() -> anyhow::Result<Vec<Entry>> {
         unsafe {
-            let host = CString::new("localhost").unwrap();
-            let nettype = "udp";
+            let host = CString::new("127.0.0.1").unwrap();
+            let nettype = "tcp";
             let c_nettype = CString::new(nettype).unwrap();
 
             let timeout_short = timeval {

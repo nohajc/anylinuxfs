@@ -2,7 +2,7 @@ use std::{
     cell::Cell,
     collections::HashSet,
     error::Error,
-    ffi::{OsStr, c_void},
+    ffi::c_void,
     fs::{File, Permissions},
     io::{self, BufRead, BufReader, Read, Write},
     mem::ManuallyDrop,
@@ -38,7 +38,6 @@ use objc2_core_foundation::{
     CFCopyTypeIDDescription, CFDictionary, CFGetTypeID, CFRetained, CFString, CFType,
 };
 use signal_hook::{consts::TERM_SIGNALS, iterator::Signals};
-use sysinfo::{ProcessRefreshKind, RefreshKind, System};
 
 use crate::pubsub::{PubSub, Subscription};
 
@@ -698,14 +697,6 @@ pub fn user_name_from_uid(uid: libc::uid_t) -> Option<String> {
         .map(|u| u.name)
 }
 
-pub fn is_process_running(name: impl AsRef<OsStr>) -> bool {
-    let s = System::new_with_specifics(
-        RefreshKind::nothing()
-            .with_processes(ProcessRefreshKind::nothing().with_exe(sysinfo::UpdateKind::Never)),
-    );
-    s.processes_by_exact_name(name.as_ref()).next().is_some()
-}
-
 /// A buffered reader that immediately outputs characters as they arrive
 /// while also providing line-based reading for pattern matching
 pub struct PassthroughBufReader<R> {
@@ -1113,25 +1104,6 @@ impl StdinForwarder {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    use std::process::{Command, Stdio};
-
-    #[test]
-    fn test_is_process_running() {
-        // Start a process with a unique name (sleep)
-        let mut child = Command::new("sleep")
-            .arg("0.1")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("Failed to start sleep process");
-
-        // Should detect the process is running
-        assert!(is_process_running(OsStr::new("sleep")));
-
-        // Wait for the process to finish
-        let _ = child.wait();
-    }
 
     #[test]
     fn test_find_env_vars_simple() {
