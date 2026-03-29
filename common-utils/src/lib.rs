@@ -158,6 +158,13 @@ impl NetHelper {
             OSType::Linux => self,
         }
     }
+
+    pub fn bind_addr_override(self, is_non_loopback: bool) -> Self {
+        match is_non_loopback {
+            true => NetHelper::GvProxy,
+            false => self,
+        }
+    }
 }
 
 impl Display for NetHelper {

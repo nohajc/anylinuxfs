@@ -2530,8 +2530,16 @@ impl AppRunner {
         }
 
         let os = config.common.kernel.os;
-        let (mut net_helper, net_helper_name, vmnet_config, vm_ip) =
-            match config.common.net_helper.os_override(os) {
+        let shared_volume = config.bind_addr.is_some_and(|addr| !addr.is_loopback());
+
+        config.common.net_helper = config
+            .common
+            .net_helper
+            .bind_addr_override(shared_volume)
+            .os_override(os);
+
+        let (mut net_helper_proc, net_helper_name, vmnet_config, vm_ip) =
+            match config.common.net_helper {
                 NetHelper::GvProxy => {
                     let Some(loopback_ip) = network_env.usable_loopback_ip.clone() else {
                         return Err(anyhow!(
@@ -2559,7 +2567,7 @@ impl AppRunner {
 
         vm_native_ip = vmnet_config.as_ref().map(|cfg| cfg.vm_ip());
 
-        let net_helper_pid = net_helper.id() as libc::pid_t;
+        let net_helper_pid = net_helper_proc.id() as libc::pid_t;
         fsutil::wait_for_file(&config.common.unixgram_sock_path)?;
 
         _ = deferred.add({
@@ -2571,7 +2579,7 @@ impl AppRunner {
             }
         });
 
-        if let Some(status) = net_helper.try_wait().ok().flatten() {
+        if let Some(status) = net_helper_proc.try_wait().ok().flatten() {
             return Err(anyhow!(
                 "gvproxy failed with exit code: {}",
                 status
@@ -2582,7 +2590,7 @@ impl AppRunner {
         }
 
         _ = deferred.add(move || {
-            if let Err(e) = terminate_child(&mut net_helper, net_helper_name) {
+            if let Err(e) = terminate_child(&mut net_helper_proc, net_helper_name) {
                 host_eprintln!("{:#}", e);
             }
         });
@@ -3038,6 +3046,9 @@ impl AppRunner {
                 };
 
                 let mut nfs_opts = fsutil::NfsOptions::default();
+                if shared_volume {
+                    nfs_opts.remove("nolocks".as_bytes());
+                }
                 nfs_opts.extend(config.nfs_options.iter().map(|s| match s.split_once('=') {
                     Some((key, value)) => (key.as_bytes().into(), value.as_bytes().into()),
                     None => (s.as_bytes().into(), b"".into()),
