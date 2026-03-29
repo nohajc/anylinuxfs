@@ -2304,6 +2304,7 @@ impl AppRunner {
         {
             network_env.rpcbind_running = true;
             let rpcinfo_status = Command::new("pgrep")
+                .arg("-x")
                 .arg("rpcbind")
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
