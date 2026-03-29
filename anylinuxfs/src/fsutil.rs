@@ -78,6 +78,8 @@ impl Default for NfsOptions {
         opts.insert("nfc".into(), "".into());
         opts.insert("vers".into(), "3".into());
         opts.insert("nolocks".into(), "".into());
+        opts.insert("port".into(), "2049".into());
+        opts.insert("mountport".into(), "32767".into());
         NfsOptions(opts)
     }
 }
