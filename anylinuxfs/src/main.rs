@@ -1821,7 +1821,7 @@ fn prepare_vm_environment(config: &MountConfig) -> anyhow::Result<(Vec<BString>,
     Ok((env_vars, env_has_passphrase))
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct NetworkEnv {
     rpcbind_running: bool,
     is_host_rpcbind: bool,
@@ -2303,15 +2303,7 @@ impl AppRunner {
             && e.kind() == io::ErrorKind::AddrInUse
         {
             network_env.rpcbind_running = true;
-            let rpcinfo_status = Command::new("pgrep")
-                .arg("-x")
-                .arg("rpcbind")
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .context("Failed to check rpcbind status")?;
-
-            network_env.is_host_rpcbind = rpcinfo_status.success();
+            network_env.is_host_rpcbind = utils::is_process_running("rpcbind");
         }
 
         let config = load_mount_config(cmd)?;
