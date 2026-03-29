@@ -5,7 +5,6 @@ use std::{
     io,
     net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs},
     ptr::null_mut,
-    vec,
 };
 
 use anyhow::{Context, anyhow};
@@ -144,46 +143,66 @@ pub fn try_port(addr: impl ToSocketAddrs) -> io::Result<()> {
 }
 
 #[derive(Debug, Clone)]
-pub enum ScopedIP {
+pub enum Host {
     IPv4(String),
     IPv6(String),
+    Hostname(String),
 }
 
-impl ScopedIP {
-    pub fn new(ip: IpAddr, scope_id: Option<u32>) -> Self {
+impl Host {
+    pub fn new(hostname: &str) -> Self {
+        Host::Hostname(hostname.into())
+    }
+
+    pub fn from_ip(ip: IpAddr, scope_id: Option<u32>) -> Self {
         match ip {
-            IpAddr::V4(addr) => ScopedIP::IPv4(addr.to_string()),
+            IpAddr::V4(addr) => Host::IPv4(addr.to_string()),
             IpAddr::V6(addr) => {
                 if let Some(id) = scope_id
                     && id != 0
                 {
-                    ScopedIP::IPv6(format!("{}%{}", addr, id))
+                    Host::IPv6(format!("{}%{}", addr, id))
                 } else {
-                    ScopedIP::IPv6(addr.to_string())
+                    Host::IPv6(addr.to_string())
                 }
             }
         }
     }
 
-    pub fn with_port(&self, port: u16) -> io::Result<vec::IntoIter<SocketAddr>> {
-        let addr = match self {
-            ScopedIP::IPv4(addr) => addr,
-            ScopedIP::IPv6(addr) => addr,
+    pub fn raw_str(&self) -> &str {
+        match self {
+            Host::IPv4(addr) => addr,
+            Host::IPv6(addr) => addr,
+            Host::Hostname(name) => name,
+        }
+    }
+
+    pub fn with_port(&self, port: u16) -> io::Result<SocketAddr> {
+        let host = match self {
+            Host::IPv4(addr) => addr,
+            Host::IPv6(addr) => addr,
+            Host::Hostname(name) => name,
         };
-        (addr.as_str(), port).to_socket_addrs()
+        (host.as_str(), port).to_socket_addrs().map(|mut it| {
+            it.next().ok_or(io::Error::new(
+                io::ErrorKind::Other,
+                format!("failed to resolve host: {}", host),
+            ))
+        })?
     }
 }
 
-impl Display for ScopedIP {
+impl Display for Host {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ScopedIP::IPv4(addr) => write!(f, "{}", addr),
-            ScopedIP::IPv6(addr) => write!(f, "[{}]", addr),
+            Host::IPv4(addr) => write!(f, "{}", addr),
+            Host::IPv6(addr) => write!(f, "[{}]", addr),
+            Host::Hostname(name) => write!(f, "{}", name),
         }
     }
 }
 
-pub fn pick_usable_loopback_ip(required_ports: &[u16]) -> anyhow::Result<Option<ScopedIP>> {
+pub fn pick_usable_loopback_ip(required_ports: &[u16]) -> anyhow::Result<Option<Host>> {
     for addr in ["127.0.0.1", "::1", "fe80::1%lo0"] {
         let mut ip_candidate = None;
         let mut ipv6_scope = None;
@@ -210,9 +229,9 @@ pub fn pick_usable_loopback_ip(required_ports: &[u16]) -> anyhow::Result<Option<
         }
         if let Some(ip) = ip_candidate {
             if let Some(scope_id) = ipv6_scope {
-                return Ok(Some(ScopedIP::new(ip, Some(scope_id))));
+                return Ok(Some(Host::from_ip(ip, Some(scope_id))));
             } else {
-                return Ok(Some(ScopedIP::new(ip, None)));
+                return Ok(Some(Host::from_ip(ip, None)));
             }
         }
     }

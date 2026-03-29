@@ -681,6 +681,7 @@ pub struct MountConfig {
     pub nfs_options: Vec<String>,
     pub nfs_export_opts: Option<String>,
     pub allow_remount: bool,
+    pub vm_hostname: String,
     pub custom_mount_point: Option<PathBuf>,
     pub fs_driver: Option<String>,
     pub assemble_raid: bool,

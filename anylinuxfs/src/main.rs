@@ -7,6 +7,7 @@ use common_utils::{
 };
 
 use devinfo::DevInfo;
+use dns_sd::{DNSRecord, DNSService};
 use ipnet::Ipv4Net;
 use nanoid::nanoid;
 use serde::Serialize;
@@ -18,7 +19,7 @@ use std::collections::{BTreeSet, HashSet};
 use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, TcpStream};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, TcpStream, ToSocketAddrs};
 use std::os::fd::{FromRawFd, IntoRawFd};
 use std::os::unix::fs::chown;
 use std::os::unix::process::CommandExt;
@@ -41,7 +42,7 @@ use utils::{
     OutputAction, PassthroughBufReader, StatusError, write_to_pipe,
 };
 
-use crate::netutil::ScopedIP;
+use crate::netutil::Host;
 use crate::settings::{
     Config, CustomActionEnvironment, ImageSource, KernelConfig, KernelPage, KrunLogLevel,
     MountConfig, PassphrasePromptConfig, Preferences,
@@ -691,6 +692,8 @@ fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
     // this is set dynamically later
     let assemble_raid = false;
 
+    let vm_hostname: String = hostname_from_disk_ident(&disk_path)?;
+
     Ok(MountConfig {
         disk_path,
         read_only,
@@ -698,6 +701,7 @@ fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
         nfs_options,
         nfs_export_opts,
         allow_remount,
+        vm_hostname,
         custom_mount_point,
         fs_driver,
         assemble_raid,
@@ -708,6 +712,34 @@ fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
         common,
         custom_action,
     })
+}
+
+fn hostname_from_disk_ident(disk_ident: &str) -> anyhow::Result<String> {
+    let disk_name = Path::new(disk_ident.split(':').next().unwrap())
+        .file_name()
+        .unwrap_or(OsStr::new("disk"));
+    let mut vm_hostname: String = disk_name
+        .to_string_lossy()
+        .replace(
+            |c| {
+                matches!(
+                    c,
+                    ' ' | '_' | '\\' | '<' | '>' | '|' | '+' | ':' | '.' | ','
+                )
+            },
+            "-",
+        )
+        .chars()
+        .filter(|&c| c.is_ascii_alphanumeric() || c == '-')
+        .collect();
+    if vm_hostname.is_empty() {
+        vm_hostname = "disk".to_string();
+    } else if vm_hostname.len() > 63 {
+        vm_hostname.truncate(63);
+    }
+
+    // TODO: detect and handle conflicts somehow
+    Ok(vm_hostname)
 }
 
 fn drop_privileges(
@@ -1307,17 +1339,26 @@ impl NfsStatus {
 }
 
 fn wait_for_nfs_server(
-    vm_host: &ScopedIP,
+    vm_host: &str,
     port: u16,
+    vm_dns_rec: &mut Option<DNSRecord>,
     nfs_notify_rx: mpsc::Receiver<NfsStatus>,
 ) -> anyhow::Result<NfsStatus> {
     // this will block until NFS server is ready or the VM exits
     let nfs_ready = nfs_notify_rx.recv()?;
 
     if nfs_ready.ok() {
+        // make sure DNS record is already set (if applicable)
+        // let start = Instant::now();
+        if let Some(rec) = vm_dns_rec.as_mut() {
+            rec.wait_for_registration()
+                .context("Could not set DNS record for the VM")?;
+            // let elapsed = start.elapsed();
+            // println!("DNS registration took {:.3?}", elapsed);
+        }
         // also check if the port is open
-        let addr = vm_host
-            .with_port(port)?
+        let addr = (vm_host, port)
+            .to_socket_addrs()?
             .next()
             .context("Failed to resolve VM host address")?;
         host_println!("Checking NFS server on {:?}...", addr);
@@ -1783,7 +1824,8 @@ fn prepare_vm_environment(config: &MountConfig) -> anyhow::Result<(Vec<BString>,
 #[derive(Default)]
 struct NetworkEnv {
     rpcbind_running: bool,
-    usable_loopback_ip: Option<ScopedIP>,
+    is_host_rpcbind: bool,
+    usable_loopback_ip: Option<Host>,
 }
 
 fn discover_api_sockets() -> anyhow::Result<Vec<PathBuf>> {
@@ -2261,6 +2303,14 @@ impl AppRunner {
             && e.kind() == io::ErrorKind::AddrInUse
         {
             network_env.rpcbind_running = true;
+            let rpcinfo_status = Command::new("pgrep")
+                .arg("rpcbind")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .context("Failed to check rpcbind status")?;
+
+            network_env.is_host_rpcbind = rpcinfo_status.success();
         }
 
         let config = load_mount_config(cmd)?;
@@ -2462,7 +2512,7 @@ impl AppRunner {
         }
 
         let os = config.common.kernel.os;
-        let (mut net_helper, net_helper_name, vmnet_config, vm_host) =
+        let (mut net_helper, net_helper_name, vmnet_config, vm_ip) =
             match config.common.net_helper.os_override(os) {
                 NetHelper::GvProxy => {
                     let Some(loopback_ip) = network_env.usable_loopback_ip.clone() else {
@@ -2484,12 +2534,11 @@ impl AppRunner {
                         child,
                         "vmnet-helper",
                         Some(vmnet_cfg),
-                        ScopedIP::new(IpAddr::V4(vm_ip), None),
+                        Host::from_ip(IpAddr::V4(vm_ip), None),
                     )
                 }
             };
 
-        let vm_host_b = vm_host.to_string().into_bytes();
         vm_native_ip = vmnet_config.as_ref().map(|cfg| cfg.vm_ip());
 
         let net_helper_pid = net_helper.id() as libc::pid_t;
@@ -2573,6 +2622,41 @@ impl AppRunner {
 
             let signal_hub = utils::start_signal_publisher()?;
 
+            // let start_time = Instant::now();
+
+            let vm_fqdn = format!("{}.local", &config.vm_hostname);
+            let conn = DNSService::create_connection().unwrap();
+            // vm_dns_rec must remain in scope for the duration of the mount, otherwise the DNS record will be removed
+            let mut vm_dns_rec: Option<DNSRecord> = conn
+                .register_record(&vm_fqdn, vm_ip.with_port(0)?)
+                .inspect_err(|e| eprintln!("DNS registration error: {e}"))
+                .ok();
+
+            // let _vm_dns_sd = if vm_dns_rec.is_some() {
+            //     DNSService::register(
+            //         Some(&config.vm_hostname),
+            //         "_nfs._tcp",
+            //         None,
+            //         Some(&vm_fqdn),
+            //         2049,
+            //         &[],
+            //     )
+            //     .ok()
+            // } else {
+            //     None
+            // };
+
+            // let elapsed = start_time.elapsed();
+            // println!("DNS registration took {:.3?}", elapsed);
+
+            let vm_host = if vm_dns_rec.is_some() {
+                Host::new(&vm_fqdn)
+            } else {
+                vm_ip
+            };
+
+            let vm_host_b = vm_host.to_string().into_bytes();
+
             // Generate unique API socket path for this instance
             api_socket_path = format!("/tmp/anylinuxfs-{}.sock", rand_string(8));
 
@@ -2601,7 +2685,10 @@ impl AppRunner {
                 }
             });
 
-            if config.common.net_helper == NetHelper::GvProxy && network_env.rpcbind_running {
+            if config.common.net_helper == NetHelper::GvProxy
+                && network_env.rpcbind_running
+                && network_env.is_host_rpcbind
+            {
                 services_to_restore = rpcbind::services::list()?
                     .into_iter()
                     .filter(|entry| {
@@ -2862,11 +2949,12 @@ impl AppRunner {
             }
             stdin_forwarder.echo_newline(false);
 
-            let nfs_status = wait_for_nfs_server(&vm_host, 2049, nfs_ready_rx)
-                .inspect_err(|e| {
-                    host_eprintln!("Error waiting for NFS server: {:#}", e);
-                })
-                .unwrap_or(NfsStatus::Failed(None));
+            let nfs_status =
+                wait_for_nfs_server(vm_host.raw_str(), 2049, &mut vm_dns_rec, nfs_ready_rx)
+                    .inspect_err(|e| {
+                        host_eprintln!("Error waiting for NFS server: {:#}", e);
+                    })
+                    .unwrap_or(NfsStatus::Failed(None));
 
             if let NfsStatus::Ready(NfsReadyState {
                 fslabel,
