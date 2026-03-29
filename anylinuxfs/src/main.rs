@@ -757,6 +757,33 @@ fn drop_privileges(
     Ok(())
 }
 
+fn drop_effective_privileges(
+    sudo_uid: Option<libc::uid_t>,
+    sudo_gid: Option<libc::gid_t>,
+) -> anyhow::Result<()> {
+    if let (Some(sudo_uid), Some(sudo_gid)) = (sudo_uid, sudo_gid) {
+        if unsafe { libc::setegid(sudo_gid) } < 0 {
+            return Err(io::Error::last_os_error()).context("Failed to setegid");
+        }
+        if unsafe { libc::seteuid(sudo_uid) } < 0 {
+            return Err(io::Error::last_os_error()).context("Failed to seteuid");
+        }
+    }
+    Ok(())
+}
+
+fn elevate_effective_privileges() -> anyhow::Result<()> {
+    let real_uid = unsafe { libc::getuid() };
+    let real_gid = unsafe { libc::getgid() };
+    if unsafe { libc::seteuid(real_uid) } < 0 {
+        return Err(io::Error::last_os_error()).context("Failed to seteuid");
+    }
+    if unsafe { libc::setegid(real_gid) } < 0 {
+        return Err(io::Error::last_os_error()).context("Failed to setegid");
+    }
+    Ok(())
+}
+
 struct VMOpts {
     add_disks_ro: bool,
     root_device: Option<String>,
@@ -2615,6 +2642,10 @@ impl AppRunner {
 
             // let start_time = Instant::now();
 
+            // DNS record must be created by regular user, otherwise
+            // dropping permissions after mount won't have any effect
+            drop_effective_privileges(config.common.sudo_uid, config.common.sudo_gid)?;
+
             let vm_fqdn = format!("{}.local", &config.vm_hostname);
             let conn = DNSService::create_connection().unwrap();
             // vm_dns_rec must remain in scope for the duration of the mount, otherwise the DNS record will be removed
@@ -2951,6 +2982,9 @@ impl AppRunner {
                         host_eprintln!("Error waiting for NFS server: {:#}", e);
                     })
                     .unwrap_or(NfsStatus::Failed(None));
+
+            // we need original permissions (possibly root) to execute mount_nfs
+            elevate_effective_privileges()?;
 
             if let NfsStatus::Ready(NfsReadyState {
                 fslabel,
