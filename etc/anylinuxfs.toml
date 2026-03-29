@@ -28,5 +28,8 @@ default_image = "alpine-latest"
 [freebsd]
 default_image = "freebsd-15.0"
 
+[network]
+helper = "vmnet"
+
 [misc]
 zfs_os = "FreeBSD"
