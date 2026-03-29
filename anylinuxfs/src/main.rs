@@ -2619,7 +2619,7 @@ impl AppRunner {
             let conn = DNSService::create_connection().unwrap();
             // vm_dns_rec must remain in scope for the duration of the mount, otherwise the DNS record will be removed
             let mut vm_dns_rec: Option<DNSRecord> = conn
-                .register_record(&vm_fqdn, vm_ip.with_port(0)?)
+                .register_record(&vm_fqdn, vm_ip.with_port(0)?, Some("lo0"))
                 .inspect_err(|e| eprintln!("DNS registration error: {e}"))
                 .ok();
 
