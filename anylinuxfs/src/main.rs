@@ -2689,7 +2689,7 @@ impl AppRunner {
                 let is_host_rpcbind = !services_to_restore
                     .iter()
                     .any(|entry| entry.owner == "superuser");
-                println!("is_host_rpcbind: {is_host_rpcbind}");
+                host_println!("is_host_rpcbind: {}", is_host_rpcbind);
 
                 if is_host_rpcbind {
                     _ = deferred.add(|| {
