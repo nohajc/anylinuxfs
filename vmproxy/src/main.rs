@@ -489,7 +489,6 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-#[cfg(target_os = "linux")]
 fn mount_tmpfs(paths: &[&str]) -> anyhow::Result<()> {
     for path in paths {
         let status = script(&format!("mount -t tmpfs tmpfs {}", path))
@@ -519,13 +518,18 @@ fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     #[cfg(target_os = "linux")]
-    mount_tmpfs(&[
+    let tmpfs_dirs = &[
         "/tmp",
         "/run",
         "/var/lib/nfs",
         "/etc/lvm/archive",
         "/etc/lvm/backup",
-    ])?;
+    ];
+
+    #[cfg(any(target_os = "freebsd", target_os = "macos"))]
+    let tmpfs_dirs = &["/tmp"];
+
+    mount_tmpfs(tmpfs_dirs)?;
 
     #[cfg(target_os = "linux")]
     for dir in ["/var/lib/nfs/rpc_pipefs", "/var/lib/nfs/sm"] {
