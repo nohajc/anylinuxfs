@@ -715,6 +715,16 @@ fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
 }
 
 fn hostname_from_disk_ident(disk_ident: &str) -> anyhow::Result<String> {
+    let prefixes_to_strip = ["lvm:", "raid:"];
+    let disk_ident = (|| {
+        for p in prefixes_to_strip {
+            if disk_ident.starts_with(p) {
+                return &disk_ident[p.len()..];
+            }
+        }
+        disk_ident
+    })();
+
     let disk_name = Path::new(disk_ident.split(':').next().unwrap())
         .file_name()
         .unwrap_or(OsStr::new("disk"));
@@ -738,7 +748,6 @@ fn hostname_from_disk_ident(disk_ident: &str) -> anyhow::Result<String> {
         vm_hostname.truncate(63);
     }
 
-    // TODO: detect and handle conflicts somehow
     Ok(vm_hostname)
 }
 
@@ -1856,6 +1865,7 @@ fn prepare_vm_environment(config: &MountConfig) -> anyhow::Result<(Vec<BString>,
 struct NetworkEnv {
     rpcbind_running: bool,
     usable_loopback_ip: Option<Host>,
+    active_vm_hosts: HashSet<String>,
 }
 
 fn discover_api_sockets() -> anyhow::Result<Vec<PathBuf>> {
@@ -1880,6 +1890,23 @@ fn get_runtime_info_from_socket(socket_path: &Path) -> anyhow::Result<api::Runti
             api::Response::Config(rt_info) => Ok(rt_info),
         },
     )
+}
+
+fn collect_active_instances() -> (Vec<api::RuntimeInfo>, Vec<PathBuf>) {
+    let mut instances = Vec::new();
+    let mut stale_sockets = Vec::new();
+
+    if let Ok(sockets) = discover_api_sockets() {
+        for socket in sockets {
+            match get_runtime_info_from_socket(&socket) {
+                Ok(rt_info) => instances.push(rt_info),
+                Err(_) => {
+                    stale_sockets.push(socket);
+                }
+            }
+        }
+    }
+    (instances, stale_sockets)
 }
 
 const LOG_RETENTION_COUNT: usize = 10;
@@ -1909,18 +1936,14 @@ where
     log_files
 }
 
-fn cleanup_old_logs_and_sockets(log_dir: &Path) -> anyhow::Result<()> {
-    // Discover all active instances and get their log file paths
+fn cleanup_old_logs<'a>(
+    log_dir: &Path,
+    active_instances: impl IntoIterator<Item = &'a api::RuntimeInfo>,
+) -> anyhow::Result<()> {
+    // Collect active log paths from pre-discovered instances
     let mut active_log_paths = HashSet::new();
-    if let Ok(sockets) = discover_api_sockets() {
-        for socket in sockets {
-            if let Ok(rt_info) = get_runtime_info_from_socket(&socket) {
-                active_log_paths.insert(rt_info.mount_config.common.log_file_path);
-            } else {
-                // If we can't get runtime info, the socket is likely stale
-                let _ = fs::remove_file(socket);
-            }
-        }
+    for rt_info in active_instances {
+        active_log_paths.insert(rt_info.mount_config.common.log_file_path.as_path());
     }
 
     // Calculate retention count
@@ -1940,7 +1963,7 @@ fn cleanup_old_logs_and_sockets(log_dir: &Path) -> anyhow::Result<()> {
     for (idx, (path, _)) in log_files.iter().enumerate() {
         if idx >= retention_count {
             // Only delete if it's not an active instance's log
-            if !active_log_paths.contains(path) {
+            if !active_log_paths.contains(path.as_path()) {
                 let _ = fs::remove_file(path);
 
                 // Also delete corresponding kernel and nethelper logs
@@ -1980,6 +2003,25 @@ fn find_latest_log(log_dir: &Path, pattern_start: &str, pattern_end: &str) -> Op
     // Sort by modification time (newest first) and get the latest
     log_files.sort_by(|a, b| b.1.cmp(&a.1));
     Some(log_files[0].0.clone())
+}
+
+/// Picks a unique hostname by appending a numeric suffix if needed.
+fn pick_unique_hostname(base: &str, active_vm_hosts: &HashSet<String>) -> String {
+    let base_val = base.to_owned();
+    let mut counter = 0u32;
+    loop {
+        let candidate = if counter == 0 {
+            base_val.clone()
+        } else {
+            let suffix = format!("-{}", counter);
+            let truncated = &base_val[..base_val.len().min(63 - suffix.len())];
+            format!("{}{}", truncated, suffix)
+        };
+        if !active_vm_hosts.contains(&format!("{}.local", candidate)) {
+            return candidate;
+        }
+        counter += 1;
+    }
 }
 
 struct AppRunner {
@@ -2348,10 +2390,21 @@ impl AppRunner {
 
         let log_file_path = &config.common.log_file_path;
 
+        // Discover active instances once, to avoid redundant socket polling
+        let (active_instances, stale_sockets) = collect_active_instances();
+        for socket in stale_sockets {
+            let _ = fs::remove_file(socket);
+        }
+
         // Clean up old log files before initializing new log
         if let Some(log_dir) = log_file_path.parent() {
-            _ = cleanup_old_logs_and_sockets(log_dir);
+            _ = cleanup_old_logs(log_dir, active_instances.iter());
         }
+
+        network_env.active_vm_hosts = active_instances
+            .iter()
+            .filter_map(|rt| String::from_utf8(rt.vm_host.clone()).ok())
+            .collect();
 
         log::init_log_file(log_file_path).context("Failed to create log file")?;
         // Change owner to invoker_uid and invoker_gid
@@ -2653,6 +2706,10 @@ impl AppRunner {
             // DNS record must be created by regular user, otherwise
             // dropping permissions after mount won't have any effect
             drop_effective_privileges(config.common.sudo_uid, config.common.sudo_gid)?;
+
+            // Pick a hostname not already in use by another anylinuxfs instance
+            config.vm_hostname =
+                pick_unique_hostname(&config.vm_hostname, &network_env.active_vm_hosts);
 
             let vm_fqdn = format!("{}.local", &config.vm_hostname);
             let conn = DNSService::create_connection().unwrap();
@@ -3213,13 +3270,9 @@ impl AppRunner {
     }
 
     fn run_unmount(&mut self, cmd: UnmountCmd) -> anyhow::Result<()> {
-        let sockets = discover_api_sockets()?;
+        let (active_instances, _) = collect_active_instances();
 
-        for socket_path in sockets {
-            let Ok(rt_info) = get_runtime_info_from_socket(&socket_path) else {
-                continue;
-            };
-
+        for rt_info in active_instances {
             // If a path was specified, check if this instance matches
             if let Some(ref target_path) = cmd.path {
                 let target_path =
@@ -3422,71 +3475,62 @@ impl AppRunner {
     }
 
     fn run_status(&mut self) -> anyhow::Result<()> {
-        let sockets = discover_api_sockets()?;
+        let (active_instances, _) = collect_active_instances();
 
-        if sockets.is_empty() {
+        if active_instances.is_empty() {
             return Ok(());
         }
 
         let mut status_list = Vec::new();
-        for socket_path in sockets {
-            match get_runtime_info_from_socket(&socket_path) {
-                Ok(rt_info) => {
-                    let mount_point = match validated_mount_point(&rt_info) {
-                        MountStatus::Mounted(mount_point) => mount_point,
-                        MountStatus::NoLonger => {
-                            eprintln!(
-                                "Drive {} no longer mounted but anylinuxfs is still running; try `anylinuxfs stop`.",
-                                &rt_info.mount_config.disk_path
-                            );
-                            continue;
-                        }
-                        MountStatus::NotYet => {
-                            eprintln!(
-                                "Drive {} not mounted yet, please wait",
-                                &rt_info.mount_config.disk_path
-                            );
-                            continue;
-                        }
-                    };
-
-                    let user_name =
-                        utils::user_name_from_uid(rt_info.mount_config.common.invoker_uid)
-                            .unwrap_or("<unknown>".into());
-                    let mounted_by = format!("mounted by {}", &user_name);
-
-                    let info: Vec<_> = rt_info
-                        .dev_info
-                        .fs_driver()
-                        .into_iter()
-                        .chain(
-                            rt_info
-                                .mount_config
-                                .mount_options
-                                .iter()
-                                .flat_map(|opts| opts.split(',')),
-                        )
-                        .chain([mounted_by.as_str()])
-                        .collect();
-
-                    let mut disk = rt_info.mount_config.disk_path.as_str();
-                    if disk.is_empty() {
-                        disk = "<unknown>";
-                    }
-                    status_list.push(format!(
-                        "{} on {} ({}) VM[cpus: {}, ram: {} MiB]",
-                        disk,
-                        mount_point.display(),
-                        info.join(", "),
-                        rt_info.mount_config.common.preferences.krun_num_vcpus(),
-                        rt_info.mount_config.common.preferences.krun_ram_size_mib(),
-                    ));
-                }
-                Err(_) => {
-                    // Skip sockets that can't be reached (stale or in transition)
+        for rt_info in active_instances {
+            let mount_point = match validated_mount_point(&rt_info) {
+                MountStatus::Mounted(mount_point) => mount_point,
+                MountStatus::NoLonger => {
+                    eprintln!(
+                        "Drive {} no longer mounted but anylinuxfs is still running; try `anylinuxfs stop`.",
+                        &rt_info.mount_config.disk_path
+                    );
                     continue;
                 }
+                MountStatus::NotYet => {
+                    eprintln!(
+                        "Drive {} not mounted yet, please wait",
+                        &rt_info.mount_config.disk_path
+                    );
+                    continue;
+                }
+            };
+
+            let user_name = utils::user_name_from_uid(rt_info.mount_config.common.invoker_uid)
+                .unwrap_or("<unknown>".into());
+            let mounted_by = format!("mounted by {}", &user_name);
+
+            let info: Vec<_> = rt_info
+                .dev_info
+                .fs_driver()
+                .into_iter()
+                .chain(
+                    rt_info
+                        .mount_config
+                        .mount_options
+                        .iter()
+                        .flat_map(|opts| opts.split(',')),
+                )
+                .chain([mounted_by.as_str()])
+                .collect();
+
+            let mut disk = rt_info.mount_config.disk_path.as_str();
+            if disk.is_empty() {
+                disk = "<unknown>";
             }
+            status_list.push(format!(
+                "{} on {} ({}) VM[cpus: {}, ram: {} MiB]",
+                disk,
+                mount_point.display(),
+                info.join(", "),
+                rt_info.mount_config.common.preferences.krun_num_vcpus(),
+                rt_info.mount_config.common.preferences.krun_ram_size_mib(),
+            ));
         }
 
         status_list.sort();
@@ -3508,13 +3552,9 @@ impl AppRunner {
         let target_path =
             fs::canonicalize(target_path_str).unwrap_or_else(|_| PathBuf::from(target_path_str));
 
-        let sockets = discover_api_sockets()?;
+        let (active_instances, _) = collect_active_instances();
 
-        for socket_path in sockets {
-            let Ok(rt_info) = get_runtime_info_from_socket(&socket_path) else {
-                continue;
-            };
-
+        for rt_info in active_instances {
             // Check if this instance matches the target path
             let matches_disk = target_path == Path::new(&rt_info.mount_config.disk_path);
             let matches_mount_point = rt_info
