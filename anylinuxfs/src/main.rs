@@ -1567,9 +1567,13 @@ fn wait_for_vm_status(pid: libc::pid_t) -> anyhow::Result<Option<i32>> {
 
 // when the process isn't a child
 fn wait_for_proc_exit(pid: libc::pid_t) -> anyhow::Result<()> {
+    wait_for_proc_exit_with_timeout(pid, Duration::from_secs(5))
+}
+
+fn wait_for_proc_exit_with_timeout(pid: libc::pid_t, timeout: Duration) -> anyhow::Result<()> {
     let start = Instant::now();
     loop {
-        if start.elapsed() > Duration::from_secs(5) {
+        if start.elapsed() > timeout {
             return Err(anyhow!("Timeout waiting for process exit"));
         }
         let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
@@ -3263,7 +3267,7 @@ impl AppRunner {
             fsutil::unmount_nfs_subdirs(our_mount_points, &mount_point)?;
 
             if cmd.wait_for_vm {
-                wait_for_proc_exit(rt_info.session_pgid)?;
+                wait_for_proc_exit_with_timeout(rt_info.session_pgid, Duration::from_secs(10))?;
             }
 
             // If a specific path was requested, we're done
