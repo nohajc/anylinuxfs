@@ -145,6 +145,10 @@ impl DevInfo {
         &self.vm_path
     }
 
+    pub fn set_vm_path(&mut self, vm_path: String) {
+        self.vm_path = vm_path;
+    }
+
     pub fn auto_mount_name(&self) -> BString {
         self.label()
             .and_then(path_safe_label_name)
