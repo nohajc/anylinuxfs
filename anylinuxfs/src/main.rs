@@ -715,15 +715,14 @@ fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
 }
 
 fn hostname_from_disk_ident(disk_ident: &str) -> anyhow::Result<String> {
-    let prefixes_to_strip = ["lvm:", "raid:"];
-    let disk_ident = (|| {
-        for p in prefixes_to_strip {
-            if disk_ident.starts_with(p) {
-                return &disk_ident[p.len()..];
-            }
-        }
-        disk_ident
-    })();
+    let disk_ident: Cow<'_, _> = if ["lvm:", "raid:"]
+        .into_iter()
+        .any(|p| disk_ident.starts_with(p))
+    {
+        disk_ident.replace(':', "-").into()
+    } else {
+        disk_ident.into()
+    };
 
     let disk_name = Path::new(disk_ident.split(':').next().unwrap())
         .file_name()

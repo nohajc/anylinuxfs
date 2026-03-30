@@ -83,6 +83,42 @@ let _cleanup = Deferred::add(|| { let _ = fs::remove_file(&socket_path); });
 - Always capture `SUDO_UID` / `SUDO_GID` environment variables at startup to record the original invoker.
 - Change Unix socket ownership to `(invoker_uid, invoker_gid)` after creation.
 
+## Building
+
+### `anylinuxfs` (macOS host binary)
+
+Requires `util-linux` for `libblkid` (via Homebrew) and must be built with the `freebsd` feature:
+
+```sh
+export PKG_CONFIG_PATH="/opt/homebrew/opt/util-linux/lib/pkgconfig"
+cargo build -F freebsd            # from anylinuxfs/
+cargo check -F freebsd            # for type-checking only
+```
+
+The `build-app.sh` script at the repo root sets these automatically and also signs and copies the binary to `bin/`.
+
+### `vmproxy` (guest binary — Linux/FreeBSD)
+
+Cross-compiled (FreeBSD also needs sysroot to be built natively on macOS but this is handled by the build-app.sh script):
+
+```sh
+# Linux (musl):
+cargo build --target aarch64-unknown-linux-musl -F freebsd
+# FreeBSD:
+cargo build --target aarch64-unknown-freebsd -F freebsd
+```
+
+### Other components
+
+```sh
+# init-rootfs
+cd init-rootfs && go build -ldflags="-w -s" -tags containers_image_openpgp -o ../libexec/
+
+# freebsd-bootstrap (cross-compile for FreeBSD)
+cd freebsd-bootstrap && CGO_ENABLED=0 GOOS=freebsd GOARCH=arm64 \
+    go build -tags netgo -ldflags '-extldflags "-static" -w -s' -o ../libexec/
+```
+
 ## Module Responsibilities (`anylinuxfs/src/`)
 
 | Module | Responsibility |
