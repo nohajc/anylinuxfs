@@ -2323,8 +2323,6 @@ impl AppRunner {
         let _lock_file = LockFile::new(LOCK_FILE)?.acquire_lock(FlockKind::Shared)?;
         let mut network_env = NetworkEnv::default();
 
-        network_env.usable_loopback_ip = netutil::pick_usable_loopback_ip(&[2049, 32765, 32767])?;
-
         if let Err(e) = netutil::try_port((Ipv4Addr::from([0, 0, 0, 0]), 111))
             && e.kind() == io::ErrorKind::AddrInUse
         {
@@ -2388,7 +2386,7 @@ impl AppRunner {
     fn run_mount_child(
         &mut self,
         mut config: MountConfig,
-        network_env: NetworkEnv,
+        mut network_env: NetworkEnv,
         comm_write_fd: libc::c_int,
     ) -> anyhow::Result<()> {
         // pre-declare so it can be referenced in a deferred action
@@ -2541,11 +2539,8 @@ impl AppRunner {
         let (mut net_helper_proc, net_helper_name, vmnet_config, vm_ip) =
             match config.common.net_helper {
                 NetHelper::GvProxy => {
-                    let Some(loopback_ip) = network_env.usable_loopback_ip.clone() else {
-                        return Err(anyhow!(
-                            "You can only mount up to three drives with gvproxy"
-                        ));
-                    };
+                    let loopback_ip = netutil::pick_usable_loopback_ip(&[2049, 32765, 32767])?;
+                    network_env.usable_loopback_ip = Some(loopback_ip.clone());
                     (
                         vm_network::start_gvproxy(&config.common)?,
                         "gvproxy",

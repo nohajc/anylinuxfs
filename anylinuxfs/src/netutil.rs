@@ -4,6 +4,7 @@ use std::{
     fmt::Display,
     io,
     net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs},
+    process::Command,
     ptr::null_mut,
 };
 
@@ -12,6 +13,7 @@ use getifaddrs::{InterfaceFilter, InterfaceFlags};
 use ipnet::Ipv4Net;
 use objc2_core_foundation::{CFArray, CFDictionary, CFString};
 use objc2_system_configuration::SCDynamicStore;
+use std::net::Ipv6Addr;
 
 use crate::utils::cfdict_get_value;
 
@@ -202,14 +204,44 @@ impl Display for Host {
     }
 }
 
-pub fn pick_usable_loopback_ip(required_ports: &[u16]) -> anyhow::Result<Option<Host>> {
-    for addr in ["127.0.0.1", "::1", "fe80::1%lo0"] {
+fn make_new_loopback() -> anyhow::Result<Host> {
+    let addr = Ipv6Addr::new(
+        0xFE80,
+        0,
+        0,
+        0,
+        rand::random(),
+        rand::random(),
+        rand::random(),
+        rand::random(),
+    );
+    let success = Command::new("/sbin/ifconfig")
+        .arg("lo0")
+        .arg("inet6")
+        .arg(addr.to_string())
+        .arg("add")
+        .status()?
+        .success();
+    if success {
+        Ok(Host::from_ip(IpAddr::V6(addr), Some(1)))
+    } else {
+        Err(anyhow!("unable to create an additional loopback address"))
+    }
+}
+
+pub fn pick_usable_loopback_ip(required_ports: &[u16]) -> anyhow::Result<Host> {
+    for itf in InterfaceFilter::new().name("lo0").get()? {
+        let Some(addr) = itf.address.ip_addr() else {
+            continue;
+        };
         let mut ip_candidate = None;
-        let mut ipv6_scope = None;
+        let ipv6_scope = if addr.is_ipv6() { itf.index } else { None };
         for port in required_ports.iter().cloned() {
-            if let Some(sock) = (addr, port).to_socket_addrs()?.next() {
-                if let SocketAddr::V6(sock) = sock {
-                    ipv6_scope = Some(sock.scope_id());
+            if let Some(mut sock) = (addr, port).to_socket_addrs()?.next() {
+                if let SocketAddr::V6(sock6) = &mut sock
+                    && let Some(scope) = ipv6_scope
+                {
+                    sock6.set_scope_id(scope);
                 }
                 match try_port(sock) {
                     Ok(()) => {
@@ -229,14 +261,13 @@ pub fn pick_usable_loopback_ip(required_ports: &[u16]) -> anyhow::Result<Option<
         }
         if let Some(ip) = ip_candidate {
             if let Some(scope_id) = ipv6_scope {
-                return Ok(Some(Host::from_ip(ip, Some(scope_id))));
+                return Ok(Host::from_ip(ip, Some(scope_id)));
             } else {
-                return Ok(Some(Host::from_ip(ip, None)));
+                return Ok(Host::from_ip(ip, None));
             }
         }
     }
-
-    Ok(None)
+    make_new_loopback()
 }
 
 #[allow(unused)]
