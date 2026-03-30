@@ -2416,10 +2416,10 @@ impl AppRunner {
         #[allow(unused_mut)]
         let mut img_src = ImageSource::default();
 
-        // pick FreeBSD for ZFS if preferred and if there
+        // pick FreeBSD for ZFS/UFS if preferred and if there
         // isn't any incompatible custom action specified
         #[cfg(feature = "freebsd")]
-        if mnt_dev_info.fs_type() == Some("zfs_member")
+        if (mnt_dev_info.fs_type() == Some("zfs_member") || mnt_dev_info.fs_type() == Some("ufs"))
             && config.common.zfs_os == OSType::FreeBSD
             && config
                 .get_action()
@@ -2441,6 +2441,7 @@ impl AppRunner {
                 .get(bsd_image)
                 .map(|&s| s.to_owned())
                 .with_context(|| format!("FreeBSD image {} not found", bsd_image))?;
+            mnt_dev_info.set_vm_path("/dev/vtbd1".to_string());
 
             config = config.with_image_source(&src);
             let freebsd_base_path = config.common.profile_path.join(&src.base_dir);

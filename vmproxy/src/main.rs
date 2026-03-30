@@ -903,7 +903,12 @@ fn run() -> anyhow::Result<()> {
         let mnt_result = if is_zfs {
             zfs::mount_datasets(&zfs_mountpoints, &env_pwds)?
         } else {
-            Command::new("/bin/mount")
+            let mount_bin = if cfg!(target_os = "freebsd") {
+                "/sbin/mount"
+            } else {
+                "/bin/mount"
+            };
+            Command::new(mount_bin)
                 .args(mnt_args)
                 .status()
                 .context("Failed to run mount command")?
