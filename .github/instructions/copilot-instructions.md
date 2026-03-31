@@ -1,3 +1,6 @@
+---
+applyTo: '**'
+---
 # anylinuxfs Project Context
 
 `anylinuxfs` is a macOS CLI utility that mounts any Linux-supported filesystem (ext4, btrfs, xfs, NTFS, exFAT, ZFS, etc.) with full read/write support. It achieves this by running a lightweight `libkrun` microVM and exposing the mounted filesystem to the host via NFS.
