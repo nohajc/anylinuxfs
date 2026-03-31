@@ -61,6 +61,8 @@ struct Cli {
     action: Option<String>,
     #[arg(long = "nfs-export-opts")]
     nfs_export_opts: Option<String>,
+    #[arg(long = "ignore-permissions")]
+    ignore_permissions: bool,
     #[arg(short, long, value_delimiter = ',', num_args = 0..)]
     bind_addrs: Vec<String>,
     #[arg(short, long)]
@@ -590,6 +592,7 @@ fn run() -> anyhow::Result<()> {
         .as_ref()
         .map(|cfg| cfg.override_nfs_export().to_owned());
     let export_args_override = cli.nfs_export_opts.as_deref();
+    let ignore_permissions = cli.ignore_permissions;
     let mut custom_action = CustomActionRunner::new(custom_action_cfg);
 
     let mut disk_path = cli.disk_path;
@@ -1017,6 +1020,15 @@ fn run() -> anyhow::Result<()> {
 
     let export_mode = if effective_read_only { "ro" } else { "rw" };
 
+    let squash_opts_storage;
+    let effective_export_args_override = if ignore_permissions && export_args_override.is_none() {
+        squash_opts_storage =
+            format!("{export_mode},no_subtree_check,all_squash,anonuid=0,anongid=0,insecure");
+        Some(squash_opts_storage.as_str())
+    } else {
+        export_args_override
+    };
+
     let all_exports = if is_zfs {
         let mut paths: BTreeSet<_> = zfs_mountpoints.into_iter().map(|m| m.path).collect();
 
@@ -1026,13 +1038,14 @@ fn run() -> anyhow::Result<()> {
 
         let mut exports = vec![];
         for (i, p) in paths.into_iter().enumerate() {
-            let a = export_args_for_path(&p, export_mode, i, export_args_override)?;
+            let a = export_args_for_path(&p, export_mode, i, effective_export_args_override)?;
             exports.push((p, a));
         }
         exports
     } else {
         // single export
-        let export_args = export_args_for_path(&export_path, export_mode, 0, export_args_override)?;
+        let export_args =
+            export_args_for_path(&export_path, export_mode, 0, effective_export_args_override)?;
         vec![(export_path, export_args)]
     };
     let mut exports_content = String::new();

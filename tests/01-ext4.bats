@@ -6,10 +6,12 @@
 #   2. Mount with custom Linux mount option (-o noatime)
 #   3. Mount read-only (-o ro) and verify writes are rejected
 #   4. Remount an already-attached image (-r flag)
+#   5. --ignore-permissions allows file roundtrip on root-owned filesystem
 
 load 'test_helper/common'
 
 LABEL="alfsext4"
+LABEL_ROOTOWNED="alfsext4ro"
 
 setup_file() {
   create_sparse_image "${BATS_FILE_TMPDIR}/ext4.img" 512M
@@ -17,6 +19,12 @@ setup_file() {
   # superblock block count matches the smaller device mount mode exposes.
   vm_exec "${BATS_FILE_TMPDIR}/ext4.img" \
     "mkfs.ext4 -E root_owner=$(id -u):$(id -g) -L ${LABEL} /dev/vda \$(( \$(blockdev --getsz /dev/vda) / 8 - 16 ))"
+
+  # Root-owned image: no root_owner flag, so / is owned by root:root.
+  # Used by the --ignore-permissions test.
+  create_sparse_image "${BATS_FILE_TMPDIR}/ext4-rootowned.img" 512M
+  vm_exec "${BATS_FILE_TMPDIR}/ext4-rootowned.img" \
+    "mkfs.ext4 -L ${LABEL_ROOTOWNED} /dev/vda \$(( \$(blockdev --getsz /dev/vda) / 8 - 16 ))"
 }
 
 teardown() {
@@ -52,6 +60,15 @@ teardown() {
   # A write to a read-only mount must fail
   run bash -c "echo test > '${mp}/should_fail.txt'"
   [ "$status" -ne 0 ]
+
+  do_unmount
+}
+
+@test "ext4: --ignore-permissions allows file roundtrip on root-owned filesystem" {
+  # The root directory is owned by root:root, which would normally block writes.
+  "$ANYLINUXFS" "${BATS_FILE_TMPDIR}/ext4-rootowned.img" --ignore-permissions -w false
+
+  assert_file_roundtrip "$(get_mount_point "$LABEL_ROOTOWNED")"
 
   do_unmount
 }

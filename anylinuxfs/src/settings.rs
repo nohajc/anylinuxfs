@@ -693,6 +693,7 @@ pub struct MountConfig {
     pub mount_options: Option<String>,
     pub nfs_options: Vec<String>,
     pub nfs_export_opts: Option<String>,
+    pub ignore_permissions: bool,
     pub allow_remount: bool,
     pub vm_hostname: String,
     pub custom_mount_point: Option<PathBuf>,
