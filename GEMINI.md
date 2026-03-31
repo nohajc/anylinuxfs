@@ -176,6 +176,10 @@ The script handles cross-compilation for vmproxy and places binaries in `bin/` a
 
 Prerequisites for integration tests: `brew install bats-core`, project built, Alpine rootfs initialized (`anylinuxfs init`). Alpine packages are installed automatically on first run.
 
+**ZFS test note**: ZFS always creates a partition table on the target device. Because of this, ZFS test images must be attached as a virtual disk via `hdiutil_attach` and mounted using the resulting partition device (`${HDIUTIL_DEV}s1`) rather than the raw image file. Remember to `hdiutil_detach` the device in `teardown`.
+
+**bats-core variable scope**: Each test and `teardown` runs in its own subshell. Any variable that must be visible across these contexts (e.g. device nodes captured in a `@test` and detached in `teardown`) must be `export`ed.
+
 ## Key CLI Commands
 
 ```
@@ -206,3 +210,5 @@ anylinuxfs image {list|install}   # Manage VM images (FreeBSD feature)
 ## Workflow Rules
 - **New test cases**: After writing a new BATS test case, always attempt to run it and report the result. Run individual test files directly with `bats tests/<file>.bats`; use `./tests/run-tests.sh` only to run the full suite.
 - **New features / non-trivial behavior changes**: After implementing, offer to write a new test case. If the user declines, offer to run the existing test suite. If the user agrees to add tests, first check whether the change is already covered by existing tests (which may need updating); then either fix the existing test or create a new one.
+- **"Please remember" / "take a note"**: When the user asks you to remember something, add it as a rule or note in this instructions file (and mirror it in GEMINI.md).
+- **`git add` new files**: After creating a new file, run `git add <file>` on it. When creating multiple files, batch them into a single `git add` command.
