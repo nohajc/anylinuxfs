@@ -207,4 +207,8 @@ anylinuxfs image {list|install}   # Manage VM images (FreeBSD feature)
 - `kernel-builder/` — **Unmaintained.** Originally a Lua-based microVM launcher used for experiments during early development (before `anylinuxfs shell` was usable) and for building custom Linux kernels (libkrun-based config with additional filesystem drivers enabled). Superseded by `anylinuxfs shell`, which now serves the same purpose on both Linux and FreeBSD. Do not modify or depend on this directory.
 
 # Miscellaneous
-When making changes to this file, apply the same changes to GEMINI.md
+When making changes to this file, apply the same changes to GEMINI.md, except this line.
+
+## Workflow Rules
+- **New test cases**: After writing a new BATS test case, always attempt to run it and report the result. Run individual test files directly with `bats tests/<file>.bats`; use `./tests/run-tests.sh` only to run the full suite.
+- **New features / non-trivial behavior changes**: After implementing, offer to write a new test case. If the user declines, offer to run the existing test suite. If the user agrees to add tests, first check whether the change is already covered by existing tests (which may need updating); then either fix the existing test or create a new one.

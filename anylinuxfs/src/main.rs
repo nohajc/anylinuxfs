@@ -2468,11 +2468,13 @@ impl AppRunner {
         #[allow(unused_mut)]
         let mut img_src = ImageSource::default();
 
-        // pick FreeBSD for ZFS/UFS if preferred and if there
-        // isn't any incompatible custom action specified
+        // Use FreeBSD when the filesystem requires or prefers it, and no
+        // incompatible custom action has been specified.
         #[cfg(feature = "freebsd")]
-        if (mnt_dev_info.fs_type() == Some("zfs_member") || mnt_dev_info.fs_type() == Some("ufs"))
-            && config.common.zfs_os == OSType::FreeBSD
+        if mnt_dev_info
+            .fs_type()
+            .map(|fs| config.common.fs_preferred_os(fs) == OSType::FreeBSD)
+            .unwrap_or(false)
             && config
                 .get_action()
                 .map(|a| a.required_os())

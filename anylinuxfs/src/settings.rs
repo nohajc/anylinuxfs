@@ -60,6 +60,19 @@ pub struct Config {
 }
 
 impl Config {
+    /// Maps a filesystem type to its preferred OS.
+    /// - UFS is FreeBSD-only (mandatory).
+    /// - ZFS can run on either OS; the user's zfs_os preference decides.
+    /// - Any filesystem not listed here is assumed to be Linux-only.
+    #[cfg(feature = "freebsd")]
+    pub fn fs_preferred_os(&self, fs_type: &str) -> OSType {
+        match fs_type {
+            "ufs" => OSType::FreeBSD,
+            "zfs_member" => self.zfs_os,
+            _ => OSType::Linux,
+        }
+    }
+
     #[cfg(feature = "freebsd")]
     pub fn with_image_source(&self, src: &ImageSource) -> Self {
         let mut new_config = self.clone();
