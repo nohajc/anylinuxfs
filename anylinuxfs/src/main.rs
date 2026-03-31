@@ -240,6 +240,9 @@ struct MountCmd {
     #[clap(verbatim_doc_comment)]
     #[arg(long = "nfs-export-opts")]
     nfs_export_opts: Option<String>,
+    /// Bypass Unix file permissions: files will appear to be owned by the current macOS user.
+    #[arg(long = "ignore-permissions", conflicts_with = "nfs_export_opts")]
+    ignore_permissions: bool,
     /// Allow remount: proceed even if the disk is already mounted by macOS (NTFS, exFAT)
     #[arg(short, long)]
     remount: bool,
@@ -370,6 +373,7 @@ impl From<ShellCmd> for MountCmd {
             options: None,
             nfs_options: None,
             nfs_export_opts: None,
+            ignore_permissions: false,
             remount: shell_cmd.remount,
             action: None,
             fs_driver: None,
@@ -623,8 +627,12 @@ fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
     let disk_path = cmd.disk_ident();
     let mount_options = cmd.options;
 
-    let nfs_options = cmd.nfs_options.unwrap_or_default();
+    let mut nfs_options = cmd.nfs_options.unwrap_or_default();
     let nfs_export_opts = cmd.nfs_export_opts;
+    let ignore_permissions = cmd.ignore_permissions;
+    if ignore_permissions && !nfs_options.iter().any(|o| o == "noowners") {
+        nfs_options.push("noowners".to_owned());
+    }
 
     let allow_remount = cmd.remount;
     let custom_mount_point = match cmd.mount_point {
@@ -700,6 +708,7 @@ fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
         mount_options,
         nfs_options,
         nfs_export_opts,
+        ignore_permissions,
         allow_remount,
         vm_hostname,
         custom_mount_point,
@@ -1169,6 +1178,12 @@ fn start_vmproxy(
             .into_iter(),
     )
     .chain(config.verbose.then_some("-v".into()).into_iter())
+    .chain(
+        config
+            .ignore_permissions
+            .then_some("--ignore-permissions".into())
+            .into_iter(),
+    )
     .collect();
 
     host_println!("vmproxy args: {:?}", &args);
