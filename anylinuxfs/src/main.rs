@@ -3320,7 +3320,7 @@ impl AppRunner {
             fsutil::unmount_nfs_subdirs(our_mount_points, &mount_point)?;
 
             if cmd.wait_for_vm {
-                wait_for_proc_exit_with_timeout(rt_info.session_pgid, Duration::from_secs(10))?;
+                wait_for_proc_exit_with_timeout(rt_info.session_pgid, Duration::from_secs(20))?;
             }
 
             // If a specific path was requested, we're done
