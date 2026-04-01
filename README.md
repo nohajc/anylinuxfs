@@ -33,7 +33,6 @@ brew install anylinuxfs
 - define your own [custom actions](#custom-actions) (e.g. mount **borg backup** located on a Linux drive)
 
 ## Limitations
-- Only one drive can be mounted at a time (this might be improved in the future)
 - Only Apple Silicon Macs are supported (libkrun limitation)
 - Some disks with non-ASCII labels might fail to mount unless a custom mount point with "safe" characters is used (this is a macOS bug)
 - By design, any mounted volume is seen by macOS as a network drive shared by our virtual machine.
