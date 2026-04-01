@@ -332,6 +332,7 @@ You can also run `anylinuxfs init` to download a fresh copy of `alpine:latest` a
 
 ## Troubleshooting
 - Make sure nothing is running on ports 2049, 32765 and 32767. If there's another NFS server already running, `anylinuxfs` will not work.
+- You should always mount individual partitions (e.g. `/dev/disk4s1`) not whole disks (`/dev/disk4`) unless they really don't have any partition table (which might be the case with LVM/LUKS containers sometimes).
 - Check your mount flags (e.g. the `subvol` flag from demo is specific to btrfs, make sure you don't use it with other filesystems)
 - Check file owner and permissions with `ls -l` and adjust accordingly. Typically, your macOS user won't have write access to your drive out of the box so you need to write files as root or first prepare a target directory writable by everyone (`chmod 777`).
 - To bypass Unix file permissions and make files appear to be owned by the current macOS user, use the `--ignore-permissions` flag (e.g. `sudo anylinuxfs /dev/disk0s6 --ignore-permissions`). This squashes all UIDs/GIDs on the NFS export and sets the `noowners` NFS mount option. Equivalent to manually setting `--nfs-export-opts rw,no_subtree_check,all_squash,anonuid=0,anongid=0,insecure -n noowners`.
