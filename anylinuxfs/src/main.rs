@@ -3551,7 +3551,7 @@ impl AppRunner {
                 return Err(anyhow!("No anylinuxfs instance is currently running"));
             }
             return Err(anyhow!(
-                "Multiple anylinuxfs instances are running; please specify the disk identifier or mount point. Example: anylinuxfs stop /dev/diskXsY"
+                "Multiple anylinuxfs instances are running; please specify the disk identifier or mount point."
             ));
         }
 
