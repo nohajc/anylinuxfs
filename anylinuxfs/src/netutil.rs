@@ -225,7 +225,9 @@ fn make_new_loopback() -> anyhow::Result<Host> {
     if success {
         Ok(Host::from_ip(IpAddr::V6(addr), Some(1)))
     } else {
-        Err(anyhow!("unable to create an additional loopback address"))
+        Err(anyhow!(
+            "unable to create loopback alias, please retry with sudo"
+        ))
     }
 }
 
