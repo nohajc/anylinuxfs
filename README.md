@@ -20,6 +20,7 @@ brew install anylinuxfs
 
 ## Features
 - mounts any filesystem supported by Linux (**ext4**, **btrfs**, **xfs**, ... but also **NTFS** and **exFAT**)
+- mount any number of drives at the same time
 - supports **LUKS**-encrypted drives
 - supports **BitLocker**-encrypted drives – **NTFS** or **FAT32** (using your recovery key as passphrase)
 - supports **LVM** (even volume groups spanning multiple drives)
@@ -34,6 +35,10 @@ brew install anylinuxfs
 
 ## Limitations
 - Only Apple Silicon Macs are supported (libkrun limitation)
+- A new virtual machine is needed for each mounted volume.
+  You can configure RAM limit (512 MB by default), typical usage is around 256 MB per VM.
+- Multi-mount relies on file locks (to prevent data corruption) and we can only lock entire physical partitions.
+  So, practically, you won't be able to mount multiple logical volumes at once if they're backed by the same partition.
 - Some disks with non-ASCII labels might fail to mount unless a custom mount point with "safe" characters is used (this is a macOS bug)
 - By design, any mounted volume is seen by macOS as a network drive shared by our virtual machine.
 - Microsoft Word cannot edit files directly on a mounted drive. This is a known issue with Word and network filesystems.
