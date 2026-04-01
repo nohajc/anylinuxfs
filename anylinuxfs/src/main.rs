@@ -3543,34 +3543,38 @@ impl AppRunner {
     }
 
     fn run_stop(&mut self, cmd: StopCmd) -> anyhow::Result<()> {
-        // Require a path to identify which instance to stop
-        let Some(target_path_str) = &cmd.path else {
-            return Err(anyhow!(
-                "Please specify the disk identifier or mount point to stop. Example: anylinuxfs stop /dev/diskXsY"
-            ));
-        };
-
-        let target_path =
-            fs::canonicalize(target_path_str).unwrap_or_else(|_| PathBuf::from(target_path_str));
-
         let (active_instances, _) = collect_active_instances();
 
-        for rt_info in active_instances {
-            // Check if this instance matches the target path
-            let matches_disk = target_path == Path::new(&rt_info.mount_config.disk_path);
-            let matches_mount_point = rt_info
-                .mount_point
-                .as_ref()
-                .map(|mp| target_path == Path::new(mp))
-                .unwrap_or(false);
-            let matches_disk_part = rt_info
-                .mount_config
-                .disk_path
-                .split(':')
-                .any(|p| OsStr::new(p) == target_path.as_os_str());
+        // If no path specified, require exactly one running instance
+        if cmd.path.is_none() && active_instances.len() != 1 {
+            if active_instances.is_empty() {
+                return Err(anyhow!("No anylinuxfs instance is currently running"));
+            }
+            return Err(anyhow!(
+                "Multiple anylinuxfs instances are running; please specify the disk identifier or mount point. Example: anylinuxfs stop /dev/diskXsY"
+            ));
+        }
 
-            if !matches_disk && !matches_mount_point && !matches_disk_part {
-                continue;
+        for rt_info in active_instances {
+            // If a path was specified, check that this instance matches
+            if let Some(target_path_str) = &cmd.path {
+                let target_path = fs::canonicalize(target_path_str)
+                    .unwrap_or_else(|_| PathBuf::from(target_path_str));
+                let matches_disk = target_path == Path::new(&rt_info.mount_config.disk_path);
+                let matches_mount_point = rt_info
+                    .mount_point
+                    .as_ref()
+                    .map(|mp| target_path == Path::new(mp))
+                    .unwrap_or(false);
+                let matches_disk_part = rt_info
+                    .mount_config
+                    .disk_path
+                    .split(':')
+                    .any(|p| OsStr::new(p) == target_path.as_os_str());
+
+                if !matches_disk && !matches_mount_point && !matches_disk_part {
+                    continue;
+                }
             }
 
             // Found matching instance, now perform the stop
@@ -3659,7 +3663,7 @@ impl AppRunner {
         // No matching instance found
         Err(anyhow!(
             "No anylinuxfs instance found for: {}",
-            target_path_str
+            cmd.path.as_deref().unwrap_or("<unknown>")
         ))
     }
 
