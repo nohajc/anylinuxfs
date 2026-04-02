@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-remote_host="${REMOTE_HOST:-winsrv}"
-image_path="${IMAGE_PATH:-C:\\Mac\\Home\\Documents\\BitLockerImages\\test-bitlocker.vhdx}"
+## Accept remote host and image name from command-line arguments.
+## IMAGE_NAME should be provided without the file extension.
+remote_host="${1:-winsrv}"
+image_name="${2:-test-bitlocker}"
+image_name_vhdx="${image_name}.vhdx"
+image_path="${IMAGE_PATH:-C:\\Mac\\Home\\Documents\\BitLockerImages\\${image_name_vhdx}}"
+host_image_path="${HOME}/Documents/BitLockerImages/${image_name_vhdx}"
+host_image_raw_path="${host_image_path%.*}.img"
 size_gb="${SIZE_GB:-1}"
 drive_letter="${DRIVE_LETTER:-R}"
 volume_label="${VOLUME_LABEL:-TestBitLocker}"
@@ -57,7 +63,7 @@ if (-not \$extension) {
 try {
 
 \$diskpartScript = @"
-create vdisk file="\$workingImagePath" maximum=\$sizeMb type=fixed
+create vdisk file="\$workingImagePath" maximum=\$sizeMb type=expandable
 select vdisk file="\$workingImagePath"
 attach vdisk
 "@
@@ -105,3 +111,10 @@ EOF
 
 # The empty line between last closing brace and EOF is crucial.
 # Without it, the powershell script didn't work at all.
+
+# Ensure any previous raw image is removed before conversion
+if [ -f "$host_image_raw_path" ]; then
+    rm -f "$host_image_raw_path" || true
+fi
+
+qemu-img convert -f vhdx -O raw "$host_image_path" "$host_image_raw_path"
