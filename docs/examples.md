@@ -105,7 +105,7 @@ May reveal encrypted LVM volume groups or additional filesystem information
 ```
 sudo anylinuxfs list -d all
 ```
-[See here for more info](luks-lvm.md)
+[See LUKS/LVM details](luks-lvm.md)
 
 **Mount LUKS-encrypted or BitLocker-encrypted partition**
 ```

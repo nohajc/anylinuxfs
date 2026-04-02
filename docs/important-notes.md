@@ -1,4 +1,4 @@
-# Notes
+# Important Notes
 
 ## VM initialization
 - When you first run `anylinuxfs` to mount a drive, it will download the alpine Linux image from Docker hub and unpack it to your user profile (`~/.anylinuxfs/alpine`).
