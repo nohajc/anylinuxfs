@@ -3,7 +3,7 @@
 ## Port conflicts
 - Make sure nothing is running on ports 2049, 32765 and 32767. If there's another NFS server already running, `anylinuxfs` will not work.
 
-## Disk identifiers
+## Command-line arguments
 - You should always mount individual partitions (e.g. `/dev/disk4s1`) not whole disks (`/dev/disk4`) unless they really don't have any partition table (which might be the case with LVM/LUKS containers sometimes).
 - Check your mount flags (e.g. the `subvol` flag from demo is specific to btrfs, make sure you don't use it with other filesystems)
 

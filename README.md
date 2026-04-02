@@ -97,10 +97,10 @@ Arguments:
 ## Documentation
 
 - [Examples](docs/examples.md) — command examples for common use cases
-- [Custom Actions](docs/custom-actions.md) — scripting hooks that run inside the VM
+- [Custom actions](docs/custom-actions.md) — scripting hooks that run inside the VM
 - [Important Notes](docs/important-notes.md) — VM initialization, permissions, LUKS memory, NTFS drivers
 - [Troubleshooting](docs/troubleshooting.md) — common issues and fixes
-- [Build from Source](docs/building.md) — how to build anylinuxfs yourself
+- [Build from source](docs/building.md) — how to build anylinuxfs yourself
 
 ## Acknowledgements
 Logo designed by [Junaid Iqbal](https://www.fiverr.com/junaidiqbal39).
