@@ -98,7 +98,7 @@ Arguments:
 
 - [Examples](docs/examples.md) — command examples for common use cases
 - [Custom actions](docs/custom-actions.md) — scripting hooks that run inside the VM
-- [Important Notes](docs/important-notes.md) — VM initialization, permissions, LUKS memory, NTFS drivers
+- [Important notes](docs/important-notes.md) — VM initialization, permissions, LUKS memory, NTFS drivers
 - [Troubleshooting](docs/troubleshooting.md) — common issues and fixes
 - [Build from source](docs/building.md) — how to build anylinuxfs yourself
 
