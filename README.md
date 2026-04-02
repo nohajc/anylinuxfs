@@ -44,7 +44,7 @@ brew install anylinuxfs
 - Microsoft Word cannot edit files directly on a mounted drive. This is a known issue with Word and network filesystems.
 
 > [!CAUTION]
-> Before using anylinuxfs with **NTFS**, please read [the notes](docs/notes.md#ntfs)
+> Before using anylinuxfs with **NTFS**, please read [the notes](docs/important-notes.md#ntfs)
 
 ## Demo
 https://github.com/user-attachments/assets/6ec6ce46-ce08-45b9-9fa4-e3d6d078d811
@@ -98,7 +98,7 @@ Arguments:
 
 - [Examples](docs/examples.md) — command examples for common use cases
 - [Custom Actions](docs/custom-actions.md) — scripting hooks that run inside the VM
-- [Notes](docs/notes.md) — VM initialization, permissions, LUKS memory, NTFS drivers
+- [Important Notes](docs/important-notes.md) — VM initialization, permissions, LUKS memory, NTFS drivers
 - [Troubleshooting](docs/troubleshooting.md) — common issues and fixes
 - [Build from Source](docs/building.md) — how to build anylinuxfs yourself
 
