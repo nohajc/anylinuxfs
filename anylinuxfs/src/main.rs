@@ -161,7 +161,7 @@ Recognized environment variables:
     Init,
     /// Show status information (mount parameters, vm resources, etc.)
     Status,
-    /// Show log of current or previous run
+    /// Show the latest application log (the rest is in ~/Library/Logs/)
     Log(LogCmd),
     /// Configure microVM parameters and other miscellaneous settings
     Config(ConfigCmd),
@@ -176,7 +176,7 @@ Recognized environment variables:
     Stop(StopCmd),
     /// microVM shell for debugging (configures the VM according to mount options but only starts a shell)
     Shell(ShellCmd),
-    /// Show dmesg output from the last run
+    /// Show the latest kernel log (after the VM has stopped)
     Dmesg,
     /// Manage custom alpine packages
     #[command(subcommand)]
