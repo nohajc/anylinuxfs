@@ -2,7 +2,7 @@
 set -euo pipefail
 
 remote_host="${REMOTE_HOST:-winsrv}"
-image_path="${IMAGE_PATH:-C:\\BitLockerImages\\test-bitlocker.vhdx}"
+image_path="${IMAGE_PATH:-C:\\Mac\\Home\\Documents\\BitLockerImages\\test-bitlocker.vhdx}"
 size_gb="${SIZE_GB:-1}"
 drive_letter="${DRIVE_LETTER:-R}"
 volume_label="${VOLUME_LABEL:-TestBitLocker}"
@@ -42,15 +42,23 @@ if (Test-Path -LiteralPath \$imagePath) {
 
 \$parent = Split-Path -Parent \$imagePath
 if (\$parent -and -not (Test-Path -LiteralPath \$parent)) {
-    New-Item -ItemType Directory -Path \$parent | Out-Null
+    New-Item -ItemType Directory -Path \$parent -Force | Out-Null
 }
 
+\$extension = [System.IO.Path]::GetExtension(\$imagePath)
+if (-not \$extension) {
+    \$extension = '.vhdx'
+}
+
+\$workingImagePath = Join-Path ([System.IO.Path]::GetTempPath()) ("anylinuxfs-" + [System.Guid]::NewGuid().ToString('N') + \$extension)
+
 \$diskAttached = \$false
+\$recoveryPassword = \$null
 try {
 
 \$diskpartScript = @"
-create vdisk file="\$imagePath" maximum=\$sizeMb type=fixed
-select vdisk file="\$imagePath"
+create vdisk file="\$workingImagePath" maximum=\$sizeMb type=fixed
+select vdisk file="\$workingImagePath"
 attach vdisk
 "@
 \$diskpartScript | & diskpart 2>&1 | ForEach-Object { Write-Log \$_ }
@@ -58,16 +66,16 @@ attach vdisk
 
 Start-Sleep -Seconds 2
 
-\$disk = Get-DiskImage -ImagePath \$imagePath | Get-Disk | Select-Object -First 1
+\$disk = Get-DiskImage -ImagePath \$workingImagePath | Get-Disk | Select-Object -First 1
 if (-not \$disk) {
-    throw "Unable to locate the attached VHD for \$imagePath"
+    throw "Unable to locate the attached VHD for \$workingImagePath"
 }
 
 Initialize-Disk -Number \$disk.Number -PartitionStyle GPT | Out-Null
 New-Partition -DiskNumber \$disk.Number -UseMaximumSize -DriveLetter \$driveLetter | Out-Null
 Format-Volume -DriveLetter \$driveLetter -FileSystem NTFS -NewFileSystemLabel \$volumeLabel -Confirm:\$false | Out-Null
 
-Write-Log "Starting BitLocker on \$imagePath"
+Write-Log "Starting BitLocker on \$workingImagePath"
 Enable-BitLocker -MountPoint "\${driveLetter}:" -RecoveryPasswordProtector -UsedSpaceOnly -SkipHardwareTest -WarningAction SilentlyContinue | Out-Null
 
 Start-Sleep -Seconds 1
@@ -81,13 +89,17 @@ if (-not \$recoveryPassword) {
     throw "Unable to determine the recovery password for \${driveLetter}:"
 }
 
-Write-Output \$recoveryPassword
-
 } finally {
     if (\$diskAttached) {
-        Dismount-DiskImage -ImagePath \$imagePath -ErrorAction SilentlyContinue | Out-Null
+        Dismount-DiskImage -ImagePath \$workingImagePath -ErrorAction SilentlyContinue | Out-Null
     }
 }
+
+if (\$workingImagePath -ne \$imagePath) {
+    Move-Item -LiteralPath \$workingImagePath -Destination \$imagePath -Force
+}
+
+Write-Output \$recoveryPassword
 
 EOF
 
