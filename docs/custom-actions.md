@@ -1,4 +1,4 @@
-# Custom Actions
+# Custom actions
 
 With custom actions, you're able to define sets of scripts which will run inside the virtual machine at specific points.
 Currently supported actions: `before_mount`, `after_mount`, `before_unmount` (typically to do cleanup).

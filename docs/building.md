@@ -1,4 +1,4 @@
-# Build from Source
+# Build from source
 
 ```
 # build dependencies
