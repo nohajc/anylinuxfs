@@ -2127,7 +2127,10 @@ impl AppRunner {
             true => NetworkMode::default_virtio_net(os, config.common.net_helper, None),
             false => NetworkMode::default_for_os(os),
         };
-        let ctx = setup_vm(&config.common, &dev_info, net_mode, false, opts)
+        // use_vsock must be true in virtio-net mode so the vsock device is present in the
+        // guest; without it AF_VSOCK is unavailable, libkrun's clock_worker() in init fails
+        // to bind its timesync socket and we get unreliable keyboard input in the shell
+        let ctx = setup_vm(&config.common, &dev_info, net_mode, cmd.no_tsi, opts)
             .context("Failed to setup microVM")?;
 
         if os == OSType::Linux {
@@ -2136,7 +2139,7 @@ impl AppRunner {
                 "mount -t tmpfs tmpfs /tmp && echo nameserver {} > /tmp/resolv.conf",
                 dns_server
             );
-            let mut cmdline: Vec<BString> = vec!["/bin/bash".into(), "-c".into()];
+            let mut cmdline: Vec<BString> = vec!["/bin/sh".into(), "-c".into()];
             if let Some(command) = cmd.command {
                 cmdline.push(command.into());
             } else {
