@@ -127,6 +127,7 @@ fn trunc_with_ellipsis(s: &str, max_len: usize) -> String {
 
 fn normalize_pt_type(pt_type: &str) -> String {
     match pt_type {
+        // TODO: verify the strings
         "gpt" | "gpt_scheme" => "GUID_partition_scheme".to_string(),
         "dos" | "mbr_scheme" => "FDisk_partition_scheme".to_string(),
         _ => pt_type.to_string(),
@@ -238,11 +239,13 @@ str_array!(
 str_array!(
     LINUX_FS_TYPES,
     [
+        "bcachefs",
         "btrfs",
         "erofs",
         "ext2",
         "ext3",
         "ext4",
+        "f2fs",
         "squashfs",
         "xfs",
         "zfs",
@@ -470,6 +473,12 @@ pub fn list_partitions(
                     );
                     for (i, dev) in probe_devs[1..].iter().enumerate() {
                         let fs_type = dev.fs_type().unwrap_or("");
+
+                        // Filter by filesystem type to match diskutil behavior
+                        if !filter.fs_types.iter().any(|t| t == &fs_type) {
+                            continue;
+                        }
+
                         let label = dev.label().unwrap_or("");
                         let truncated_label = trunc_with_ellipsis(label, 23);
                         let size_str = dev.size().map(format_partition_size).unwrap_or_default();
@@ -486,13 +495,17 @@ pub fn list_partitions(
                 } else {
                     // Whole-disk image without partition table
                     let fs_type = whole.fs_type().unwrap_or("");
-                    let label = whole.label().unwrap_or("");
-                    let truncated_label = trunc_with_ellipsis(label, 23);
-                    let size_str = whole.size().map(format_partition_size).unwrap_or_default();
-                    entry.partitions_mut().push(format!(
-                        "   0: {:>26} {:<23} {:<10} {}",
-                        fs_type, truncated_label, size_str, image_name,
-                    ));
+
+                    // Filter by filesystem type to match diskutil behavior
+                    if filter.fs_types.iter().any(|t| t == &fs_type) {
+                        let label = whole.label().unwrap_or("");
+                        let truncated_label = trunc_with_ellipsis(label, 23);
+                        let size_str = whole.size().map(format_partition_size).unwrap_or_default();
+                        entry.partitions_mut().push(format!(
+                            "   0: {:>26} {:<23} {:<10} {}",
+                            fs_type, truncated_label, size_str, image_name,
+                        ));
+                    }
                 }
 
                 disk_entries.push(entry);
