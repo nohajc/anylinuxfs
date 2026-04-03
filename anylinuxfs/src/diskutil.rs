@@ -1,6 +1,6 @@
 use anyhow::{Context, anyhow};
 use bstr::BStr;
-use common_utils::{host_println, safe_print};
+use common_utils::{PathExt, host_println, safe_print};
 use derive_more::{AddAssign, Deref};
 use indexmap::IndexMap;
 use objc2_core_foundation::{
@@ -86,9 +86,15 @@ pub struct List(Vec<Entry>);
 
 impl Display for List {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for entry in &self.0 {
-            if entry.partitions().is_empty() {
-                continue;
+        let entries_with_partitions: Vec<_> = self
+            .0
+            .iter()
+            .filter(|e| !e.partitions().is_empty())
+            .collect();
+
+        for (idx, entry) in entries_with_partitions.iter().enumerate() {
+            if idx > 0 {
+                writeln!(f, "")?;
             }
             writeln!(f, "{}", entry.disk())?;
             if !entry.header().is_empty() {
@@ -97,10 +103,15 @@ impl Display for List {
             if !entry.scheme().is_empty() {
                 writeln!(f, "{}", entry.scheme())?;
             }
-            for partition in entry.partitions() {
-                writeln!(f, "{}", partition)?;
+            for (pidx, partition) in entry.partitions().iter().enumerate() {
+                let is_last_entry = idx == entries_with_partitions.len() - 1;
+                let is_last_partition = pidx == entry.partitions().len() - 1;
+                if is_last_entry && is_last_partition {
+                    write!(f, "{}", partition)?;
+                } else {
+                    writeln!(f, "{}", partition)?;
+                }
             }
-            writeln!(f, "")?;
         }
         Ok(())
     }
@@ -114,12 +125,13 @@ fn trunc_with_ellipsis(s: &str, max_len: usize) -> String {
     }
 }
 
-fn diskutil_list_from_plist() -> anyhow::Result<Plist> {
-    let output = Command::new("diskutil")
-        .arg("list")
-        .arg("-plist")
-        .output()
-        .expect("Failed to execute diskutil");
+fn diskutil_list_from_plist(disk: Option<&str>) -> anyhow::Result<Plist> {
+    let mut cmd = Command::new("diskutil");
+    cmd.arg("list").arg("-plist");
+    if let Some(d) = disk {
+        cmd.arg(d);
+    }
+    let output = cmd.output().expect("Failed to execute diskutil");
 
     if !output.status.success() {
         return Err(anyhow!("diskutil command failed"));
@@ -392,6 +404,7 @@ impl FromStr for LvIdent {
 
 pub fn list_partitions(
     config: Config,
+    disk: Option<&str>,
     enc_partitions: Option<&[String]>,
     filter: Labels,
 ) -> anyhow::Result<List> {
@@ -399,7 +412,70 @@ pub fn list_partitions(
     let part_type_pattern = Regex::new(&format!(r"({})", filter.part_types.join("|"))).unwrap();
     let mut disk_entries = Vec::new();
 
-    let plist_out = diskutil_list_from_plist()?;
+    if let Some(path) = disk {
+        let p = Path::new(path);
+        if p.exists() && p.is_file() {
+            // It's an image file — probe directly with libblkid, bypassing diskutil.
+            use bstr::BString;
+            let probe_devs = DevInfo::probe_image(BString::from(p.as_bytes()))?;
+
+            if !probe_devs.is_empty() {
+                let whole = &probe_devs[0];
+                let is_partitioned = whole.pt_type().is_some();
+
+                let image_name = p
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.to_string());
+
+                let mut entry = Entry::new(format!("{} (disk image):", path));
+                entry.header_mut().push_str(
+                    "   #:                       TYPE NAME                    SIZE       IDENTIFIER",
+                );
+
+                if is_partitioned {
+                    let pt_type = whole.pt_type().unwrap_or("unknown");
+                    *entry.scheme_mut() = format!(
+                        "   0: {:>26} {:<23} {:<10} {}",
+                        format!("{}_scheme", pt_type),
+                        "",
+                        "",
+                        image_name,
+                    );
+                    for (i, dev) in probe_devs[1..].iter().enumerate() {
+                        let fs_type = dev.fs_type().unwrap_or("");
+                        let label = dev.label().unwrap_or("");
+                        let ident = dev
+                            .disk()
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| dev.disk().to_string_lossy().into_owned());
+                        entry.partitions_mut().push(format!(
+                            "{:>4}: {:>26} {:<23} {:<10} {}",
+                            i + 1,
+                            fs_type,
+                            label,
+                            "",
+                            ident,
+                        ));
+                    }
+                } else {
+                    // Whole-disk image without partition table
+                    let fs_type = whole.fs_type().unwrap_or("");
+                    let label = whole.label().unwrap_or("");
+                    entry.partitions_mut().push(format!(
+                        "   0: {:>26} {:<23} {:<10} {}",
+                        fs_type, label, "", image_name,
+                    ));
+                }
+
+                disk_entries.push(entry);
+                return Ok(List(disk_entries));
+            }
+        }
+    }
+
+    let plist_out = diskutil_list_from_plist(disk)?;
     // println!("plist_out: {:#?}", plist_out);
     let selected_partitions = partitions_with_part_type(&plist_out, filter.part_types);
     // println!("selected_partitions: {:?}", selected_partitions);
@@ -414,6 +490,7 @@ pub fn list_partitions(
 
     let output = Command::new("diskutil")
         .arg("list")
+        .args(disk)
         .output()
         .expect("Failed to execute diskutil");
 

@@ -317,6 +317,8 @@ struct ConfigCmd {
         .args(&["linux", "microsoft"]),
 ))]
 struct ListCmd {
+    #[arg(value_name = "DISK")]
+    disk: Option<String>,
     /// Decrypt LUKS partitions: comma-separated list of paths or "all"
     #[arg(short, long, value_delimiter = ',', num_args = 1..)]
     decrypt: Option<Vec<String>>,
@@ -3428,7 +3430,7 @@ impl AppRunner {
 
         println!(
             "{}",
-            diskutil::list_partitions(config, cmd.decrypt.as_deref(), labels)?
+            diskutil::list_partitions(config, cmd.disk.as_deref(), cmd.decrypt.as_deref(), labels)?
         );
         Ok(())
     }

@@ -1,3 +1,4 @@
+use std::os::fd::AsRawFd;
 use std::path::Path;
 
 use anyhow::{Context, anyhow};
@@ -16,6 +17,7 @@ pub struct DevInfo {
     label: Option<String>,
     fs_type: Option<String>,
     uuid: Option<String>,
+    pt_type: Option<String>,
     vm_path: String,
     fs_driver: Option<String>, // will be auto-detected if not set
     da_info: diskutil::DiskInfo,
@@ -37,6 +39,7 @@ impl DevInfo {
             label: label.map(|l| l.to_owned()),
             fs_type: Some("auto".into()),
             uuid: None,
+            pt_type: None,
             vm_path: vm_path.into(),
             fs_driver: None,
             da_info: diskutil::DiskInfo::default(),
@@ -95,10 +98,124 @@ impl DevInfo {
             label,
             fs_type,
             uuid,
+            pt_type: None,
             vm_path: "/dev/vda".to_owned(),
             fs_driver: None,
             da_info,
         })
+    }
+
+    pub fn probe_image(path: impl AsRef<BStr>) -> anyhow::Result<Vec<DevInfo>> {
+        let path = path.as_ref();
+        if path.is_empty() {
+            return Err(anyhow::anyhow!("Empty image path"));
+        }
+
+        let path_ref = Path::from_bytes(path);
+
+        let mut whole_probe =
+            BlkidProbe::new_from_filename(path_ref).context("Cannot open image with BlkidProbe")?;
+
+        whole_probe
+            .enable_partitions(true)
+            .context("Cannot enable partitions probe")?;
+
+        whole_probe
+            .enable_superblocks(true)
+            .context("Cannot enable superblocks probe")?;
+
+        whole_probe
+            .set_superblock_flags(BlkidSublksFlags::new(vec![
+                BlkidSublks::Label,
+                BlkidSublks::Type,
+                BlkidSublks::Uuid,
+            ]))
+            .context("Cannot configure superblock probe")?;
+
+        whole_probe
+            .do_safeprobe()
+            .context(format!("Cannot probe image {}", path.as_bstr()))?;
+
+        let block_size = whole_probe
+            .lookup_value("BLOCK_SIZE")
+            .ok()
+            .and_then(|v| v.parse().ok());
+
+        let label = whole_probe.lookup_value("LABEL").ok();
+        let fs_type = whole_probe.lookup_value("TYPE").ok();
+        let uuid = whole_probe.lookup_value("UUID").ok();
+        let pt_type = whole_probe.lookup_value("PTTYPE").ok();
+
+        let mut result = vec![DevInfo {
+            path: path.to_owned(),
+            rpath: path.to_owned(),
+            block_size,
+            label,
+            fs_type,
+            uuid,
+            pt_type,
+            vm_path: "/dev/vda".to_owned(),
+            fs_driver: None,
+            da_info: diskutil::DiskInfo::default(),
+        }];
+
+        if let Ok(mut partitions) = whole_probe.get_partitions() {
+            if let Ok(num_parts) = partitions.number_of_partitions() {
+                let file = std::fs::File::open(path_ref)
+                    .context(format!("Cannot open image {}", path.as_bstr()))?;
+                let fd = file.as_raw_fd();
+
+                for i in 0..num_parts {
+                    let part = partitions
+                        .get_partition(i)
+                        .context(format!("Cannot get partition {}", i))?;
+
+                    let start = part.get_start();
+                    let size = part.get_size();
+
+                    let offset_bytes = (*start.as_ref()) as i64 * 512;
+                    let size_bytes = (*size.as_ref()) as i64 * 512;
+
+                    let mut part_probe =
+                        BlkidProbe::new().context("Cannot create partition probe")?;
+
+                    let _ = part_probe.set_device(fd, offset_bytes, size_bytes);
+                    let _ = part_probe.enable_superblocks(true);
+                    let _ = part_probe.set_superblock_flags(BlkidSublksFlags::new(vec![
+                        BlkidSublks::Label,
+                        BlkidSublks::Type,
+                        BlkidSublks::Uuid,
+                    ]));
+                    let _ = part_probe.do_safeprobe();
+
+                    let part_block_size = part_probe
+                        .lookup_value("BLOCK_SIZE")
+                        .ok()
+                        .and_then(|v| v.parse().ok());
+
+                    let part_label = part_probe.lookup_value("LABEL").ok();
+                    let part_fs_type = part_probe.lookup_value("TYPE").ok();
+                    let part_uuid = part_probe.lookup_value("UUID").ok();
+
+                    let part_path = format!("{}p{}", path.as_bstr(), i + 1);
+
+                    result.push(DevInfo {
+                        path: part_path.clone().into(),
+                        rpath: part_path.into(),
+                        block_size: part_block_size,
+                        label: part_label,
+                        fs_type: part_fs_type,
+                        uuid: part_uuid,
+                        pt_type: None,
+                        vm_path: format!("/dev/vda{}", i + 1),
+                        fs_driver: None,
+                        da_info: diskutil::DiskInfo::default(),
+                    });
+                }
+            }
+        }
+
+        Ok(result)
     }
 
     pub fn disk(&self) -> &Path {
@@ -139,6 +256,10 @@ impl DevInfo {
 
     pub fn uuid(&self) -> Option<&str> {
         self.uuid.as_deref()
+    }
+
+    pub fn pt_type(&self) -> Option<&str> {
+        self.pt_type.as_deref()
     }
 
     pub fn vm_path(&self) -> &str {
