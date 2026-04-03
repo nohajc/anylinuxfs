@@ -125,6 +125,27 @@ fn trunc_with_ellipsis(s: &str, max_len: usize) -> String {
     }
 }
 
+fn normalize_pt_type(pt_type: &str) -> String {
+    match pt_type {
+        "gpt" | "gpt_scheme" => "GUID_partition_scheme".to_string(),
+        "dos" | "mbr_scheme" => "FDisk_partition_scheme".to_string(),
+        _ => pt_type.to_string(),
+    }
+}
+
+fn format_partition_size(size_bytes: u64) -> String {
+    const UNITS: &[&str] = &["", "K", "M", "G", "T", "P"];
+    let mut size = size_bytes as f64;
+    let mut unit_idx = 0;
+
+    while size >= 1000.0 && unit_idx < UNITS.len() - 1 {
+        size /= 1000.0;
+        unit_idx += 1;
+    }
+
+    format!("{:.1} {}B", size, UNITS[unit_idx])
+}
+
 fn diskutil_list_from_plist(disk: Option<&str>) -> anyhow::Result<Plist> {
     let mut cmd = Command::new("diskutil");
     cmd.arg("list").arg("-plist");
@@ -435,27 +456,24 @@ pub fn list_partitions(
 
                 if is_partitioned {
                     let pt_type = whole.pt_type().unwrap_or("unknown");
+                    let normalized_pt = normalize_pt_type(pt_type);
+                    let whole_size = whole.size().map(format_partition_size).unwrap_or_default();
                     *entry.scheme_mut() = format!(
                         "   0: {:>26} {:<23} {:<10} {}",
-                        format!("{}_scheme", pt_type),
-                        "",
-                        "",
-                        image_name,
+                        normalized_pt, "", whole_size, image_name,
                     );
                     for (i, dev) in probe_devs[1..].iter().enumerate() {
                         let fs_type = dev.fs_type().unwrap_or("");
                         let label = dev.label().unwrap_or("");
-                        let ident = dev
-                            .disk()
-                            .file_name()
-                            .map(|n| n.to_string_lossy().into_owned())
-                            .unwrap_or_else(|| dev.disk().to_string_lossy().into_owned());
+                        let truncated_label = trunc_with_ellipsis(label, 23);
+                        let size_str = dev.size().map(format_partition_size).unwrap_or_default();
+                        let ident = format!("{}@s{}", image_name, i + 1);
                         entry.partitions_mut().push(format!(
                             "{:>4}: {:>26} {:<23} {:<10} {}",
                             i + 1,
                             fs_type,
-                            label,
-                            "",
+                            truncated_label,
+                            size_str,
                             ident,
                         ));
                     }
@@ -463,9 +481,11 @@ pub fn list_partitions(
                     // Whole-disk image without partition table
                     let fs_type = whole.fs_type().unwrap_or("");
                     let label = whole.label().unwrap_or("");
+                    let truncated_label = trunc_with_ellipsis(label, 23);
+                    let size_str = whole.size().map(format_partition_size).unwrap_or_default();
                     entry.partitions_mut().push(format!(
                         "   0: {:>26} {:<23} {:<10} {}",
-                        fs_type, label, "", image_name,
+                        fs_type, truncated_label, size_str, image_name,
                     ));
                 }
 

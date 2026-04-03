@@ -21,6 +21,7 @@ pub struct DevInfo {
     vm_path: String,
     fs_driver: Option<String>, // will be auto-detected if not set
     da_info: diskutil::DiskInfo,
+    size_bytes: Option<u64>, // partition size in bytes (for image probes)
 }
 
 const BUF_PREFIX: &[u8] = b"/dev/disk";
@@ -43,6 +44,7 @@ impl DevInfo {
             vm_path: vm_path.into(),
             fs_driver: None,
             da_info: diskutil::DiskInfo::default(),
+            size_bytes: None,
         })
     }
 
@@ -102,6 +104,7 @@ impl DevInfo {
             vm_path: "/dev/vda".to_owned(),
             fs_driver: None,
             da_info,
+            size_bytes: None,
         })
     }
 
@@ -157,6 +160,7 @@ impl DevInfo {
             vm_path: "/dev/vda".to_owned(),
             fs_driver: None,
             da_info: diskutil::DiskInfo::default(),
+            size_bytes: None,
         }];
 
         if let Ok(mut partitions) = whole_probe.get_partitions() {
@@ -199,6 +203,7 @@ impl DevInfo {
 
                     let part_path = format!("{}p{}", path.as_bstr(), i + 1);
 
+                    let size_bytes = Some(size_bytes as u64);
                     result.push(DevInfo {
                         path: part_path.clone().into(),
                         rpath: part_path.into(),
@@ -210,6 +215,7 @@ impl DevInfo {
                         vm_path: format!("/dev/vda{}", i + 1),
                         fs_driver: None,
                         da_info: diskutil::DiskInfo::default(),
+                        size_bytes,
                     });
                 }
             }
@@ -260,6 +266,10 @@ impl DevInfo {
 
     pub fn pt_type(&self) -> Option<&str> {
         self.pt_type.as_deref()
+    }
+
+    pub fn size(&self) -> Option<u64> {
+        self.size_bytes
     }
 
     pub fn vm_path(&self) -> &str {
