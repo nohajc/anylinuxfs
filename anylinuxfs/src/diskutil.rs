@@ -153,12 +153,18 @@ fn diskutil_list_from_plist(disk: Option<&str>) -> anyhow::Result<Plist> {
         cmd.arg(d);
     }
     let output = cmd.output().expect("Failed to execute diskutil");
+    let plist: Plist = plist::from_bytes(&output.stdout).context("Failed to parse plist")?;
 
     if !output.status.success() {
-        return Err(anyhow!("diskutil command failed"));
+        return Err(anyhow!(
+            "{}",
+            plist
+                .error_message
+                .as_deref()
+                .unwrap_or("diskutil command failed")
+        ));
     }
 
-    let plist: Plist = plist::from_bytes(&output.stdout).context("Failed to parse plist")?;
     Ok(plist)
 }
 
@@ -1291,8 +1297,10 @@ pub fn get_info(bsd_name: impl AsRef<BStr>) -> DiskInfo {
 
 #[derive(Debug, Deserialize)]
 struct Plist {
-    #[serde(rename = "AllDisksAndPartitions")]
+    #[serde(default, rename = "AllDisksAndPartitions")]
     all_disks_and_partitions: Vec<Disk>,
+    #[serde(rename = "ErrorMessage")]
+    error_message: Option<String>,
 }
 
 #[allow(unused)]
