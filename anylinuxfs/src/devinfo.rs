@@ -201,12 +201,12 @@ impl DevInfo {
                     let part_fs_type = part_probe.lookup_value("TYPE").ok();
                     let part_uuid = part_probe.lookup_value("UUID").ok();
 
-                    let part_path = format!("{}p{}", path.as_bstr(), i + 1);
-
                     let size_bytes = Some(size_bytes as u64);
                     result.push(DevInfo {
-                        path: part_path.clone().into(),
-                        rpath: part_path.into(),
+                        // partition path doesn't really exist for images
+                        // so we always pass the whole disk to the microVM
+                        path: path.into(),
+                        rpath: path.into(),
                         block_size: part_block_size,
                         label: part_label,
                         fs_type: part_fs_type,
