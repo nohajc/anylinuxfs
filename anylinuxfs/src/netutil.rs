@@ -3,7 +3,7 @@ use std::{
     cmp,
     fmt::Display,
     io,
-    net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs},
+    net::{IpAddr, SocketAddr, ToSocketAddrs},
     process::Command,
     ptr::null_mut,
 };
@@ -79,17 +79,22 @@ pub fn get_interface_networks() -> anyhow::Result<Vec<Ipv4Net>> {
     Ok(networks)
 }
 
-pub fn pick_available_network(
+pub fn pick_available_network_in_pool(
     prefix_len: u8,
     used_networks: &[Ipv4Net],
+    pool: Ipv4Net,
 ) -> anyhow::Result<Ipv4Net> {
-    if prefix_len <= 12 {
+    let pool_prefix_len = pool.prefix_len();
+    if prefix_len <= pool_prefix_len {
         return Err(anyhow::anyhow!(
-            "invalid prefix length: {}, must be greater than 12",
-            prefix_len
+            "invalid prefix length: {}, must be greater than {}",
+            prefix_len,
+            pool_prefix_len
         ));
     }
-    let candidate_base = Ipv4Net::new(Ipv4Addr::new(172, 27, 1, 0), prefix_len)?;
+
+    let candidate_base = Ipv4Net::new(pool.addr(), prefix_len)?;
+
     let mut search_prefix_len = prefix_len - 1;
     let mut candidate = candidate_base;
 
@@ -286,6 +291,14 @@ pub fn check_port_availability(ip: impl Into<IpAddr>, port: u16) -> anyhow::Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::settings::DEFAULT_VMNET_POOL;
+
+    pub fn pick_available_network(
+        prefix_len: u8,
+        used_networks: &[Ipv4Net],
+    ) -> anyhow::Result<Ipv4Net> {
+        pick_available_network_in_pool(prefix_len, used_networks, DEFAULT_VMNET_POOL)
+    }
 
     #[test]
     fn test_aggregation() {

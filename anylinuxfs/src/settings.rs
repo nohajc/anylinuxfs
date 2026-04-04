@@ -4,7 +4,7 @@ use std::{
     ffi::OsStr,
     fmt::Display,
     fs,
-    net::IpAddr,
+    net::{IpAddr, Ipv4Addr},
     os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
 };
@@ -13,6 +13,7 @@ use anyhow::{Context, anyhow};
 use bstr::{BString, ByteSlice, ByteVec};
 use clap::ValueEnum;
 use common_utils::{CustomActionConfig, CustomActionConfigOld, NetHelper, OSType};
+use ipnet::Ipv4Net;
 use serde::{Deserialize, Serialize};
 use toml_edit::{Document, DocumentMut, Item};
 
@@ -20,6 +21,8 @@ use toml_edit::{Document, DocumentMut, Item};
 use crate::vm_image::KERNEL_IMAGE;
 
 use crate::utils;
+
+pub const DEFAULT_VMNET_POOL: Ipv4Net = Ipv4Net::new_assert(Ipv4Addr::new(172, 27, 1, 0), 12);
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct KernelConfig {
@@ -102,6 +105,7 @@ pub trait Preferences {
     fn zfs_os(&self) -> OSType;
 
     fn network_helper(&self) -> NetHelper;
+    fn vmnet_pool(&self) -> Ipv4Net;
 
     fn user<'a>(&'a self) -> &'a PrefsObject;
     fn user_mut<'a>(&'a mut self) -> &'a mut PrefsObject;
@@ -230,6 +234,14 @@ impl Preferences for [PrefsObject; 2] {
             .helper
             .or(self[0].network.helper)
             .unwrap_or_default()
+    }
+
+    fn vmnet_pool(&self) -> Ipv4Net {
+        self[1]
+            .network
+            .vmnet_pool
+            .or(self[0].network.vmnet_pool)
+            .unwrap_or(DEFAULT_VMNET_POOL)
     }
 
     fn user<'a>(&'a self) -> &'a PrefsObject {
@@ -649,19 +661,27 @@ impl Display for MiscConfig {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct NetworkConfig {
     pub helper: Option<NetHelper>,
+    #[serde(default)]
+    pub vmnet_pool: Option<Ipv4Net>,
 }
 
 impl NetworkConfig {
     fn merge_with(&self, other: &NetworkConfig) -> NetworkConfig {
         NetworkConfig {
             helper: other.helper.or(self.helper),
+            vmnet_pool: other.vmnet_pool.clone().or(self.vmnet_pool.clone()),
         }
     }
 }
 
 impl Display for NetworkConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "helper = {}", self.helper.unwrap_or_default())
+        write!(
+            f,
+            "helper = {}\nvmnet_pool = {}",
+            self.helper.unwrap_or_default(),
+            self.vmnet_pool.unwrap_or(DEFAULT_VMNET_POOL)
+        )
     }
 }
 

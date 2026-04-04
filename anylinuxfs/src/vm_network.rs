@@ -112,8 +112,12 @@ pub fn start_vmnet_helper(config: &Config) -> anyhow::Result<(Child, VmnetConfig
     let known_networks =
         netutil::get_interface_networks().context("Failed to get interface networks")?;
 
-    let vmnet_cidr = netutil::pick_available_network(VMNET_PREFIX_LEN, &known_networks)
-        .context("Failed to find available network for vmnet-helper")?;
+    let vmnet_cidr = netutil::pick_available_network_in_pool(
+        VMNET_PREFIX_LEN,
+        &known_networks,
+        config.preferences.vmnet_pool(),
+    )
+    .context("Failed to find available network for vmnet-helper")?;
 
     let mut vmnet_helper_cmd = Command::new(&config.vmnet_helper_path);
 
