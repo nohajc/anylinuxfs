@@ -317,7 +317,8 @@ struct ConfigCmd {
         .args(&["linux", "microsoft"]),
 ))]
 struct ListCmd {
-    #[arg(value_name = "DISK")]
+    /// List only the specified disk or image
+    #[arg(value_name = "DISK|IMAGE")]
     disk: Option<String>,
     /// Decrypt LUKS partitions: comma-separated list of paths or "all"
     #[arg(short, long, value_delimiter = ',', num_args = 1..)]
