@@ -127,9 +127,8 @@ fn trunc_with_ellipsis(s: &str, max_len: usize) -> String {
 
 fn normalize_pt_type(pt_type: &str) -> String {
     match pt_type {
-        // TODO: verify the strings
-        "gpt" | "gpt_scheme" => "GUID_partition_scheme".to_string(),
-        "dos" | "mbr_scheme" => "FDisk_partition_scheme".to_string(),
+        "gpt" => "GUID_partition_scheme".to_string(),
+        "dos" => "FDisk_partition_scheme".to_string(),
         _ => pt_type.to_string(),
     }
 }
