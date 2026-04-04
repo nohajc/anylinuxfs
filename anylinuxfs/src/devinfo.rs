@@ -160,7 +160,7 @@ impl DevInfo {
             vm_path: "/dev/vda".to_owned(),
             fs_driver: None,
             da_info: diskutil::DiskInfo::default(),
-            size_bytes: None,
+            size_bytes: Some(whole_probe.get_size() as u64),
         }];
 
         if let Ok(mut partitions) = whole_probe.get_partitions() {

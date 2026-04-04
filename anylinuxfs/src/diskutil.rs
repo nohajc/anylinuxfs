@@ -476,20 +476,40 @@ pub fn list_partitions(
                 let normalized_pt = normalize_pt_type(pt_type);
                 let whole_size = whole.size().map(format_partition_size).unwrap_or_default();
                 *entry.scheme_mut() = format!(
-                    "   0: {:>26} {:<23} {:<10} {}",
+                    "   0: {:>26} {:<22} +{:<10} {}",
                     normalized_pt, "", whole_size, image_name,
                 );
-                for (i, dev) in probe_devs[1..].iter().enumerate() {
-                    let fs_type = dev.fs_type().unwrap_or("");
+                for (i, dev_info) in probe_devs[1..].iter().enumerate() {
+                    let fs_type = dev_info.fs_type().unwrap_or("");
 
                     // Filter by filesystem type to match diskutil behavior
                     if !filter.fs_types.iter().any(|t| t == &fs_type) {
                         continue;
                     }
 
-                    let label = dev.label().unwrap_or("");
+                    let is_enc = fs_type == "crypto_LUKS" || fs_type == "BitLocker";
+                    let is_raid = fs_type == "linux_raid_member";
+                    let is_lvm = fs_type == "LVM2_member";
+
+                    if is_raid {
+                        assemble_raid = true;
+                    }
+
+                    if is_lvm || is_raid || (enc_partitions.is_some() && is_enc) {
+                        pv_dev_infos.push(dev_info.to_owned());
+                        pv_dev_idents.push(image_name.clone());
+
+                        if decrypt_all && is_enc {
+                            all_enc_partitions.push(path.to_owned());
+                        }
+                    }
+
+                    let label = dev_info.label().unwrap_or("");
                     let truncated_label = trunc_with_ellipsis(label, 23);
-                    let size_str = dev.size().map(format_partition_size).unwrap_or_default();
+                    let size_str = dev_info
+                        .size()
+                        .map(format_partition_size)
+                        .unwrap_or_default();
                     let ident = format!("{}@s{}", image_name, i + 1);
                     entry.partitions_mut().push(format!(
                         "{:>4}: {:>26} {:<23} {:<10} {}",
@@ -502,13 +522,27 @@ pub fn list_partitions(
                 }
             } else {
                 // Whole-disk image without partition table
-                let fs_type = whole.fs_type().unwrap_or("");
+                let dev_info = whole;
+                let fs_type = dev_info.fs_type().unwrap_or("");
 
                 // Filter by filesystem type to match diskutil behavior
                 if filter.fs_types.iter().any(|t| t == &fs_type) {
-                    let label = whole.label().unwrap_or("");
+                    let is_enc = fs_type == "crypto_LUKS" || fs_type == "BitLocker";
+                    if fs_type == "LVM2_member" || (enc_partitions.is_some() && is_enc) {
+                        pv_dev_infos.push(dev_info.clone());
+                        pv_dev_idents.push(image_name.clone());
+
+                        if decrypt_all && is_enc {
+                            all_enc_partitions.push(path.to_owned());
+                        }
+                    }
+
+                    let label = dev_info.label().unwrap_or("");
                     let truncated_label = trunc_with_ellipsis(label, 23);
-                    let size_str = whole.size().map(format_partition_size).unwrap_or_default();
+                    let size_str = dev_info
+                        .size()
+                        .map(format_partition_size)
+                        .unwrap_or_default();
                     entry.partitions_mut().push(format!(
                         "   0: {:>26} {:<23} {:<10} {}",
                         fs_type, truncated_label, size_str, image_name,
