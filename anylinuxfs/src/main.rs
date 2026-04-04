@@ -203,6 +203,9 @@ struct CommonArgs {
     /// Preferred network helper
     #[arg(long)]
     net_helper: Option<NetHelper>,
+    /// IP address pool for vmnet (172.27.1.0/12 by default).
+    #[arg(long)]
+    vmnet_pool: Option<Ipv4Net>,
 }
 
 #[derive(Args, Default, Clone, PartialEq, Eq)]
@@ -3394,6 +3397,9 @@ impl AppRunner {
         let network_config = &mut config.preferences.user_mut().network;
         if let Some(net_helper) = cmd.common.net_helper {
             network_config.helper = Some(net_helper);
+        }
+        if let Some(vmnet_pool) = cmd.common.vmnet_pool {
+            network_config.vmnet_pool = Some(vmnet_pool);
         }
 
         println!("{}", &config.preferences.merged());
