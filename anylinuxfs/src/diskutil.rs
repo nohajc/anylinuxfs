@@ -543,7 +543,7 @@ pub fn list_partitions(
                         .map(format_partition_size)
                         .unwrap_or_default();
                     entry.partitions_mut().push(format!(
-                        "   0: {:>26} {:<23} {:<10} {}",
+                        "   0: {:>26} {:<22} +{:<10} {}",
                         fs_type, truncated_label, size_str, image_name,
                     ));
                 }
