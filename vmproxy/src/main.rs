@@ -516,6 +516,14 @@ fn prepare_key_file_from_env() -> anyhow::Result<Option<&'static str>> {
     fs::write(KEY_FILE_VM_PATH, &content)
         .context("Failed to write key file inside VM")?;
 
+    // Restrict key file permissions to owner-read-only (0600) to protect key material.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(KEY_FILE_VM_PATH, fs::Permissions::from_mode(0o600))
+            .context("Failed to set permissions on key file")?;
+    }
+
     Ok(Some(KEY_FILE_VM_PATH))
 }
 
@@ -1174,4 +1182,38 @@ fn run() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_decode_hex_basic() {
+        assert_eq!(decode_hex(b"68656c6c6f").unwrap(), b"hello");
+        assert_eq!(decode_hex(b"").unwrap(), b"");
+        assert_eq!(decode_hex(b"00ff").unwrap(), vec![0x00, 0xff]);
+    }
+
+    #[test]
+    fn test_decode_hex_binary() {
+        // Test with binary data (typical raw key file content)
+        let expected = vec![0xde, 0xad, 0xbe, 0xef];
+        assert_eq!(decode_hex(b"deadbeef").unwrap(), expected);
+    }
+
+    #[test]
+    fn test_decode_hex_odd_length_error() {
+        assert!(decode_hex(b"abc").is_err());
+    }
+
+    #[test]
+    fn test_decode_hex_invalid_char_error() {
+        assert!(decode_hex(b"zz").is_err());
+    }
+
+    #[test]
+    fn test_decode_hex_uppercase() {
+        assert_eq!(decode_hex(b"DEADBEEF").unwrap(), vec![0xde, 0xad, 0xbe, 0xef]);
+    }
 }

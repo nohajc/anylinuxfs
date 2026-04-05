@@ -200,9 +200,16 @@ pub fn mount_datasets(
             }
         }
         for mp in mountpoints.iter() {
-            script(&format!("zfs mount {}", mp.name))
+            let status = script(&format!("zfs mount {}", mp.name))
                 .status()
                 .with_context(|| format!("Failed to mount ZFS dataset {}", mp.name))?;
+            if !status.success() {
+                return Err(anyhow::anyhow!(
+                    "zfs mount failed for dataset {}: exit code {}",
+                    mp.name,
+                    status.code().unwrap_or(-1)
+                ));
+            }
         }
     } else {
         for (i, mp) in mountpoints.iter().enumerate() {
