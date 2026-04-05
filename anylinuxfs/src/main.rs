@@ -20,7 +20,7 @@ use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, TcpStream, ToSocketAddrs};
-use std::os::fd::{FromRawFd, IntoRawFd};
+use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd};
 use std::os::unix::fs::chown;
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
@@ -153,8 +153,7 @@ Supported partition schemes:
 
 Recognized environment variables:
 - ALFS_PASSPHRASE: passphrase for LUKS/BitLocker drive (optional)
-- ALFS_PASSPHRASE1, ALFS_PASSPHRASE2, ...: passphrases for multiple drives if needed
-- ALFS_KEY_FILE: path to a key file for LUKS/ZFS encrypted drive (alternative to passphrase)")]
+- ALFS_PASSPHRASE1, ALFS_PASSPHRASE2, ...: passphrases for multiple drives if needed")]
     Mount(MountCmd),
     /// Unmount a filesystem
     Unmount(UnmountCmd),
@@ -721,7 +720,27 @@ fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
             }
             Some(key_path)
         }
-        None => None,
+        None => {
+            // Fall back to ALFS_KEY_FILE env var (value is a host path, not the key content)
+            if let Ok(env_path) = env::var("ALFS_KEY_FILE") {
+                let key_path = PathBuf::from(&env_path);
+                if !key_path.exists() {
+                    return Err(anyhow::anyhow!(
+                        "Key file from ALFS_KEY_FILE not found: {}",
+                        key_path.display()
+                    ));
+                }
+                if !key_path.is_file() {
+                    return Err(anyhow::anyhow!(
+                        "ALFS_KEY_FILE path is not a file: {}",
+                        key_path.display()
+                    ));
+                }
+                Some(key_path)
+            } else {
+                None
+            }
+        }
     };
 
     // this is set dynamically later
@@ -887,6 +906,7 @@ struct VMContext {
     invoker_uid: libc::uid_t,
     invoker_gid: libc::gid_t,
     vmnet_cidr: Option<Ipv4Net>,
+    disk_count: usize,
 }
 
 enum NetworkMode {
@@ -1095,6 +1115,7 @@ fn setup_vm(
         invoker_uid,
         invoker_gid,
         vmnet_cidr,
+        disk_count: dev_info.len(),
     })
 }
 
@@ -1214,11 +1235,137 @@ fn start_vmproxy(
     )
     .collect();
 
+    // Prepare key file transfer into the VM.
+    // For Linux: copy the key file directly into the virtiofs-mapped rootfs directory.
+    // For FreeBSD: pack the key file into an ISO image and attach it as a read-only disk.
+    // In both cases vmproxy receives the in-VM path via CLI args.
+    let key_file_args: Vec<BString>;
+    // Keep the ISO fd alive until the VM exits (FreeBSD only).
+    #[allow(unused_variables)]
+    let key_iso_fd: Option<File>;
+    // Keep temp dir path for cleanup after VM exits.
+    #[allow(unused_variables)]
+    let key_tmp_dir: Option<PathBuf>;
+
+    if let Some(key_file_host_path) = &config.key_file {
+        match ctx.os {
+            OSType::Linux => {
+                // Write key file into the virtiofs root (readable as /.alfs_keyfile in the VM).
+                let root_path = ctx
+                    .root_path
+                    .as_ref()
+                    .context("Linux VM must have a root path")?;
+                let dst = root_path.join(".alfs_keyfile");
+                fs::copy(key_file_host_path, &dst).with_context(|| {
+                    format!(
+                        "Failed to copy key file to rootfs: {}",
+                        dst.display()
+                    )
+                })?;
+                // Restrict to owner-read-only so only the VM process can access it.
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    fs::set_permissions(&dst, fs::Permissions::from_mode(0o600))
+                        .context("Failed to set permissions on key file in rootfs")?;
+                }
+                key_file_args = vec!["--key-file".into(), "/.alfs_keyfile".into()];
+                key_iso_fd = None;
+                key_tmp_dir = None; // Linux cleanup is done below, not via key_tmp_dir
+                // Schedule cleanup of the key file after the VM exits.
+                // We do it at the end of this function, after krun_start_enter returns.
+            }
+            OSType::FreeBSD => {
+                // Pack the key file into an ISO image and attach as a read-only disk.
+                let tmp_dir =
+                    PathBuf::from("/tmp").join(format!("alfs-kf-{}", rand_string(8)));
+                fs::create_dir_all(&tmp_dir)
+                    .context("Failed to create key file temp directory")?;
+
+                let iso_keyfile_name = "keyfile";
+                let key_dst = tmp_dir.join(iso_keyfile_name);
+                fs::copy(key_file_host_path, &key_dst).with_context(|| {
+                    format!(
+                        "Failed to copy key file to temp dir: {}",
+                        key_dst.display()
+                    )
+                })?;
+
+                let iso_path = tmp_dir.join("keyfile.iso");
+                vm_image::create_iso(
+                    &iso_path,
+                    &tmp_dir,
+                    &tmp_dir,
+                    IsoAdd::Files(&[iso_keyfile_name]),
+                    Some("ALFS_KEYFILE"),
+                )
+                .context("Failed to create ISO image for key file")?;
+
+                // Open the ISO by fd so it survives cleanup of the temp dir.
+                let iso_file = File::open(&iso_path)
+                    .context("Failed to open key file ISO")?;
+                let iso_fd = iso_file.as_raw_fd();
+                let iso_fd_path = format!("/dev/fd/{}", iso_fd);
+
+                let key_disk_idx = ctx.disk_count;
+                unsafe {
+                    bindings::krun_add_disk(
+                        ctx.id,
+                        CString::new("keyfile").unwrap().as_ptr(),
+                        CString::new(iso_fd_path.as_str()).unwrap().as_ptr(),
+                        true,
+                    )
+                }
+                .context("Failed to attach key file disk to VM")?;
+
+                key_file_args = vec![
+                    "--key-disk-idx".into(),
+                    key_disk_idx.to_string().into(),
+                ];
+                key_iso_fd = Some(iso_file);
+                key_tmp_dir = Some(tmp_dir);
+            }
+        }
+    } else {
+        key_file_args = vec![];
+        key_iso_fd = None;
+        key_tmp_dir = None;
+    }
+
+    let mut args = args;
+    args.extend(key_file_args);
+
     host_println!("vmproxy args: {:?}", &args);
     set_vm_cmdline(ctx, &args, env)?;
 
     before_start().context("Before start callback failed")?;
     unsafe { bindings::krun_start_enter(ctx.id) }.context("Failed to start VM")?;
+
+    // Cleanup after VM exits.
+    // For Linux: remove the key file from the virtiofs rootfs.
+    if config.key_file.is_some() && ctx.os == OSType::Linux {
+        if let Some(root_path) = &ctx.root_path {
+            let dst = root_path.join(".alfs_keyfile");
+            if let Err(e) = fs::remove_file(&dst) {
+                host_eprintln!(
+                    "Warning: failed to remove key file from rootfs {}: {:#}",
+                    dst.display(),
+                    e
+                );
+            }
+        }
+    }
+    // For FreeBSD: remove the key file temp directory.
+    if let Some(tmp_dir) = key_tmp_dir.as_ref() {
+        if let Err(e) = fs::remove_dir_all(tmp_dir) {
+            host_eprintln!(
+                "Warning: failed to remove key file temp directory {}: {:#}",
+                tmp_dir.display(),
+                e
+            );
+        }
+    }
+    drop(key_iso_fd); // close the ISO fd
 
     Ok(())
 }
@@ -1885,10 +2032,6 @@ fn get_default_packages() -> BTreeSet<String> {
         .collect()
 }
 
-fn encode_key_file_content(content: &[u8]) -> String {
-    content.iter().map(|b| format!("{:02x}", b)).collect()
-}
-
 fn prepare_vm_environment(config: &MountConfig) -> anyhow::Result<(Vec<BString>, bool)> {
     let mut env_vars = Vec::new();
     let mut env_has_passphrase = false;
@@ -1901,32 +2044,6 @@ fn prepare_vm_environment(config: &MountConfig) -> anyhow::Result<(Vec<BString>,
             env_has_passphrase = true;
         }
     }
-
-    // Key file takes priority over passphrase.
-    // CLI --key-file takes precedence over the ALFS_KEY_FILE env var.
-    // The ALFS_KEY_FILE env var value is treated as a host-side path and its
-    // content is hex-encoded before being forwarded to the VM.
-    let key_file_content: Option<Vec<u8>> = if let Some(path) = &config.key_file {
-        let content = fs::read(path)
-            .with_context(|| format!("Failed to read key file: {}", path.display()))?;
-        Some(content)
-    } else if let Ok(env_path) = env::var("ALFS_KEY_FILE") {
-        let path = PathBuf::from(&env_path);
-        let content = fs::read(&path)
-            .with_context(|| format!("Failed to read key file from ALFS_KEY_FILE: {}", env_path))?;
-        Some(content)
-    } else {
-        None
-    };
-
-    if let Some(content) = key_file_content {
-        let hex = encode_key_file_content(&content);
-        let mut var_str = BString::from(b"ALFS_KEY_FILE=");
-        var_str.push_str(hex.as_bytes());
-        env_vars.push(var_str);
-        env_has_passphrase = true; // treat key file as a passphrase substitute
-    }
-
     if let Some(action) = config.get_action() {
         action.prepare_environment(&mut env_vars)?;
     }
@@ -2632,7 +2749,7 @@ impl AppRunner {
         let mut passphrase_callbacks = Vec::new();
         let mut passphrase_needed = false;
 
-        if !env_has_passphrase {
+        if !env_has_passphrase && config.key_file.is_none() {
             for di in &dev_info {
                 let is_luks = di.fs_type() == Some("crypto_LUKS");
                 if is_luks || di.fs_type() == Some("BitLocker") {

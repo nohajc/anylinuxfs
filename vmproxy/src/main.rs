@@ -75,6 +75,12 @@ struct Cli {
     native_network: Option<Ipv4Net>,
     #[arg(short, long)]
     verbose: bool,
+    /// Path to the key file inside the VM (Linux: file in virtiofs rootfs)
+    #[arg(long = "key-file")]
+    key_file: Option<String>,
+    /// Disk index of the ISO containing the key file (FreeBSD only)
+    #[arg(long = "key-disk-idx")]
+    key_disk_idx: Option<usize>,
 }
 
 #[derive(Serialize, Debug)]
@@ -464,8 +470,6 @@ fn export_args_for_path(
 }
 
 const ALFS_PASSPHRASE_PREFIX: &[u8] = b"ALFS_PASSPHRASE";
-const ALFS_KEY_FILE_ENV: &str = "ALFS_KEY_FILE";
-const KEY_FILE_VM_PATH: &str = "/tmp/alfs_keyfile";
 
 fn get_pwds_from_env() -> HashMap<usize, BString> {
     let mut pwds = HashMap::new();
@@ -484,47 +488,49 @@ fn get_pwds_from_env() -> HashMap<usize, BString> {
     pwds
 }
 
-fn decode_hex(hex: &[u8]) -> anyhow::Result<Vec<u8>> {
-    if hex.len() % 2 != 0 {
-        return Err(anyhow!("Invalid hex string: odd length"));
+#[cfg(any(target_os = "freebsd", target_os = "macos"))]
+const KEY_FILE_MOUNT_DIR: &str = "/alfs_keyfiles";
+#[cfg(any(target_os = "freebsd", target_os = "macos"))]
+const KEY_FILE_NAME_IN_ISO: &str = "keyfile";
+
+/// Resolve the key file path inside the VM.
+/// For Linux: the path is directly accessible (passed via --key-file).
+/// For FreeBSD: if --key-disk-idx is set, mount the ISO disk and return the path inside it.
+#[allow(unused_variables)]
+fn setup_key_file_path(
+    key_file: Option<String>,
+    key_disk_idx: Option<usize>,
+    deferred: &mut Deferred,
+) -> anyhow::Result<Option<String>> {
+    #[cfg(any(target_os = "freebsd", target_os = "macos"))]
+    if let Some(disk_idx) = key_disk_idx {
+        let dev = format!("/dev/vtbd{}", disk_idx);
+        fs::create_dir_all(KEY_FILE_MOUNT_DIR)
+            .context("Failed to create key file mount dir")?;
+        let status = Command::new("mount")
+            .args(["-t", "cd9660", &dev, KEY_FILE_MOUNT_DIR])
+            .status()
+            .context("Failed to mount key file disk")?;
+        if !status.success() {
+            return Err(anyhow!(
+                "Failed to mount key file ISO at /dev/vtbd{}: exit code {}",
+                disk_idx,
+                status.code().unwrap_or(-1)
+            ));
+        }
+        deferred.add(|| {
+            let _ = Command::new("umount").arg(KEY_FILE_MOUNT_DIR).status();
+        });
+        return Ok(Some(format!(
+            "{}/{}",
+            KEY_FILE_MOUNT_DIR, KEY_FILE_NAME_IN_ISO
+        )));
     }
-    let mut bytes = Vec::with_capacity(hex.len() / 2);
-    for chunk in hex.chunks(2) {
-        let hi = char::from(chunk[0])
-            .to_digit(16)
-            .context("Invalid hex character")?;
-        let lo = char::from(chunk[1])
-            .to_digit(16)
-            .context("Invalid hex character")?;
-        bytes.push(((hi << 4) | lo) as u8);
-    }
-    Ok(bytes)
-}
 
-/// Read the hex-encoded key file content from ALFS_KEY_FILE env var,
-/// decode it, and write it to KEY_FILE_VM_PATH inside the VM.
-/// Returns the path if the key file was successfully prepared, None otherwise.
-fn prepare_key_file_from_env() -> anyhow::Result<Option<&'static str>> {
-    let hex_content = match env::var(ALFS_KEY_FILE_ENV) {
-        Ok(val) => val,
-        Err(_) => return Ok(None),
-    };
+    // Suppress unused warning when not on FreeBSD
+    let _ = key_disk_idx;
 
-    let content = decode_hex(hex_content.as_bytes())
-        .context("Failed to decode ALFS_KEY_FILE hex content")?;
-
-    fs::write(KEY_FILE_VM_PATH, &content)
-        .context("Failed to write key file inside VM")?;
-
-    // Restrict key file permissions to owner-read-only (0600) to protect key material.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(KEY_FILE_VM_PATH, fs::Permissions::from_mode(0o600))
-            .context("Failed to set permissions on key file")?;
-    }
-
-    Ok(Some(KEY_FILE_VM_PATH))
+    Ok(key_file)
 }
 
 fn main() -> ExitCode {
@@ -640,6 +646,10 @@ fn run() -> anyhow::Result<()> {
     let ignore_permissions = cli.ignore_permissions;
     let mut custom_action = CustomActionRunner::new(custom_action_cfg);
 
+    // Extract key file args before other cli fields are moved.
+    let cli_key_file = cli.key_file.clone();
+    let cli_key_disk_idx = cli.key_disk_idx;
+
     let mut disk_path = cli.disk_path;
     let mut fs_type = cli.fs_type;
     let fs_driver = cli.fs_driver;
@@ -661,14 +671,15 @@ fn run() -> anyhow::Result<()> {
     let env_pwds = get_pwds_from_env();
     let env_has_passphrase = !env_pwds.is_empty();
 
-    // Prepare key file (if ALFS_KEY_FILE env var is set, decode and write it to VM tmpfs).
-    // When a key file is present it takes priority over any passphrase.
-    let key_file_path = prepare_key_file_from_env()
-        .context("Failed to prepare encryption key file")?;
+    // Resolve key file path inside the VM.
+    // For Linux: the path is directly accessible via the virtiofs rootfs (--key-file arg).
+    // For FreeBSD: mount the ISO disk specified by --key-disk-idx and return path within it.
+    let key_file_path = setup_key_file_path(cli_key_file, cli_key_disk_idx, &mut deferred)
+        .context("Failed to set up encryption key file")?;
 
     // decrypt LUKS/BitLocker volumes if any
     if let Some(decrypt) = &cli.decrypt {
-        if let Some(key_file) = key_file_path {
+        if let Some(ref key_file) = key_file_path {
             // Key-file path: pass --key-file <path> to cryptsetup (no passphrase needed)
             for (i, dev) in decrypt.split(",").enumerate() {
                 let cryptsetup_result = Command::new("/sbin/cryptsetup")
@@ -984,7 +995,7 @@ fn run() -> anyhow::Result<()> {
         });
 
         let mnt_result = if is_zfs {
-            zfs::mount_datasets(&zfs_mountpoints, &env_pwds, key_file_path)?
+            zfs::mount_datasets(&zfs_mountpoints, &env_pwds, key_file_path.as_deref())?
         } else {
             let mount_bin = if cfg!(target_os = "freebsd") {
                 "/sbin/mount"
@@ -1182,38 +1193,4 @@ fn run() -> anyhow::Result<()> {
     }
 
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_decode_hex_basic() {
-        assert_eq!(decode_hex(b"68656c6c6f").unwrap(), b"hello");
-        assert_eq!(decode_hex(b"").unwrap(), b"");
-        assert_eq!(decode_hex(b"00ff").unwrap(), vec![0x00, 0xff]);
-    }
-
-    #[test]
-    fn test_decode_hex_binary() {
-        // Test with binary data (typical raw key file content)
-        let expected = vec![0xde, 0xad, 0xbe, 0xef];
-        assert_eq!(decode_hex(b"deadbeef").unwrap(), expected);
-    }
-
-    #[test]
-    fn test_decode_hex_odd_length_error() {
-        assert!(decode_hex(b"abc").is_err());
-    }
-
-    #[test]
-    fn test_decode_hex_invalid_char_error() {
-        assert!(decode_hex(b"zz").is_err());
-    }
-
-    #[test]
-    fn test_decode_hex_uppercase() {
-        assert_eq!(decode_hex(b"DEADBEEF").unwrap(), vec![0xde, 0xad, 0xbe, 0xef]);
-    }
 }
