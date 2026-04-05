@@ -108,7 +108,8 @@ Logo designed by [Junaid Iqbal](https://www.fiverr.com/junaidiqbal39).
 This project was made possible by
 - [libkrun](https://github.com/containers/libkrun) the microVM hypervisor for Linux and Mac
 - [libkrunfw](https://github.com/containers/libkrunfw) - Linux kernel bundled for libkrun as a dynamic library
-- [gvproxy](https://github.com/containers/gvisor-tap-vsock) - user space networking for virtual machines (also used by podman)
+- [vmnet-helper](https://github.com/nirs/vmnet-helper) - utility for using macOS vmnet Framework (provides IP addresses for VMs)
+- [gvproxy](https://github.com/containers/gvisor-tap-vsock) - user space networking for VMs (vmnet-helper alternative)
 - [docker-nfs-server](https://github.com/ehough/docker-nfs-server) - launcher for NFS server in a container
 
 Thank you all for your great work!
