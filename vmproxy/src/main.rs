@@ -78,9 +78,6 @@ struct Cli {
     /// Path to the key file inside the VM (Linux: file in virtiofs rootfs)
     #[arg(long = "key-file")]
     key_file: Option<String>,
-    /// Mount the key file ISO (FreeBSD only); the ISO is identified by its label ALFS_KEYFILE
-    #[arg(long = "key-from-iso")]
-    key_from_iso: bool,
 }
 
 #[derive(Serialize, Debug)]
@@ -497,16 +494,15 @@ const KEY_FILE_NAME_IN_ISO: &str = "keyfile";
 
 /// Resolve the key file path inside the VM.
 /// For Linux: the path is directly accessible (passed via --key-file).
-/// For FreeBSD: if --key-from-iso is set, mount the ISO (identified by label ALFS_KEYFILE)
-/// and return the path to the key file inside it.
+/// For FreeBSD: if the key file ISO device exists (identified by label ALFS_KEYFILE),
+/// mount it and return the path to the key file inside it.
 #[allow(unused_variables)]
 fn setup_key_file_path(
     key_file: Option<String>,
-    key_from_iso: bool,
     deferred: &mut Deferred,
 ) -> anyhow::Result<Option<String>> {
     #[cfg(any(target_os = "freebsd", target_os = "macos"))]
-    if key_from_iso {
+    if Path::new(KEY_FILE_ISO_DEV).exists() {
         fs::create_dir_all(KEY_FILE_MOUNT_DIR)
             .context("Failed to create key file mount dir")?;
         let status = Command::new("mount")
@@ -528,9 +524,6 @@ fn setup_key_file_path(
             KEY_FILE_MOUNT_DIR, KEY_FILE_NAME_IN_ISO
         )));
     }
-
-    // Suppress unused warning when not on FreeBSD
-    let _ = key_from_iso;
 
     Ok(key_file)
 }
@@ -650,7 +643,6 @@ fn run() -> anyhow::Result<()> {
 
     // Extract key file args before other cli fields are moved.
     let cli_key_file = cli.key_file.clone();
-    let cli_key_from_iso = cli.key_from_iso;
 
     let mut disk_path = cli.disk_path;
     let mut fs_type = cli.fs_type;
@@ -675,8 +667,8 @@ fn run() -> anyhow::Result<()> {
 
     // Resolve key file path inside the VM.
     // For Linux: the path is directly accessible via the virtiofs rootfs (--key-file arg).
-    // For FreeBSD: mount the ISO (identified by label) and return path within it.
-    let key_file_path = setup_key_file_path(cli_key_file, cli_key_from_iso, &mut deferred)
+    // For FreeBSD: detect the ISO by label and mount it automatically.
+    let key_file_path = setup_key_file_path(cli_key_file, &mut deferred)
         .context("Failed to set up encryption key file")?;
 
     // decrypt LUKS/BitLocker volumes if any

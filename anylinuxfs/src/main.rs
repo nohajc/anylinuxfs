@@ -1217,7 +1217,7 @@ fn prepare_key_file_for_vm(
             })?;
 
             Ok(PreparedKeyFile {
-                args: vec!["--key-from-iso".into()],
+                args: vec![],
                 iso_file: Some(iso_file),
             })
         }
