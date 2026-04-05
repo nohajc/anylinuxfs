@@ -21,7 +21,6 @@ use std::io::{self, Read, Write};
 #[cfg(any(target_os = "freebsd", target_os = "macos"))]
 use std::net::TcpListener;
 use std::os::unix::ffi::OsStrExt;
-#[cfg(target_os = "linux")]
 use std::path::Path;
 use std::process::{Child, Command, ExitCode, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -503,8 +502,7 @@ fn setup_key_file_path(
 ) -> anyhow::Result<Option<String>> {
     #[cfg(any(target_os = "freebsd", target_os = "macos"))]
     if Path::new(KEY_FILE_ISO_DEV).exists() {
-        fs::create_dir_all(KEY_FILE_MOUNT_DIR)
-            .context("Failed to create key file mount dir")?;
+        fs::create_dir_all(KEY_FILE_MOUNT_DIR).context("Failed to create key file mount dir")?;
         let status = Command::new("mount")
             .args(["-t", "cd9660", KEY_FILE_ISO_DEV, KEY_FILE_MOUNT_DIR])
             .status()
@@ -708,7 +706,8 @@ fn run() -> anyhow::Result<()> {
                     ));
                 } else {
                     println!("<anylinuxfs-passphrase-prompt:start>");
-                    let prompt_end = deferred.add(|| println!("<anylinuxfs-passphrase-prompt:end>"));
+                    let prompt_end =
+                        deferred.add(|| println!("<anylinuxfs-passphrase-prompt:end>"));
                     let pwd = BString::from(rpassword::read_password()?.as_bytes());
                     deferred.call_now(prompt_end);
                     pwd
@@ -745,7 +744,8 @@ fn run() -> anyhow::Result<()> {
                     ));
                 } else {
                     println!("<anylinuxfs-passphrase-prompt:start>");
-                    let prompt_end = deferred.add(|| println!("<anylinuxfs-passphrase-prompt:end>"));
+                    let prompt_end =
+                        deferred.add(|| println!("<anylinuxfs-passphrase-prompt:end>"));
                     let res = cryptsetup.wait()?;
                     deferred.call_now(prompt_end);
                     res

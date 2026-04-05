@@ -392,6 +392,7 @@ impl From<ShellCmd> for MountCmd {
             kernel_page_size: shell_cmd.kernel_page_size,
             debug: shell_cmd.debug,
             verbose: false,
+            key_file: None,
         }
     }
 }
@@ -713,7 +714,10 @@ fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
         .map(PathBuf::from)
         .map(|key_path| {
             if !key_path.exists() {
-                return Err(anyhow::anyhow!("Key file not found: {}", key_path.display()));
+                return Err(anyhow::anyhow!(
+                    "Key file not found: {}",
+                    key_path.display()
+                ));
             }
             if !key_path.is_file() {
                 return Err(anyhow::anyhow!(
@@ -1144,9 +1148,8 @@ fn prepare_key_file_for_vm(
             // Copy the key file into the virtiofs-mapped rootfs directory.
             // The VM sees it as /.alfs_keyfile via virtiofs.
             let dst = root_path.join(".alfs_keyfile");
-            fs::copy(key_file_host_path, &dst).with_context(|| {
-                format!("Failed to copy key file to rootfs: {}", dst.display())
-            })?;
+            fs::copy(key_file_host_path, &dst)
+                .with_context(|| format!("Failed to copy key file to rootfs: {}", dst.display()))?;
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
@@ -1172,18 +1175,13 @@ fn prepare_key_file_for_vm(
         OSType::FreeBSD => {
             // Pack the key file into an ISO image; the ISO is attached as a read-only
             // disk to the VM. The child inherits the open fd via fork.
-            let tmp_dir =
-                PathBuf::from("/tmp").join(format!("alfs-kf-{}", rand_string(8)));
-            fs::create_dir_all(&tmp_dir)
-                .context("Failed to create key file temp directory")?;
+            let tmp_dir = PathBuf::from("/tmp").join(format!("alfs-kf-{}", rand_string(8)));
+            fs::create_dir_all(&tmp_dir).context("Failed to create key file temp directory")?;
 
             let iso_keyfile_name = "keyfile";
             let key_dst = tmp_dir.join(iso_keyfile_name);
             fs::copy(key_file_host_path, &key_dst).with_context(|| {
-                format!(
-                    "Failed to copy key file to temp dir: {}",
-                    key_dst.display()
-                )
+                format!("Failed to copy key file to temp dir: {}", key_dst.display())
             })?;
 
             let iso_path = tmp_dir.join("keyfile.iso");
@@ -1205,8 +1203,7 @@ fn prepare_key_file_for_vm(
             // Open the ISO by fd before deleting the temp dir; this way the ISO
             // remains accessible via /dev/fd/<N> until process termination — the
             // same trick used in set_vm_cmdline for the krun config ISO.
-            let iso_file = File::open(&iso_path)
-                .context("Failed to open key file ISO")?;
+            let iso_file = File::open(&iso_path).context("Failed to open key file ISO")?;
 
             // All staging files can be removed immediately; the open fd is enough.
             fs::remove_dir_all(&tmp_dir).with_context(|| {
