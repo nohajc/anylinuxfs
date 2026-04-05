@@ -194,8 +194,8 @@ mod freebsd {
                     let upgrade_iso_image_path = tmp_path.join(upgrade_iso_image);
 
                     let devices = &[
-                        DevInfo::pv(vm_disk_image_path.as_bytes())?,
-                        DevInfo::pv(upgrade_iso_image_path.as_bytes())?,
+                        DevInfo::pv(vm_disk_image_path.as_bytes(), true)?,
+                        DevInfo::pv(upgrade_iso_image_path.as_bytes(), true)?,
                     ];
                     let cmdline = &["/upgrade-binaries.sh".into()];
                     start_freebsd_vm(&config, devices, cmdline, NetworkMode::Default)
@@ -396,7 +396,7 @@ mod freebsd {
 
         // 2. boot it again to install third-party packages
         let setup_status = setup_gvproxy(&config, || {
-            let devices = &[DevInfo::pv(vm_disk_image_path.as_bytes())?];
+            let devices = &[DevInfo::pv(vm_disk_image_path.as_bytes(), true)?];
             let cmdline = &["/usr/local/bin/vm-setup.sh".into()];
             start_freebsd_vm(
                 &config,
@@ -515,9 +515,9 @@ mod freebsd {
         vm_disk_image_path: impl AsRef<BStr>,
     ) -> anyhow::Result<i32> {
         let devices = &[
-            DevInfo::pv(bootstrap_image_path)?,
-            DevInfo::pv(vm_disk_image_path)?,
-            DevInfo::pv(oci_iso_image_path)?,
+            DevInfo::pv(bootstrap_image_path, true)?,
+            DevInfo::pv(vm_disk_image_path, true)?,
+            DevInfo::pv(oci_iso_image_path, true)?,
         ];
 
         let opts = VMOpts::new()

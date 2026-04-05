@@ -592,7 +592,7 @@ pub fn list_partitions(
                         continue;
                     }
                     let disk_path = format!("/dev/{dev_ident}");
-                    let dev_info = DevInfo::pv(disk_path.as_str()).ok();
+                    let dev_info = DevInfo::pv(disk_path.as_str(), false).ok();
 
                     let line = match dev_info {
                         Some(dev_info) => {
@@ -625,7 +625,7 @@ pub fn list_partitions(
                     if disks_without_part_table.iter().any(|d| d == dev_ident) {
                         // This is a disk without partition table, it might still contain a Linux filesystem
                         let disk_path = format!("/dev/{dev_ident}");
-                        let dev_info = DevInfo::pv(disk_path.as_str()).ok();
+                        let dev_info = DevInfo::pv(disk_path.as_str(), false).ok();
 
                         let fs_type = dev_info
                             .as_ref()

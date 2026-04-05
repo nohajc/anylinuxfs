@@ -767,7 +767,20 @@ fn hostname_from_disk_ident(disk_ident: &str) -> anyhow::Result<String> {
         disk_ident.into()
     };
 
-    let disk_name = Path::new(disk_ident.split(':').next().unwrap())
+    // Strip @s<digits> suffix from image partition identifiers
+    let first_token = disk_ident.split(':').next().unwrap();
+    let first_token = if let Some(at_pos) = first_token.rfind("@s") {
+        let suffix = &first_token[at_pos + 2..];
+        if suffix.chars().all(|c| c.is_ascii_digit()) {
+            &first_token[..at_pos]
+        } else {
+            first_token
+        }
+    } else {
+        first_token
+    };
+
+    let disk_name = Path::new(first_token)
         .file_name()
         .unwrap_or(OsStr::new("disk"));
     let mut vm_hostname: String = disk_name
@@ -1863,6 +1876,91 @@ fn print_dev_info(dev_info: &DevInfo, dev_type: DevType) {
     }
 }
 
+/// Parse a token of the form `<image_path>@s<N>` where <N> is 1-based partition number.
+/// Returns Some((image_path, N)) if the token matches the pattern (checks format only).
+fn parse_image_partition_ident(s: &str) -> Option<(&str, usize)> {
+    if let Some(at_pos) = s.rfind("@s") {
+        let (image_path, suffix) = s.split_at(at_pos);
+        if image_path.is_empty() {
+            return None;
+        }
+        let suffix = &suffix[2..];
+        if !suffix.is_empty() && suffix.chars().all(|c| c.is_ascii_digit()) {
+            if let Ok(n) = suffix.parse::<usize>() {
+                return Some((image_path, n));
+            }
+        }
+    }
+    None
+}
+
+/// Resolve a disk token (block device name, path, or image@sN) into a (DevInfo, File) pair.
+/// Does NOT check is_mounted — that is the caller's responsibility.
+fn resolve_disk_token(token: &str, read_only: bool) -> anyhow::Result<(DevInfo, File)> {
+    // Try image partition syntax first: image@sN
+    if let Some((image_path, part_num)) = parse_image_partition_ident(token) {
+        if !Path::new(image_path).exists() {
+            return Err(anyhow!("Image file not found: {}", image_path));
+        }
+        let probe_devs = DevInfo::probe_image(BString::from(image_path.as_bytes()))
+            .context("Failed to probe image")?;
+        if part_num == 0 || part_num >= probe_devs.len() {
+            return Err(anyhow!(
+                "Partition {} out of range (image has {} partitions)",
+                part_num,
+                probe_devs.len() - 1
+            ));
+        }
+        let partition_info = probe_devs[part_num].clone();
+        let disk = File::open(partition_info.rdisk())
+            .context("Failed to open image file")?
+            .acquire_lock(if read_only {
+                FlockKind::Shared
+            } else {
+                FlockKind::Exclusive
+            })
+            .context("Failed to acquire lock on image file")?;
+        print_dev_info(&partition_info, DevType::Direct);
+        return Ok((partition_info, disk));
+    }
+
+    // Check if token is an explicit file path (not a block device shorthand)
+    let token_path = Path::new(token);
+    if token_path.is_file() {
+        // Whole image file (no partition spec)
+        let dev_info = DevInfo::pv(token, true)?;
+        let disk = File::open(dev_info.rdisk())
+            .context("Failed to open image file")?
+            .acquire_lock(if read_only {
+                FlockKind::Shared
+            } else {
+                FlockKind::Exclusive
+            })
+            .context("Failed to acquire lock on image file")?;
+        print_dev_info(&dev_info, DevType::Direct);
+        return Ok((dev_info, disk));
+    }
+
+    // Block device: disk7s1 or /dev/disk7s1
+    let dev_path_str = if token.starts_with("/dev/") {
+        token.to_string()
+    } else {
+        format!("/dev/{}", token)
+    };
+
+    let dev_info = DevInfo::pv(dev_path_str.as_bytes().as_bstr(), false)?;
+    let disk = File::open(dev_info.rdisk())
+        .context("Failed to open device")?
+        .acquire_lock(if read_only {
+            FlockKind::Shared
+        } else {
+            FlockKind::Exclusive
+        })
+        .context("Failed to acquire lock on device")?;
+    print_dev_info(&dev_info, DevType::Direct);
+    Ok((dev_info, disk))
+}
+
 fn claim_devices(config: &mut MountConfig) -> anyhow::Result<(Vec<DevInfo>, DevInfo, Vec<File>)> {
     let mount_table = fsutil::MountTable::new()?;
     // host_println!("Current mount table: {:#?}", mount_table);
@@ -1873,7 +1971,7 @@ fn claim_devices(config: &mut MountConfig) -> anyhow::Result<(Vec<DevInfo>, DevI
     let disk_path = config.disk_path.as_str();
 
     let mut mnt_dev_info = if disk_path.starts_with("lvm:") {
-        // example: lvm:vg1:disk7s1:lvol0
+        // example: lvm:vg1:disk7s1:lvol0 or lvm:vg1:disk7s1:image.img@s1:lvol0
         let disk_ident: Vec<&str> = disk_path.split(':').collect();
         if disk_ident.len() < 4 {
             return Err(anyhow!("Invalid LVM disk path"));
@@ -1889,26 +1987,14 @@ fn claim_devices(config: &mut MountConfig) -> anyhow::Result<(Vec<DevInfo>, DevI
             if i == disk_ident.len() - 3 {
                 break;
             }
-            let pv_path = if di.starts_with("/") || di.starts_with("./") {
-                di.to_string()
-            } else {
-                format!("/dev/{}", di)
-            };
-            if mount_table.is_mounted(&pv_path) {
-                return Err(anyhow!("{} is already mounted", &pv_path));
+            let (dev_info, disk) = resolve_disk_token(di, config.read_only)?;
+            if !dev_info.is_image() && mount_table.is_mounted(dev_info.disk()) {
+                return Err(anyhow!("{} is already mounted", dev_info.disk().display()));
             }
-            let dev_info = DevInfo::pv(pv_path.as_str())?;
-            let disk = File::open(dev_info.rdisk())?.acquire_lock(if config.read_only {
-                FlockKind::Shared
-            } else {
-                FlockKind::Exclusive
-            })?;
 
             if dev_info.fs_type() == Some("linux_raid_member") {
                 config.assemble_raid = true;
             }
-
-            print_dev_info(&dev_info, DevType::PV);
 
             dev_infos.push(dev_info);
             disks.push(disk);
@@ -1919,7 +2005,7 @@ fn claim_devices(config: &mut MountConfig) -> anyhow::Result<(Vec<DevInfo>, DevI
         print_dev_info(&lv_info, DevType::LV);
         lv_info
     } else if disk_path.starts_with("raid:") {
-        // example: raid:disk7s1:disk8s1
+        // example: raid:disk7s1:disk8s1 or raid:disk7s1:image.img@s1
         let disk_ident: Vec<&str> = disk_path.split(':').collect();
         if disk_ident.len() < 2 {
             return Err(anyhow!("Invalid RAID disk path"));
@@ -1929,22 +2015,10 @@ fn claim_devices(config: &mut MountConfig) -> anyhow::Result<(Vec<DevInfo>, DevI
         config.assemble_raid = true;
 
         for (_, &di) in disk_ident.iter().skip(1).enumerate() {
-            let pv_path = if di.starts_with("/") || di.starts_with("./") {
-                di.to_string()
-            } else {
-                format!("/dev/{}", di)
-            };
-            if mount_table.is_mounted(&pv_path) {
-                return Err(anyhow!("{} is already mounted", &pv_path));
+            let (dev_info, disk) = resolve_disk_token(di, config.read_only)?;
+            if !dev_info.is_image() && mount_table.is_mounted(dev_info.disk()) {
+                return Err(anyhow!("{} is already mounted", dev_info.disk().display()));
             }
-            let dev_info = DevInfo::pv(pv_path.as_str())?;
-            let disk = File::open(dev_info.rdisk())?.acquire_lock(if config.read_only {
-                FlockKind::Shared
-            } else {
-                FlockKind::Exclusive
-            })?;
-
-            print_dev_info(&dev_info, DevType::PV);
 
             dev_infos.push(dev_info);
             disks.push(disk);
@@ -1958,33 +2032,42 @@ fn claim_devices(config: &mut MountConfig) -> anyhow::Result<(Vec<DevInfo>, DevI
         // diskless mode
         DevInfo::default()
     } else {
+        // Multi-disk (colon-separated): disk1:disk2 or img1.img@s1:img2.img@s2 or mixed
         let disk_paths: Vec<_> = disk_path.split(":").collect();
 
-        for disk_path in disk_paths {
-            if !Path::new(disk_path).exists() {
-                return Err(anyhow!("disk {} not found", disk_path));
-            }
-
-            if mount_table.is_mounted(disk_path) {
-                if config.allow_remount {
-                    unmount_fs(Path::new(disk_path))?;
-                    println!("Remounting with anylinuxfs...");
-                } else {
-                    return Err(anyhow!("{} is already mounted", disk_path));
-                }
-            }
-            let di = DevInfo::pv(&disk_path)?;
-
-            let disk = File::open(di.rdisk())?.acquire_lock(if config.read_only {
-                FlockKind::Shared
+        for token in disk_paths {
+            // Try to resolve as image partition or image file first, then as block device
+            if parse_image_partition_ident(token).is_some() {
+                let (dev_info, disk) = resolve_disk_token(token, config.read_only)?;
+                dev_infos.push(dev_info);
+                disks.push(disk);
+            } else if Path::new(token).is_file() {
+                // Image file
+                let (dev_info, disk) = resolve_disk_token(token, config.read_only)?;
+                dev_infos.push(dev_info);
+                disks.push(disk);
             } else {
-                FlockKind::Exclusive
-            })?;
-
-            print_dev_info(&di, DevType::Direct);
-
-            dev_infos.push(di);
-            disks.push(disk);
+                // Block device path or shorthand (disk7s1 -> /dev/disk7s1)
+                let dev_path = if token.starts_with("/dev/") {
+                    token.to_owned()
+                } else {
+                    format!("/dev/{}", token)
+                };
+                if !Path::new(&dev_path).exists() {
+                    return Err(anyhow!("disk {} not found", dev_path));
+                }
+                if mount_table.is_mounted(&dev_path) {
+                    if config.allow_remount {
+                        unmount_fs(Path::new(&dev_path))?;
+                        println!("Remounting with anylinuxfs...");
+                    } else {
+                        return Err(anyhow!("{} is already mounted", dev_path));
+                    }
+                }
+                let (dev_info, disk) = resolve_disk_token(token, config.read_only)?;
+                dev_infos.push(dev_info);
+                disks.push(disk);
+            }
         }
 
         dev_infos[0].clone()
@@ -2289,7 +2372,7 @@ impl AppRunner {
             && os == OSType::FreeBSD
         {
             opts = opts.root_device("ufs:/dev/gpt/rootfs").legacy_console(true);
-            dev_info = [DevInfo::pv(root_disk_path.as_bytes())?]
+            dev_info = [DevInfo::pv(root_disk_path.as_bytes(), true)?]
                 .iter()
                 .chain(dev_info.iter())
                 .cloned()
@@ -2694,7 +2777,7 @@ impl AppRunner {
             host_println!("root_disk: {}", root_disk_path.display());
 
             opts = opts.root_device("ufs:/dev/gpt/rootfs").legacy_console(true);
-            dev_info = [DevInfo::pv(root_disk_path.as_bytes())?]
+            dev_info = [DevInfo::pv(root_disk_path.as_bytes(), true)?]
                 .iter()
                 .chain(dev_info.iter())
                 .cloned()

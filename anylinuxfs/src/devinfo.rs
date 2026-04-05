@@ -13,6 +13,7 @@ use crate::diskutil;
 pub struct DevInfo {
     path: BString,
     rpath: BString,
+    is_image: bool,
     block_size: Option<u32>,
     label: Option<String>,
     fs_type: Option<String>,
@@ -36,6 +37,7 @@ impl DevInfo {
         Ok(DevInfo {
             path: path.into(),
             rpath: path.into(),
+            is_image: false,
             block_size: None,
             label: label.map(|l| l.to_owned()),
             fs_type: Some("auto".into()),
@@ -48,7 +50,7 @@ impl DevInfo {
         })
     }
 
-    pub fn pv(path: impl AsRef<BStr>) -> anyhow::Result<DevInfo> {
+    pub fn pv(path: impl AsRef<BStr>, is_image: bool) -> anyhow::Result<DevInfo> {
         let path = path.as_ref();
         if path.is_empty() {
             return Err(anyhow!("Empty device path"));
@@ -96,6 +98,7 @@ impl DevInfo {
         Ok(DevInfo {
             path,
             rpath,
+            is_image,
             block_size,
             label,
             fs_type,
@@ -106,6 +109,10 @@ impl DevInfo {
             da_info,
             size_bytes: None,
         })
+    }
+
+    pub fn is_image(&self) -> bool {
+        self.is_image
     }
 
     pub fn probe_image(path: impl AsRef<BStr>) -> anyhow::Result<Vec<DevInfo>> {
@@ -152,6 +159,7 @@ impl DevInfo {
         let mut result = vec![DevInfo {
             path: path.to_owned(),
             rpath: path.to_owned(),
+            is_image: true,
             block_size,
             label,
             fs_type,
@@ -207,6 +215,7 @@ impl DevInfo {
                         // so we always pass the whole disk to the microVM
                         path: path.into(),
                         rpath: path.into(),
+                        is_image: true,
                         block_size: part_block_size,
                         label: part_label,
                         fs_type: part_fs_type,
