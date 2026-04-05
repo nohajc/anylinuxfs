@@ -176,22 +176,51 @@ pub fn import_all_zpools(
 pub fn mount_datasets(
     mountpoints: &[Mountpoint],
     env_pwds: &HashMap<usize, BString>,
+    key_file_path: Option<&str>,
 ) -> anyhow::Result<ExitStatus> {
-    for (i, mp) in mountpoints.iter().enumerate() {
-        // println!("Mounting {}", mp.name);
-        let mut cmd = script(&format!("zfs mount -l {}", mp.name));
-
-        let status = if let Some(pwd) = env_pwds.get(&(i + 1)) {
-            let mut child = cmd.stdin(Stdio::piped()).spawn()?;
-            {
-                let mut stdin = child.stdin.take().unwrap();
-                stdin.write_all(pwd.as_bytes())?;
+    if let Some(key_file) = key_file_path {
+        // Key-file path: load encryption keys for all encrypted pools, then mount all datasets.
+        let mut loaded_pools: HashSet<String> = HashSet::new();
+        for mp in mountpoints.iter() {
+            if mp.encrypted && !loaded_pools.contains(&mp.pool) {
+                let status = script(&format!(
+                    "zfs load-key -L file://{} {}",
+                    key_file, mp.pool
+                ))
+                .status()
+                .with_context(|| format!("Failed to load ZFS key for pool {}", mp.pool))?;
+                if !status.success() {
+                    return Err(anyhow::anyhow!(
+                        "zfs load-key failed for pool {}: exit code {}",
+                        mp.pool,
+                        status.code().unwrap_or(-1)
+                    ));
+                }
+                loaded_pools.insert(mp.pool.clone());
             }
-            child.wait()
-        } else {
-            cmd.status()
         }
-        .with_context(|| format!("Failed to mount ZFS dataset {}", mp.name))?;
+        for mp in mountpoints.iter() {
+            script(&format!("zfs mount {}", mp.name))
+                .status()
+                .with_context(|| format!("Failed to mount ZFS dataset {}", mp.name))?;
+        }
+    } else {
+        for (i, mp) in mountpoints.iter().enumerate() {
+            // println!("Mounting {}", mp.name);
+            let mut cmd = script(&format!("zfs mount -l {}", mp.name));
+
+            let status = if let Some(pwd) = env_pwds.get(&(i + 1)) {
+                let mut child = cmd.stdin(Stdio::piped()).spawn()?;
+                {
+                    let mut stdin = child.stdin.take().unwrap();
+                    stdin.write_all(pwd.as_bytes())?;
+                }
+                child.wait()
+            } else {
+                cmd.status()
+            }
+            .with_context(|| format!("Failed to mount ZFS dataset {}", mp.name))?;
+        }
     }
     Ok(ExitStatus::default())
 }

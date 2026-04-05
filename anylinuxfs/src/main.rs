@@ -153,7 +153,8 @@ Supported partition schemes:
 
 Recognized environment variables:
 - ALFS_PASSPHRASE: passphrase for LUKS/BitLocker drive (optional)
-- ALFS_PASSPHRASE1, ALFS_PASSPHRASE2, ...: passphrases for multiple drives if needed")]
+- ALFS_PASSPHRASE1, ALFS_PASSPHRASE2, ...: passphrases for multiple drives if needed
+- ALFS_KEY_FILE: path to a key file for LUKS/ZFS encrypted drive (alternative to passphrase)")]
     Mount(MountCmd),
     /// Unmount a filesystem
     Unmount(UnmountCmd),
@@ -270,6 +271,9 @@ struct MountCmd {
     debug: DebugArgs,
     #[arg(short, long)]
     verbose: bool,
+    /// Path to a key file for unlocking an encrypted drive (LUKS or ZFS), as an alternative to a passphrase
+    #[arg(long = "key-file", conflicts_with = "passphrase_config")]
+    key_file: Option<String>,
 }
 
 impl MountCmd {
@@ -703,6 +707,23 @@ fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
         None
     };
 
+    let key_file = match cmd.key_file {
+        Some(ref path) => {
+            let key_path = PathBuf::from(path);
+            if !key_path.exists() {
+                return Err(anyhow::anyhow!("Key file not found: {}", key_path.display()));
+            }
+            if !key_path.is_file() {
+                return Err(anyhow::anyhow!(
+                    "Key file path is not a file: {}",
+                    key_path.display()
+                ));
+            }
+            Some(key_path)
+        }
+        None => None,
+    };
+
     // this is set dynamically later
     let assemble_raid = false;
 
@@ -726,6 +747,7 @@ fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
         kernel_page_size,
         common,
         custom_action,
+        key_file,
     })
 }
 
@@ -1863,6 +1885,10 @@ fn get_default_packages() -> BTreeSet<String> {
         .collect()
 }
 
+fn encode_key_file_content(content: &[u8]) -> String {
+    content.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
 fn prepare_vm_environment(config: &MountConfig) -> anyhow::Result<(Vec<BString>, bool)> {
     let mut env_vars = Vec::new();
     let mut env_has_passphrase = false;
@@ -1875,6 +1901,32 @@ fn prepare_vm_environment(config: &MountConfig) -> anyhow::Result<(Vec<BString>,
             env_has_passphrase = true;
         }
     }
+
+    // Key file takes priority over passphrase.
+    // CLI --key-file takes precedence over the ALFS_KEY_FILE env var.
+    // The ALFS_KEY_FILE env var value is treated as a host-side path and its
+    // content is hex-encoded before being forwarded to the VM.
+    let key_file_content: Option<Vec<u8>> = if let Some(path) = &config.key_file {
+        let content = fs::read(path)
+            .with_context(|| format!("Failed to read key file: {}", path.display()))?;
+        Some(content)
+    } else if let Ok(env_path) = env::var("ALFS_KEY_FILE") {
+        let path = PathBuf::from(&env_path);
+        let content = fs::read(&path)
+            .with_context(|| format!("Failed to read key file from ALFS_KEY_FILE: {}", env_path))?;
+        Some(content)
+    } else {
+        None
+    };
+
+    if let Some(content) = key_file_content {
+        let hex = encode_key_file_content(&content);
+        let mut var_str = BString::from(b"ALFS_KEY_FILE=");
+        var_str.push_str(hex.as_bytes());
+        env_vars.push(var_str);
+        env_has_passphrase = true; // treat key file as a passphrase substitute
+    }
+
     if let Some(action) = config.get_action() {
         action.prepare_environment(&mut env_vars)?;
     }

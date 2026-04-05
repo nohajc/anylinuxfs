@@ -27,7 +27,7 @@ use std::process::{Child, Command, ExitCode, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
-use std::{env, thread};
+use std::{env, str, thread};
 #[cfg(target_os = "linux")]
 use sys_mount::{UnmountFlags, unmount};
 #[cfg(target_os = "linux")]
@@ -464,6 +464,8 @@ fn export_args_for_path(
 }
 
 const ALFS_PASSPHRASE_PREFIX: &[u8] = b"ALFS_PASSPHRASE";
+const ALFS_KEY_FILE_ENV: &str = "ALFS_KEY_FILE";
+const KEY_FILE_VM_PATH: &str = "/tmp/alfs_keyfile";
 
 fn get_pwds_from_env() -> HashMap<usize, BString> {
     let mut pwds = HashMap::new();
@@ -480,6 +482,41 @@ fn get_pwds_from_env() -> HashMap<usize, BString> {
         }
     }
     pwds
+}
+
+fn decode_hex(hex: &[u8]) -> anyhow::Result<Vec<u8>> {
+    if hex.len() % 2 != 0 {
+        return Err(anyhow!("Invalid hex string: odd length"));
+    }
+    let mut bytes = Vec::with_capacity(hex.len() / 2);
+    for chunk in hex.chunks(2) {
+        let hi = char::from(chunk[0])
+            .to_digit(16)
+            .context("Invalid hex character")?;
+        let lo = char::from(chunk[1])
+            .to_digit(16)
+            .context("Invalid hex character")?;
+        bytes.push(((hi << 4) | lo) as u8);
+    }
+    Ok(bytes)
+}
+
+/// Read the hex-encoded key file content from ALFS_KEY_FILE env var,
+/// decode it, and write it to KEY_FILE_VM_PATH inside the VM.
+/// Returns the path if the key file was successfully prepared, None otherwise.
+fn prepare_key_file_from_env() -> anyhow::Result<Option<&'static str>> {
+    let hex_content = match env::var(ALFS_KEY_FILE_ENV) {
+        Ok(val) => val,
+        Err(_) => return Ok(None),
+    };
+
+    let content = decode_hex(hex_content.as_bytes())
+        .context("Failed to decode ALFS_KEY_FILE hex content")?;
+
+    fs::write(KEY_FILE_VM_PATH, &content)
+        .context("Failed to write key file inside VM")?;
+
+    Ok(Some(KEY_FILE_VM_PATH))
 }
 
 fn main() -> ExitCode {
@@ -616,70 +653,101 @@ fn run() -> anyhow::Result<()> {
     let env_pwds = get_pwds_from_env();
     let env_has_passphrase = !env_pwds.is_empty();
 
+    // Prepare key file (if ALFS_KEY_FILE env var is set, decode and write it to VM tmpfs).
+    // When a key file is present it takes priority over any passphrase.
+    let key_file_path = prepare_key_file_from_env()
+        .context("Failed to prepare encryption key file")?;
+
     // decrypt LUKS/BitLocker volumes if any
     if let Some(decrypt) = &cli.decrypt {
-        let (pwd_for_all, input_mode_fn): (_, fn() -> _) = if cli.reuse_passphrase {
-            let pwd = if let Some(passphrase) = env_pwds.get(&1) {
-                BString::from(passphrase.as_bytes())
-            } else if env_has_passphrase {
-                return Err(anyhow!(
-                    "Missing environment variable {}",
-                    ALFS_PASSPHRASE_PREFIX.as_bstr()
-                ));
-            } else {
-                println!("<anylinuxfs-passphrase-prompt:start>");
-                let prompt_end = deferred.add(|| println!("<anylinuxfs-passphrase-prompt:end>"));
-                let pwd = BString::from(rpassword::read_password()?.as_bytes());
-                deferred.call_now(prompt_end);
-                pwd
-            };
-            (Some(pwd), || Stdio::piped())
-        } else if env_has_passphrase {
-            (None, || Stdio::piped())
+        if let Some(key_file) = key_file_path {
+            // Key-file path: pass --key-file <path> to cryptsetup (no passphrase needed)
+            for (i, dev) in decrypt.split(",").enumerate() {
+                let cryptsetup_result = Command::new("/sbin/cryptsetup")
+                    .arg("-T1")
+                    .arg(cryptsetup_op)
+                    .arg("--key-file")
+                    .arg(key_file)
+                    .arg(&dev)
+                    .arg(format!("{mapper_ident_prefix}{i}"))
+                    .status()
+                    .context("Failed to run cryptsetup")?;
+
+                if !cryptsetup_result.success() {
+                    return Err(anyhow!(
+                        "Failed to open encrypted device '{}' with key file: {}",
+                        dev,
+                        cryptsetup_result
+                            .code()
+                            .map(|c| c.to_string())
+                            .unwrap_or("unknown".to_owned())
+                    ));
+                }
+            }
         } else {
-            (None, || Stdio::inherit())
-        };
-
-        for (i, dev) in decrypt.split(",").enumerate() {
-            let mut cryptsetup = Command::new("/sbin/cryptsetup")
-                .arg("-T1")
-                .arg(cryptsetup_op)
-                .arg(&dev)
-                .arg(format!("{mapper_ident_prefix}{i}"))
-                .stdin(input_mode_fn())
-                .spawn()?;
-
-            let pwd = pwd_for_all.as_ref().or(env_pwds.get(&(i + 1)));
-            let cryptsetup_result = if let Some(pwd) = pwd {
-                {
-                    let mut stdin = cryptsetup.stdin.take().unwrap();
-                    stdin.write_all(pwd.as_bytes())?;
-                } // must close stdin before waiting for child
-                cryptsetup.wait()?
+            let (pwd_for_all, input_mode_fn): (_, fn() -> _) = if cli.reuse_passphrase {
+                let pwd = if let Some(passphrase) = env_pwds.get(&1) {
+                    BString::from(passphrase.as_bytes())
+                } else if env_has_passphrase {
+                    return Err(anyhow!(
+                        "Missing environment variable {}",
+                        ALFS_PASSPHRASE_PREFIX.as_bstr()
+                    ));
+                } else {
+                    println!("<anylinuxfs-passphrase-prompt:start>");
+                    let prompt_end = deferred.add(|| println!("<anylinuxfs-passphrase-prompt:end>"));
+                    let pwd = BString::from(rpassword::read_password()?.as_bytes());
+                    deferred.call_now(prompt_end);
+                    pwd
+                };
+                (Some(pwd), || Stdio::piped())
             } else if env_has_passphrase {
-                return Err(anyhow!(
-                    "Missing environment variable {}{} for device {}",
-                    ALFS_PASSPHRASE_PREFIX.as_bstr(),
-                    i + 1,
-                    dev
-                ));
+                (None, || Stdio::piped())
             } else {
-                println!("<anylinuxfs-passphrase-prompt:start>");
-                let prompt_end = deferred.add(|| println!("<anylinuxfs-passphrase-prompt:end>"));
-                let res = cryptsetup.wait()?;
-                deferred.call_now(prompt_end);
-                res
+                (None, || Stdio::inherit())
             };
 
-            if !cryptsetup_result.success() {
-                return Err(anyhow!(
-                    "Failed to open encrypted device '{}': {}",
-                    dev,
-                    cryptsetup_result
-                        .code()
-                        .map(|c| c.to_string())
-                        .unwrap_or("unknown".to_owned())
-                ));
+            for (i, dev) in decrypt.split(",").enumerate() {
+                let mut cryptsetup = Command::new("/sbin/cryptsetup")
+                    .arg("-T1")
+                    .arg(cryptsetup_op)
+                    .arg(&dev)
+                    .arg(format!("{mapper_ident_prefix}{i}"))
+                    .stdin(input_mode_fn())
+                    .spawn()?;
+
+                let pwd = pwd_for_all.as_ref().or(env_pwds.get(&(i + 1)));
+                let cryptsetup_result = if let Some(pwd) = pwd {
+                    {
+                        let mut stdin = cryptsetup.stdin.take().unwrap();
+                        stdin.write_all(pwd.as_bytes())?;
+                    } // must close stdin before waiting for child
+                    cryptsetup.wait()?
+                } else if env_has_passphrase {
+                    return Err(anyhow!(
+                        "Missing environment variable {}{} for device {}",
+                        ALFS_PASSPHRASE_PREFIX.as_bstr(),
+                        i + 1,
+                        dev
+                    ));
+                } else {
+                    println!("<anylinuxfs-passphrase-prompt:start>");
+                    let prompt_end = deferred.add(|| println!("<anylinuxfs-passphrase-prompt:end>"));
+                    let res = cryptsetup.wait()?;
+                    deferred.call_now(prompt_end);
+                    res
+                };
+
+                if !cryptsetup_result.success() {
+                    return Err(anyhow!(
+                        "Failed to open encrypted device '{}': {}",
+                        dev,
+                        cryptsetup_result
+                            .code()
+                            .map(|c| c.to_string())
+                            .unwrap_or("unknown".to_owned())
+                    ));
+                }
             }
         }
     }
@@ -908,7 +976,7 @@ fn run() -> anyhow::Result<()> {
         });
 
         let mnt_result = if is_zfs {
-            zfs::mount_datasets(&zfs_mountpoints, &env_pwds)?
+            zfs::mount_datasets(&zfs_mountpoints, &env_pwds, key_file_path)?
         } else {
             let mount_bin = if cfg!(target_os = "freebsd") {
                 "/sbin/mount"
