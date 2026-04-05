@@ -255,6 +255,9 @@ struct MountCmd {
     /// Filesystem driver override (e.g. for using ntfs3 instead of ntfs-3g)
     #[arg(short = 't', long = "type")]
     fs_driver: Option<String>,
+    /// Path to a key file for unlocking an encrypted drive (alternative to a passphrase)
+    #[arg(short, long, conflicts_with = "passphrase_config")]
+    key_file: Option<String>,
     #[command(flatten)]
     common: CommonArgs,
     /// Open Finder window with the mounted drive
@@ -270,9 +273,6 @@ struct MountCmd {
     debug: DebugArgs,
     #[arg(short, long)]
     verbose: bool,
-    /// Path to a key file for unlocking an encrypted drive (LUKS or ZFS), as an alternative to a passphrase
-    #[arg(long = "key-file", conflicts_with = "passphrase_config")]
-    key_file: Option<String>,
 }
 
 impl MountCmd {

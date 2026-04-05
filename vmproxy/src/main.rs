@@ -58,6 +58,9 @@ struct Cli {
     assemble_raid: bool,
     #[arg(short, long)]
     action: Option<String>,
+    /// Path to the key file inside the VM
+    #[arg(long = "key-file")]
+    key_file: Option<String>,
     #[arg(long = "nfs-export-opts")]
     nfs_export_opts: Option<String>,
     #[arg(long = "ignore-permissions")]
@@ -74,9 +77,6 @@ struct Cli {
     native_network: Option<Ipv4Net>,
     #[arg(short, long)]
     verbose: bool,
-    /// Path to the key file inside the VM (Linux: file in virtiofs rootfs)
-    #[arg(long = "key-file")]
-    key_file: Option<String>,
 }
 
 #[derive(Serialize, Debug)]
