@@ -1,13 +1,14 @@
 #!/usr/bin/env bats
 # 06-zfs.bats — ZFS filesystem mount/unmount tests
 #
-# The same image is formatted once (using the FreeBSD microVM, which ships
-# with zfs utils pre-installed), then mounted twice: once using the FreeBSD
-# kernel and once using Linux.
+# Two images are created: one unencrypted pool (mounted twice for platform tests)
+# and one encrypted pool (mounted twice with ALFS_PASSPHRASE for encryption tests).
 #
 # Tests:
-#   1. Mount ZFS pool with --zfs-os freebsd, file I/O, unmount
-#   2. Mount ZFS pool with --zfs-os linux, file I/O, unmount
+#   1. Mount unencrypted ZFS pool with --zfs-os freebsd, file I/O, unmount
+#   2. Mount unencrypted ZFS pool with --zfs-os linux, file I/O, unmount
+#   3. Mount encrypted ZFS pool with --zfs-os freebsd using ALFS_PASSPHRASE, file I/O, unmount
+#   4. Mount encrypted ZFS pool with --zfs-os linux using ALFS_PASSPHRASE, file I/O, unmount
 
 load 'test_helper/common'
 
@@ -22,10 +23,21 @@ setup_file() {
      && zfs create ${POOL}/data \
      && chown -R $(id -u):$(id -g) /tmp/${POOL} \
      && zpool export ${POOL}"
+
+  # --- Encrypted ZFS pool with ALFS_PASSPHRASE ---
+  create_sparse_image "${BATS_FILE_TMPDIR}/zfs-encrypted.img" 1G
+  vm_exec "${BATS_FILE_TMPDIR}/zfs-encrypted.img" \
+    "modprobe zfs && echo -n 'alfszfsencryptedpass' | zpool create -R /tmp -f \
+         -O encryption=on -O keyformat=passphrase -O keylocation=prompt \
+         ${POOL} /dev/vda \
+     && zfs create ${POOL}/data \
+     && chown -R $(id -u):$(id -g) /tmp/${POOL} \
+     && zpool export ${POOL}"
 }
 
 teardown() {
   safe_teardown "${BATS_FILE_TMPDIR}/zfs.img"
+  safe_teardown "${BATS_FILE_TMPDIR}/zfs-encrypted.img"
 }
 
 # ---------------------------------------------------------------------------
@@ -48,6 +60,30 @@ teardown() {
   local part_dev="${HDIUTIL_DEV}s1"
 
   "$ANYLINUXFS" "$part_dev" --zfs-os linux -w false
+
+  assert_file_roundtrip "$(get_mount_point "zfs_root/$POOL")"
+
+  do_unmount
+}
+
+@test "zfs: mount encrypted with FreeBSD kernel using ALFS_PASSPHRASE, file roundtrip, unmount" {
+  local img="${BATS_FILE_TMPDIR}/zfs-encrypted.img"
+  hdiutil_attach "$img"
+  local part_dev="${HDIUTIL_DEV}s1"
+
+  ALFS_PASSPHRASE="alfszfsencryptedpass" "$ANYLINUXFS" "$part_dev" --zfs-os freebsd -w false
+
+  assert_file_roundtrip "$(get_mount_point "zfs_root/$POOL")"
+
+  do_unmount
+}
+
+@test "zfs: mount encrypted with Linux kernel using ALFS_PASSPHRASE, file roundtrip, unmount" {
+  local img="${BATS_FILE_TMPDIR}/zfs-encrypted.img"
+  hdiutil_attach "$img"
+  local part_dev="${HDIUTIL_DEV}s1"
+
+  ALFS_PASSPHRASE="alfszfsencryptedpass" "$ANYLINUXFS" "$part_dev" --zfs-os linux -w false
 
   assert_file_roundtrip "$(get_mount_point "zfs_root/$POOL")"
 
