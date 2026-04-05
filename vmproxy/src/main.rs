@@ -78,9 +78,9 @@ struct Cli {
     /// Path to the key file inside the VM (Linux: file in virtiofs rootfs)
     #[arg(long = "key-file")]
     key_file: Option<String>,
-    /// Disk index of the ISO containing the key file (FreeBSD only)
-    #[arg(long = "key-disk-idx")]
-    key_disk_idx: Option<usize>,
+    /// Mount the key file ISO (FreeBSD only); the ISO is identified by its label ALFS_KEYFILE
+    #[arg(long = "key-from-iso")]
+    key_from_iso: bool,
 }
 
 #[derive(Serialize, Debug)]
@@ -489,32 +489,34 @@ fn get_pwds_from_env() -> HashMap<usize, BString> {
 }
 
 #[cfg(any(target_os = "freebsd", target_os = "macos"))]
-const KEY_FILE_MOUNT_DIR: &str = "/alfs_keyfiles";
+const KEY_FILE_MOUNT_DIR: &str = "/tmp/alfs_keyfiles";
+#[cfg(any(target_os = "freebsd", target_os = "macos"))]
+const KEY_FILE_ISO_DEV: &str = "/dev/iso9660/ALFS_KEYFILE";
 #[cfg(any(target_os = "freebsd", target_os = "macos"))]
 const KEY_FILE_NAME_IN_ISO: &str = "keyfile";
 
 /// Resolve the key file path inside the VM.
 /// For Linux: the path is directly accessible (passed via --key-file).
-/// For FreeBSD: if --key-disk-idx is set, mount the ISO disk and return the path inside it.
+/// For FreeBSD: if --key-from-iso is set, mount the ISO (identified by label ALFS_KEYFILE)
+/// and return the path to the key file inside it.
 #[allow(unused_variables)]
 fn setup_key_file_path(
     key_file: Option<String>,
-    key_disk_idx: Option<usize>,
+    key_from_iso: bool,
     deferred: &mut Deferred,
 ) -> anyhow::Result<Option<String>> {
     #[cfg(any(target_os = "freebsd", target_os = "macos"))]
-    if let Some(disk_idx) = key_disk_idx {
-        let dev = format!("/dev/vtbd{}", disk_idx);
+    if key_from_iso {
         fs::create_dir_all(KEY_FILE_MOUNT_DIR)
             .context("Failed to create key file mount dir")?;
         let status = Command::new("mount")
-            .args(["-t", "cd9660", &dev, KEY_FILE_MOUNT_DIR])
+            .args(["-t", "cd9660", KEY_FILE_ISO_DEV, KEY_FILE_MOUNT_DIR])
             .status()
-            .context("Failed to mount key file disk")?;
+            .context("Failed to mount key file ISO")?;
         if !status.success() {
             return Err(anyhow!(
-                "Failed to mount key file ISO at /dev/vtbd{}: exit code {}",
-                disk_idx,
+                "Failed to mount key file ISO {}: exit code {}",
+                KEY_FILE_ISO_DEV,
                 status.code().unwrap_or(-1)
             ));
         }
@@ -528,7 +530,7 @@ fn setup_key_file_path(
     }
 
     // Suppress unused warning when not on FreeBSD
-    let _ = key_disk_idx;
+    let _ = key_from_iso;
 
     Ok(key_file)
 }
@@ -648,7 +650,7 @@ fn run() -> anyhow::Result<()> {
 
     // Extract key file args before other cli fields are moved.
     let cli_key_file = cli.key_file.clone();
-    let cli_key_disk_idx = cli.key_disk_idx;
+    let cli_key_from_iso = cli.key_from_iso;
 
     let mut disk_path = cli.disk_path;
     let mut fs_type = cli.fs_type;
@@ -673,8 +675,8 @@ fn run() -> anyhow::Result<()> {
 
     // Resolve key file path inside the VM.
     // For Linux: the path is directly accessible via the virtiofs rootfs (--key-file arg).
-    // For FreeBSD: mount the ISO disk specified by --key-disk-idx and return path within it.
-    let key_file_path = setup_key_file_path(cli_key_file, cli_key_disk_idx, &mut deferred)
+    // For FreeBSD: mount the ISO (identified by label) and return path within it.
+    let key_file_path = setup_key_file_path(cli_key_file, cli_key_from_iso, &mut deferred)
         .context("Failed to set up encryption key file")?;
 
     // decrypt LUKS/BitLocker volumes if any

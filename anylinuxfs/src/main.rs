@@ -706,9 +706,12 @@ fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
         None
     };
 
-    let key_file = match cmd.key_file {
-        Some(ref path) => {
-            let key_path = PathBuf::from(path);
+    let key_file = cmd
+        .key_file
+        .clone()
+        .or_else(|| env::var("ALFS_KEY_FILE").ok())
+        .map(PathBuf::from)
+        .map(|key_path| {
             if !key_path.exists() {
                 return Err(anyhow::anyhow!("Key file not found: {}", key_path.display()));
             }
@@ -718,30 +721,9 @@ fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
                     key_path.display()
                 ));
             }
-            Some(key_path)
-        }
-        None => {
-            // Fall back to ALFS_KEY_FILE env var (value is a host path, not the key content)
-            if let Ok(env_path) = env::var("ALFS_KEY_FILE") {
-                let key_path = PathBuf::from(&env_path);
-                if !key_path.exists() {
-                    return Err(anyhow::anyhow!(
-                        "Key file from ALFS_KEY_FILE not found: {}",
-                        key_path.display()
-                    ));
-                }
-                if !key_path.is_file() {
-                    return Err(anyhow::anyhow!(
-                        "ALFS_KEY_FILE path is not a file: {}",
-                        key_path.display()
-                    ));
-                }
-                Some(key_path)
-            } else {
-                None
-            }
-        }
-    };
+            Ok(key_path)
+        })
+        .transpose()?;
 
     // this is set dynamically later
     let assemble_raid = false;
@@ -906,7 +888,6 @@ struct VMContext {
     invoker_uid: libc::uid_t,
     invoker_gid: libc::gid_t,
     vmnet_cidr: Option<Ipv4Net>,
-    disk_count: usize,
 }
 
 enum NetworkMode {
@@ -1115,7 +1096,6 @@ fn setup_vm(
         invoker_uid,
         invoker_gid,
         vmnet_cidr,
-        disk_count: dev_info.len(),
     })
 }
 
@@ -1153,7 +1133,6 @@ fn prepare_key_file_for_vm(
     key_file: Option<&Path>,
     os: OSType,
     root_path: &Path,
-    disk_count: usize,
     deferred: &mut Deferred,
 ) -> anyhow::Result<PreparedKeyFile> {
     let Some(key_file_host_path) = key_file else {
@@ -1206,12 +1185,6 @@ fn prepare_key_file_for_vm(
                     key_dst.display()
                 )
             })?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(&key_dst, fs::Permissions::from_mode(0o600))
-                    .context("Failed to set permissions on key file in temp dir")?;
-            }
 
             let iso_path = tmp_dir.join("keyfile.iso");
             vm_image::create_iso(
@@ -1244,10 +1217,7 @@ fn prepare_key_file_for_vm(
             })?;
 
             Ok(PreparedKeyFile {
-                args: vec![
-                    "--key-disk-idx".into(),
-                    disk_count.to_string().into(),
-                ],
+                args: vec!["--key-from-iso".into()],
                 iso_file: Some(iso_file),
             })
         }
@@ -2883,7 +2853,6 @@ impl AppRunner {
             config.key_file.as_deref(),
             os,
             &config.common.root_path,
-            dev_info.len(), // = ctx.disk_count that will be set in the child
             &mut deferred,
         )
         .context("Failed to prepare key file for VM")?;
