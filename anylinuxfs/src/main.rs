@@ -1136,7 +1136,7 @@ impl PreparedKeyFile {
 fn prepare_key_file_for_vm(
     key_file: Option<&Path>,
     os: OSType,
-    root_path: &Path,
+    config: &Config,
     deferred: &mut Deferred,
 ) -> anyhow::Result<PreparedKeyFile> {
     let Some(key_file_host_path) = key_file else {
@@ -1148,9 +1148,11 @@ fn prepare_key_file_for_vm(
             // Copy the key file into the virtiofs-mapped rootfs directory.
             // The VM sees it as /.alfs_keyfile via virtiofs.
             let keyfile_name = format!(".alfs_keyfile-{}", rand_string(8));
-            let dst = root_path.join(&keyfile_name);
+            let dst = config.root_path.join(&keyfile_name);
             fs::copy(key_file_host_path, &dst)
                 .with_context(|| format!("Failed to copy key file to rootfs: {}", dst.display()))?;
+            chown(&dst, Some(config.invoker_uid), Some(config.invoker_gid))
+                .with_context(|| format!("Failed to change owner of {}", dst.display()))?;
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
@@ -1158,12 +1160,12 @@ fn prepare_key_file_for_vm(
                     .context("Failed to set permissions on key file in rootfs")?;
             }
             // Register cleanup in the parent's Deferred — runs after the child exits.
-            let dst_cleanup = dst.clone();
+
             deferred.add(move || {
-                if let Err(e) = fs::remove_file(&dst_cleanup) {
+                if let Err(e) = fs::remove_file(&dst) {
                     host_eprintln!(
                         "Warning: failed to remove key file from rootfs {}: {:#}",
-                        dst_cleanup.display(),
+                        dst.display(),
                         e
                     );
                 }
@@ -2850,7 +2852,7 @@ impl AppRunner {
         let prepared_key_file = prepare_key_file_for_vm(
             config.key_file.as_deref(),
             os,
-            &config.common.root_path,
+            &config.common,
             &mut deferred,
         )
         .context("Failed to prepare key file for VM")?;

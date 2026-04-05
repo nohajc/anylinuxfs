@@ -69,7 +69,7 @@ teardown() {
   do_unmount
 }
 
-@test "keyfile: ZFS mount with --key-file option, file roundtrip, unmount" {
+@test "keyfile: Linux ZFS mount with --key-file option, file roundtrip, unmount" {
   local img="${BATS_FILE_TMPDIR}/zfs-keyfile.img"
   local keyfile="${BATS_FILE_TMPDIR}/test.key"
 
@@ -77,6 +77,20 @@ teardown() {
   local part_dev="${HDIUTIL_DEV}s1"
 
   "$ANYLINUXFS" "$part_dev" --key-file "$keyfile" --zfs-os linux -w false
+
+  assert_file_roundtrip "$(get_mount_point "zfs_root/${ZFS_POOL}")"
+
+  do_unmount
+}
+
+@test "keyfile: FreeBSD ZFS mount with --key-file option, file roundtrip, unmount" {
+  local img="${BATS_FILE_TMPDIR}/zfs-keyfile.img"
+  local keyfile="${BATS_FILE_TMPDIR}/test.key"
+
+  hdiutil_attach "$img"
+  local part_dev="${HDIUTIL_DEV}s1"
+
+  "$ANYLINUXFS" "$part_dev" --key-file "$keyfile" --zfs-os freebsd -w false
 
   assert_file_roundtrip "$(get_mount_point "zfs_root/${ZFS_POOL}")"
 
