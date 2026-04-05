@@ -152,7 +152,7 @@ Supported partition schemes:
 - disk without partitions (single filesystem or LVM/LUKS container).
 
 Recognized environment variables:
-- ALFS_PASSPHRASE: passphrase for LUKS/BitLocker drive (optional)
+- ALFS_PASSPHRASE: passphrase for LUKS or BitLocker drive (optional)
 - ALFS_PASSPHRASE1, ALFS_PASSPHRASE2, ...: passphrases for multiple drives if needed
 - ALFS_KEY_FILE: path to a key file for unlocking encrypted drives")]
     Mount(MountCmd),
@@ -166,9 +166,9 @@ Recognized environment variables:
     Log(LogCmd),
     /// Configure microVM parameters and other miscellaneous settings
     Config(ConfigCmd),
-    /// List all available disks with compatible filesystems (run with sudo to get more detailed info)
+    /// List all available drives with compatible filesystems (run with sudo to get more detailed info)
     #[command(
-        after_help = "Lists all physical partitions and LVM/RAID volumes. Can decrypt LUKS partition metadata too."
+        after_help = "Lists all partitions and LVM/RAID volumes. Can decrypt LUKS or BitLocker partition metadata too."
     )]
     List(ListCmd),
     /// List available custom actions
@@ -220,8 +220,11 @@ struct DebugArgs {
 struct DiskIdentArg {
     /// File path(s), LVM identifier or RAID identifier, e.g.:
     /// /dev/diskXsY[:/dev/diskYsZ:...]
+    /// path/to/disk.img@s1[:path/to/disk2.img@s2:...]
     /// lvm:<vg-name>:diskXsY[:diskYsZ:...]:<lv-name>
+    /// lvm:<vg-name>:path/to/disk.img@s1[:path/to/disk2.img@s2:...]:<lv-name>
     /// raid:diskXsY[:diskYsZ:...]
+    /// raid:path/to/disk.img@s1[:path/to/disk2.img@s2:...]
     /// (see `list` command output for available volumes)
     #[clap(verbatim_doc_comment)]
     disk_ident: Option<String>,
