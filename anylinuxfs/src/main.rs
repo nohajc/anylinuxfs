@@ -153,7 +153,8 @@ Supported partition schemes:
 
 Recognized environment variables:
 - ALFS_PASSPHRASE: passphrase for LUKS/BitLocker drive (optional)
-- ALFS_PASSPHRASE1, ALFS_PASSPHRASE2, ...: passphrases for multiple drives if needed")]
+- ALFS_PASSPHRASE1, ALFS_PASSPHRASE2, ...: passphrases for multiple drives if needed
+- ALFS_KEY_FILE: path to a key file for unlocking encrypted drives")]
     Mount(MountCmd),
     /// Unmount a filesystem
     Unmount(UnmountCmd),
@@ -255,7 +256,7 @@ struct MountCmd {
     /// Filesystem driver override (e.g. for using ntfs3 instead of ntfs-3g)
     #[arg(short = 't', long = "type")]
     fs_driver: Option<String>,
-    /// Path to a key file for unlocking an encrypted drive (alternative to a passphrase)
+    /// Path to a key file for unlocking encrypted drives (alternative to a passphrase)
     #[arg(short, long, conflicts_with = "passphrase_config")]
     key_file: Option<String>,
     #[command(flatten)]
