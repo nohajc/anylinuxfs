@@ -1147,7 +1147,8 @@ fn prepare_key_file_for_vm(
         OSType::Linux => {
             // Copy the key file into the virtiofs-mapped rootfs directory.
             // The VM sees it as /.alfs_keyfile via virtiofs.
-            let dst = root_path.join(".alfs_keyfile");
+            let keyfile_name = format!(".alfs_keyfile-{}", rand_string(8));
+            let dst = root_path.join(&keyfile_name);
             fs::copy(key_file_host_path, &dst)
                 .with_context(|| format!("Failed to copy key file to rootfs: {}", dst.display()))?;
             #[cfg(unix)]
@@ -1168,7 +1169,7 @@ fn prepare_key_file_for_vm(
                 }
             });
             Ok(PreparedKeyFile {
-                args: vec!["--key-file".into(), "/.alfs_keyfile".into()],
+                args: vec!["--key-file".into(), format!("/{}", keyfile_name).into()],
                 iso_file: None,
             })
         }
