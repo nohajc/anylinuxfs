@@ -33,7 +33,10 @@ setup_file() {
 }
 
 teardown() {
-  do_unmount
+  safe_teardown "${BATS_FILE_TMPDIR}/multi1.img"
+  safe_teardown "${BATS_FILE_TMPDIR}/multi2.img"
+  safe_teardown "${BATS_FILE_TMPDIR}/dup1.img"
+  safe_teardown "${BATS_FILE_TMPDIR}/dup2.img"
 }
 
 # ---------------------------------------------------------------------------
