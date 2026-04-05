@@ -1139,7 +1139,16 @@ impl PreparedKeyFile {
 }
 
 /// Prepare the key file for transfer into the VM. Must be called in the parent
-/// process before forking. Cleanup is registered in `deferred` (parent only).
+/// process before forking.
+///
+/// Linux: copies the key file into the virtiofs-mapped rootfs dir. The `deferred`
+/// parameter is used to register cleanup (removal of the copied file) that runs in
+/// the parent after the child exits.
+///
+/// FreeBSD: creates an ISO containing the key file, opens it by fd, then immediately
+/// removes the temp dir. The open fd (stored in `PreparedKeyFile`) keeps the ISO
+/// accessible via `/dev/fd/<N>` until process termination — same trick as
+/// `set_vm_cmdline`.
 fn prepare_key_file_for_vm(
     key_file: Option<&Path>,
     os: OSType,
@@ -1197,6 +1206,12 @@ fn prepare_key_file_for_vm(
                     key_dst.display()
                 )
             })?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&key_dst, fs::Permissions::from_mode(0o600))
+                    .context("Failed to set permissions on key file in temp dir")?;
+            }
 
             let iso_path = tmp_dir.join("keyfile.iso");
             vm_image::create_iso(
@@ -1207,22 +1222,26 @@ fn prepare_key_file_for_vm(
                 Some("ALFS_KEYFILE"),
             )
             .context("Failed to create ISO image for key file")?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&iso_path, fs::Permissions::from_mode(0o600))
+                    .context("Failed to set permissions on key file ISO")?;
+            }
 
-            // Open the ISO by fd; the fd is inherited by the child after fork.
+            // Open the ISO by fd before deleting the temp dir; this way the ISO
+            // remains accessible via /dev/fd/<N> until process termination — the
+            // same trick used in set_vm_cmdline for the krun config ISO.
             let iso_file = File::open(&iso_path)
                 .context("Failed to open key file ISO")?;
 
-            // Register cleanup in the parent's Deferred — runs after the child exits.
-            let tmp_dir_cleanup = tmp_dir;
-            deferred.add(move || {
-                if let Err(e) = fs::remove_dir_all(&tmp_dir_cleanup) {
-                    host_eprintln!(
-                        "Warning: failed to remove key file temp directory {}: {:#}",
-                        tmp_dir_cleanup.display(),
-                        e
-                    );
-                }
-            });
+            // All staging files can be removed immediately; the open fd is enough.
+            fs::remove_dir_all(&tmp_dir).with_context(|| {
+                format!(
+                    "Failed to remove key file temp directory {}",
+                    tmp_dir.display()
+                )
+            })?;
 
             Ok(PreparedKeyFile {
                 args: vec![
