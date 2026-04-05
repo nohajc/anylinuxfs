@@ -26,7 +26,7 @@ use std::process::{Child, Command, ExitCode, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
-use std::{env, str, thread};
+use std::{env, thread};
 #[cfg(target_os = "linux")]
 use sys_mount::{UnmountFlags, unmount};
 #[cfg(target_os = "linux")]
