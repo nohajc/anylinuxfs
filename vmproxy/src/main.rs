@@ -21,7 +21,6 @@ use std::io::{self, Read, Write};
 #[cfg(any(target_os = "freebsd", target_os = "macos"))]
 use std::net::TcpListener;
 use std::os::unix::ffi::OsStrExt;
-#[cfg(target_os = "linux")]
 use std::path::Path;
 use std::process::{Child, Command, ExitCode, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -59,6 +58,9 @@ struct Cli {
     assemble_raid: bool,
     #[arg(short, long)]
     action: Option<String>,
+    /// Path to the key file inside the VM
+    #[arg(long = "key-file")]
+    key_file: Option<String>,
     #[arg(long = "nfs-export-opts")]
     nfs_export_opts: Option<String>,
     #[arg(long = "ignore-permissions")]
@@ -482,6 +484,48 @@ fn get_pwds_from_env() -> HashMap<usize, BString> {
     pwds
 }
 
+#[cfg(any(target_os = "freebsd", target_os = "macos"))]
+const KEY_FILE_MOUNT_DIR: &str = "/tmp/alfs_keyfiles";
+#[cfg(any(target_os = "freebsd", target_os = "macos"))]
+const KEY_FILE_ISO_DEV: &str = "/dev/iso9660/ALFS_KEYFILE";
+#[cfg(any(target_os = "freebsd", target_os = "macos"))]
+const KEY_FILE_NAME_IN_ISO: &str = "keyfile";
+
+/// Resolve the key file path inside the VM.
+/// For Linux: the path is directly accessible (passed via --key-file).
+/// For FreeBSD: if the key file ISO device exists (identified by label ALFS_KEYFILE),
+/// mount it and return the path to the key file inside it.
+#[allow(unused_variables)]
+fn setup_key_file_path(
+    key_file: Option<String>,
+    deferred: &mut Deferred,
+) -> anyhow::Result<Option<String>> {
+    #[cfg(any(target_os = "freebsd", target_os = "macos"))]
+    if Path::new(KEY_FILE_ISO_DEV).exists() {
+        fs::create_dir_all(KEY_FILE_MOUNT_DIR).context("Failed to create key file mount dir")?;
+        let status = Command::new("mount")
+            .args(["-t", "cd9660", KEY_FILE_ISO_DEV, KEY_FILE_MOUNT_DIR])
+            .status()
+            .context("Failed to mount key file ISO")?;
+        if !status.success() {
+            return Err(anyhow!(
+                "Failed to mount key file ISO {}: exit code {}",
+                KEY_FILE_ISO_DEV,
+                status.code().unwrap_or(-1)
+            ));
+        }
+        deferred.add(|| {
+            let _ = Command::new("umount").arg(KEY_FILE_MOUNT_DIR).status();
+        });
+        return Ok(Some(format!(
+            "{}/{}",
+            KEY_FILE_MOUNT_DIR, KEY_FILE_NAME_IN_ISO
+        )));
+    }
+
+    Ok(key_file)
+}
+
 fn main() -> ExitCode {
     if let Err(e) = run() {
         eprintln!("Error: {:#}", e);
@@ -595,6 +639,9 @@ fn run() -> anyhow::Result<()> {
     let ignore_permissions = cli.ignore_permissions;
     let mut custom_action = CustomActionRunner::new(custom_action_cfg);
 
+    // Extract key file args before other cli fields are moved.
+    let cli_key_file = cli.key_file.clone();
+
     let mut disk_path = cli.disk_path;
     let mut fs_type = cli.fs_type;
     let fs_driver = cli.fs_driver;
@@ -616,9 +663,17 @@ fn run() -> anyhow::Result<()> {
     let env_pwds = get_pwds_from_env();
     let env_has_passphrase = !env_pwds.is_empty();
 
+    // Resolve key file path inside the VM.
+    // For Linux: the path is directly accessible via the virtiofs rootfs (--key-file arg).
+    // For FreeBSD: detect the ISO by label and mount it automatically.
+    let key_file_path = setup_key_file_path(cli_key_file, &mut deferred)
+        .context("Failed to set up encryption key file")?;
+
     // decrypt LUKS/BitLocker volumes if any
     if let Some(decrypt) = &cli.decrypt {
-        let (pwd_for_all, input_mode_fn): (_, fn() -> _) = if cli.reuse_passphrase {
+        let (pwd_for_all, input_mode_fn): (_, fn() -> _) = if cli.reuse_passphrase
+            && key_file_path.is_none()
+        {
             let pwd = if let Some(passphrase) = env_pwds.get(&1) {
                 BString::from(passphrase.as_bytes())
             } else if env_has_passphrase {
@@ -634,16 +689,22 @@ fn run() -> anyhow::Result<()> {
                 pwd
             };
             (Some(pwd), || Stdio::piped())
-        } else if env_has_passphrase {
+        } else if env_has_passphrase && key_file_path.is_none() {
             (None, || Stdio::piped())
         } else {
             (None, || Stdio::inherit())
         };
 
+        let key_file_args: &[&str] = if let Some(ref key_file) = key_file_path {
+            &["--key-file", key_file.as_str()]
+        } else {
+            &[]
+        };
         for (i, dev) in decrypt.split(",").enumerate() {
             let mut cryptsetup = Command::new("/sbin/cryptsetup")
                 .arg("-T1")
                 .arg(cryptsetup_op)
+                .args(key_file_args)
                 .arg(&dev)
                 .arg(format!("{mapper_ident_prefix}{i}"))
                 .stdin(input_mode_fn())
@@ -655,6 +716,9 @@ fn run() -> anyhow::Result<()> {
                     let mut stdin = cryptsetup.stdin.take().unwrap();
                     stdin.write_all(pwd.as_bytes())?;
                 } // must close stdin before waiting for child
+                cryptsetup.wait()?
+            } else if key_file_path.is_some() {
+                // --key-file has been provided to cryptsetup, just wait for it to finish
                 cryptsetup.wait()?
             } else if env_has_passphrase {
                 return Err(anyhow!(
@@ -908,7 +972,7 @@ fn run() -> anyhow::Result<()> {
         });
 
         let mnt_result = if is_zfs {
-            zfs::mount_datasets(&zfs_mountpoints, &env_pwds)?
+            zfs::mount_datasets(&zfs_mountpoints, &env_pwds, key_file_path.as_deref())?
         } else {
             let mount_bin = if cfg!(target_os = "freebsd") {
                 "/sbin/mount"

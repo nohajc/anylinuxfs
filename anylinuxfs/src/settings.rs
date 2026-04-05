@@ -725,6 +725,7 @@ pub struct MountConfig {
     pub kernel_page_size: Option<KernelPage>,
     pub common: Config,
     pub custom_action: Option<String>,
+    pub key_file: Option<PathBuf>,
 }
 
 impl MountConfig {

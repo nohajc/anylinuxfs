@@ -20,7 +20,7 @@ use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, TcpStream, ToSocketAddrs};
-use std::os::fd::{FromRawFd, IntoRawFd};
+use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd};
 use std::os::unix::fs::chown;
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
@@ -153,7 +153,8 @@ Supported partition schemes:
 
 Recognized environment variables:
 - ALFS_PASSPHRASE: passphrase for LUKS/BitLocker drive (optional)
-- ALFS_PASSPHRASE1, ALFS_PASSPHRASE2, ...: passphrases for multiple drives if needed")]
+- ALFS_PASSPHRASE1, ALFS_PASSPHRASE2, ...: passphrases for multiple drives if needed
+- ALFS_KEY_FILE: path to a key file for unlocking encrypted drives")]
     Mount(MountCmd),
     /// Unmount a filesystem
     Unmount(UnmountCmd),
@@ -255,6 +256,9 @@ struct MountCmd {
     /// Filesystem driver override (e.g. for using ntfs3 instead of ntfs-3g)
     #[arg(short = 't', long = "type")]
     fs_driver: Option<String>,
+    /// Path to a key file for unlocking encrypted drives (alternative to a passphrase)
+    #[arg(short, long, conflicts_with = "passphrase_config")]
+    key_file: Option<String>,
     #[command(flatten)]
     common: CommonArgs,
     /// Open Finder window with the mounted drive
@@ -389,6 +393,7 @@ impl From<ShellCmd> for MountCmd {
             kernel_page_size: shell_cmd.kernel_page_size,
             debug: shell_cmd.debug,
             verbose: false,
+            key_file: None,
         }
     }
 }
@@ -703,6 +708,28 @@ fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
         None
     };
 
+    let key_file = cmd
+        .key_file
+        .clone()
+        .or_else(|| env::var("ALFS_KEY_FILE").ok())
+        .map(PathBuf::from)
+        .map(|key_path| {
+            if !key_path.exists() {
+                return Err(anyhow::anyhow!(
+                    "Key file not found: {}",
+                    key_path.display()
+                ));
+            }
+            if !key_path.is_file() {
+                return Err(anyhow::anyhow!(
+                    "Key file path is not a file: {}",
+                    key_path.display()
+                ));
+            }
+            Ok(key_path)
+        })
+        .transpose()?;
+
     // this is set dynamically later
     let assemble_raid = false;
 
@@ -726,6 +753,7 @@ fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
         kernel_page_size,
         common,
         custom_action,
+        key_file,
     })
 }
 
@@ -1076,6 +1104,127 @@ fn setup_vm(
     })
 }
 
+/// Key file information prepared for transfer into the VM, created in the parent process
+/// before forking. The ISO fd (FreeBSD) is inherited by the child via fork.
+struct PreparedKeyFile {
+    /// Extra CLI args to pass to vmproxy (e.g. ["--key-file", "/.alfs_keyfile"])
+    args: Vec<BString>,
+    /// For FreeBSD: the open ISO file whose fd is inherited by the child.
+    /// `krun_add_disk` is called in the child using `/dev/fd/{iso_fd}`.
+    iso_file: Option<File>,
+}
+
+impl PreparedKeyFile {
+    fn none() -> Self {
+        Self {
+            args: vec![],
+            iso_file: None,
+        }
+    }
+}
+
+/// Prepare the key file for transfer into the VM. Must be called in the parent
+/// process before forking.
+///
+/// Linux: copies the key file into the virtiofs-mapped rootfs dir. The `deferred`
+/// parameter is used to register cleanup (removal of the copied file) that runs in
+/// the parent after the child exits.
+///
+/// FreeBSD: creates an ISO containing the key file, opens it by fd, then immediately
+/// removes the temp dir. The open fd (stored in `PreparedKeyFile`) keeps the ISO
+/// accessible via `/dev/fd/<N>` until process termination — same trick as
+/// `set_vm_cmdline`.
+fn prepare_key_file_for_vm(
+    key_file: Option<&Path>,
+    os: OSType,
+    config: &Config,
+    deferred: &mut Deferred,
+) -> anyhow::Result<PreparedKeyFile> {
+    let Some(key_file_host_path) = key_file else {
+        return Ok(PreparedKeyFile::none());
+    };
+
+    match os {
+        OSType::Linux => {
+            // Copy the key file into the virtiofs-mapped rootfs directory.
+            // The VM sees it as /.alfs_keyfile via virtiofs.
+            let keyfile_name = format!(".alfs_keyfile-{}", rand_string(8));
+            let dst = config.root_path.join(&keyfile_name);
+            fs::copy(key_file_host_path, &dst)
+                .with_context(|| format!("Failed to copy key file to rootfs: {}", dst.display()))?;
+            chown(&dst, Some(config.invoker_uid), Some(config.invoker_gid))
+                .with_context(|| format!("Failed to change owner of {}", dst.display()))?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&dst, fs::Permissions::from_mode(0o600))
+                    .context("Failed to set permissions on key file in rootfs")?;
+            }
+            // Register cleanup in the parent's Deferred — runs after the child exits.
+
+            deferred.add(move || {
+                if let Err(e) = fs::remove_file(&dst) {
+                    host_eprintln!(
+                        "Warning: failed to remove key file from rootfs {}: {:#}",
+                        dst.display(),
+                        e
+                    );
+                }
+            });
+            Ok(PreparedKeyFile {
+                args: vec!["--key-file".into(), format!("/{}", keyfile_name).into()],
+                iso_file: None,
+            })
+        }
+        OSType::FreeBSD => {
+            // Pack the key file into an ISO image; the ISO is attached as a read-only
+            // disk to the VM. The child inherits the open fd via fork.
+            let tmp_dir = PathBuf::from("/tmp").join(format!("alfs-kf-{}", rand_string(8)));
+            fs::create_dir_all(&tmp_dir).context("Failed to create key file temp directory")?;
+
+            let iso_keyfile_name = "keyfile";
+            let key_dst = tmp_dir.join(iso_keyfile_name);
+            fs::copy(key_file_host_path, &key_dst).with_context(|| {
+                format!("Failed to copy key file to temp dir: {}", key_dst.display())
+            })?;
+
+            let iso_path = tmp_dir.join("keyfile.iso");
+            vm_image::create_iso(
+                &iso_path,
+                &tmp_dir,
+                &tmp_dir,
+                IsoAdd::Files(&[iso_keyfile_name]),
+                Some("ALFS_KEYFILE"),
+            )
+            .context("Failed to create ISO image for key file")?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&iso_path, fs::Permissions::from_mode(0o600))
+                    .context("Failed to set permissions on key file ISO")?;
+            }
+
+            // Open the ISO by fd before deleting the temp dir; this way the ISO
+            // remains accessible via /dev/fd/<N> until process termination — the
+            // same trick used in set_vm_cmdline for the krun config ISO.
+            let iso_file = File::open(&iso_path).context("Failed to open key file ISO")?;
+
+            // All staging files can be removed immediately; the open fd is enough.
+            fs::remove_dir_all(&tmp_dir).with_context(|| {
+                format!(
+                    "Failed to remove key file temp directory {}",
+                    tmp_dir.display()
+                )
+            })?;
+
+            Ok(PreparedKeyFile {
+                args: vec![],
+                iso_file: Some(iso_file),
+            })
+        }
+    }
+}
+
 fn start_vmproxy(
     ctx: &VMContext,
     config: &MountConfig,
@@ -1084,6 +1233,7 @@ fn start_vmproxy(
     dev_info: &DevInfo,
     multi_device: bool,
     to_decrypt: Vec<String>,
+    prepared_key_file: &PreparedKeyFile,
     before_start: impl FnOnce() -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
     let to_decrypt_arg = if to_decrypt.is_empty() {
@@ -1190,7 +1340,23 @@ fn start_vmproxy(
             .then_some("--ignore-permissions".into())
             .into_iter(),
     )
+    .chain(prepared_key_file.args.iter().cloned())
     .collect();
+
+    // For FreeBSD: attach the key file ISO disk using the fd inherited from the parent.
+    if let Some(iso_file) = &prepared_key_file.iso_file {
+        let iso_fd = iso_file.as_raw_fd();
+        let iso_fd_path = format!("/dev/fd/{}", iso_fd);
+        unsafe {
+            bindings::krun_add_disk(
+                ctx.id,
+                CString::new("keyfile").unwrap().as_ptr(),
+                CString::new(iso_fd_path.as_str()).unwrap().as_ptr(),
+                true,
+            )
+        }
+        .context("Failed to attach key file disk to VM")?;
+    }
 
     host_println!("vmproxy args: {:?}", &args);
     set_vm_cmdline(ctx, &args, env)?;
@@ -2580,7 +2746,7 @@ impl AppRunner {
         let mut passphrase_callbacks = Vec::new();
         let mut passphrase_needed = false;
 
-        if !env_has_passphrase {
+        if !env_has_passphrase && config.key_file.is_none() {
             for di in &dev_info {
                 let is_luks = di.fs_type() == Some("crypto_LUKS");
                 if is_luks || di.fs_type() == Some("BitLocker") {
@@ -2682,6 +2848,16 @@ impl AppRunner {
             }
         });
 
+        // Prepare the key file for transfer into the VM (runs in the parent before forking).
+        // Cleanup is registered in `deferred` and fires after the child exits.
+        let prepared_key_file = prepare_key_file_for_vm(
+            config.key_file.as_deref(),
+            os,
+            &config.common,
+            &mut deferred,
+        )
+        .context("Failed to prepare key file for VM")?;
+
         let mut forked = utils::fork_with_pty_output(OutputAction::RedirectLater)?;
         if forked.pid == 0 {
             // Child process
@@ -2714,6 +2890,7 @@ impl AppRunner {
                 &mnt_dev_info,
                 dev_info.len() > 1,
                 to_decrypt,
+                &prepared_key_file,
                 || forked.redirect(),
             )
             .context("Failed to start microVM")?;
