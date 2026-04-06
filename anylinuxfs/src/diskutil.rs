@@ -29,12 +29,12 @@ use std::{
 use url::Url;
 
 use crate::{
-    NetworkMode, VMOpts,
     devinfo::DevInfo,
     fsutil,
     pubsub::Subscription,
     settings::{Config, PassphrasePromptConfig},
     utils::{cfdict_get_value, is_stdin_tty},
+    vm::{NetworkMode, VMOpts},
 };
 
 pub struct Entry(String, String, String, Vec<String>);
@@ -1045,7 +1045,7 @@ fn get_lsblk_info(
             Ok(())
         }
     });
-    let lsblk_cmd = crate::run_vmcommand_short(
+    let lsblk_cmd = crate::vm::run_vmcommand_short(
         config,
         dev_info,
         NetworkMode::Default,
