@@ -1069,13 +1069,10 @@ fn run() -> anyhow::Result<()> {
     let ignore_permissions = cli.ignore_permissions;
     let mut custom_action = CustomActionRunner::new(custom_action_cfg);
 
-    // Extract key file args before other cli fields are moved.
-    let cli_key_file = cli.key_file.clone();
-
     // Resolve key file path inside the VM.
     // For Linux: the path is directly accessible via the virtiofs rootfs (--key-file arg).
     // For FreeBSD: detect the ISO by label and mount it automatically.
-    let key_file_path = setup_key_file_path(cli_key_file, &mut deferred)
+    let key_file_path = setup_key_file_path(cli.key_file.clone(), &mut deferred)
         .context("Failed to set up encryption key file")?;
 
     let mut dsk = VmDiskContext::new(&cli, key_file_path);
