@@ -1220,3 +1220,77 @@ fn run() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_read_only_set() {
+        assert!(is_read_only_set(["ro"].into_iter()));
+        assert!(is_read_only_set(["rw", "ro"].into_iter()));
+        assert!(is_read_only_set(["noatime", "ro", "nosuid"].into_iter()));
+        assert!(!is_read_only_set(["rw"].into_iter()));
+        assert!(!is_read_only_set(["noatime"].into_iter()));
+        assert!(!is_read_only_set(std::iter::empty()));
+    }
+
+    #[test]
+    fn test_vm_disk_context_specified_read_only() {
+        let cli = Cli::parse_from(["vmproxy", "/dev/vda", "test"]);
+        let dsk = VmDiskContext::new(&cli, None);
+        assert!(!dsk.specified_read_only());
+
+        let cli = Cli::parse_from(["vmproxy", "/dev/vda", "test", "-o", "ro,noatime"]);
+        let dsk = VmDiskContext::new(&cli, None);
+        assert!(dsk.specified_read_only());
+    }
+
+    #[test]
+    fn test_vm_disk_context_mapper_prefix_luks() {
+        let cli = Cli::parse_from(["vmproxy", "/dev/vda", "test", "-t", "crypto_LUKS"]);
+        let dsk = VmDiskContext::new(&cli, None);
+        assert_eq!(dsk.mapper_ident_prefix, "luks");
+        assert_eq!(dsk.cryptsetup_op, "open");
+    }
+
+    #[test]
+    fn test_vm_disk_context_mapper_prefix_bitlocker() {
+        let cli = Cli::parse_from(["vmproxy", "/dev/vda", "test", "-t", "BitLocker"]);
+        let dsk = VmDiskContext::new(&cli, None);
+        assert_eq!(dsk.mapper_ident_prefix, "btlk");
+        assert_eq!(dsk.cryptsetup_op, "bitlkOpen");
+    }
+
+    #[test]
+    fn test_vm_disk_context_mapper_prefix_default() {
+        let cli = Cli::parse_from(["vmproxy", "/dev/vda", "test", "-t", "ext4"]);
+        let dsk = VmDiskContext::new(&cli, None);
+        assert_eq!(dsk.mapper_ident_prefix, "luks");
+        assert_eq!(dsk.cryptsetup_op, "open");
+    }
+
+    #[test]
+    fn test_vm_disk_context_is_logical() {
+        let cli = Cli::parse_from(["vmproxy", "/dev/mapper/luks0", "test"]);
+        let dsk = VmDiskContext::new(&cli, None);
+        assert!(dsk.is_logical());
+
+        let cli = Cli::parse_from(["vmproxy", "/dev/vda", "test"]);
+        let dsk = VmDiskContext::new(&cli, None);
+        assert!(!dsk.is_logical());
+
+        let cli = Cli::parse_from(["vmproxy", "/dev/vda", "test"]);
+        let mut dsk = VmDiskContext::new(&cli, None);
+        dsk.is_raid = true;
+        assert!(dsk.is_logical());
+    }
+
+    #[test]
+    fn test_vm_disk_context_env_has_passphrase() {
+        let cli = Cli::parse_from(["vmproxy", "/dev/vda", "test"]);
+        let dsk = VmDiskContext::new(&cli, None);
+        // Without any ALFS_PASSPHRASE env vars set, env_pwds should be empty
+        assert!(!dsk.env_has_passphrase());
+    }
+}

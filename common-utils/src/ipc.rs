@@ -95,3 +95,49 @@ impl Client {
         read_msg(stream, "response")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn test_validate_msg_size_zero() {
+        let err = validate_msg_size(0, "request").unwrap_err();
+        assert!(err.to_string().contains("request size is zero"));
+    }
+
+    #[test]
+    fn test_validate_msg_size_too_large() {
+        let err = validate_msg_size(MAX_MSG_SIZE + 1, "response").unwrap_err();
+        assert!(err.to_string().contains("response size is too large"));
+    }
+
+    #[test]
+    fn test_validate_msg_size_valid() {
+        assert!(validate_msg_size(1, "request").is_ok());
+        assert!(validate_msg_size(MAX_MSG_SIZE, "response").is_ok());
+    }
+
+    #[test]
+    fn test_roundtrip_handler_client() {
+        // Client writes a request, Handler reads it
+        let mut buf = Cursor::new(Vec::new());
+        Client::write_request(&mut buf, &"hello").unwrap();
+
+        buf.set_position(0);
+        let msg: String = Handler::read_request(&mut buf).unwrap();
+        assert_eq!(msg, "hello");
+    }
+
+    #[test]
+    fn test_roundtrip_handler_response() {
+        // Handler writes a response, Client reads it
+        let mut buf = Cursor::new(Vec::new());
+        Handler::write_response(&mut buf, &42u32).unwrap();
+
+        buf.set_position(0);
+        let msg: u32 = Client::read_response(&mut buf).unwrap();
+        assert_eq!(msg, 42);
+    }
+}
