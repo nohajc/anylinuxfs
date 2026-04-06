@@ -551,16 +551,6 @@ fn mount_tmpfs(paths: &[&str]) -> anyhow::Result<()> {
 const KERNEL_LOG_PATH: &str = "/tmp/kernel.log";
 
 fn run() -> anyhow::Result<()> {
-    // println!("vmproxy started");
-    // println!("uid = {}", unsafe { libc::getuid() });
-    // println!("gid = {}", unsafe { libc::getgid() });
-
-    // let kernel_cfg = procfs::kernel_config()?;
-    // println!("Kernel config");
-    // for (key, value) in kernel_cfg {
-    //     println!("{} = {:?}", key, value);
-    // }
-
     let cli = Cli::parse();
 
     #[cfg(target_os = "linux")]
@@ -882,24 +872,6 @@ fn run() -> anyhow::Result<()> {
         "".into()
     };
 
-    // let supported_fs =
-    //     SupportedFilesystems::new().context("Failed to get supported filesystems")?;
-
-    // for fs in supported_fs.dev_file_systems() {
-    //     println!("Supported filesystem: {:?}", fs);
-    // }
-
-    // for fs in supported_fs.nodev_file_systems() {
-    //     println!("Supported nodev filesystem: {:?}", fs);
-    // }
-
-    // let mounted = Mount::builder()
-    //     .fstype(FilesystemType::from(&supported_fs))
-    //     .flags(MountFlags::RDONLY)
-    //     // .data(data)
-    //     .mount("/dev/vda", &mount_point)
-    //     .context(format!("Failed to mount '/dev/vda' on '{}'", &mount_point))?;
-
     let (zfs_mountpoints, zfs_pools) = if is_zfs {
         let (status, mountpoints, zpools) =
             zfs::import_all_zpools(&mount_point, specified_read_only)?;
@@ -1136,26 +1108,7 @@ fn run() -> anyhow::Result<()> {
         .context(format!("Failed to write to {}", nfs_exports_path))?;
     println!("Successfully initialized {}.", nfs_exports_path);
 
-    // let curl_result = Command::new("curl")
-    //     .arg("ifconfig.co")
-    //     .status()
-    //     .context("Failed to execute curl to check internet connectivity")?;
-
-    // if !curl_result.success() {
-    //     return Err(anyhow!(
-    //         "Curl command failed with error code {}",
-    //         curl_result
-    //             .code()
-    //             .map(|c| c.to_string())
-    //             .unwrap_or("unknown".to_owned())
-    //     ));
-    // }
-
-    match Command::new("/usr/local/bin/entrypoint.sh")
-        // .env("NFS_VERSION", "3")
-        // .env("NFS_DISABLE_VERSION_3", "1")
-        .spawn()
-    {
+    match Command::new("/usr/local/bin/entrypoint.sh").spawn() {
         Ok(mut hnd) => {
             ctrl_server.wait_for_quit_cmd();
             println!("Exiting...");

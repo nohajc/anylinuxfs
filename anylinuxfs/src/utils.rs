@@ -899,7 +899,6 @@ pub fn disable_raw_mode() -> anyhow::Result<()> {
     }
 
     RAW_MODE_ENABLED.store(false, Ordering::Relaxed);
-    // host_println!("Disabled terminal raw mode");
     Ok(())
 }
 

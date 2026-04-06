@@ -506,17 +506,11 @@ fn load_config(common_args: &CommonArgs, debug_args: &DebugArgs) -> anyhow::Resu
         .map_err(anyhow::Error::from)
         .and_then(|s| Ok(s.parse::<libc::uid_t>()?))
         .ok();
-    // if let Some(sudo_uid) = sudo_uid {
-    //     host_println!("sudo_uid = {}", sudo_uid);
-    // }
 
     let sudo_gid = env::var("SUDO_GID")
         .map_err(anyhow::Error::from)
         .and_then(|s| Ok(s.parse::<libc::gid_t>()?))
         .ok();
-    // if let Some(sudo_gid) = sudo_gid {
-    //     host_println!("sudo_gid = {}", sudo_gid);
-    // }
 
     let home_dir = homedir::my_home()
         .context("Failed to get home directory")?
@@ -583,7 +577,6 @@ fn load_config(common_args: &CommonArgs, debug_args: &DebugArgs) -> anyhow::Resu
     let global_cfg_path = global_prefix_dir.join("etc").join("anylinuxfs.toml");
     let all_cfg_paths = [global_cfg_path.as_path(), config_file_path.as_path()];
     let preferences = settings::load_preferences(all_cfg_paths.iter().cloned())?;
-    // println!("Loaded preferences: {:#?}", &preferences);
 
     let passphrase_config = common_args
         .passphrase_config
@@ -1036,22 +1029,6 @@ fn setup_vm(
         }
         NetworkMode::Default => None,
     };
-
-    // let ports = vec![
-    //     // CString::new("8000:8000").unwrap(),
-    //     CString::new("111:111").unwrap(),
-    //     CString::new("2049:2049").unwrap(),
-    //     CString::new("32765:32765").unwrap(),
-    //     CString::new("32767:32767").unwrap(),
-    // ];
-    // let port_map = ports
-    //     .iter()
-    //     .map(|s| s.as_ptr())
-    //     .chain([std::ptr::null()])
-    //     .collect::<Vec<_>>();
-
-    // unsafe { bindings::krun_set_port_map(ctx, port_map.as_ptr()) }
-    //     .context("Failed to set port map")?;
 
     vm_network::vsock_cleanup(&config.vsock_path)?;
 
@@ -2354,7 +2331,6 @@ impl AppRunner {
 
         let (vm_env, _) = prepare_vm_environment(&config)?;
 
-        // host_println!("disk_path: {}", config.disk_path);
         host_println!("num_vcpus: {}", config.common.preferences.krun_num_vcpus());
         host_println!(
             "ram_size_mib: {}",
@@ -2803,7 +2779,6 @@ impl AppRunner {
 
         let (vm_env, env_has_passphrase) = prepare_vm_environment(&config)?;
 
-        // host_println!("disk_path: {}", config.disk_path);
         host_println!("num_vcpus: {}", config.common.preferences.krun_num_vcpus());
         host_println!(
             "ram_size_mib: {}",
@@ -2989,8 +2964,6 @@ impl AppRunner {
 
             let signal_hub = utils::start_signal_publisher()?;
 
-            // let start_time = Instant::now();
-
             // DNS record must be created by regular user, otherwise
             // dropping permissions after mount won't have any effect
             drop_effective_privileges(config.common.sudo_uid, config.common.sudo_gid)?;
@@ -3006,23 +2979,6 @@ impl AppRunner {
                 .register_record(&vm_fqdn, vm_ip.with_port(0)?, Some("lo0"))
                 .inspect_err(|e| eprintln!("DNS registration error: {e}"))
                 .ok();
-
-            // let _vm_dns_sd = if vm_dns_rec.is_some() {
-            //     DNSService::register(
-            //         Some(&config.vm_hostname),
-            //         "_nfs._tcp",
-            //         None,
-            //         Some(&vm_fqdn),
-            //         2049,
-            //         &[],
-            //     )
-            //     .ok()
-            // } else {
-            //     None
-            // };
-
-            // let elapsed = start_time.elapsed();
-            // println!("DNS registration took {:.3?}", elapsed);
 
             let vm_host = if vm_dns_rec.is_some() {
                 Host::new(&vm_fqdn)

@@ -396,8 +396,6 @@ fn parse_lv_size(size: &str) -> anyhow::Result<LvSize> {
         _ => size_integer,
     } / 10;
 
-    // println!("DEBUG: size={size}, size_bytes={size_bytes}, unit_prefix={unit_prefix}");
-
     Ok(LvSize(size_bytes))
 }
 
@@ -553,11 +551,8 @@ pub fn list_partitions(
         }
     } else {
         let plist_out = diskutil_list_from_plist(disk)?;
-        // println!("plist_out: {:#?}", plist_out);
         let selected_partitions = partitions_with_part_type(&plist_out, filter.part_types);
-        // println!("selected_partitions: {:?}", selected_partitions);
         let disks_without_part_table = disks_without_partition_table(&plist_out);
-        // println!("disks_without_part_table: {:?}", disks_without_part_table);
 
         let output = Command::new("diskutil")
             .arg("list")
@@ -1024,7 +1019,6 @@ fn get_lsblk_info(
             ""
         }
     );
-    // println!("lsblk script: {}", &script);
     let lsblk_args = [
         "/bin/busybox".into(),
         "sh".into(),
@@ -1063,15 +1057,10 @@ fn get_lsblk_info(
         prompt_fn,
     )
     .context("Failed to run command in microVM")?;
-    // let lsblk_output =
-    //     String::from_utf8(lsblk_cmd.output).context("Failed to convert lsblk output to String")?;
-    // println!("lsblk_status: {}", &lsblk_cmd.status);
-    // println!("lsblk_output: {}", &lsblk_output);
     if lsblk_cmd.status != 0 {
         return Err(anyhow!("lsblk command failed"));
     }
 
-    // println!("{}", String::from_utf8_lossy(&lsblk_cmd.stdout));
     eprintln!("{}", String::from_utf8_lossy(&lsblk_cmd.stderr));
 
     let lsblk = serde_json::from_slice(&lsblk_cmd.stdout)
