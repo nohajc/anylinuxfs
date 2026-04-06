@@ -312,6 +312,36 @@ impl PathExt for Path {
     }
 }
 
+pub fn is_encrypted_fs(fs_type: &str) -> bool {
+    matches!(fs_type, "crypto_LUKS" | "BitLocker")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_encrypted_fs_luks() {
+        assert!(is_encrypted_fs("crypto_LUKS"));
+    }
+
+    #[test]
+    fn test_is_encrypted_fs_bitlocker() {
+        assert!(is_encrypted_fs("BitLocker"));
+    }
+
+    #[test]
+    fn test_is_encrypted_fs_non_encrypted() {
+        assert!(!is_encrypted_fs("ext4"));
+        assert!(!is_encrypted_fs("btrfs"));
+        assert!(!is_encrypted_fs("ntfs"));
+        assert!(!is_encrypted_fs("LVM2_member"));
+        assert!(!is_encrypted_fs("linux_raid_member"));
+        assert!(!is_encrypted_fs("zfs_member"));
+        assert!(!is_encrypted_fs(""));
+    }
+}
+
 pub fn fail_for_known_nonmountable_types(fs_type: Option<&str>) -> anyhow::Result<()> {
     let err_prefix = "partition cannot be mounted directly.";
     match fs_type {

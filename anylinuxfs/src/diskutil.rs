@@ -1,6 +1,6 @@
 use anyhow::{Context, anyhow};
 use bstr::BStr;
-use common_utils::{PathExt, host_println, safe_print};
+use common_utils::{PathExt, host_println, is_encrypted_fs, safe_print};
 use derive_more::{AddAssign, Deref};
 use indexmap::IndexMap;
 use objc2_core_foundation::{
@@ -29,12 +29,12 @@ use std::{
 use url::Url;
 
 use crate::{
-    NetworkMode, VMOpts,
     devinfo::DevInfo,
     fsutil,
     pubsub::Subscription,
     settings::{Config, PassphrasePromptConfig},
     utils::{cfdict_get_value, is_stdin_tty},
+    vm::{NetworkMode, VMOpts},
 };
 
 pub struct Entry(String, String, String, Vec<String>);
@@ -396,8 +396,6 @@ fn parse_lv_size(size: &str) -> anyhow::Result<LvSize> {
         _ => size_integer,
     } / 10;
 
-    // println!("DEBUG: size={size}, size_bytes={size_bytes}, unit_prefix={unit_prefix}");
-
     Ok(LvSize(size_bytes))
 }
 
@@ -431,6 +429,59 @@ impl FromStr for LvIdent {
     }
 }
 
+/// Accumulates physical volume entries (encrypted, RAID, LVM) discovered during partition listing.
+struct PvCollector {
+    dev_infos: Vec<DevInfo>,
+    dev_idents: Vec<String>,
+    enc_partitions: Vec<String>,
+    assemble_raid: bool,
+    decrypt_all: bool,
+    has_enc_filter: bool,
+}
+
+impl PvCollector {
+    fn new(enc_partitions: Option<&[String]>) -> Self {
+        let decrypt_all = enc_partitions.is_some_and(|p| !p.is_empty() && p[0] == "all");
+        Self {
+            dev_infos: Vec::new(),
+            dev_idents: Vec::new(),
+            enc_partitions: Vec::new(),
+            assemble_raid: false,
+            decrypt_all,
+            has_enc_filter: enc_partitions.is_some(),
+        }
+    }
+
+    /// Check a partition's fs_type and accumulate it if it's a PV (encrypted, RAID, or LVM).
+    /// Returns `(is_enc, is_raid, is_lvm)`.
+    fn try_collect(
+        &mut self,
+        dev_info: &DevInfo,
+        dev_ident: &str,
+        disk_path: &str,
+        fs_type: &str,
+    ) -> (bool, bool, bool) {
+        let is_enc = is_encrypted_fs(fs_type);
+        let is_raid = fs_type == "linux_raid_member";
+        let is_lvm = fs_type == "LVM2_member";
+
+        if is_raid {
+            self.assemble_raid = true;
+        }
+
+        if is_lvm || is_raid || (self.has_enc_filter && is_enc) {
+            self.dev_infos.push(dev_info.to_owned());
+            self.dev_idents.push(dev_ident.to_owned());
+
+            if self.decrypt_all && is_enc {
+                self.enc_partitions.push(disk_path.to_owned());
+            }
+        }
+
+        (is_enc, is_raid, is_lvm)
+    }
+}
+
 pub fn list_partitions(
     config: Config,
     disk: Option<&str>,
@@ -441,12 +492,7 @@ pub fn list_partitions(
     let part_type_pattern = Regex::new(&format!(r"({})", filter.part_types.join("|"))).unwrap();
     let mut disk_entries = Vec::new();
 
-    let mut pv_dev_infos = Vec::new();
-    let mut pv_dev_idents = Vec::new();
-    let mut all_enc_partitions = Vec::new();
-    let mut assemble_raid = false;
-
-    let decrypt_all = enc_partitions.is_some() && enc_partitions.unwrap()[0] == "all";
+    let mut pv = PvCollector::new(enc_partitions);
 
     if let Some((path, p)) = disk.map(|d| (d, Path::new(d)))
         && p.exists()
@@ -486,22 +532,7 @@ pub fn list_partitions(
                         continue;
                     }
 
-                    let is_enc = fs_type == "crypto_LUKS" || fs_type == "BitLocker";
-                    let is_raid = fs_type == "linux_raid_member";
-                    let is_lvm = fs_type == "LVM2_member";
-
-                    if is_raid {
-                        assemble_raid = true;
-                    }
-
-                    if is_lvm || is_raid || (enc_partitions.is_some() && is_enc) {
-                        pv_dev_infos.push(dev_info.to_owned());
-                        pv_dev_idents.push(image_name.clone());
-
-                        if decrypt_all && is_enc {
-                            all_enc_partitions.push(path.to_owned());
-                        }
-                    }
+                    pv.try_collect(dev_info, &image_name, path, fs_type);
 
                     let label = dev_info.label().unwrap_or("");
                     let truncated_label = trunc_with_ellipsis(label, 23);
@@ -526,15 +557,7 @@ pub fn list_partitions(
 
                 // Filter by filesystem type to match diskutil behavior
                 if filter.fs_types.iter().any(|t| t == &fs_type) {
-                    let is_enc = fs_type == "crypto_LUKS" || fs_type == "BitLocker";
-                    if fs_type == "LVM2_member" || (enc_partitions.is_some() && is_enc) {
-                        pv_dev_infos.push(dev_info.clone());
-                        pv_dev_idents.push(image_name.clone());
-
-                        if decrypt_all && is_enc {
-                            all_enc_partitions.push(path.to_owned());
-                        }
-                    }
+                    pv.try_collect(dev_info, &image_name, path, fs_type);
 
                     let label = dev_info.label().unwrap_or("");
                     let truncated_label = trunc_with_ellipsis(label, 23);
@@ -553,11 +576,8 @@ pub fn list_partitions(
         }
     } else {
         let plist_out = diskutil_list_from_plist(disk)?;
-        // println!("plist_out: {:#?}", plist_out);
         let selected_partitions = partitions_with_part_type(&plist_out, filter.part_types);
-        // println!("selected_partitions: {:?}", selected_partitions);
         let disks_without_part_table = disks_without_partition_table(&plist_out);
-        // println!("disks_without_part_table: {:?}", disks_without_part_table);
 
         let output = Command::new("diskutil")
             .arg("list")
@@ -597,22 +617,7 @@ pub fn list_partitions(
                     let line = match dev_info {
                         Some(dev_info) => {
                             let fs_type = dev_info.fs_type().unwrap_or(part_type);
-                            let is_enc = fs_type == "crypto_LUKS" || fs_type == "BitLocker";
-                            let is_raid = fs_type == "linux_raid_member";
-                            let is_lvm = fs_type == "LVM2_member";
-
-                            if is_raid {
-                                assemble_raid = true;
-                            }
-
-                            if is_lvm || is_raid || (enc_partitions.is_some() && is_enc) {
-                                pv_dev_infos.push(dev_info.clone());
-                                pv_dev_idents.push(dev_ident.to_owned());
-
-                                if decrypt_all && is_enc {
-                                    all_enc_partitions.push(disk_path);
-                                }
-                            }
+                            pv.try_collect(&dev_info, dev_ident, &disk_path, fs_type);
 
                             augment_line(line, part_type, Some(&dev_info), fs_type)
                         }
@@ -639,16 +644,8 @@ pub fn list_partitions(
                             continue;
                         }
 
-                        let is_enc = fs_type == "crypto_LUKS" || fs_type == "BitLocker";
-                        if dev_info.is_some()
-                            && (fs_type == "LVM2_member" || (enc_partitions.is_some() && is_enc))
-                        {
-                            pv_dev_infos.push(dev_info.as_ref().unwrap().clone());
-                            pv_dev_idents.push(dev_ident.to_owned());
-
-                            if decrypt_all && is_enc {
-                                all_enc_partitions.push(disk_path);
-                            }
+                        if let Some(ref dev_info) = dev_info {
+                            pv.try_collect(dev_info, dev_ident, &disk_path, fs_type);
                         }
 
                         let line = augment_line(line, "", dev_info.as_ref(), fs_type);
@@ -665,126 +662,16 @@ pub fn list_partitions(
         }
     }
 
-    if pv_dev_infos.len() > 0 {
+    if !pv.dev_infos.is_empty() {
         let mut enc_partitions = enc_partitions;
-        if decrypt_all {
-            enc_partitions = Some(&all_enc_partitions);
+        if pv.decrypt_all {
+            enc_partitions = Some(&pv.enc_partitions);
         }
-        match get_lsblk_info(&config, &pv_dev_infos, enc_partitions, assemble_raid) {
+        match get_lsblk_info(&config, &pv.dev_infos, enc_partitions, pv.assemble_raid) {
             Ok(lsblk) => {
-                // println!("lsblk: {:#?}", lsblk);
                 if !lsblk.blockdevices.is_empty() {
-                    let vol_map = create_volume_map(&lsblk, &pv_dev_idents);
-                    // println!("vol_map: {:#?}", vol_map);
-
-                    for (
-                        _,
-                        RaidEntry {
-                            dev_idents,
-                            logical_vol,
-                        },
-                    ) in &vol_map.raid_volumes
-                    {
-                        let mut entry = Entry::new("");
-                        entry.header_mut().push_str(
-                            "   #:                       TYPE NAME                    SIZE       IDENTIFIER",
-                        );
-
-                        let dev_ident = dev_idents.join(":");
-                        entry.partitions_mut().push(format!(
-                            "{:>4}: {:>26} {:<23} {:<10} {}",
-                            0,
-                            logical_vol.fstype.as_deref().unwrap_or(""),
-                            logical_vol.label.as_deref().unwrap_or(""),
-                            format_lv_size(&logical_vol.size),
-                            format!("{}", &dev_ident),
-                        ));
-
-                        *entry.disk_mut() = format!("raid:{} (volume):", &dev_ident);
-                        disk_entries.push(entry);
-                    }
-
-                    for (
-                        vg_name,
-                        VgEntry {
-                            size,
-                            dev_idents,
-                            lvs,
-                            encrypted: _,
-                        },
-                    ) in &vol_map.vol_groups
-                    {
-                        let mut entry = Entry::new("");
-                        entry.header_mut().push_str(
-                        "   #:                       TYPE NAME                    SIZE       IDENTIFIER"
-                        );
-
-                        for (j, (child, devs)) in lvs.iter().enumerate() {
-                            let lv_ident = child.name.parse::<LvIdent>().unwrap();
-                            let dev_ident = devs.join(":");
-                            entry.partitions_mut().push(format!(
-                                "{:>4}: {:>26} {:<23} {:<10} {}",
-                                j + 1,
-                                child.fstype.as_deref().unwrap_or(""),
-                                child.label.as_deref().unwrap_or(""),
-                                format_lv_size(&child.size),
-                                format!(
-                                    "{}:{}:{}",
-                                    &lv_ident.vg_name, &dev_ident, &lv_ident.lv_name
-                                ),
-                            ));
-                        }
-
-                        if !entry.partitions().is_empty() {
-                            *entry.disk_mut() = format!("lvm:{} (volume group):", &vg_name);
-                            *entry.scheme_mut() = format!(
-                                "   0:                LVM2_scheme                        +{:<10} {}",
-                                size, &vg_name
-                            );
-
-                            let mut label = "Physical Store";
-                            for dev_ident in dev_idents {
-                                *entry.scheme_mut() +=
-                                    &format!("\n{:<32} {} {}", "", label, dev_ident);
-                                label = "              ";
-                            }
-
-                            disk_entries.push(entry);
-                        }
-                    }
-
-                    // extend entries with decrypted metadata
-                    for entry in &mut disk_entries {
-                        for part in entry.partitions_mut() {
-                            for enc_type in ["crypto_LUKS", "BitLocker"] {
-                                if part.contains(enc_type) {
-                                    if let Some(dev_ident) = part.split_whitespace().last() {
-                                        if let Some(enc_dev) =
-                                            vol_map.simple_enc_devs.get(dev_ident)
-                                        {
-                                            if let Some(fstype) = enc_dev.fstype.as_deref() {
-                                                let enc_fs_type =
-                                                    format!("{}: {}", enc_type, fstype);
-                                                *part = part
-                                                    .replace(
-                                                        &format!("{:>27}", enc_type),
-                                                        &format!("{:>27}", enc_fs_type),
-                                                    )
-                                                    .replace(
-                                                        &format!("{:>27} {:<23}", enc_fs_type, ""),
-                                                        &format!(
-                                                            "{:>27} {:<23}",
-                                                            enc_fs_type,
-                                                            enc_dev.label.as_deref().unwrap_or(""),
-                                                        ),
-                                                    );
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    let vol_map = VolumeMap::from_lsblk(&lsblk, &pv.dev_idents);
+                    vol_map.build_entries(&mut disk_entries);
                 }
             }
             Err(e) => {
@@ -832,93 +719,197 @@ impl VolumeMap {
             raid_volumes: IndexMap::new(),
         }
     }
-}
 
-fn create_volume_map(lsblk: &LsBlk, pv_dev_idents: &[String]) -> VolumeMap {
-    let mut vol_map = VolumeMap::new();
+    fn from_lsblk(lsblk: &LsBlk, pv_dev_idents: &[String]) -> Self {
+        let mut vol_map = VolumeMap::new();
 
-    fn iterate_children(
-        vol_map: &mut VolumeMap,
-        dev_ident: &str,
-        dev_encrypted: bool,
-        blkdev: &LsBlkDevice,
-        kind: BlkDevKind,
-        children: Option<&Vec<LsBlkDevice>>,
-    ) {
-        for (j, child) in children.into_iter().flatten().enumerate() {
-            let child_kind = BlkDevKind::from_fstype(child.fstype.as_deref());
+        fn iterate_children(
+            vol_map: &mut VolumeMap,
+            dev_ident: &str,
+            dev_encrypted: bool,
+            blkdev: &LsBlkDevice,
+            kind: BlkDevKind,
+            children: Option<&Vec<LsBlkDevice>>,
+        ) {
+            for (j, child) in children.into_iter().flatten().enumerate() {
+                let child_kind = BlkDevKind::from_fstype(child.fstype.as_deref());
 
-            if child_kind == BlkDevKind::Simple {
-                match kind {
-                    BlkDevKind::LUKS | BlkDevKind::BitLocker => {
-                        vol_map
-                            .simple_enc_devs
-                            .insert(dev_ident.into(), child.clone());
-                    }
-                    BlkDevKind::RAID => {
-                        let RaidEntry {
-                            dev_idents,
-                            logical_vol,
-                        } = vol_map.raid_volumes.entry(child.name.clone()).or_default();
-
-                        *logical_vol = child.clone();
-                        dev_idents.push(dev_ident.into());
-                    }
-                    BlkDevKind::LVM => {
-                        if let Ok(lv_ident) = child.name.parse::<LvIdent>() {
-                            // println!("lv_ident: {:#?}", &lv_ident);
-                            let VgEntry {
-                                size,
-                                dev_idents,
-                                lvs,
-                                encrypted,
-                            } = vol_map
-                                .vol_groups
-                                .entry(lv_ident.vg_name.to_string())
-                                .or_default();
-
-                            if j == 0 {
-                                *size += parse_lv_size(&blkdev.size).unwrap_or(LvSize(0));
-
-                                dev_idents.push(dev_ident.into());
-                            }
-
-                            lvs.entry(child.clone()).or_default().push(dev_ident.into());
-
-                            *encrypted = dev_encrypted;
+                if child_kind == BlkDevKind::Simple {
+                    match kind {
+                        BlkDevKind::LUKS | BlkDevKind::BitLocker => {
+                            vol_map
+                                .simple_enc_devs
+                                .insert(dev_ident.into(), child.clone());
                         }
+                        BlkDevKind::RAID => {
+                            let RaidEntry {
+                                dev_idents,
+                                logical_vol,
+                            } = vol_map.raid_volumes.entry(child.name.clone()).or_default();
+
+                            *logical_vol = child.clone();
+                            dev_idents.push(dev_ident.into());
+                        }
+                        BlkDevKind::LVM => {
+                            if let Ok(lv_ident) = child.name.parse::<LvIdent>() {
+                                let VgEntry {
+                                    size,
+                                    dev_idents,
+                                    lvs,
+                                    encrypted,
+                                } = vol_map
+                                    .vol_groups
+                                    .entry(lv_ident.vg_name.to_string())
+                                    .or_default();
+
+                                if j == 0 {
+                                    *size += parse_lv_size(&blkdev.size).unwrap_or(LvSize(0));
+
+                                    dev_idents.push(dev_ident.into());
+                                }
+
+                                lvs.entry(child.clone()).or_default().push(dev_ident.into());
+
+                                *encrypted = dev_encrypted;
+                            }
+                        }
+                        _ => {}
                     }
-                    _ => {}
                 }
+
+                iterate_children(
+                    vol_map,
+                    dev_ident,
+                    dev_encrypted || kind == BlkDevKind::LUKS,
+                    child,
+                    child_kind,
+                    child.children.as_ref(),
+                );
             }
+        }
+
+        for (i, blkdev) in lsblk.blockdevices.iter().enumerate() {
+            let dev_ident = &pv_dev_idents[i];
+            let kind = BlkDevKind::from_fstype(blkdev.fstype.as_deref());
+            let encrypted = kind == BlkDevKind::LUKS;
 
             iterate_children(
-                vol_map,
+                &mut vol_map,
                 dev_ident,
-                dev_encrypted || kind == BlkDevKind::LUKS,
-                child,
-                child_kind,
-                child.children.as_ref(),
+                encrypted,
+                blkdev,
+                kind,
+                blkdev.children.as_ref(),
+            )
+        }
+
+        vol_map
+    }
+
+    /// Build disk entries from RAID volumes, LVM volume groups, and encrypted device metadata.
+    fn build_entries(&self, disk_entries: &mut Vec<Entry>) {
+        for (
+            _,
+            RaidEntry {
+                dev_idents,
+                logical_vol,
+            },
+        ) in &self.raid_volumes
+        {
+            let mut entry = Entry::new("");
+            entry.header_mut().push_str(
+                "   #:                       TYPE NAME                    SIZE       IDENTIFIER",
             );
+
+            let dev_ident = dev_idents.join(":");
+            entry.partitions_mut().push(format!(
+                "{:>4}: {:>26} {:<23} {:<10} {}",
+                0,
+                logical_vol.fstype.as_deref().unwrap_or(""),
+                logical_vol.label.as_deref().unwrap_or(""),
+                format_lv_size(&logical_vol.size),
+                format!("{}", &dev_ident),
+            ));
+
+            *entry.disk_mut() = format!("raid:{} (volume):", &dev_ident);
+            disk_entries.push(entry);
+        }
+
+        for (
+            vg_name,
+            VgEntry {
+                size,
+                dev_idents,
+                lvs,
+                encrypted: _,
+            },
+        ) in &self.vol_groups
+        {
+            let mut entry = Entry::new("");
+            entry.header_mut().push_str(
+                "   #:                       TYPE NAME                    SIZE       IDENTIFIER",
+            );
+
+            for (j, (child, devs)) in lvs.iter().enumerate() {
+                let lv_ident = child.name.parse::<LvIdent>().unwrap();
+                let dev_ident = devs.join(":");
+                entry.partitions_mut().push(format!(
+                    "{:>4}: {:>26} {:<23} {:<10} {}",
+                    j + 1,
+                    child.fstype.as_deref().unwrap_or(""),
+                    child.label.as_deref().unwrap_or(""),
+                    format_lv_size(&child.size),
+                    format!("{}:{}:{}", &lv_ident.vg_name, &dev_ident, &lv_ident.lv_name),
+                ));
+            }
+
+            if !entry.partitions().is_empty() {
+                *entry.disk_mut() = format!("lvm:{} (volume group):", &vg_name);
+                *entry.scheme_mut() = format!(
+                    "   0:                LVM2_scheme                        +{:<10} {}",
+                    size, &vg_name
+                );
+
+                let mut label = "Physical Store";
+                for dev_ident in dev_idents {
+                    *entry.scheme_mut() += &format!("\n{:<32} {} {}", "", label, dev_ident);
+                    label = "              ";
+                }
+
+                disk_entries.push(entry);
+            }
+        }
+
+        // extend entries with decrypted metadata
+        for entry in disk_entries {
+            for part in entry.partitions_mut() {
+                for enc_type in ["crypto_LUKS", "BitLocker"] {
+                    if part.contains(enc_type) {
+                        if let Some(dev_ident) = part.split_whitespace().last() {
+                            if let Some(enc_dev) = self.simple_enc_devs.get(dev_ident) {
+                                if let Some(fstype) = enc_dev.fstype.as_deref() {
+                                    let enc_fs_type = format!("{}: {}", enc_type, fstype);
+                                    *part = part
+                                        .replace(
+                                            &format!("{:>27}", enc_type),
+                                            &format!("{:>27}", enc_fs_type),
+                                        )
+                                        .replace(
+                                            &format!("{:>27} {:<23}", enc_fs_type, ""),
+                                            &format!(
+                                                "{:>27} {:<23}",
+                                                enc_fs_type,
+                                                enc_dev.label.as_deref().unwrap_or(""),
+                                            ),
+                                        );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
-
-    for (i, blkdev) in lsblk.blockdevices.iter().enumerate() {
-        let dev_ident = &pv_dev_idents[i];
-        let kind = BlkDevKind::from_fstype(blkdev.fstype.as_deref());
-        let encrypted = kind == BlkDevKind::LUKS;
-
-        iterate_children(
-            &mut vol_map,
-            dev_ident,
-            encrypted,
-            blkdev,
-            kind,
-            blkdev.children.as_ref(),
-        )
-    }
-
-    vol_map
 }
 
 fn read_passphrase(partition: Option<&str>) -> anyhow::Result<String> {
@@ -1024,7 +1015,6 @@ fn get_lsblk_info(
             ""
         }
     );
-    // println!("lsblk script: {}", &script);
     let lsblk_args = [
         "/bin/busybox".into(),
         "sh".into(),
@@ -1052,7 +1042,7 @@ fn get_lsblk_info(
             Ok(())
         }
     });
-    let lsblk_cmd = crate::run_vmcommand_short(
+    let lsblk_cmd = crate::vm::run_vmcommand_short(
         config,
         dev_info,
         NetworkMode::Default,
@@ -1063,15 +1053,10 @@ fn get_lsblk_info(
         prompt_fn,
     )
     .context("Failed to run command in microVM")?;
-    // let lsblk_output =
-    //     String::from_utf8(lsblk_cmd.output).context("Failed to convert lsblk output to String")?;
-    // println!("lsblk_status: {}", &lsblk_cmd.status);
-    // println!("lsblk_output: {}", &lsblk_output);
     if lsblk_cmd.status != 0 {
         return Err(anyhow!("lsblk command failed"));
     }
 
-    // println!("{}", String::from_utf8_lossy(&lsblk_cmd.stdout));
     eprintln!("{}", String::from_utf8_lossy(&lsblk_cmd.stderr));
 
     let lsblk = serde_json::from_slice(&lsblk_cmd.stdout)
