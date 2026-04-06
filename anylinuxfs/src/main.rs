@@ -510,6 +510,33 @@ fn is_read_only_set(mount_options: Option<&str>) -> bool {
     }
 }
 
+/// RAII guard that temporarily enables console logging in non-verbose mode.
+/// When created (if `verbose` is false), enables console log.
+/// When dropped, disables console log again.
+/// If `verbose` is true, the guard is a no-op.
+struct ConsoleLogGuard {
+    active: bool,
+}
+
+impl ConsoleLogGuard {
+    /// Temporarily re-enable console logging for a visible operation.
+    /// When dropped, console logging will be disabled again.
+    fn enable_temporarily(verbose: bool) -> Self {
+        if !verbose {
+            log::enable_console_log();
+        }
+        Self { active: !verbose }
+    }
+}
+
+impl Drop for ConsoleLogGuard {
+    fn drop(&mut self) {
+        if self.active {
+            log::disable_console_log();
+        }
+    }
+}
+
 fn load_config(common_args: &CommonArgs, debug_args: &DebugArgs) -> anyhow::Result<Config> {
     let sudo_uid = env::var("SUDO_UID")
         .map_err(anyhow::Error::from)
@@ -2776,14 +2803,9 @@ impl AppRunner {
             host_println!("root_path: {}", config.common.root_path.display());
         }
 
-        if !verbose {
-            log::enable_console_log();
-        }
-
-        vm_image::init(&config.common, false, &img_src)?;
-
-        if !verbose {
-            log::disable_console_log();
+        {
+            let _log_guard = ConsoleLogGuard::enable_temporarily(verbose);
+            vm_image::init(&config.common, false, &img_src)?;
         }
 
         let (vm_env, env_has_passphrase) = prepare_vm_environment(&config)?;
@@ -3340,13 +3362,8 @@ impl AppRunner {
                 match &mount_result {
                     Ok(_) => host_println!("Requested NFS share mount"),
                     Err(e) => {
-                        if !verbose {
-                            log::enable_console_log();
-                        }
+                        let _log_guard = ConsoleLogGuard::enable_temporarily(verbose);
                         host_eprintln!("Failed to request NFS mount: {:#}", e);
-                        if !verbose {
-                            log::disable_console_log();
-                        }
                     }
                 };
 
@@ -3385,28 +3402,27 @@ impl AppRunner {
                         .filter(|&export_path| export_path != &share_path)
                         .peekable();
 
-                    if !verbose {
-                        log::enable_console_log();
-                    }
-                    let elevate =
-                        config.common.sudo_uid.is_none() && config.common.invoker_uid != 0;
+                    {
+                        let _log_guard = ConsoleLogGuard::enable_temporarily(verbose);
+                        let elevate =
+                            config.common.sudo_uid.is_none() && config.common.invoker_uid != 0;
 
-                    if elevate && additional_exports.peek().is_some() {
-                        host_println!("need to use sudo to mount additional NFS exports");
-                    }
-                    match fsutil::mount_nfs_subdirs(
-                        &vm_host_b,
-                        &share_path,
-                        additional_exports.into_iter(),
-                        mount_point.display(),
-                        &nfs_opts,
-                        elevate,
-                    ) {
-                        Ok(_) => {}
-                        Err(e) => host_eprintln!("Failed to mount additional NFS exports: {:#}", e),
-                    }
-                    if !verbose {
-                        log::disable_console_log();
+                        if elevate && additional_exports.peek().is_some() {
+                            host_println!("need to use sudo to mount additional NFS exports");
+                        }
+                        match fsutil::mount_nfs_subdirs(
+                            &vm_host_b,
+                            &share_path,
+                            additional_exports.into_iter(),
+                            mount_point.display(),
+                            &nfs_opts,
+                            elevate,
+                        ) {
+                            Ok(_) => {}
+                            Err(e) => {
+                                host_eprintln!("Failed to mount additional NFS exports: {:#}", e)
+                            }
+                        }
                     }
                 }
 
