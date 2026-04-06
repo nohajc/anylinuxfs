@@ -2810,7 +2810,7 @@ impl AppRunner {
         if !env_has_passphrase && config.key_file.is_none() {
             for di in &dev_info {
                 let is_luks = di.fs_type() == Some("crypto_LUKS");
-                if is_luks || di.fs_type() == Some("BitLocker") {
+                if di.fs_type().is_some_and(common_utils::is_encrypted_fs) {
                     if is_luks {
                         ensure_enough_ram_for_luks(&mut config.common);
                     }
@@ -2935,7 +2935,7 @@ impl AppRunner {
 
             let to_decrypt: Vec<_> = iter::zip(dev_info.iter(), 'a'..='z')
                 .filter_map(|(di, letter)| {
-                    if di.fs_type() == Some("crypto_LUKS") || di.fs_type() == Some("BitLocker") {
+                    if di.fs_type().is_some_and(common_utils::is_encrypted_fs) {
                         Some(format!("/dev/vd{}", letter))
                     } else {
                         None

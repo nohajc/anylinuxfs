@@ -1,6 +1,6 @@
 use anyhow::{Context, anyhow};
 use bstr::BStr;
-use common_utils::{PathExt, host_println, safe_print};
+use common_utils::{PathExt, host_println, is_encrypted_fs, safe_print};
 use derive_more::{AddAssign, Deref};
 use indexmap::IndexMap;
 use objc2_core_foundation::{
@@ -484,7 +484,7 @@ pub fn list_partitions(
                         continue;
                     }
 
-                    let is_enc = fs_type == "crypto_LUKS" || fs_type == "BitLocker";
+                    let is_enc = is_encrypted_fs(fs_type);
                     let is_raid = fs_type == "linux_raid_member";
                     let is_lvm = fs_type == "LVM2_member";
 
@@ -524,7 +524,7 @@ pub fn list_partitions(
 
                 // Filter by filesystem type to match diskutil behavior
                 if filter.fs_types.iter().any(|t| t == &fs_type) {
-                    let is_enc = fs_type == "crypto_LUKS" || fs_type == "BitLocker";
+                    let is_enc = is_encrypted_fs(fs_type);
                     if fs_type == "LVM2_member" || (enc_partitions.is_some() && is_enc) {
                         pv_dev_infos.push(dev_info.clone());
                         pv_dev_idents.push(image_name.clone());
@@ -592,7 +592,7 @@ pub fn list_partitions(
                     let line = match dev_info {
                         Some(dev_info) => {
                             let fs_type = dev_info.fs_type().unwrap_or(part_type);
-                            let is_enc = fs_type == "crypto_LUKS" || fs_type == "BitLocker";
+                            let is_enc = is_encrypted_fs(fs_type);
                             let is_raid = fs_type == "linux_raid_member";
                             let is_lvm = fs_type == "LVM2_member";
 
@@ -634,7 +634,7 @@ pub fn list_partitions(
                             continue;
                         }
 
-                        let is_enc = fs_type == "crypto_LUKS" || fs_type == "BitLocker";
+                        let is_enc = is_encrypted_fs(fs_type);
                         if dev_info.is_some()
                             && (fs_type == "LVM2_member" || (enc_partitions.is_some() && is_enc))
                         {
