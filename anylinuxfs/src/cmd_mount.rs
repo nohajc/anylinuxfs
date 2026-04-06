@@ -786,7 +786,9 @@ pub(crate) fn pick_unique_hostname(base: &str, active_vm_hosts: &HashSet<String>
 
 /// Spawn a thread that reads VM PTY output, parses `<anylinuxfs-*>` tags,
 /// and forwards NFS readiness / passphrase / report signals via channels.
-fn spawn_pty_reader(
+/// Reads PTY output from the VM, parses structured tags, and dispatches
+/// NFS-ready / passphrase-prompt / report events to the parent process.
+struct PtyReader {
     pty_fd: libc::c_int,
     guest_prefix: log::Prefix,
     verbose: bool,
@@ -795,69 +797,81 @@ fn spawn_pty_reader(
     nfs_ready_tx: mpsc::Sender<NfsStatus>,
     vm_pwd_prompt_tx: mpsc::Sender<bool>,
     vm_report_tx: mpsc::Sender<vmctrl::Report>,
-) {
-    _ = thread::spawn(move || {
-        let mut nfs_ready = false;
-        let mut fslabel: Option<String> = None;
-        let mut fstype: Option<String> = None;
-        let mut changed_to_ro = false;
-        let mut exit_code = None;
-        let mut buf_reader =
-            PassthroughBufReader::new(unsafe { File::from_raw_fd(pty_fd) }, guest_prefix);
-        let mut line = String::new();
-        let mut exports = BTreeSet::new();
+}
 
-        loop {
-            let bytes = match buf_reader.read_line(&mut line) {
-                Ok(bytes) => bytes,
-                Err(e) => {
-                    host_eprintln!("Error reading from pty: {}", e);
-                    break;
+impl PtyReader {
+    fn spawn(self) {
+        _ = thread::spawn(move || {
+            let mut nfs_ready = false;
+            let mut fslabel: Option<String> = None;
+            let mut fstype: Option<String> = None;
+            let mut changed_to_ro = false;
+            let mut exit_code = None;
+            let mut buf_reader = PassthroughBufReader::new(
+                unsafe { File::from_raw_fd(self.pty_fd) },
+                self.guest_prefix,
+            );
+            let mut line = String::new();
+            let mut exports = BTreeSet::new();
+
+            loop {
+                let bytes = match buf_reader.read_line(&mut line) {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        host_eprintln!("Error reading from pty: {}", e);
+                        break;
+                    }
+                };
+                if bytes == 0 {
+                    break; // EOF
                 }
-            };
-            if bytes == 0 {
-                break; // EOF
+                if line.contains("READY AND WAITING FOR NFS CLIENT CONNECTIONS") {
+                    self.nfs_ready_tx
+                        .send(NfsStatus::Ready(NfsReadyState {
+                            fslabel: fslabel.take(),
+                            fstype: fstype.take(),
+                            changed_to_ro,
+                            exports: exports.iter().cloned().collect(),
+                        }))
+                        .unwrap();
+                    nfs_ready = true;
+                } else if line.starts_with("<anylinuxfs-vmproxy-ready>") {
+                    subscribe_to_vm_events(
+                        &self.config,
+                        self.vm_native_ip,
+                        self.vm_report_tx.clone(),
+                    );
+                } else if line.starts_with("<anylinuxfs-exit-code") {
+                    exit_code = parse_vm_tag_value(&line).and_then(|v| v.parse::<i32>().ok());
+                } else if line.starts_with("<anylinuxfs-label") {
+                    fslabel = parse_vm_tag_value(&line).map(str::to_string);
+                } else if line.starts_with("<anylinuxfs-type") {
+                    fstype = parse_vm_tag_value(&line).map(str::to_string);
+                } else if line.starts_with("<anylinuxfs-mount:changed-to-ro>") {
+                    changed_to_ro = true;
+                } else if line.starts_with("<anylinuxfs-nfs-export") {
+                    if let Some(export_path) = parse_vm_tag_value(&line) {
+                        exports.insert(export_path.to_string());
+                    }
+                } else if line.starts_with("<anylinuxfs-passphrase-prompt:start>") {
+                    self.vm_pwd_prompt_tx.send(true).unwrap();
+                } else if line.starts_with("<anylinuxfs-passphrase-prompt:end>") {
+                    self.vm_pwd_prompt_tx.send(false).unwrap();
+                } else if !self.verbose && line.starts_with("<anylinuxfs-force-output:off>") {
+                    log::disable_console_log();
+                } else if !self.verbose && line.starts_with("<anylinuxfs-force-output:on>") {
+                    log::enable_console_log();
+                }
+
+                line.clear();
             }
-            if line.contains("READY AND WAITING FOR NFS CLIENT CONNECTIONS") {
-                nfs_ready_tx
-                    .send(NfsStatus::Ready(NfsReadyState {
-                        fslabel: fslabel.take(),
-                        fstype: fstype.take(),
-                        changed_to_ro,
-                        exports: exports.iter().cloned().collect(),
-                    }))
+            if !nfs_ready {
+                self.nfs_ready_tx
+                    .send(NfsStatus::Failed(exit_code))
                     .unwrap();
-                nfs_ready = true;
-            } else if line.starts_with("<anylinuxfs-vmproxy-ready>") {
-                subscribe_to_vm_events(&config, vm_native_ip, vm_report_tx.clone());
-            } else if line.starts_with("<anylinuxfs-exit-code") {
-                exit_code = parse_vm_tag_value(&line).and_then(|v| v.parse::<i32>().ok());
-            } else if line.starts_with("<anylinuxfs-label") {
-                fslabel = parse_vm_tag_value(&line).map(str::to_string);
-            } else if line.starts_with("<anylinuxfs-type") {
-                fstype = parse_vm_tag_value(&line).map(str::to_string);
-            } else if line.starts_with("<anylinuxfs-mount:changed-to-ro>") {
-                changed_to_ro = true;
-            } else if line.starts_with("<anylinuxfs-nfs-export") {
-                if let Some(export_path) = parse_vm_tag_value(&line) {
-                    exports.insert(export_path.to_string());
-                }
-            } else if line.starts_with("<anylinuxfs-passphrase-prompt:start>") {
-                vm_pwd_prompt_tx.send(true).unwrap();
-            } else if line.starts_with("<anylinuxfs-passphrase-prompt:end>") {
-                vm_pwd_prompt_tx.send(false).unwrap();
-            } else if !verbose && line.starts_with("<anylinuxfs-force-output:off>") {
-                log::disable_console_log();
-            } else if !verbose && line.starts_with("<anylinuxfs-force-output:on>") {
-                log::enable_console_log();
             }
-
-            line.clear();
-        }
-        if !nfs_ready {
-            nfs_ready_tx.send(NfsStatus::Failed(exit_code)).unwrap();
-        }
-    });
+        });
+    }
 }
 
 /// Spawn a thread to connect to the VM control socket and subscribe to events.
@@ -968,68 +982,75 @@ fn setup_rpcbind_services<'a>(
     Ok(())
 }
 
-/// Build the NFS share path and mount options from the config.
-fn build_nfs_share_config(
-    config: &MountConfig,
-    mnt_dev_info: &DevInfo,
-    shared_volume: bool,
-) -> (BString, fsutil::NfsOptions) {
-    let share_name = match config.custom_mount_name() {
-        Some(name) => name.as_bytes().into(),
-        None => mnt_dev_info.auto_mount_name(),
-    };
-
-    let share_path = match config.get_action() {
-        Some(action) if !action.override_nfs_export().is_empty() => {
-            BString::from(action.override_nfs_export())
-        }
-        _ => [b"/mnt/", share_name.as_slice()].concat().into(),
-    };
-
-    let mut nfs_opts = fsutil::NfsOptions::default();
-    if shared_volume {
-        nfs_opts.remove("nolocks".as_bytes());
-    }
-    nfs_opts.extend(config.nfs_options.iter().map(|s| match s.split_once('=') {
-        Some((key, value)) => (key.as_bytes().into(), value.as_bytes().into()),
-        None => (s.as_bytes().into(), b"".into()),
-    }));
-
-    (share_path, nfs_opts)
+/// Holds the NFS share path and mount options, and provides methods to mount
+/// the primary share and any additional subdirectory exports.
+struct NfsShareSetup {
+    share_path: BString,
+    nfs_opts: fsutil::NfsOptions,
 }
 
-/// Mount additional NFS subdirectory exports under the main mount point.
-fn mount_nfs_subdirectories(
-    config: &MountConfig,
-    vm_host_b: &[u8],
-    share_path: &BString,
-    exports: &[String],
-    mount_point: &diskutil::MountPoint,
-    nfs_opts: &fsutil::NfsOptions,
-    verbose: bool,
-) {
-    let mut additional_exports = exports
-        .iter()
-        .map(|item| item.as_str())
-        .filter(|&export_path| export_path != share_path)
-        .peekable();
+impl NfsShareSetup {
+    /// Build the NFS share path and mount options from the config.
+    fn new(config: &MountConfig, mnt_dev_info: &DevInfo, shared_volume: bool) -> Self {
+        let share_name = match config.custom_mount_name() {
+            Some(name) => name.as_bytes().into(),
+            None => mnt_dev_info.auto_mount_name(),
+        };
 
-    let _log_guard = ConsoleLogGuard::enable_temporarily(verbose);
-    let elevate = config.common.sudo_uid.is_none() && config.common.invoker_uid != 0;
+        let share_path = match config.get_action() {
+            Some(action) if !action.override_nfs_export().is_empty() => {
+                BString::from(action.override_nfs_export())
+            }
+            _ => [b"/mnt/", share_name.as_slice()].concat().into(),
+        };
 
-    if elevate && additional_exports.peek().is_some() {
-        host_println!("need to use sudo to mount additional NFS exports");
+        let mut nfs_opts = fsutil::NfsOptions::default();
+        if shared_volume {
+            nfs_opts.remove("nolocks".as_bytes());
+        }
+        nfs_opts.extend(config.nfs_options.iter().map(|s| match s.split_once('=') {
+            Some((key, value)) => (key.as_bytes().into(), value.as_bytes().into()),
+            None => (s.as_bytes().into(), b"".into()),
+        }));
+
+        Self {
+            share_path,
+            nfs_opts,
+        }
     }
-    match fsutil::mount_nfs_subdirs(
-        vm_host_b,
-        share_path,
-        additional_exports.into_iter(),
-        mount_point.display(),
-        nfs_opts,
-        elevate,
+
+    /// Mount additional NFS subdirectory exports under the main mount point.
+    fn mount_subdirectories(
+        &self,
+        config: &MountConfig,
+        vm_host_b: &[u8],
+        exports: &[String],
+        mount_point: &diskutil::MountPoint,
+        verbose: bool,
     ) {
-        Ok(_) => {}
-        Err(e) => host_eprintln!("Failed to mount additional NFS exports: {:#}", e),
+        let mut additional_exports = exports
+            .iter()
+            .map(|item| item.as_str())
+            .filter(|&export_path| export_path != self.share_path)
+            .peekable();
+
+        let _log_guard = ConsoleLogGuard::enable_temporarily(verbose);
+        let elevate = config.common.sudo_uid.is_none() && config.common.invoker_uid != 0;
+
+        if elevate && additional_exports.peek().is_some() {
+            host_println!("need to use sudo to mount additional NFS exports");
+        }
+        match fsutil::mount_nfs_subdirs(
+            vm_host_b,
+            &self.share_path,
+            additional_exports.into_iter(),
+            mount_point.display(),
+            &self.nfs_opts,
+            elevate,
+        ) {
+            Ok(_) => {}
+            Err(e) => host_eprintln!("Failed to mount additional NFS exports: {:#}", e),
+        }
     }
 }
 
@@ -1495,16 +1516,17 @@ impl super::AppRunner {
                 OSType::FreeBSD => log::Prefix::GuestBSD,
             };
 
-            spawn_pty_reader(
-                forked.master_fd(),
+            PtyReader {
+                pty_fd: forked.master_fd(),
                 guest_prefix,
                 verbose,
-                config.clone(),
+                config: config.clone(),
                 vm_native_ip,
                 nfs_ready_tx,
                 vm_pwd_prompt_tx,
                 vm_report_tx,
-            );
+            }
+            .spawn();
 
             let signals = signal_hub.subscribe();
             let signal_subscr_id = signals.id().expect("just subscribed, ID should be set");
@@ -1574,10 +1596,14 @@ impl super::AppRunner {
                     rt_info.lock().unwrap().mount_config.mount_options = Some(new_mount_opts);
                 }
 
-                let (share_path, nfs_opts) =
-                    build_nfs_share_config(&config, &mnt_dev_info, shared_volume);
+                let nfs_share = NfsShareSetup::new(&config, &mnt_dev_info, shared_volume);
 
-                let mount_result = mount_nfs(&vm_host_b, &share_path, &config, &nfs_opts);
+                let mount_result = mount_nfs(
+                    &vm_host_b,
+                    &nfs_share.share_path,
+                    &config,
+                    &nfs_share.nfs_opts,
+                );
                 match &mount_result {
                     Ok(_) => host_println!("Requested NFS share mount"),
                     Err(e) => {
@@ -1587,7 +1613,8 @@ impl super::AppRunner {
                 };
 
                 let mount_point_opt = if mount_result.is_ok() {
-                    let nfs_path = PathBuf::from(format!("{}:{}", vm_host_b.as_bstr(), share_path));
+                    let nfs_path =
+                        PathBuf::from(format!("{}:{}", vm_host_b.as_bstr(), nfs_share.share_path));
                     event_session.wait_for_mount(&nfs_path)
                 } else {
                     None
@@ -1615,13 +1642,11 @@ impl super::AppRunner {
 
                     rt_info.lock().unwrap().mount_point = Some(mount_point.display().into());
 
-                    mount_nfs_subdirectories(
+                    nfs_share.mount_subdirectories(
                         &config,
                         &vm_host_b,
-                        &share_path,
                         exports,
                         mount_point,
-                        &nfs_opts,
                         verbose,
                     );
                 }
