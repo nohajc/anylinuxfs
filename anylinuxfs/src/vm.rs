@@ -1,27 +1,28 @@
 use anyhow::{Context, anyhow};
 use bstr::BString;
-use common_utils::{Deferred, NetHelper, OSType, host_eprintln, host_println};
+use common_utils::{Deferred, FromPath, NetHelper, OSType, host_eprintln, host_println};
 use ipnet::Ipv4Net;
 use serde::Serialize;
 use serde_with::{DisplayFromStr, serde_as};
 
+use std::collections::HashSet;
 use std::ffi::CString;
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::chown;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::ptr::null;
 use std::sync::Once;
-use std::{env, thread};
 
-use crate::bindings;
 use crate::cmd_mount::NetworkEnv;
 use crate::devinfo::DevInfo;
-use crate::settings::{Config, MountConfig};
-use crate::vm_image::IsoAdd;
-use crate::vm_network::VmnetConfig;
+use crate::settings::{Config, MountConfig, PassphrasePromptConfig, Preferences};
+use crate::utils::{HasPipeInFd, HasPipeOutFds};
+use crate::vm_image::{self, IsoAdd};
+use crate::vm_network::{self, VmnetConfig};
+use crate::{ResultWithCtx, bindings};
 use crate::{rand_string, to_exit_code, utils};
 
 pub(crate) struct VMOpts {
@@ -98,7 +99,11 @@ impl NetworkMode {
         }
     }
 
-    pub(crate) fn default_virtio_net(os: OSType, net_helper: NetHelper, cfg: Option<VmnetConfig>) -> Self {
+    pub(crate) fn default_virtio_net(
+        os: OSType,
+        net_helper: NetHelper,
+        cfg: Option<VmnetConfig>,
+    ) -> Self {
         match os {
             OSType::FreeBSD => NetworkMode::GvProxy,
             OSType::Linux => match net_helper {
@@ -554,7 +559,11 @@ struct KrunConfig<'a, 'b> {
     process: KrunConfigProcess<'a, 'b>,
 }
 
-pub(crate) fn set_vm_cmdline(ctx: &VMContext, args: &[BString], env: &[BString]) -> anyhow::Result<()> {
+pub(crate) fn set_vm_cmdline(
+    ctx: &VMContext,
+    args: &[BString],
+    env: &[BString],
+) -> anyhow::Result<()> {
     let krun_config_tmp_dir;
     let mut deferred = Deferred::new();
 
@@ -628,7 +637,11 @@ pub(crate) fn set_vm_cmdline(ctx: &VMContext, args: &[BString], env: &[BString])
     Ok(())
 }
 
-pub(crate) fn start_vm_forked(ctx: &VMContext, cmdline: &[BString], env: &[BString]) -> anyhow::Result<i32> {
+pub(crate) fn start_vm_forked(
+    ctx: &VMContext,
+    cmdline: &[BString],
+    env: &[BString],
+) -> anyhow::Result<i32> {
     let pid = unsafe { libc::fork() };
     if pid < 0 {
         return Err(io::Error::last_os_error()).context("Failed to fork process");
@@ -646,7 +659,11 @@ pub(crate) fn start_vm_forked(ctx: &VMContext, cmdline: &[BString], env: &[BStri
     }
 }
 
-pub(crate) fn start_vm(ctx: &VMContext, cmdline: &[BString], env: &[BString]) -> anyhow::Result<()> {
+pub(crate) fn start_vm(
+    ctx: &VMContext,
+    cmdline: &[BString],
+    env: &[BString],
+) -> anyhow::Result<()> {
     set_vm_cmdline(ctx, cmdline, env)?;
     unsafe { bindings::krun_start_enter(ctx.id) }.context("Failed to start VM")?;
 

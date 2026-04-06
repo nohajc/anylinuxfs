@@ -1,7 +1,8 @@
 use anyhow::{Context, anyhow};
-use bstr::BString;
+use bstr::{BString, ByteSlice, ByteVec};
 use common_utils::{
-    Deferred, NetHelper, OSType, host_eprintln, host_println, ipc, log, safe_println, vmctrl,
+    Deferred, NetHelper, OSType, PathExt, host_eprintln, host_println, ipc, log, safe_println,
+    vmctrl,
 };
 
 use dns_sd::{DNSRecord, DNSService};
@@ -10,9 +11,8 @@ use std::borrow::Cow;
 use std::collections::{BTreeSet, HashSet};
 use std::ffi::OsStr;
 use std::fs::{self, File};
-use std::io::{self, BufRead, BufReader, Read};
-use std::net::{IpAddr, Ipv4Addr, TcpStream};
 use std::os::fd::FromRawFd;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::chown;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -20,21 +20,27 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant, SystemTime};
 use std::{env, iter, thread};
+use std::{
+    io::{self, BufRead, BufReader, Write},
+    net::{IpAddr, Ipv4Addr, TcpStream, ToSocketAddrs},
+};
 
 use crate::devinfo::DevInfo;
-use crate::settings::{Config, ImageSource, MountConfig, Preferences};
+use crate::netutil::Host;
+use crate::settings::{
+    Config, CustomActionEnvironment, ImageSource, KernelPage, MountConfig, PassphrasePromptConfig,
+    Preferences,
+};
 use crate::utils::{
-    self, CommFd, FlockKind, HasCommFd, HasPtyFd, LockFile, OutputAction,
+    self, AcquireLock, CommFd, FlockKind, HasCommFd, HasPtyFd, LockFile, OutputAction,
     PassthroughBufReader, StatusError, write_to_pipe,
 };
 use crate::vm::*;
 use crate::{
-    api, cli::*, diskutil, fsutil, netutil, rpcbind, vm_image, vm_network,
-    ConsoleLogGuard, LOCK_FILE, drop_effective_privileges, drop_privileges,
-    elevate_effective_privileges, hostname_from_disk_ident, is_read_only_set,
-    load_mount_config, parse_vm_tag_value, rand_string, to_exit_code,
+    ConsoleLogGuard, LOCK_FILE, api, cli::*, diskutil, drop_effective_privileges, drop_privileges,
+    elevate_effective_privileges, fsutil, load_mount_config, netutil, parse_vm_tag_value,
+    rand_string, rpcbind, to_exit_code, vm_image, vm_network,
 };
-use crate::netutil::Host;
 
 pub(crate) enum NfsStatus {
     Ready(NfsReadyState),
@@ -440,7 +446,9 @@ fn resolve_disk_token(token: &str, read_only: bool) -> anyhow::Result<(DevInfo, 
     Ok((dev_info, disk))
 }
 
-pub(crate) fn claim_devices(config: &mut MountConfig) -> anyhow::Result<(Vec<DevInfo>, DevInfo, Vec<File>)> {
+pub(crate) fn claim_devices(
+    config: &mut MountConfig,
+) -> anyhow::Result<(Vec<DevInfo>, DevInfo, Vec<File>)> {
     let mount_table = fsutil::MountTable::new()?;
     // host_println!("Current mount table: {:#?}", mount_table);
 
@@ -739,7 +747,11 @@ pub(crate) fn cleanup_old_logs<'a>(
 }
 
 /// Find the most recently modified log file matching a pattern in a directory
-pub(crate) fn find_latest_log(log_dir: &Path, pattern_start: &str, pattern_end: &str) -> Option<PathBuf> {
+pub(crate) fn find_latest_log(
+    log_dir: &Path,
+    pattern_start: &str,
+    pattern_end: &str,
+) -> Option<PathBuf> {
     let mut log_files = collect_files_with_mtime(log_dir, |fname| {
         fname.starts_with(pattern_start) && fname.ends_with(pattern_end)
     });
@@ -954,6 +966,7 @@ fn setup_rpcbind_services<'a>(
     }
 
     Ok(())
+}
 
 impl super::AppRunner {
     pub(crate) fn run_mount(&mut self, cmd: MountCmd) -> anyhow::Result<()> {
@@ -1718,5 +1731,4 @@ impl super::AppRunner {
 
         Ok(())
     }
-
 }

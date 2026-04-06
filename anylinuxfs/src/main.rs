@@ -1,9 +1,6 @@
 use anyhow::{Context, anyhow};
-use bstr::{BString, ByteSlice, ByteVec};
-use common_utils::{
-    Deferred, FromPath, NetHelper, OSType, PathExt, host_eprintln, host_println, ipc, log,
-    safe_print, safe_println, vmctrl,
-};
+use bstr::BString;
+use common_utils::{OSType, PathExt, host_eprintln, host_println, log, safe_print, safe_println};
 
 use cli::*;
 
@@ -12,30 +9,18 @@ use nanoid::nanoid;
 use toml_edit::{Document, DocumentMut};
 
 use std::borrow::Cow;
+use std::env;
 use std::ffi::OsStr;
 use std::fs::{self, File};
-use std::io::{self, BufReader, Read};
-use std::net::Ipv4Addr;
-use std::os::unix::process::CommandExt;
-use std::process::{Command, Stdio};
-use std::{
-    env,
-    os::unix::ffi::OsStrExt,
-    path::{Path, PathBuf},
-};
-use std::iter;
+use std::io::{self, BufRead, BufReader, Write};
+use std::net::{Ipv4Addr, Ipv6Addr};
+use std::path::{Path, PathBuf};
 
 use notify::{RecursiveMode, Watcher};
 use std::sync::mpsc;
-use utils::{
-    AcquireLock, CommFd, FlockKind, HasCommFd, HasPipeInFd, HasPipeOutFds, HasPtyFd, LockFile,
-    OutputAction, PassthroughBufReader, StatusError, write_to_pipe,
-};
+use utils::{AcquireLock, FlockKind, LockFile, StatusError, write_to_pipe};
 
-use crate::settings::{
-    Config, CustomActionEnvironment, ImageSource, KernelConfig, KernelPage, KrunLogLevel,
-    MountConfig, PassphrasePromptConfig, Preferences,
-};
+use crate::settings::{Config, ImageSource, KernelConfig, MountConfig, Preferences};
 
 mod api;
 #[allow(unused)]
@@ -54,8 +39,8 @@ mod vm;
 mod vm_image;
 mod vm_network;
 
-use vm::*;
 use cmd_mount::*;
+use vm::*;
 
 pub(crate) const LOCK_FILE: &str = "/tmp/anylinuxfs.lock";
 
@@ -503,10 +488,6 @@ pub(crate) fn elevate_effective_privileges() -> anyhow::Result<()> {
         return Err(io::Error::last_os_error()).context("Failed to setegid");
     }
     Ok(())
-}
-
-
-#[derive(Debug)]
 }
 
 pub(crate) struct AppRunner {
