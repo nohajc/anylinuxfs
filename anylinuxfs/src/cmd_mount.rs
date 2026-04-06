@@ -97,117 +97,6 @@ fn wait_for_nfs_server(
     Ok(nfs_ready)
 }
 
-fn mount_nfs(
-    vm_host: &[u8],
-    share_path: &[u8],
-    config: &MountConfig,
-    nfs_opts: &fsutil::NfsOptions,
-) -> anyhow::Result<()> {
-    let mount_point: Cow<'_, _> = match config.custom_mount_point.as_deref() {
-        // custom mount point must already exist
-        Some(mount_point) => mount_point.into(),
-        None => {
-            // default mount point will be created
-            let volume_base_dir = if config.common.sudo_uid.is_some() {
-                PathBuf::from("/")
-            } else {
-                config.common.home_dir.clone()
-            }
-            .join("Volumes");
-
-            let mut mount_name = share_path.split(|&b| b == b'/').last().unwrap();
-            if mount_name.is_empty() {
-                mount_name = b"root";
-            }
-            let mut mount_path = volume_base_dir.join(Path::from_bytes(mount_name));
-            let mut counter = 1;
-
-            while mount_path.exists() {
-                mount_path = volume_base_dir.join(Path::from_bytes(
-                    &[mount_name, b"-", counter.to_string().as_bytes()].concat(),
-                ));
-                counter += 1;
-            }
-
-            fs::create_dir_all(&mount_path).with_context(|| {
-                format!(
-                    "Failed to create mount point directory {}",
-                    mount_path.display()
-                )
-            })?;
-            chown(
-                &mount_path,
-                Some(config.common.invoker_uid),
-                Some(config.common.invoker_gid),
-            )
-            .with_context(|| format!("Failed to change owner of {}", mount_path.display()))?;
-
-            mount_path.into()
-        }
-    };
-
-    let shell_script = [
-        b"mount -t nfs -o ",
-        nfs_opts.to_list().as_slice(),
-        b" \"",
-        vm_host,
-        b":",
-        share_path,
-        b"\" \"",
-        mount_point.as_bytes(),
-        b"\"",
-    ]
-    .concat();
-
-    let shell_script = OsStr::from_bytes(&shell_script);
-    host_println!("NFS mount command: {}", shell_script.display());
-    // try to run mount as regular user first
-    // (if that succeeds, umount will work without sudo)
-    let mut status = Command::new("sh")
-        .arg("-c")
-        .arg(shell_script)
-        .uid(config.common.invoker_uid)
-        .gid(config.common.invoker_gid)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()?;
-
-    if !status.success() {
-        // otherwise run as root (probably the mount point wasn't accessible)
-        status = Command::new("sh").arg("-c").arg(shell_script).status()?;
-    }
-
-    if !status.success() {
-        return Err(anyhow!(
-            "failed with exit code {}",
-            status
-                .code()
-                .map(|c| c.to_string())
-                .unwrap_or("unknown".to_owned())
-        ));
-    }
-
-    if config.open_finder {
-        let mut shell_script =
-            br#"afplay /System/Library/Components/CoreAudio.component/Contents/SharedSupport/SystemSounds/system/Volume\ Mount.aif \
-                -v $(awk "BEGIN { print "$(osascript -e "get alert volume of (get volume settings)")"/100 };")"#.to_vec();
-        shell_script.extend_from_slice(b" &! open \"");
-        shell_script.extend_from_slice(mount_point.as_bytes());
-        shell_script.extend_from_slice(b"\"");
-        let shell_script = OsStr::from_bytes(&shell_script);
-        let _ = Command::new("sh")
-            .arg("-c")
-            .arg(shell_script)
-            .uid(config.common.invoker_uid)
-            .gid(config.common.invoker_gid)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-    }
-
-    Ok(())
-}
-
 pub(crate) fn unmount_fs(volume_path: &Path) -> anyhow::Result<()> {
     let status = Command::new("diskutil")
         .arg("unmount")
@@ -982,14 +871,21 @@ fn setup_rpcbind_services<'a>(
 
 /// Holds the NFS share path and mount options, and provides methods to mount
 /// the primary share and any additional subdirectory exports.
-struct NfsShareSetup {
+struct NfsShareSetup<'a> {
+    config: &'a MountConfig,
+    vm_host_b: &'a [u8],
     share_path: BString,
     nfs_opts: fsutil::NfsOptions,
 }
 
-impl NfsShareSetup {
+impl<'a> NfsShareSetup<'a> {
     /// Build the NFS share path and mount options from the config.
-    fn new(config: &MountConfig, mnt_dev_info: &DevInfo, shared_volume: bool) -> Self {
+    fn new(
+        config: &'a MountConfig,
+        vm_host_b: &'a [u8],
+        mnt_dev_info: &DevInfo,
+        shared_volume: bool,
+    ) -> Self {
         let share_name = match config.custom_mount_name() {
             Some(name) => name.as_bytes().into(),
             None => mnt_dev_info.auto_mount_name(),
@@ -1012,16 +908,122 @@ impl NfsShareSetup {
         }));
 
         Self {
+            config,
+            vm_host_b,
             share_path,
             nfs_opts,
         }
     }
 
+    fn mount(&self) -> anyhow::Result<()> {
+        let mount_point: Cow<'_, _> = match self.config.custom_mount_point.as_deref() {
+            // custom mount point must already exist
+            Some(mount_point) => mount_point.into(),
+            None => {
+                // default mount point will be created
+                let volume_base_dir = if self.config.common.sudo_uid.is_some() {
+                    PathBuf::from("/")
+                } else {
+                    self.config.common.home_dir.clone()
+                }
+                .join("Volumes");
+
+                let mut mount_name = self.share_path.split(|&b| b == b'/').last().unwrap();
+                if mount_name.is_empty() {
+                    mount_name = b"root";
+                }
+                let mut mount_path = volume_base_dir.join(Path::from_bytes(mount_name));
+                let mut counter = 1;
+
+                while mount_path.exists() {
+                    mount_path = volume_base_dir.join(Path::from_bytes(
+                        &[mount_name, b"-", counter.to_string().as_bytes()].concat(),
+                    ));
+                    counter += 1;
+                }
+
+                fs::create_dir_all(&mount_path).with_context(|| {
+                    format!(
+                        "Failed to create mount point directory {}",
+                        mount_path.display()
+                    )
+                })?;
+                chown(
+                    &mount_path,
+                    Some(self.config.common.invoker_uid),
+                    Some(self.config.common.invoker_gid),
+                )
+                .with_context(|| format!("Failed to change owner of {}", mount_path.display()))?;
+
+                mount_path.into()
+            }
+        };
+
+        let shell_script = [
+            b"mount -t nfs -o ",
+            self.nfs_opts.to_list().as_slice(),
+            b" \"",
+            self.vm_host_b,
+            b":",
+            &self.share_path,
+            b"\" \"",
+            mount_point.as_bytes(),
+            b"\"",
+        ]
+        .concat();
+
+        let shell_script = OsStr::from_bytes(&shell_script);
+        host_println!("NFS mount command: {}", shell_script.display());
+        // try to run mount as regular user first
+        // (if that succeeds, umount will work without sudo)
+        let mut status = Command::new("sh")
+            .arg("-c")
+            .arg(shell_script)
+            .uid(self.config.common.invoker_uid)
+            .gid(self.config.common.invoker_gid)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()?;
+
+        if !status.success() {
+            // otherwise run as root (probably the mount point wasn't accessible)
+            status = Command::new("sh").arg("-c").arg(shell_script).status()?;
+        }
+
+        if !status.success() {
+            return Err(anyhow!(
+                "failed with exit code {}",
+                status
+                    .code()
+                    .map(|c| c.to_string())
+                    .unwrap_or("unknown".to_owned())
+            ));
+        }
+
+        if self.config.open_finder {
+            let mut shell_script =
+            br#"afplay /System/Library/Components/CoreAudio.component/Contents/SharedSupport/SystemSounds/system/Volume\ Mount.aif \
+                -v $(awk "BEGIN { print "$(osascript -e "get alert volume of (get volume settings)")"/100 };")"#.to_vec();
+            shell_script.extend_from_slice(b" &! open \"");
+            shell_script.extend_from_slice(mount_point.as_bytes());
+            shell_script.extend_from_slice(b"\"");
+            let shell_script = OsStr::from_bytes(&shell_script);
+            let _ = Command::new("sh")
+                .arg("-c")
+                .arg(shell_script)
+                .uid(self.config.common.invoker_uid)
+                .gid(self.config.common.invoker_gid)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+
+        Ok(())
+    }
+
     /// Mount additional NFS subdirectory exports under the main mount point.
     fn mount_subdirectories(
         &self,
-        config: &MountConfig,
-        vm_host_b: &[u8],
         exports: &[String],
         mount_point: &diskutil::MountPoint,
         verbose: bool,
@@ -1033,13 +1035,13 @@ impl NfsShareSetup {
             .peekable();
 
         let _log_guard = ConsoleLogGuard::enable_temporarily(verbose);
-        let elevate = config.common.sudo_uid.is_none() && config.common.invoker_uid != 0;
+        let elevate = self.config.common.sudo_uid.is_none() && self.config.common.invoker_uid != 0;
 
         if elevate && additional_exports.peek().is_some() {
             host_println!("need to use sudo to mount additional NFS exports");
         }
         match fsutil::mount_nfs_subdirs(
-            vm_host_b,
+            self.vm_host_b,
             &self.share_path,
             additional_exports.into_iter(),
             mount_point.display(),
@@ -1594,14 +1596,10 @@ impl super::AppRunner {
                     rt_info.lock().unwrap().mount_config.mount_options = Some(new_mount_opts);
                 }
 
-                let nfs_share = NfsShareSetup::new(&config, &mnt_dev_info, shared_volume);
+                let nfs_share =
+                    NfsShareSetup::new(&config, &vm_host_b, &mnt_dev_info, shared_volume);
 
-                let mount_result = mount_nfs(
-                    &vm_host_b,
-                    &nfs_share.share_path,
-                    &config,
-                    &nfs_share.nfs_opts,
-                );
+                let mount_result = nfs_share.mount();
                 match &mount_result {
                     Ok(_) => host_println!("Requested NFS share mount"),
                     Err(e) => {
@@ -1639,14 +1637,7 @@ impl super::AppRunner {
                     }
 
                     rt_info.lock().unwrap().mount_point = Some(mount_point.display().into());
-
-                    nfs_share.mount_subdirectories(
-                        &config,
-                        &vm_host_b,
-                        exports,
-                        mount_point,
-                        verbose,
-                    );
+                    nfs_share.mount_subdirectories(exports, mount_point, verbose);
                 }
 
                 // drop privileges back to the original user if he used sudo
