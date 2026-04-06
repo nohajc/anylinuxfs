@@ -249,6 +249,7 @@ str_array!(
         "xfs",
         "zfs",
         "crypto_LUKS",
+        "linux_raid_member",
         "LVM2_member",
         "zfs_member",
     ]
