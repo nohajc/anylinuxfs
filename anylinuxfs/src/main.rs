@@ -493,6 +493,15 @@ impl Cli {
     }
 }
 
+/// Extracts the value from a `<tag:value>` line emitted by vmproxy.
+/// Returns `None` if the line has no `:` separator.
+fn parse_vm_tag_value(line: &str) -> Option<&str> {
+    line.split_once(':').map(|(_, rest)| {
+        let trimmed = rest.trim();
+        trimmed.strip_suffix('>').unwrap_or(trimmed)
+    })
+}
+
 fn is_read_only_set(mount_options: Option<&str>) -> bool {
     if let Some(options) = mount_options {
         options.split(',').any(|opt| opt == "ro")
@@ -3208,45 +3217,17 @@ impl AppRunner {
                                 }
                             });
                         } else if line.starts_with("<anylinuxfs-exit-code") {
-                            exit_code = line
-                                .split(':')
-                                .nth(1)
-                                .map(|pattern| {
-                                    pattern
-                                        .trim()
-                                        .strip_suffix(">")
-                                        .unwrap_or(pattern)
-                                        .parse::<i32>()
-                                        .ok()
-                                })
-                                .flatten();
+                            exit_code =
+                                parse_vm_tag_value(&line).and_then(|v| v.parse::<i32>().ok());
                         } else if line.starts_with("<anylinuxfs-label") {
-                            fslabel = line.split(':').nth(1).map(|pattern| {
-                                pattern
-                                    .trim()
-                                    .strip_suffix(">")
-                                    .unwrap_or(pattern)
-                                    .to_string()
-                            })
+                            fslabel = parse_vm_tag_value(&line).map(str::to_string);
                         } else if line.starts_with("<anylinuxfs-type") {
-                            fstype = line.split(':').nth(1).map(|pattern| {
-                                pattern
-                                    .trim()
-                                    .strip_suffix(">")
-                                    .unwrap_or(pattern)
-                                    .to_string()
-                            })
+                            fstype = parse_vm_tag_value(&line).map(str::to_string);
                         } else if line.starts_with("<anylinuxfs-mount:changed-to-ro>") {
                             changed_to_ro = true;
                         } else if line.starts_with("<anylinuxfs-nfs-export") {
-                            if let Some(export_path) = line.split(':').nth(1).map(|pattern| {
-                                pattern
-                                    .trim()
-                                    .strip_suffix(">")
-                                    .unwrap_or(pattern)
-                                    .to_string()
-                            }) {
-                                exports.insert(export_path);
+                            if let Some(export_path) = parse_vm_tag_value(&line) {
+                                exports.insert(export_path.to_string());
                             }
                         } else if line.starts_with("<anylinuxfs-passphrase-prompt:start>") {
                             vm_pwd_prompt_tx.send(true).unwrap();
