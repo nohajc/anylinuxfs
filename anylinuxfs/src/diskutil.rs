@@ -429,6 +429,59 @@ impl FromStr for LvIdent {
     }
 }
 
+/// Accumulates physical volume entries (encrypted, RAID, LVM) discovered during partition listing.
+struct PvCollector {
+    dev_infos: Vec<DevInfo>,
+    dev_idents: Vec<String>,
+    enc_partitions: Vec<String>,
+    assemble_raid: bool,
+    decrypt_all: bool,
+    has_enc_filter: bool,
+}
+
+impl PvCollector {
+    fn new(enc_partitions: Option<&[String]>) -> Self {
+        let decrypt_all = enc_partitions.is_some_and(|p| !p.is_empty() && p[0] == "all");
+        Self {
+            dev_infos: Vec::new(),
+            dev_idents: Vec::new(),
+            enc_partitions: Vec::new(),
+            assemble_raid: false,
+            decrypt_all,
+            has_enc_filter: enc_partitions.is_some(),
+        }
+    }
+
+    /// Check a partition's fs_type and accumulate it if it's a PV (encrypted, RAID, or LVM).
+    /// Returns `(is_enc, is_raid, is_lvm)`.
+    fn try_collect(
+        &mut self,
+        dev_info: &DevInfo,
+        dev_ident: &str,
+        disk_path: &str,
+        fs_type: &str,
+    ) -> (bool, bool, bool) {
+        let is_enc = is_encrypted_fs(fs_type);
+        let is_raid = fs_type == "linux_raid_member";
+        let is_lvm = fs_type == "LVM2_member";
+
+        if is_raid {
+            self.assemble_raid = true;
+        }
+
+        if is_lvm || is_raid || (self.has_enc_filter && is_enc) {
+            self.dev_infos.push(dev_info.to_owned());
+            self.dev_idents.push(dev_ident.to_owned());
+
+            if self.decrypt_all && is_enc {
+                self.enc_partitions.push(disk_path.to_owned());
+            }
+        }
+
+        (is_enc, is_raid, is_lvm)
+    }
+}
+
 pub fn list_partitions(
     config: Config,
     disk: Option<&str>,
@@ -439,12 +492,7 @@ pub fn list_partitions(
     let part_type_pattern = Regex::new(&format!(r"({})", filter.part_types.join("|"))).unwrap();
     let mut disk_entries = Vec::new();
 
-    let mut pv_dev_infos = Vec::new();
-    let mut pv_dev_idents = Vec::new();
-    let mut all_enc_partitions = Vec::new();
-    let mut assemble_raid = false;
-
-    let decrypt_all = enc_partitions.is_some() && enc_partitions.unwrap()[0] == "all";
+    let mut pv = PvCollector::new(enc_partitions);
 
     if let Some((path, p)) = disk.map(|d| (d, Path::new(d)))
         && p.exists()
@@ -484,22 +532,7 @@ pub fn list_partitions(
                         continue;
                     }
 
-                    let is_enc = is_encrypted_fs(fs_type);
-                    let is_raid = fs_type == "linux_raid_member";
-                    let is_lvm = fs_type == "LVM2_member";
-
-                    if is_raid {
-                        assemble_raid = true;
-                    }
-
-                    if is_lvm || is_raid || (enc_partitions.is_some() && is_enc) {
-                        pv_dev_infos.push(dev_info.to_owned());
-                        pv_dev_idents.push(image_name.clone());
-
-                        if decrypt_all && is_enc {
-                            all_enc_partitions.push(path.to_owned());
-                        }
-                    }
+                    pv.try_collect(dev_info, &image_name, path, fs_type);
 
                     let label = dev_info.label().unwrap_or("");
                     let truncated_label = trunc_with_ellipsis(label, 23);
@@ -524,15 +557,7 @@ pub fn list_partitions(
 
                 // Filter by filesystem type to match diskutil behavior
                 if filter.fs_types.iter().any(|t| t == &fs_type) {
-                    let is_enc = is_encrypted_fs(fs_type);
-                    if fs_type == "LVM2_member" || (enc_partitions.is_some() && is_enc) {
-                        pv_dev_infos.push(dev_info.clone());
-                        pv_dev_idents.push(image_name.clone());
-
-                        if decrypt_all && is_enc {
-                            all_enc_partitions.push(path.to_owned());
-                        }
-                    }
+                    pv.try_collect(dev_info, &image_name, path, fs_type);
 
                     let label = dev_info.label().unwrap_or("");
                     let truncated_label = trunc_with_ellipsis(label, 23);
@@ -592,22 +617,7 @@ pub fn list_partitions(
                     let line = match dev_info {
                         Some(dev_info) => {
                             let fs_type = dev_info.fs_type().unwrap_or(part_type);
-                            let is_enc = is_encrypted_fs(fs_type);
-                            let is_raid = fs_type == "linux_raid_member";
-                            let is_lvm = fs_type == "LVM2_member";
-
-                            if is_raid {
-                                assemble_raid = true;
-                            }
-
-                            if is_lvm || is_raid || (enc_partitions.is_some() && is_enc) {
-                                pv_dev_infos.push(dev_info.clone());
-                                pv_dev_idents.push(dev_ident.to_owned());
-
-                                if decrypt_all && is_enc {
-                                    all_enc_partitions.push(disk_path);
-                                }
-                            }
+                            pv.try_collect(&dev_info, dev_ident, &disk_path, fs_type);
 
                             augment_line(line, part_type, Some(&dev_info), fs_type)
                         }
@@ -634,16 +644,8 @@ pub fn list_partitions(
                             continue;
                         }
 
-                        let is_enc = is_encrypted_fs(fs_type);
-                        if dev_info.is_some()
-                            && (fs_type == "LVM2_member" || (enc_partitions.is_some() && is_enc))
-                        {
-                            pv_dev_infos.push(dev_info.as_ref().unwrap().clone());
-                            pv_dev_idents.push(dev_ident.to_owned());
-
-                            if decrypt_all && is_enc {
-                                all_enc_partitions.push(disk_path);
-                            }
+                        if let Some(ref dev_info) = dev_info {
+                            pv.try_collect(dev_info, dev_ident, &disk_path, fs_type);
                         }
 
                         let line = augment_line(line, "", dev_info.as_ref(), fs_type);
@@ -660,17 +662,15 @@ pub fn list_partitions(
         }
     }
 
-    if pv_dev_infos.len() > 0 {
+    if !pv.dev_infos.is_empty() {
         let mut enc_partitions = enc_partitions;
-        if decrypt_all {
-            enc_partitions = Some(&all_enc_partitions);
+        if pv.decrypt_all {
+            enc_partitions = Some(&pv.enc_partitions);
         }
-        match get_lsblk_info(&config, &pv_dev_infos, enc_partitions, assemble_raid) {
+        match get_lsblk_info(&config, &pv.dev_infos, enc_partitions, pv.assemble_raid) {
             Ok(lsblk) => {
-                // println!("lsblk: {:#?}", lsblk);
                 if !lsblk.blockdevices.is_empty() {
-                    let vol_map = create_volume_map(&lsblk, &pv_dev_idents);
-                    // println!("vol_map: {:#?}", vol_map);
+                    let vol_map = create_volume_map(&lsblk, &pv.dev_idents);
 
                     for (
                         _,
@@ -861,7 +861,6 @@ fn create_volume_map(lsblk: &LsBlk, pv_dev_idents: &[String]) -> VolumeMap {
                     }
                     BlkDevKind::LVM => {
                         if let Ok(lv_ident) = child.name.parse::<LvIdent>() {
-                            // println!("lv_ident: {:#?}", &lv_ident);
                             let VgEntry {
                                 size,
                                 dev_idents,
