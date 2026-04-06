@@ -174,4 +174,45 @@ safe_teardown() {
     hdiutil_detach "$HDIUTIL_DEV"
     HDIUTIL_DEV=""
   fi
+  # Optionally preserve created test artifacts (images) for manual inspection.
+  if [[ "${KEEP_TEST_ARTIFACTS:-}" == "1" ]]; then
+    local artifacts_root="${ARTIFACTS_DIR:-"${REPO_ROOT}/tests/artifacts"}"
+    mkdir -p "$artifacts_root"
+
+    # Prefer the bats test filename when available, fall back to a timestamp.
+    local testname
+    if [[ -n "${BATS_TEST_FILENAME:-}" ]]; then
+      testname="$(basename "${BATS_TEST_FILENAME%.*}")"
+    else
+      testname="unnamed-$(date +%s)"
+    fi
+
+    local destdir="$artifacts_root/$testname"
+    mkdir -p "$destdir"
+
+    # If a specific disk_arg (file) was provided, copy it; otherwise copy
+    # common image file types from the BATS temporary directory.
+    if [[ -n "$disk_arg" && -e "$disk_arg" ]]; then
+      if [[ -d "$disk_arg" ]]; then
+        cp -a "$disk_arg"/* "$destdir"/ 2>/dev/null || true
+      else
+        cp -a "$disk_arg" "$destdir"/ 2>/dev/null || true
+      fi
+    else
+      if [[ -n "${BATS_FILE_TMPDIR:-}" && -d "$BATS_FILE_TMPDIR" ]]; then
+        shopt -s nullglob
+        local copied=0
+        for f in "$BATS_FILE_TMPDIR"/*.img "$BATS_FILE_TMPDIR"/*.hdd "$BATS_FILE_TMPDIR"/*.raw; do
+          cp -a "$f" "$destdir"/ 2>/dev/null || true
+          copied=1
+        done
+        shopt -u nullglob
+        if [[ $copied -eq 0 ]]; then
+          echo "KEEP_TEST_ARTIFACTS=1: no images found in $BATS_FILE_TMPDIR" >&2
+        fi
+      fi
+    fi
+
+    echo "Artifacts preserved at: $destdir"
+  fi
 }

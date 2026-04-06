@@ -35,3 +35,4 @@ tmp/
 *.raw
 *.txz
 .DS_Store
+tests/artifacts/
