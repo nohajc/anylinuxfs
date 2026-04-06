@@ -12,6 +12,7 @@ use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd};
 use std::os::unix::fs::chown;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::ptr::null;
 use std::sync::Once;
 use std::{env, thread};
 
