@@ -1334,7 +1334,8 @@ impl super::AppRunner {
 
         if let Some(status) = net_helper_proc.try_wait().ok().flatten() {
             return Err(anyhow!(
-                "gvproxy failed with exit code: {}",
+                "{} failed with exit code: {}",
+                net_helper_name,
                 status
                     .code()
                     .map(|c| c.to_string())
