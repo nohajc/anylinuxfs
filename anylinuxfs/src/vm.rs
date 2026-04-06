@@ -16,6 +16,7 @@ use std::sync::Once;
 use std::{env, thread};
 
 use crate::bindings;
+use crate::cmd_mount::NetworkEnv;
 use crate::devinfo::DevInfo;
 use crate::settings::{Config, MountConfig};
 use crate::vm_image::IsoAdd;
