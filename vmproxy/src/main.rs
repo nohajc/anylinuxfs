@@ -550,20 +550,82 @@ fn mount_tmpfs(paths: &[&str]) -> anyhow::Result<()> {
 
 const KERNEL_LOG_PATH: &str = "/tmp/kernel.log";
 
-/// Decrypt LUKS/BitLocker volumes using cryptsetup.
-fn decrypt_volumes(
-    decrypt_devs: &str,
-    mapper_ident_prefix: &str,
-    cryptsetup_op: &str,
-    reuse_passphrase: bool,
-    env_has_passphrase: bool,
-    env_pwds: &HashMap<usize, BString>,
-    key_file_path: Option<&str>,
-    deferred: &mut Deferred,
-) -> anyhow::Result<()> {
-    let (pwd_for_all, input_mode_fn): (_, fn() -> _) =
-        if reuse_passphrase && key_file_path.is_none() {
-            let pwd = if let Some(passphrase) = env_pwds.get(&1) {
+/// Bundles the mutable disk/volume state that flows through the entire
+/// vmproxy lifecycle — decryption, volume activation, filesystem detection,
+/// mount-label resolution, mounting, and NFS export generation.
+struct VmDiskContext {
+    disk_path: String,
+    fs_type: Option<String>,
+    fs_driver: Option<String>,
+    mount_options: Option<String>,
+    mount_name: String,
+    verbose: bool,
+    mapper_ident_prefix: &'static str,
+    cryptsetup_op: &'static str,
+    assemble_raid: bool,
+    env_pwds: HashMap<usize, BString>,
+    key_file_path: Option<String>,
+    // Derived state (populated during the lifecycle)
+    is_raid: bool,
+    is_zfs: bool,
+    zfs_mountpoints: Vec<zfs::Mountpoint>,
+    zfs_pools: Vec<String>,
+}
+
+impl VmDiskContext {
+    fn new(cli: &Cli, key_file_path: Option<String>) -> Self {
+        let (mapper_ident_prefix, cryptsetup_op) = match cli.fs_type.as_deref() {
+            Some("crypto_LUKS") => ("luks", "open"),
+            Some("BitLocker") => ("btlk", "bitlkOpen"),
+            _ => ("luks", "open"),
+        };
+
+        VmDiskContext {
+            disk_path: cli.disk_path.clone(),
+            fs_type: cli.fs_type.clone(),
+            fs_driver: cli.fs_driver.clone(),
+            mount_options: cli.mount_options.clone(),
+            mount_name: cli.mount_name.clone(),
+            verbose: cli.verbose,
+            mapper_ident_prefix,
+            cryptsetup_op,
+            assemble_raid: cli.assemble_raid,
+            env_pwds: get_pwds_from_env(),
+            key_file_path,
+            is_raid: false,
+            is_zfs: false,
+            zfs_mountpoints: vec![],
+            zfs_pools: vec![],
+        }
+    }
+
+    fn env_has_passphrase(&self) -> bool {
+        !self.env_pwds.is_empty()
+    }
+
+    fn is_logical(&self) -> bool {
+        self.disk_path.starts_with("/dev/mapper") || self.is_raid
+    }
+
+    fn specified_read_only(&self) -> bool {
+        self.mount_options
+            .as_deref()
+            .map(|opts| is_read_only_set(opts.split(',')))
+            .unwrap_or(false)
+    }
+
+    /// Decrypt LUKS/BitLocker volumes using cryptsetup.
+    fn decrypt(
+        &self,
+        decrypt_devs: &str,
+        reuse_passphrase: bool,
+        deferred: &mut Deferred,
+    ) -> anyhow::Result<()> {
+        let env_has_passphrase = self.env_has_passphrase();
+        let (pwd_for_all, input_mode_fn): (_, fn() -> _) = if reuse_passphrase
+            && self.key_file_path.is_none()
+        {
+            let pwd = if let Some(passphrase) = self.env_pwds.get(&1) {
                 BString::from(passphrase.as_bytes())
             } else if env_has_passphrase {
                 return Err(anyhow!(
@@ -578,344 +640,354 @@ fn decrypt_volumes(
                 pwd
             };
             (Some(pwd), || Stdio::piped())
-        } else if env_has_passphrase && key_file_path.is_none() {
+        } else if env_has_passphrase && self.key_file_path.is_none() {
             (None, || Stdio::piped())
         } else {
             (None, || Stdio::inherit())
         };
 
-    let key_file_args: &[&str] = if let Some(key_file) = key_file_path {
-        &["--key-file", key_file]
-    } else {
-        &[]
-    };
-    for (i, dev) in decrypt_devs.split(",").enumerate() {
-        let mut cryptsetup = Command::new("/sbin/cryptsetup")
-            .arg("-T1")
-            .arg(cryptsetup_op)
-            .args(key_file_args)
-            .arg(&dev)
-            .arg(format!("{mapper_ident_prefix}{i}"))
-            .stdin(input_mode_fn())
-            .spawn()?;
-
-        let pwd = pwd_for_all.as_ref().or(env_pwds.get(&(i + 1)));
-        let cryptsetup_result = if let Some(pwd) = pwd {
-            {
-                let mut stdin = cryptsetup.stdin.take().unwrap();
-                stdin.write_all(pwd.as_bytes())?;
-            } // must close stdin before waiting for child
-            cryptsetup.wait()?
-        } else if key_file_path.is_some() {
-            cryptsetup.wait()?
-        } else if env_has_passphrase {
-            return Err(anyhow!(
-                "Missing environment variable {}{} for device {}",
-                ALFS_PASSPHRASE_PREFIX.as_bstr(),
-                i + 1,
-                dev
-            ));
+        let key_file_args: &[&str] = if let Some(key_file) = self.key_file_path.as_deref() {
+            &["--key-file", key_file]
         } else {
-            println!("<anylinuxfs-passphrase-prompt:start>");
-            let prompt_end = deferred.add(|| println!("<anylinuxfs-passphrase-prompt:end>"));
-            let res = cryptsetup.wait()?;
-            deferred.call_now(prompt_end);
-            res
+            &[]
         };
+        for (i, dev) in decrypt_devs.split(",").enumerate() {
+            let mut cryptsetup = Command::new("/sbin/cryptsetup")
+                .arg("-T1")
+                .arg(self.cryptsetup_op)
+                .args(key_file_args)
+                .arg(&dev)
+                .arg(format!("{}{i}", self.mapper_ident_prefix))
+                .stdin(input_mode_fn())
+                .spawn()?;
 
-        if !cryptsetup_result.success() {
-            return Err(anyhow!(
-                "Failed to open encrypted device '{}': {}",
-                dev,
-                cryptsetup_result
-                    .code()
-                    .map(|c| c.to_string())
-                    .unwrap_or("unknown".to_owned())
-            ));
+            let pwd = pwd_for_all.as_ref().or(self.env_pwds.get(&(i + 1)));
+            let cryptsetup_result = if let Some(pwd) = pwd {
+                {
+                    let mut stdin = cryptsetup.stdin.take().unwrap();
+                    stdin.write_all(pwd.as_bytes())?;
+                } // must close stdin before waiting for child
+                cryptsetup.wait()?
+            } else if self.key_file_path.is_some() {
+                cryptsetup.wait()?
+            } else if env_has_passphrase {
+                return Err(anyhow!(
+                    "Missing environment variable {}{} for device {}",
+                    ALFS_PASSPHRASE_PREFIX.as_bstr(),
+                    i + 1,
+                    dev
+                ));
+            } else {
+                println!("<anylinuxfs-passphrase-prompt:start>");
+                let prompt_end = deferred.add(|| println!("<anylinuxfs-passphrase-prompt:end>"));
+                let res = cryptsetup.wait()?;
+                deferred.call_now(prompt_end);
+                res
+            };
+
+            if !cryptsetup_result.success() {
+                return Err(anyhow!(
+                    "Failed to open encrypted device '{}': {}",
+                    dev,
+                    cryptsetup_result
+                        .code()
+                        .map(|c| c.to_string())
+                        .unwrap_or("unknown".to_owned())
+                ));
+            }
         }
+        Ok(())
     }
-    Ok(())
-}
 
-/// Activate RAID and LVM volumes, updating `disk_path` and `fs_type` as needed.
-fn activate_volume_managers(
-    disk_path: &mut String,
-    fs_type: &mut Option<String>,
-    assemble_raid: bool,
-    mapper_ident_prefix: &str,
-) -> anyhow::Result<bool> {
-    let is_raid = assemble_raid || disk_path.starts_with("/dev/md");
-    if is_raid {
-        let _mdadm_assemble_result = Command::new("/sbin/mdadm")
-            .arg("--assemble")
-            .arg("--scan")
+    /// Activate RAID and LVM volumes, updating `disk_path` and `fs_type`.
+    fn activate_volume_managers(&mut self) -> anyhow::Result<()> {
+        self.is_raid = self.assemble_raid || self.disk_path.starts_with("/dev/md");
+        if self.is_raid {
+            let _mdadm_assemble_result = Command::new("/sbin/mdadm")
+                .arg("--assemble")
+                .arg("--scan")
+                .status()
+                .context("Failed to run mdadm command")?;
+
+            let md_path = script_output("mdadm --detail --scan | cut -d' ' -f2")
+                .context("Failed to get RAID device path from mdadm")?
+                .trim()
+                .to_owned();
+
+            if !md_path.is_empty() && !self.disk_path.starts_with("/dev/mapper") {
+                self.disk_path = md_path;
+            }
+        }
+
+        #[cfg(target_os = "linux")]
+        let _vgchange_result = Command::new("/sbin/vgchange")
+            .arg("-ay")
             .status()
-            .context("Failed to run mdadm command")?;
+            .context("Failed to run vgchange command")?;
 
-        let md_path = script_output("mdadm --detail --scan | cut -d' ' -f2")
-            .context("Failed to get RAID device path from mdadm")?
-            .trim()
-            .to_owned();
-
-        if !md_path.is_empty() && !disk_path.starts_with("/dev/mapper") {
-            *disk_path = md_path;
+        match self.fs_type.as_deref() {
+            Some("crypto_LUKS") | Some("BitLocker") => {
+                self.disk_path = format!("/dev/mapper/{}0", self.mapper_ident_prefix);
+                self.fs_type = None;
+            }
+            _ => {}
         }
+
+        self.is_zfs = self.fs_type.as_deref() == Some("zfs_member");
+        Ok(())
     }
 
-    #[cfg(target_os = "linux")]
-    let _vgchange_result = Command::new("/sbin/vgchange")
-        .arg("-ay")
-        .status()
-        .context("Failed to run vgchange command")?;
+    /// Detect filesystem type from the disk using blkid.
+    fn detect_fs_type(&mut self) -> anyhow::Result<()> {
+        if self.disk_path.is_empty() {
+            return Ok(());
+        }
 
-    match fs_type.as_deref() {
-        Some("crypto_LUKS") => {
-            *disk_path = format!("/dev/mapper/{}0", mapper_ident_prefix);
-            *fs_type = None;
+        match self.fs_type.as_deref() {
+            Some("auto") | None => {
+                let fs = Command::new("/sbin/blkid")
+                    .arg(&self.disk_path)
+                    .arg("-s")
+                    .arg("TYPE")
+                    .arg("-o")
+                    .arg("value")
+                    .output()
+                    .context("Failed to run blkid command")?
+                    .stdout;
+
+                let fs = String::from_utf8_lossy(&fs).trim().to_owned();
+                println!("<anylinuxfs-type:{}>", &fs);
+                self.fs_type = if !fs.is_empty() { Some(fs) } else { None };
+            }
+            Some("zfs_member") => {
+                self.fs_type = Some("zfs".to_owned());
+                println!("<anylinuxfs-type:{}>", self.fs_type.as_deref().unwrap());
+            }
+            _ => (),
         }
-        Some("BitLocker") => {
-            *disk_path = format!("/dev/mapper/{}0", mapper_ident_prefix);
-            *fs_type = None;
-        }
-        _ => {}
+        Ok(())
     }
 
-    Ok(is_raid)
-}
-
-/// Detect filesystem type from the disk using blkid.
-fn detect_filesystem_type(disk_path: &str, fs_type: &mut Option<String>) -> anyhow::Result<()> {
-    if disk_path.is_empty() {
-        return Ok(());
-    }
-
-    match fs_type.as_deref() {
-        Some("auto") | None => {
-            let fs = Command::new("/sbin/blkid")
-                .arg(disk_path)
+    /// Resolve a filesystem label for the mount point name.
+    fn resolve_mount_label(&mut self) -> anyhow::Result<()> {
+        if !self.is_logical() {
+            if self.is_zfs {
+                #[cfg(target_os = "linux")]
+                script("modprobe zfs")
+                    .status()
+                    .context("Failed to load zfs module")?;
+                let label = "zfs_root".to_owned();
+                println!("<anylinuxfs-label:{}>", &label);
+                self.mount_name = label;
+            }
+        } else {
+            let label = Command::new("/sbin/blkid")
+                .arg(&self.disk_path)
                 .arg("-s")
-                .arg("TYPE")
+                .arg("LABEL")
                 .arg("-o")
                 .arg("value")
                 .output()
                 .context("Failed to run blkid command")?
                 .stdout;
 
-            let fs = String::from_utf8_lossy(&fs).trim().to_owned();
-            println!("<anylinuxfs-type:{}>", &fs);
-            *fs_type = if !fs.is_empty() { Some(fs) } else { None };
-        }
-        Some("zfs_member") => {
-            *fs_type = Some("zfs".to_owned());
-            println!("<anylinuxfs-type:{}>", fs_type.as_deref().unwrap());
-        }
-        _ => (),
-    }
-    Ok(())
-}
-
-/// Build NFS export configuration and write /etc/exports (or /tmp/exports).
-fn build_nfs_exports(
-    export_path: String,
-    export_mode: &str,
-    effective_export_args_override: Option<&str>,
-    is_zfs: bool,
-    zfs_mountpoints: Vec<zfs::Mountpoint>,
-) -> anyhow::Result<()> {
-    let all_exports = if is_zfs {
-        let mut paths: BTreeSet<_> = zfs_mountpoints.into_iter().map(|m| m.path).collect();
-
-        if !paths.contains(&export_path) {
-            paths.insert(export_path);
-        }
-
-        let mut exports = vec![];
-        for (i, p) in paths.into_iter().enumerate() {
-            let a = export_args_for_path(&p, export_mode, i, effective_export_args_override)?;
-            exports.push((p, a));
-        }
-        exports
-    } else {
-        let export_args =
-            export_args_for_path(&export_path, export_mode, 0, effective_export_args_override)?;
-        vec![(export_path, export_args)]
-    };
-    let mut exports_content = String::new();
-
-    for (export_path, export_args) in &all_exports {
-        println!("<anylinuxfs-nfs-export:{}>", export_path);
-        #[cfg(target_os = "linux")]
-        {
-            exports_content += &format!("\"{}\"      *({})\n", export_path, export_args);
-        }
-        #[cfg(any(target_os = "freebsd", target_os = "macos"))]
-        {
-            exports_content += &format!("{} {},network 0.0.0.0/0\n", export_path, export_args);
-        }
-    }
-
-    let nfs_exports_path = if cfg!(target_os = "freebsd") {
-        "/etc/exports"
-    } else {
-        "/tmp/exports"
-    };
-
-    fs::write(nfs_exports_path, exports_content)
-        .context(format!("Failed to write to {}", nfs_exports_path))?;
-    println!("Successfully initialized {}.", nfs_exports_path);
-    Ok(())
-}
-
-/// Resolve a filesystem label for the mount point name.
-///
-/// For ZFS, this is always "zfs_root". For logical volumes (LVM/RAID),
-/// the label is read from the device via blkid.
-fn resolve_mount_label(
-    mut mount_name: String,
-    disk_path: &str,
-    is_logical: bool,
-    is_zfs: bool,
-) -> anyhow::Result<String> {
-    if !is_logical {
-        if is_zfs {
-            #[cfg(target_os = "linux")]
-            script("modprobe zfs")
-                .status()
-                .context("Failed to load zfs module")?;
-            let label = "zfs_root".to_owned();
-            println!("<anylinuxfs-label:{}>", &label);
-            mount_name = label;
-        }
-    } else {
-        let label = Command::new("/sbin/blkid")
-            .arg(disk_path)
-            .arg("-s")
-            .arg("LABEL")
-            .arg("-o")
-            .arg("value")
-            .output()
-            .context("Failed to run blkid command")?
-            .stdout;
-
-        if let Some(label) =
-            path_safe_label_name(&String::from_utf8_lossy(&label).trim().to_owned())
-        {
-            println!("<anylinuxfs-label:{}>", &label);
-            mount_name = label;
-        }
-    }
-    Ok(mount_name)
-}
-
-/// Mount the filesystem (ZFS or regular) and register deferred cleanup.
-fn mount_filesystem(
-    disk_path: &str,
-    mount_point: &str,
-    is_zfs: bool,
-    fs_type: Option<String>,
-    fs_driver: Option<&str>,
-    mount_options: Option<&str>,
-    verbose: bool,
-    zfs_mountpoints: &[zfs::Mountpoint],
-    env_pwds: &HashMap<usize, BString>,
-    key_file_path: Option<&str>,
-    zfs_pools: Vec<String>,
-    deferred: &mut Deferred,
-) -> anyhow::Result<()> {
-    let mnt_args = if !is_zfs {
-        let mnt_args = [
-            "-t",
-            fs_driver.or(fs_type.as_deref()).unwrap_or("auto"),
-            disk_path,
-            mount_point,
-        ]
-        .into_iter()
-        .chain(mount_options.into_iter().flat_map(|opts| ["-o", opts]))
-        .chain(verbose.then_some("-v").into_iter());
-
-        let mnt_args: Vec<&str> = mnt_args.collect();
-        println!("mount args: {:?}", &mnt_args);
-        mnt_args
-    } else {
-        vec![]
-    };
-
-    // we must show any output of mount command
-    // in case there's a warning (e.g. NTFS cannot be accessed rw)
-    println!("<anylinuxfs-force-output:on>");
-    let force_output_off = deferred.add(|| {
-        println!("<anylinuxfs-force-output:off>");
-    });
-
-    let mnt_result = if is_zfs {
-        zfs::mount_datasets(zfs_mountpoints, env_pwds, key_file_path)?
-    } else {
-        let mount_bin = if cfg!(target_os = "freebsd") {
-            "/sbin/mount"
-        } else {
-            "/bin/mount"
-        };
-        Command::new(mount_bin)
-            .args(mnt_args)
-            .status()
-            .context("Failed to run mount command")?
-    };
-
-    if !mnt_result.success() {
-        return Err(anyhow!(
-            "Mounting {} on {} failed with error code {}",
-            disk_path,
-            mount_point,
-            mnt_result
-                .code()
-                .map(|c| c.to_string())
-                .unwrap_or("unknown".to_owned())
-        ));
-    }
-    deferred.call_now(force_output_off);
-
-    println!(
-        "'{}' mounted successfully on '{}', filesystem {}.",
-        disk_path,
-        mount_point,
-        fs_type.unwrap_or("unknown".to_owned())
-    );
-
-    let zfs_export_script = zfs_pools
-        .iter()
-        .rev()
-        .map(|pool| format!("zpool export {}", pool))
-        .collect::<Vec<String>>()
-        .join(" && ");
-
-    deferred.add({
-        let mount_point = mount_point.to_owned();
-        move || {
-            let mut backoff = Duration::from_millis(50);
-            let umount_action: &dyn Fn() -> _ = if is_zfs {
-                &|| script(&zfs_export_script).status().map(|_| ())
-            } else {
-                #[cfg(target_os = "linux")]
-                {
-                    &|| unmount(&mount_point, UnmountFlags::empty())
-                }
-                #[cfg(not(target_os = "linux"))]
-                {
-                    &|| Ok(())
-                }
-            };
-            while let Err(e) = umount_action() {
-                eprintln!("Failed to unmount '{}': {}", &mount_point, e);
-                thread::sleep(backoff);
-                backoff = std::cmp::min(backoff * 2, Duration::from_secs(32));
+            if let Some(label) =
+                path_safe_label_name(&String::from_utf8_lossy(&label).trim().to_owned())
+            {
+                println!("<anylinuxfs-label:{}>", &label);
+                self.mount_name = label;
             }
-            println!("Unmounted '{}' successfully.", &mount_point);
-
-            _ = fs::remove_dir(&mount_point);
         }
-    });
+        Ok(())
+    }
 
-    Ok(())
+    /// Import ZFS pools and populate zfs_mountpoints / zfs_pools.
+    fn import_zfs_pools(&mut self, mount_point: &str) -> anyhow::Result<()> {
+        if !self.is_zfs {
+            return Ok(());
+        }
+        let (status, mountpoints, zpools) =
+            zfs::import_all_zpools(mount_point, self.specified_read_only())?;
+        if !status.success() {
+            return Err(anyhow!(
+                "Importing zpools failed with error code {}",
+                status
+                    .code()
+                    .map(|c| c.to_string())
+                    .unwrap_or("unknown".to_owned())
+            ));
+        }
+        self.zfs_mountpoints = mountpoints;
+        self.zfs_pools = zpools;
+        Ok(())
+    }
+
+    /// Mount the filesystem (ZFS or regular) and register deferred cleanup.
+    fn mount(&self, mount_point: &str, deferred: &mut Deferred) -> anyhow::Result<()> {
+        let mnt_args = if !self.is_zfs {
+            let mnt_args = [
+                "-t",
+                self.fs_driver
+                    .as_deref()
+                    .or(self.fs_type.as_deref())
+                    .unwrap_or("auto"),
+                &self.disk_path,
+                mount_point,
+            ]
+            .into_iter()
+            .chain(
+                self.mount_options
+                    .as_deref()
+                    .into_iter()
+                    .flat_map(|opts| ["-o", opts]),
+            )
+            .chain(self.verbose.then_some("-v").into_iter());
+
+            let mnt_args: Vec<&str> = mnt_args.collect();
+            println!("mount args: {:?}", &mnt_args);
+            mnt_args
+        } else {
+            vec![]
+        };
+
+        // we must show any output of mount command
+        // in case there's a warning (e.g. NTFS cannot be accessed rw)
+        println!("<anylinuxfs-force-output:on>");
+        let force_output_off = deferred.add(|| {
+            println!("<anylinuxfs-force-output:off>");
+        });
+
+        let mnt_result = if self.is_zfs {
+            zfs::mount_datasets(
+                &self.zfs_mountpoints,
+                &self.env_pwds,
+                self.key_file_path.as_deref(),
+            )?
+        } else {
+            let mount_bin = if cfg!(target_os = "freebsd") {
+                "/sbin/mount"
+            } else {
+                "/bin/mount"
+            };
+            Command::new(mount_bin)
+                .args(mnt_args)
+                .status()
+                .context("Failed to run mount command")?
+        };
+
+        if !mnt_result.success() {
+            return Err(anyhow!(
+                "Mounting {} on {} failed with error code {}",
+                self.disk_path,
+                mount_point,
+                mnt_result
+                    .code()
+                    .map(|c| c.to_string())
+                    .unwrap_or("unknown".to_owned())
+            ));
+        }
+        deferred.call_now(force_output_off);
+
+        println!(
+            "'{}' mounted successfully on '{}', filesystem {}.",
+            self.disk_path,
+            mount_point,
+            self.fs_type.as_deref().unwrap_or("unknown")
+        );
+
+        let is_zfs = self.is_zfs;
+        let zfs_export_script = self
+            .zfs_pools
+            .iter()
+            .rev()
+            .map(|pool| format!("zpool export {}", pool))
+            .collect::<Vec<String>>()
+            .join(" && ");
+
+        deferred.add({
+            let mount_point = mount_point.to_owned();
+            move || {
+                let mut backoff = Duration::from_millis(50);
+                let umount_action: &dyn Fn() -> _ = if is_zfs {
+                    &|| script(&zfs_export_script).status().map(|_| ())
+                } else {
+                    #[cfg(target_os = "linux")]
+                    {
+                        &|| unmount(&mount_point, UnmountFlags::empty())
+                    }
+                    #[cfg(not(target_os = "linux"))]
+                    {
+                        &|| Ok(())
+                    }
+                };
+                while let Err(e) = umount_action() {
+                    eprintln!("Failed to unmount '{}': {}", &mount_point, e);
+                    thread::sleep(backoff);
+                    backoff = std::cmp::min(backoff * 2, Duration::from_secs(32));
+                }
+                println!("Unmounted '{}' successfully.", &mount_point);
+
+                _ = fs::remove_dir(&mount_point);
+            }
+        });
+
+        Ok(())
+    }
+
+    /// Build NFS export configuration and write /etc/exports (or /tmp/exports).
+    fn build_nfs_exports(
+        &self,
+        export_path: String,
+        export_mode: &str,
+        effective_export_args_override: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let all_exports = if self.is_zfs {
+            let mut paths: BTreeSet<_> = self
+                .zfs_mountpoints
+                .iter()
+                .map(|m| m.path.clone())
+                .collect();
+
+            if !paths.contains(&export_path) {
+                paths.insert(export_path);
+            }
+
+            let mut exports = vec![];
+            for (i, p) in paths.into_iter().enumerate() {
+                let a = export_args_for_path(&p, export_mode, i, effective_export_args_override)?;
+                exports.push((p, a));
+            }
+            exports
+        } else {
+            let export_args =
+                export_args_for_path(&export_path, export_mode, 0, effective_export_args_override)?;
+            vec![(export_path, export_args)]
+        };
+        let mut exports_content = String::new();
+
+        for (export_path, export_args) in &all_exports {
+            println!("<anylinuxfs-nfs-export:{}>", export_path);
+            #[cfg(target_os = "linux")]
+            {
+                exports_content += &format!("\"{}\"      *({})\n", export_path, export_args);
+            }
+            #[cfg(any(target_os = "freebsd", target_os = "macos"))]
+            {
+                exports_content += &format!("{} {},network 0.0.0.0/0\n", export_path, export_args);
+            }
+        }
+
+        let nfs_exports_path = if cfg!(target_os = "freebsd") {
+            "/etc/exports"
+        } else {
+            "/tmp/exports"
+        };
+
+        fs::write(nfs_exports_path, exports_content)
+            .context(format!("Failed to write to {}", nfs_exports_path))?;
+        println!("Successfully initialized {}.", nfs_exports_path);
+        Ok(())
+    }
 }
 
 fn run() -> anyhow::Result<()> {
@@ -1000,65 +1072,29 @@ fn run() -> anyhow::Result<()> {
     // Extract key file args before other cli fields are moved.
     let cli_key_file = cli.key_file.clone();
 
-    let mut disk_path = cli.disk_path;
-    let mut fs_type = cli.fs_type;
-    let fs_driver = cli.fs_driver;
-    let assemble_raid = cli.assemble_raid;
-    let mount_options = cli.mount_options;
-    let verbose = cli.verbose;
-
-    let specified_read_only = mount_options
-        .as_deref()
-        .map(|opts| is_read_only_set(opts.split(',')))
-        .unwrap_or(false);
-
-    let (mapper_ident_prefix, cryptsetup_op) = match fs_type.as_deref() {
-        Some("crypto_LUKS") => ("luks", "open"),
-        Some("BitLocker") => ("btlk", "bitlkOpen"),
-        _ => ("luks", "open"),
-    };
-
-    let env_pwds = get_pwds_from_env();
-    let env_has_passphrase = !env_pwds.is_empty();
-
     // Resolve key file path inside the VM.
     // For Linux: the path is directly accessible via the virtiofs rootfs (--key-file arg).
     // For FreeBSD: detect the ISO by label and mount it automatically.
     let key_file_path = setup_key_file_path(cli_key_file, &mut deferred)
         .context("Failed to set up encryption key file")?;
 
+    let mut dsk = VmDiskContext::new(&cli, key_file_path);
+
     // decrypt LUKS/BitLocker volumes if any
     if let Some(decrypt) = &cli.decrypt {
-        decrypt_volumes(
-            decrypt,
-            mapper_ident_prefix,
-            cryptsetup_op,
-            cli.reuse_passphrase,
-            env_has_passphrase,
-            &env_pwds,
-            key_file_path.as_deref(),
-            &mut deferred,
-        )?;
+        dsk.decrypt(decrypt, cli.reuse_passphrase, &mut deferred)?;
     }
 
-    let is_raid = activate_volume_managers(
-        &mut disk_path,
-        &mut fs_type,
-        assemble_raid,
-        mapper_ident_prefix,
-    )?;
-    let is_logical = disk_path.starts_with("/dev/mapper") || is_raid;
-    let is_zfs = fs_type.as_deref() == Some("zfs_member");
+    dsk.activate_volume_managers()?;
 
-    let mut mount_name = cli.mount_name;
     if !cli.custom_mount_point {
-        mount_name = resolve_mount_label(mount_name, &disk_path, is_logical, is_zfs)?;
+        dsk.resolve_mount_label()?;
     }
 
-    detect_filesystem_type(&disk_path, &mut fs_type)?;
+    dsk.detect_fs_type()?;
 
     // scan multidisk volumes
-    if cli.multi_device && fs_type.as_deref() == Some("btrfs") {
+    if cli.multi_device && dsk.fs_type.as_deref() == Some("btrfs") {
         Command::new("/sbin/btrfs")
             .args(["device", "scan"])
             .status()
@@ -1078,10 +1114,10 @@ fn run() -> anyhow::Result<()> {
         return Err(anyhow!("Failed to mount tmpfs on /mnt"));
     }
 
-    common_utils::fail_for_known_nonmountable_types(fs_type.as_deref())?;
+    common_utils::fail_for_known_nonmountable_types(dsk.fs_type.as_deref())?;
 
-    let mount_point = if !mount_name.is_empty() {
-        let mount_point = format!("/mnt/{}", mount_name);
+    let mount_point = if !dsk.mount_name.is_empty() {
+        let mount_point = format!("/mnt/{}", dsk.mount_name);
         custom_action.set_env("ALFS_VM_MOUNT_POINT", mount_point.clone());
 
         fs::create_dir_all(&mount_point)
@@ -1092,27 +1128,12 @@ fn run() -> anyhow::Result<()> {
         "".into()
     };
 
-    let (zfs_mountpoints, zfs_pools) = if is_zfs {
-        let (status, mountpoints, zpools) =
-            zfs::import_all_zpools(&mount_point, specified_read_only)?;
-        if !status.success() {
-            return Err(anyhow!(
-                "Importing zpools failed with error code {}",
-                status
-                    .code()
-                    .map(|c| c.to_string())
-                    .unwrap_or("unknown".to_owned())
-            ));
-        }
-        (mountpoints, zpools)
-    } else {
-        (vec![], vec![])
-    };
+    dsk.import_zfs_pools(&mount_point)?;
 
     #[cfg(all(feature = "freebsd", target_os = "linux"))]
     {
         // Inform the user about ZFS crypto performance on Linux arm64 and suggest using FreeBSD
-        if zfs_mountpoints.iter().any(|m| m.encrypted) {
+        if dsk.zfs_mountpoints.iter().any(|m| m.encrypted) {
             println!("<anylinuxfs-force-output:on>");
             println!("Warning: Using encrypted ZFS datasets on Linux with ARM64 hardware results");
             println!("in degraded performance due to GPL/CDDL license incompatibility.");
@@ -1129,21 +1150,8 @@ fn run() -> anyhow::Result<()> {
         .before_mount()
         .context("before_mount action")?;
 
-    if !disk_path.is_empty() && !mount_point.is_empty() {
-        mount_filesystem(
-            &disk_path,
-            &mount_point,
-            is_zfs,
-            fs_type,
-            fs_driver.as_deref(),
-            mount_options.as_deref(),
-            verbose,
-            &zfs_mountpoints,
-            &env_pwds,
-            key_file_path.as_deref(),
-            zfs_pools,
-            &mut deferred,
-        )?;
+    if !dsk.disk_path.is_empty() && !mount_point.is_empty() {
+        dsk.mount(&mount_point, &mut deferred)?;
     }
 
     custom_action.after_mount().context("after_mount action")?;
@@ -1157,9 +1165,9 @@ fn run() -> anyhow::Result<()> {
     let effective_mount_options = {
         let opts = script_output(&format!(
             "mount | grep {} | awk -F'(' '{{ print $2 }}' | tr -d ')'",
-            &disk_path
+            &dsk.disk_path
         ))
-        .with_context(|| format!("Failed to get mount options for {}", &disk_path))?
+        .with_context(|| format!("Failed to get mount options for {}", &dsk.disk_path))?
         .trim()
         .to_owned();
         println!("Effective mount options: {}", opts);
@@ -1169,15 +1177,15 @@ fn run() -> anyhow::Result<()> {
     .map(|s| s.to_owned())
     .collect::<Vec<String>>();
 
-    let effective_read_only = if is_zfs {
+    let effective_read_only = if dsk.is_zfs {
         // we don't check effective ro flag for ZFS
         // (it's only useful for NTFS in hibernation anyway)
-        specified_read_only
+        dsk.specified_read_only()
     } else {
         is_read_only_set(effective_mount_options.iter().map(String::as_str))
     };
 
-    if specified_read_only != effective_read_only {
+    if dsk.specified_read_only() != effective_read_only {
         println!("<anylinuxfs-mount:changed-to-ro>");
     }
 
@@ -1197,13 +1205,7 @@ fn run() -> anyhow::Result<()> {
         export_args_override
     };
 
-    build_nfs_exports(
-        export_path,
-        export_mode,
-        effective_export_args_override,
-        is_zfs,
-        zfs_mountpoints,
-    )?;
+    dsk.build_nfs_exports(export_path, export_mode, effective_export_args_override)?;
 
     match Command::new("/usr/local/bin/entrypoint.sh").spawn() {
         Ok(mut hnd) => {
