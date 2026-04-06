@@ -550,6 +550,226 @@ fn mount_tmpfs(paths: &[&str]) -> anyhow::Result<()> {
 
 const KERNEL_LOG_PATH: &str = "/tmp/kernel.log";
 
+/// Decrypt LUKS/BitLocker volumes using cryptsetup.
+fn decrypt_volumes(
+    decrypt_devs: &str,
+    mapper_ident_prefix: &str,
+    cryptsetup_op: &str,
+    reuse_passphrase: bool,
+    env_has_passphrase: bool,
+    env_pwds: &HashMap<usize, BString>,
+    key_file_path: Option<&str>,
+    deferred: &mut Deferred,
+) -> anyhow::Result<()> {
+    let (pwd_for_all, input_mode_fn): (_, fn() -> _) = if reuse_passphrase
+        && key_file_path.is_none()
+    {
+        let pwd = if let Some(passphrase) = env_pwds.get(&1) {
+            BString::from(passphrase.as_bytes())
+        } else if env_has_passphrase {
+            return Err(anyhow!(
+                "Missing environment variable {}",
+                ALFS_PASSPHRASE_PREFIX.as_bstr()
+            ));
+        } else {
+            println!("<anylinuxfs-passphrase-prompt:start>");
+            let prompt_end = deferred.add(|| println!("<anylinuxfs-passphrase-prompt:end>"));
+            let pwd = BString::from(rpassword::read_password()?.as_bytes());
+            deferred.call_now(prompt_end);
+            pwd
+        };
+        (Some(pwd), || Stdio::piped())
+    } else if env_has_passphrase && key_file_path.is_none() {
+        (None, || Stdio::piped())
+    } else {
+        (None, || Stdio::inherit())
+    };
+
+    let key_file_args: &[&str] = if let Some(key_file) = key_file_path {
+        &["--key-file", key_file]
+    } else {
+        &[]
+    };
+    for (i, dev) in decrypt_devs.split(",").enumerate() {
+        let mut cryptsetup = Command::new("/sbin/cryptsetup")
+            .arg("-T1")
+            .arg(cryptsetup_op)
+            .args(key_file_args)
+            .arg(&dev)
+            .arg(format!("{mapper_ident_prefix}{i}"))
+            .stdin(input_mode_fn())
+            .spawn()?;
+
+        let pwd = pwd_for_all.as_ref().or(env_pwds.get(&(i + 1)));
+        let cryptsetup_result = if let Some(pwd) = pwd {
+            {
+                let mut stdin = cryptsetup.stdin.take().unwrap();
+                stdin.write_all(pwd.as_bytes())?;
+            } // must close stdin before waiting for child
+            cryptsetup.wait()?
+        } else if key_file_path.is_some() {
+            cryptsetup.wait()?
+        } else if env_has_passphrase {
+            return Err(anyhow!(
+                "Missing environment variable {}{} for device {}",
+                ALFS_PASSPHRASE_PREFIX.as_bstr(),
+                i + 1,
+                dev
+            ));
+        } else {
+            println!("<anylinuxfs-passphrase-prompt:start>");
+            let prompt_end = deferred.add(|| println!("<anylinuxfs-passphrase-prompt:end>"));
+            let res = cryptsetup.wait()?;
+            deferred.call_now(prompt_end);
+            res
+        };
+
+        if !cryptsetup_result.success() {
+            return Err(anyhow!(
+                "Failed to open encrypted device '{}': {}",
+                dev,
+                cryptsetup_result
+                    .code()
+                    .map(|c| c.to_string())
+                    .unwrap_or("unknown".to_owned())
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Activate RAID and LVM volumes, updating `disk_path` and `fs_type` as needed.
+fn activate_volume_managers(
+    disk_path: &mut String,
+    fs_type: &mut Option<String>,
+    assemble_raid: bool,
+    mapper_ident_prefix: &str,
+) -> anyhow::Result<bool> {
+    let is_raid = assemble_raid || disk_path.starts_with("/dev/md");
+    if is_raid {
+        let _mdadm_assemble_result = Command::new("/sbin/mdadm")
+            .arg("--assemble")
+            .arg("--scan")
+            .status()
+            .context("Failed to run mdadm command")?;
+
+        let md_path = script_output("mdadm --detail --scan | cut -d' ' -f2")
+            .context("Failed to get RAID device path from mdadm")?
+            .trim()
+            .to_owned();
+
+        if !md_path.is_empty() && !disk_path.starts_with("/dev/mapper") {
+            *disk_path = md_path;
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    let _vgchange_result = Command::new("/sbin/vgchange")
+        .arg("-ay")
+        .status()
+        .context("Failed to run vgchange command")?;
+
+    match fs_type.as_deref() {
+        Some("crypto_LUKS") => {
+            *disk_path = format!("/dev/mapper/{}0", mapper_ident_prefix);
+            *fs_type = None;
+        }
+        Some("BitLocker") => {
+            *disk_path = format!("/dev/mapper/{}0", mapper_ident_prefix);
+            *fs_type = None;
+        }
+        _ => {}
+    }
+
+    Ok(is_raid)
+}
+
+/// Detect filesystem type from the disk using blkid.
+fn detect_filesystem_type(
+    disk_path: &str,
+    fs_type: &mut Option<String>,
+) -> anyhow::Result<()> {
+    if disk_path.is_empty() {
+        return Ok(());
+    }
+
+    match fs_type.as_deref() {
+        Some("auto") | None => {
+            let fs = Command::new("/sbin/blkid")
+                .arg(disk_path)
+                .arg("-s")
+                .arg("TYPE")
+                .arg("-o")
+                .arg("value")
+                .output()
+                .context("Failed to run blkid command")?
+                .stdout;
+
+            let fs = String::from_utf8_lossy(&fs).trim().to_owned();
+            println!("<anylinuxfs-type:{}>", &fs);
+            *fs_type = if !fs.is_empty() { Some(fs) } else { None };
+        }
+        Some("zfs_member") => {
+            *fs_type = Some("zfs".to_owned());
+            println!("<anylinuxfs-type:{}>", fs_type.as_deref().unwrap());
+        }
+        _ => (),
+    }
+    Ok(())
+}
+
+/// Build NFS export configuration and write /etc/exports (or /tmp/exports).
+fn build_nfs_exports(
+    export_path: String,
+    export_mode: &str,
+    effective_export_args_override: Option<&str>,
+    is_zfs: bool,
+    zfs_mountpoints: Vec<zfs::Mountpoint>,
+) -> anyhow::Result<()> {
+    let all_exports = if is_zfs {
+        let mut paths: BTreeSet<_> = zfs_mountpoints.into_iter().map(|m| m.path).collect();
+
+        if !paths.contains(&export_path) {
+            paths.insert(export_path);
+        }
+
+        let mut exports = vec![];
+        for (i, p) in paths.into_iter().enumerate() {
+            let a = export_args_for_path(&p, export_mode, i, effective_export_args_override)?;
+            exports.push((p, a));
+        }
+        exports
+    } else {
+        let export_args =
+            export_args_for_path(&export_path, export_mode, 0, effective_export_args_override)?;
+        vec![(export_path, export_args)]
+    };
+    let mut exports_content = String::new();
+
+    for (export_path, export_args) in &all_exports {
+        println!("<anylinuxfs-nfs-export:{}>", export_path);
+        #[cfg(target_os = "linux")]
+        {
+            exports_content += &format!("\"{}\"      *({})\n", export_path, export_args);
+        }
+        #[cfg(any(target_os = "freebsd", target_os = "macos"))]
+        {
+            exports_content += &format!("{} {},network 0.0.0.0/0\n", export_path, export_args);
+        }
+    }
+
+    let nfs_exports_path = if cfg!(target_os = "freebsd") {
+        "/etc/exports"
+    } else {
+        "/tmp/exports"
+    };
+
+    fs::write(nfs_exports_path, exports_content)
+        .context(format!("Failed to write to {}", nfs_exports_path))?;
+    println!("Successfully initialized {}.", nfs_exports_path);
+    Ok(())
+}
+
 fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
@@ -661,122 +881,24 @@ fn run() -> anyhow::Result<()> {
 
     // decrypt LUKS/BitLocker volumes if any
     if let Some(decrypt) = &cli.decrypt {
-        let (pwd_for_all, input_mode_fn): (_, fn() -> _) = if cli.reuse_passphrase
-            && key_file_path.is_none()
-        {
-            let pwd = if let Some(passphrase) = env_pwds.get(&1) {
-                BString::from(passphrase.as_bytes())
-            } else if env_has_passphrase {
-                return Err(anyhow!(
-                    "Missing environment variable {}",
-                    ALFS_PASSPHRASE_PREFIX.as_bstr()
-                ));
-            } else {
-                println!("<anylinuxfs-passphrase-prompt:start>");
-                let prompt_end = deferred.add(|| println!("<anylinuxfs-passphrase-prompt:end>"));
-                let pwd = BString::from(rpassword::read_password()?.as_bytes());
-                deferred.call_now(prompt_end);
-                pwd
-            };
-            (Some(pwd), || Stdio::piped())
-        } else if env_has_passphrase && key_file_path.is_none() {
-            (None, || Stdio::piped())
-        } else {
-            (None, || Stdio::inherit())
-        };
-
-        let key_file_args: &[&str] = if let Some(ref key_file) = key_file_path {
-            &["--key-file", key_file.as_str()]
-        } else {
-            &[]
-        };
-        for (i, dev) in decrypt.split(",").enumerate() {
-            let mut cryptsetup = Command::new("/sbin/cryptsetup")
-                .arg("-T1")
-                .arg(cryptsetup_op)
-                .args(key_file_args)
-                .arg(&dev)
-                .arg(format!("{mapper_ident_prefix}{i}"))
-                .stdin(input_mode_fn())
-                .spawn()?;
-
-            let pwd = pwd_for_all.as_ref().or(env_pwds.get(&(i + 1)));
-            let cryptsetup_result = if let Some(pwd) = pwd {
-                {
-                    let mut stdin = cryptsetup.stdin.take().unwrap();
-                    stdin.write_all(pwd.as_bytes())?;
-                } // must close stdin before waiting for child
-                cryptsetup.wait()?
-            } else if key_file_path.is_some() {
-                // --key-file has been provided to cryptsetup, just wait for it to finish
-                cryptsetup.wait()?
-            } else if env_has_passphrase {
-                return Err(anyhow!(
-                    "Missing environment variable {}{} for device {}",
-                    ALFS_PASSPHRASE_PREFIX.as_bstr(),
-                    i + 1,
-                    dev
-                ));
-            } else {
-                println!("<anylinuxfs-passphrase-prompt:start>");
-                let prompt_end = deferred.add(|| println!("<anylinuxfs-passphrase-prompt:end>"));
-                let res = cryptsetup.wait()?;
-                deferred.call_now(prompt_end);
-                res
-            };
-
-            if !cryptsetup_result.success() {
-                return Err(anyhow!(
-                    "Failed to open encrypted device '{}': {}",
-                    dev,
-                    cryptsetup_result
-                        .code()
-                        .map(|c| c.to_string())
-                        .unwrap_or("unknown".to_owned())
-                ));
-            }
-        }
+        decrypt_volumes(
+            decrypt,
+            mapper_ident_prefix,
+            cryptsetup_op,
+            cli.reuse_passphrase,
+            env_has_passphrase,
+            &env_pwds,
+            key_file_path.as_deref(),
+            &mut deferred,
+        )?;
     }
 
-    // activate RAID volumes if any
-    let is_raid = assemble_raid || disk_path.starts_with("/dev/md");
-    if is_raid {
-        let _mdadm_assemble_result = Command::new("/sbin/mdadm")
-            .arg("--assemble")
-            .arg("--scan")
-            .status()
-            .context("Failed to run mdadm command")?;
-
-        let md_path = script_output("mdadm --detail --scan | cut -d' ' -f2")
-            .context("Failed to get RAID device path from mdadm")?
-            .trim()
-            .to_owned();
-
-        if !md_path.is_empty() && !disk_path.starts_with("/dev/mapper") {
-            // set disk_path to the real /dev/md* path unless it was already set to a /dev/mapper path (LVM on RAID)
-            disk_path = md_path;
-        }
-    }
-
-    // activate LVM volumes if any
-    // vgchange can return non-zero but still partially succeed
-    #[cfg(target_os = "linux")]
-    let _vgchange_result = Command::new("/sbin/vgchange")
-        .arg("-ay")
-        .status()
-        .context("Failed to run vgchange command")?;
-
-    match fs_type.as_deref() {
-        Some("crypto_LUKS") => {
-            disk_path = "/dev/mapper/luks0".into();
-            fs_type = None;
-        }
-        Some("BitLocker") => {
-            disk_path = "/dev/mapper/btlk0".into();
-            fs_type = None;
-        }
-        _ => {}
-    }
+    let is_raid = activate_volume_managers(
+        &mut disk_path,
+        &mut fs_type,
+        assemble_raid,
+        mapper_ident_prefix,
+    )?;
     let is_logical = disk_path.starts_with("/dev/mapper") || is_raid;
     let is_zfs = fs_type.as_deref() == Some("zfs_member");
 
@@ -812,30 +934,7 @@ fn run() -> anyhow::Result<()> {
         }
     }
 
-    if !disk_path.is_empty() {
-        match fs_type.as_deref() {
-            Some("auto") | None => {
-                let fs = Command::new("/sbin/blkid")
-                    .arg(&disk_path)
-                    .arg("-s")
-                    .arg("TYPE")
-                    .arg("-o")
-                    .arg("value")
-                    .output()
-                    .context("Failed to run blkid command")?
-                    .stdout;
-
-                let fs = String::from_utf8_lossy(&fs).trim().to_owned();
-                println!("<anylinuxfs-type:{}>", &fs);
-                fs_type = if !fs.is_empty() { Some(fs) } else { None };
-            }
-            Some("zfs_member") => {
-                fs_type = Some("zfs".to_owned());
-                println!("<anylinuxfs-type:{}>", fs_type.as_deref().unwrap());
-            }
-            _ => (),
-        }
-    }
+    detect_filesystem_type(&disk_path, &mut fs_type)?;
 
     // scan multidisk volumes
     if cli.multi_device && fs_type.as_deref() == Some("btrfs") {
@@ -1035,8 +1134,6 @@ fn run() -> anyhow::Result<()> {
     .map(|s| s.to_owned())
     .collect::<Vec<String>>();
 
-    // list_dir(mount_point);
-
     let effective_read_only = if is_zfs {
         // we don't check effective ro flag for ZFS
         // (it's only useful for NTFS in hibernation anyway)
@@ -1065,48 +1162,13 @@ fn run() -> anyhow::Result<()> {
         export_args_override
     };
 
-    let all_exports = if is_zfs {
-        let mut paths: BTreeSet<_> = zfs_mountpoints.into_iter().map(|m| m.path).collect();
-
-        if !paths.contains(&export_path) {
-            paths.insert(export_path);
-        }
-
-        let mut exports = vec![];
-        for (i, p) in paths.into_iter().enumerate() {
-            let a = export_args_for_path(&p, export_mode, i, effective_export_args_override)?;
-            exports.push((p, a));
-        }
-        exports
-    } else {
-        // single export
-        let export_args =
-            export_args_for_path(&export_path, export_mode, 0, effective_export_args_override)?;
-        vec![(export_path, export_args)]
-    };
-    let mut exports_content = String::new();
-
-    for (export_path, export_args) in &all_exports {
-        println!("<anylinuxfs-nfs-export:{}>", export_path);
-        #[cfg(target_os = "linux")]
-        {
-            exports_content += &format!("\"{}\"      *({})\n", export_path, export_args);
-        }
-        #[cfg(any(target_os = "freebsd", target_os = "macos"))]
-        {
-            exports_content += &format!("{} {},network 0.0.0.0/0\n", export_path, export_args);
-        }
-    }
-
-    let nfs_exports_path = if cfg!(target_os = "freebsd") {
-        "/etc/exports"
-    } else {
-        "/tmp/exports"
-    };
-
-    fs::write(nfs_exports_path, exports_content)
-        .context(format!("Failed to write to {}", nfs_exports_path))?;
-    println!("Successfully initialized {}.", nfs_exports_path);
+    build_nfs_exports(
+        export_path,
+        export_mode,
+        effective_export_args_override,
+        is_zfs,
+        zfs_mountpoints,
+    )?;
 
     match Command::new("/usr/local/bin/entrypoint.sh").spawn() {
         Ok(mut hnd) => {
