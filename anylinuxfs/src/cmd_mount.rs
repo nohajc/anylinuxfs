@@ -784,10 +784,8 @@ pub(crate) fn pick_unique_hostname(base: &str, active_vm_hosts: &HashSet<String>
     }
 }
 
-/// Spawn a thread that reads VM PTY output, parses `<anylinuxfs-*>` tags,
-/// and forwards NFS readiness / passphrase / report signals via channels.
-/// Reads PTY output from the VM, parses structured tags, and dispatches
-/// NFS-ready / passphrase-prompt / report events to the parent process.
+/// Reads PTY output from the VM, parses `<anylinuxfs-*>` tags, and dispatches
+/// NFS-ready / passphrase-prompt / report events to the parent process via channels.
 struct PtyReader {
     pty_fd: libc::c_int,
     guest_prefix: log::Prefix,
