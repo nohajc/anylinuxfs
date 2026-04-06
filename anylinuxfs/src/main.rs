@@ -3231,18 +3231,20 @@ impl AppRunner {
                 }
             });
 
-            if config.common.net_helper == NetHelper::GvProxy && network_env.rpcbind_running {
-                services_to_restore = rpcbind::services::list()?
+            services_to_restore = if config.common.net_helper == NetHelper::GvProxy
+                && network_env.rpcbind_running
+            {
+                rpcbind::services::list()?
                     .into_iter()
                     .filter(|entry| {
                         entry.prog == rpcbind::RPCPROG_MNT
                             || entry.prog == rpcbind::RPCPROG_NFS
                             || entry.prog == rpcbind::RPCPROG_STAT
                     })
-                    .collect();
+                    .collect()
             } else {
-                services_to_restore = Vec::new();
-            }
+                Vec::new()
+            };
             setup_rpcbind_services(
                 &config,
                 &network_env,
