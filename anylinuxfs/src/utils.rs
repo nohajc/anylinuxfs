@@ -1020,10 +1020,7 @@ impl StdinForwarder {
     }
 
     /// Pipe mode: read from stdin directly and forward to VM.
-    fn run_pipe_forwarding(
-        in_fd: libc::c_int,
-        close_rx: mpsc::Receiver<()>,
-    ) -> anyhow::Result<()> {
+    fn run_pipe_forwarding(in_fd: libc::c_int, close_rx: mpsc::Receiver<()>) -> anyhow::Result<()> {
         use std::io::{BufRead, BufReader, stdin};
         use std::sync::mpsc;
 

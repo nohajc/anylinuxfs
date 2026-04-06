@@ -42,8 +42,8 @@ where
     R: ?Sized + Serialize,
     S: Read + Write,
 {
-    let msg_str = ron::ser::to_string(msg)
-        .with_context(|| format!("Failed to serialize {}", direction))?;
+    let msg_str =
+        ron::ser::to_string(msg).with_context(|| format!("Failed to serialize {}", direction))?;
     let size = msg_str.len() as u32;
     let size_buf = size.to_be_bytes();
     stream

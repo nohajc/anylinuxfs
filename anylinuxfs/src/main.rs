@@ -2396,9 +2396,7 @@ fn subscribe_to_vm_events(
             return;
         };
 
-        if let Err(e) =
-            ipc::Client::write_request(&mut stream, &vmctrl::Request::SubscribeEvents)
-        {
+        if let Err(e) = ipc::Client::write_request(&mut stream, &vmctrl::Request::SubscribeEvents) {
             host_eprintln!("Failed to send SubscribeEvents to vmctrl: {:#}", e);
             return;
         };
@@ -2423,7 +2421,7 @@ fn subscribe_to_vm_events(
 fn setup_rpcbind_services<'a>(
     config: &MountConfig,
     network_env: &NetworkEnv,
-    services_to_restore: &'a Vec<rpcbind::services::RpcbEntry>,
+    services_to_restore: &'a [rpcbind::Entry],
     deferred: &mut Deferred<'a>,
 ) -> anyhow::Result<()> {
     if !(config.common.net_helper == NetHelper::GvProxy && network_env.rpcbind_running) {
@@ -2450,9 +2448,9 @@ fn setup_rpcbind_services<'a>(
     let unregister_fn = || -> anyhow::Result<()> {
         let uid = config.common.invoker_uid;
         if config.common.sudo_uid.is_none() && uid != 0 {
-            let any_root_svcs = services_to_restore.iter().any(|entry| {
-                Some(&entry.owner) != utils::user_name_from_uid(uid).as_ref()
-            });
+            let any_root_svcs = services_to_restore
+                .iter()
+                .any(|entry| Some(&entry.owner) != utils::user_name_from_uid(uid).as_ref());
 
             if any_root_svcs {
                 safe_println!("rpcbind already running, need to use sudo for NFS setup")?;
@@ -2486,8 +2484,7 @@ fn setup_rpcbind_services<'a>(
             return Err(anyhow!("Failed to register NFS server to rpcbind"));
         }
     } else {
-        rpcbind::services::register()
-            .context("Failed to register NFS server to rpcbind")?;
+        rpcbind::services::register().context("Failed to register NFS server to rpcbind")?;
     }
 
     Ok(())
@@ -3231,26 +3228,20 @@ impl AppRunner {
                 }
             });
 
-            services_to_restore = if config.common.net_helper == NetHelper::GvProxy
-                && network_env.rpcbind_running
-            {
-                rpcbind::services::list()?
-                    .into_iter()
-                    .filter(|entry| {
-                        entry.prog == rpcbind::RPCPROG_MNT
-                            || entry.prog == rpcbind::RPCPROG_NFS
-                            || entry.prog == rpcbind::RPCPROG_STAT
-                    })
-                    .collect()
-            } else {
-                Vec::new()
-            };
-            setup_rpcbind_services(
-                &config,
-                &network_env,
-                &services_to_restore,
-                &mut deferred,
-            )?;
+            services_to_restore =
+                if config.common.net_helper == NetHelper::GvProxy && network_env.rpcbind_running {
+                    rpcbind::services::list()?
+                        .into_iter()
+                        .filter(|entry| {
+                            entry.prog == rpcbind::RPCPROG_MNT
+                                || entry.prog == rpcbind::RPCPROG_NFS
+                                || entry.prog == rpcbind::RPCPROG_STAT
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+            setup_rpcbind_services(&config, &network_env, &services_to_restore, &mut deferred)?;
 
             let (nfs_ready_tx, nfs_ready_rx) = mpsc::channel();
             let (vm_pwd_prompt_tx, vm_pwd_prompt_rx) = mpsc::channel();

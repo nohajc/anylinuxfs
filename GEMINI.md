@@ -83,6 +83,9 @@ let _cleanup = Deferred::add(|| { let _ = fs::remove_file(&socket_path); });
 - Always capture `SUDO_UID` / `SUDO_GID` environment variables at startup to record the original invoker.
 - Change Unix socket ownership to `(invoker_uid, invoker_gid)` after creation.
 
+### Formatting
+- Run `cargo fmt` / `rustfmt` on any Rust changes before committing. Do not commit unformatted Rust code.
+
 ## Building
 
 ### `anylinuxfs` (macOS host binary)

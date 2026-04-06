@@ -561,29 +561,28 @@ fn decrypt_volumes(
     key_file_path: Option<&str>,
     deferred: &mut Deferred,
 ) -> anyhow::Result<()> {
-    let (pwd_for_all, input_mode_fn): (_, fn() -> _) = if reuse_passphrase
-        && key_file_path.is_none()
-    {
-        let pwd = if let Some(passphrase) = env_pwds.get(&1) {
-            BString::from(passphrase.as_bytes())
-        } else if env_has_passphrase {
-            return Err(anyhow!(
-                "Missing environment variable {}",
-                ALFS_PASSPHRASE_PREFIX.as_bstr()
-            ));
+    let (pwd_for_all, input_mode_fn): (_, fn() -> _) =
+        if reuse_passphrase && key_file_path.is_none() {
+            let pwd = if let Some(passphrase) = env_pwds.get(&1) {
+                BString::from(passphrase.as_bytes())
+            } else if env_has_passphrase {
+                return Err(anyhow!(
+                    "Missing environment variable {}",
+                    ALFS_PASSPHRASE_PREFIX.as_bstr()
+                ));
+            } else {
+                println!("<anylinuxfs-passphrase-prompt:start>");
+                let prompt_end = deferred.add(|| println!("<anylinuxfs-passphrase-prompt:end>"));
+                let pwd = BString::from(rpassword::read_password()?.as_bytes());
+                deferred.call_now(prompt_end);
+                pwd
+            };
+            (Some(pwd), || Stdio::piped())
+        } else if env_has_passphrase && key_file_path.is_none() {
+            (None, || Stdio::piped())
         } else {
-            println!("<anylinuxfs-passphrase-prompt:start>");
-            let prompt_end = deferred.add(|| println!("<anylinuxfs-passphrase-prompt:end>"));
-            let pwd = BString::from(rpassword::read_password()?.as_bytes());
-            deferred.call_now(prompt_end);
-            pwd
+            (None, || Stdio::inherit())
         };
-        (Some(pwd), || Stdio::piped())
-    } else if env_has_passphrase && key_file_path.is_none() {
-        (None, || Stdio::piped())
-    } else {
-        (None, || Stdio::inherit())
-    };
 
     let key_file_args: &[&str] = if let Some(key_file) = key_file_path {
         &["--key-file", key_file]
@@ -685,10 +684,7 @@ fn activate_volume_managers(
 }
 
 /// Detect filesystem type from the disk using blkid.
-fn detect_filesystem_type(
-    disk_path: &str,
-    fs_type: &mut Option<String>,
-) -> anyhow::Result<()> {
+fn detect_filesystem_type(disk_path: &str, fs_type: &mut Option<String>) -> anyhow::Result<()> {
     if disk_path.is_empty() {
         return Ok(());
     }
