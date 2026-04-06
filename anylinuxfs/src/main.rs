@@ -1600,12 +1600,9 @@ fn wait_for_nfs_server(
 
     if nfs_ready.ok() {
         // make sure DNS record is already set (if applicable)
-        // let start = Instant::now();
         if let Some(rec) = vm_dns_rec.as_mut() {
             rec.wait_for_registration()
                 .context("Could not set DNS record for the VM")?;
-            // let elapsed = start.elapsed();
-            // println!("DNS registration took {:.3?}", elapsed);
         }
         // also check if the port is open
         let addr = (vm_host, port)
@@ -2307,6 +2304,193 @@ fn pick_unique_hostname(base: &str, active_vm_hosts: &HashSet<String>) -> String
         }
         counter += 1;
     }
+}
+
+/// Spawn a thread that reads VM PTY output, parses `<anylinuxfs-*>` tags,
+/// and forwards NFS readiness / passphrase / report signals via channels.
+fn spawn_pty_reader(
+    pty_fd: libc::c_int,
+    guest_prefix: log::Prefix,
+    verbose: bool,
+    config: MountConfig,
+    vm_native_ip: Option<Ipv4Addr>,
+    nfs_ready_tx: mpsc::Sender<NfsStatus>,
+    vm_pwd_prompt_tx: mpsc::Sender<bool>,
+    vm_report_tx: mpsc::Sender<vmctrl::Report>,
+) {
+    _ = thread::spawn(move || {
+        let mut nfs_ready = false;
+        let mut fslabel: Option<String> = None;
+        let mut fstype: Option<String> = None;
+        let mut changed_to_ro = false;
+        let mut exit_code = None;
+        let mut buf_reader =
+            PassthroughBufReader::new(unsafe { File::from_raw_fd(pty_fd) }, guest_prefix);
+        let mut line = String::new();
+        let mut exports = BTreeSet::new();
+
+        loop {
+            let bytes = match buf_reader.read_line(&mut line) {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    host_eprintln!("Error reading from pty: {}", e);
+                    break;
+                }
+            };
+            if bytes == 0 {
+                break; // EOF
+            }
+            if line.contains("READY AND WAITING FOR NFS CLIENT CONNECTIONS") {
+                nfs_ready_tx
+                    .send(NfsStatus::Ready(NfsReadyState {
+                        fslabel: fslabel.take(),
+                        fstype: fstype.take(),
+                        changed_to_ro,
+                        exports: exports.iter().cloned().collect(),
+                    }))
+                    .unwrap();
+                nfs_ready = true;
+            } else if line.starts_with("<anylinuxfs-vmproxy-ready>") {
+                subscribe_to_vm_events(&config, vm_native_ip, vm_report_tx.clone());
+            } else if line.starts_with("<anylinuxfs-exit-code") {
+                exit_code = parse_vm_tag_value(&line).and_then(|v| v.parse::<i32>().ok());
+            } else if line.starts_with("<anylinuxfs-label") {
+                fslabel = parse_vm_tag_value(&line).map(str::to_string);
+            } else if line.starts_with("<anylinuxfs-type") {
+                fstype = parse_vm_tag_value(&line).map(str::to_string);
+            } else if line.starts_with("<anylinuxfs-mount:changed-to-ro>") {
+                changed_to_ro = true;
+            } else if line.starts_with("<anylinuxfs-nfs-export") {
+                if let Some(export_path) = parse_vm_tag_value(&line) {
+                    exports.insert(export_path.to_string());
+                }
+            } else if line.starts_with("<anylinuxfs-passphrase-prompt:start>") {
+                vm_pwd_prompt_tx.send(true).unwrap();
+            } else if line.starts_with("<anylinuxfs-passphrase-prompt:end>") {
+                vm_pwd_prompt_tx.send(false).unwrap();
+            } else if !verbose && line.starts_with("<anylinuxfs-force-output:off>") {
+                log::disable_console_log();
+            } else if !verbose && line.starts_with("<anylinuxfs-force-output:on>") {
+                log::enable_console_log();
+            }
+
+            line.clear();
+        }
+        if !nfs_ready {
+            nfs_ready_tx.send(NfsStatus::Failed(exit_code)).unwrap();
+        }
+    });
+}
+
+/// Spawn a thread to connect to the VM control socket and subscribe to events.
+fn subscribe_to_vm_events(
+    config: &MountConfig,
+    vm_native_ip: Option<Ipv4Addr>,
+    vm_report_tx: mpsc::Sender<vmctrl::Report>,
+) {
+    let config = config.clone();
+    _ = thread::spawn(move || {
+        let Ok(mut stream) =
+            vm_network::connect_to_vm_ctrl_socket(&config.common, vm_native_ip, None)
+        else {
+            return;
+        };
+
+        if let Err(e) =
+            ipc::Client::write_request(&mut stream, &vmctrl::Request::SubscribeEvents)
+        {
+            host_eprintln!("Failed to send SubscribeEvents to vmctrl: {:#}", e);
+            return;
+        };
+
+        match ipc::Client::read_response(&mut stream) {
+            Ok(response) => {
+                if let vmctrl::Response::ReportEvent(info) = response {
+                    if let Err(e) = vm_report_tx.send(info) {
+                        host_eprintln!("Failed to send VM report to channel: {:#}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                host_eprintln!("Failed to read VM report from vmctrl: {:#}", e);
+            }
+        }
+    });
+}
+
+/// Set up rpcbind services for NFS when using GvProxy and host rpcbind is running.
+/// `services_to_restore` must outlive `deferred` so cleanup can reference it.
+fn setup_rpcbind_services<'a>(
+    config: &MountConfig,
+    network_env: &NetworkEnv,
+    services_to_restore: &'a Vec<rpcbind::services::RpcbEntry>,
+    deferred: &mut Deferred<'a>,
+) -> anyhow::Result<()> {
+    if !(config.common.net_helper == NetHelper::GvProxy && network_env.rpcbind_running) {
+        return Ok(());
+    }
+
+    let is_host_rpcbind = !services_to_restore
+        .iter()
+        .any(|entry| entry.owner == "superuser");
+    host_println!("is_host_rpcbind: {}", is_host_rpcbind);
+
+    if !is_host_rpcbind {
+        return Ok(());
+    }
+
+    _ = deferred.add(|| {
+        rpcbind::services::unregister();
+        _ = rpcbind::services::rpcb_set_entries(services_to_restore);
+    });
+
+    // if rpcbind is already running, we can use it to register our NFS server
+    // but we have to unregister any conflicting system services first
+    // (make sure to elevate if we need to unregister any services not owned by us)
+    let unregister_fn = || -> anyhow::Result<()> {
+        let uid = config.common.invoker_uid;
+        if config.common.sudo_uid.is_none() && uid != 0 {
+            let any_root_svcs = services_to_restore.iter().any(|entry| {
+                Some(&entry.owner) != utils::user_name_from_uid(uid).as_ref()
+            });
+
+            if any_root_svcs {
+                safe_println!("rpcbind already running, need to use sudo for NFS setup")?;
+                Command::new("sudo")
+                    .arg("-S")
+                    .arg(&config.common.exec_path)
+                    .arg("rpcbind")
+                    .arg("unregister")
+                    .status()?;
+
+                return Ok(());
+            }
+        }
+
+        rpcbind::services::unregister();
+        Ok(())
+    };
+    unregister_fn()?;
+
+    // make sure to always run this as regular user
+    // because cleanup code runs after we've dropped privileges
+    // (regular user cannot unregister services registered by root)
+    if let (Some(uid), Some(gid)) = (config.common.sudo_uid, config.common.sudo_gid) {
+        let status = Command::new(&config.common.exec_path)
+            .arg("rpcbind")
+            .arg("register")
+            .uid(uid)
+            .gid(gid)
+            .status()?;
+        if !status.success() {
+            return Err(anyhow!("Failed to register NFS server to rpcbind"));
+        }
+    } else {
+        rpcbind::services::register()
+            .context("Failed to register NFS server to rpcbind")?;
+    }
+
+    Ok(())
 }
 
 struct AppRunner {
@@ -3056,67 +3240,15 @@ impl AppRunner {
                             || entry.prog == rpcbind::RPCPROG_STAT
                     })
                     .collect();
-
-                let is_host_rpcbind = !services_to_restore
-                    .iter()
-                    .any(|entry| entry.owner == "superuser");
-                host_println!("is_host_rpcbind: {}", is_host_rpcbind);
-
-                if is_host_rpcbind {
-                    _ = deferred.add(|| {
-                        rpcbind::services::unregister();
-                        _ = rpcbind::services::rpcb_set_entries(&services_to_restore);
-                    });
-                    // if rpcbind is already running, we can use it to register our NFS server
-                    // but we have to unregister any conflicting system services first
-                    // (make sure to elevate if we need to unregister any services not owned by us)
-                    let unregister_fn = || -> anyhow::Result<()> {
-                        let uid = config.common.invoker_uid;
-                        if config.common.sudo_uid.is_none() && uid != 0 {
-                            let any_root_svcs = services_to_restore.iter().any(|entry| {
-                                Some(&entry.owner) != utils::user_name_from_uid(uid).as_ref()
-                            });
-
-                            if any_root_svcs {
-                                safe_println!(
-                                    "rpcbind already running, need to use sudo for NFS setup"
-                                )?;
-                                Command::new("sudo")
-                                    .arg("-S")
-                                    .arg(&config.common.exec_path)
-                                    .arg("rpcbind")
-                                    .arg("unregister")
-                                    .status()?;
-
-                                return Ok(());
-                            }
-                        }
-
-                        rpcbind::services::unregister();
-                        Ok(())
-                    };
-                    unregister_fn()?;
-
-                    // make sure to always run this as regular user
-                    // because cleanup code runs after we've dropped privileges
-                    // (regular user cannot unregister services registered by root)
-                    if let (Some(uid), Some(gid)) = (config.common.sudo_uid, config.common.sudo_gid)
-                    {
-                        let status = Command::new(&config.common.exec_path)
-                            .arg("rpcbind")
-                            .arg("register")
-                            .uid(uid)
-                            .gid(gid)
-                            .status()?;
-                        if !status.success() {
-                            return Err(anyhow!("Failed to register NFS server to rpcbind"));
-                        }
-                    } else {
-                        rpcbind::services::register()
-                            .context("Failed to register NFS server to rpcbind")?;
-                    }
-                }
+            } else {
+                services_to_restore = Vec::new();
             }
+            setup_rpcbind_services(
+                &config,
+                &network_env,
+                &services_to_restore,
+                &mut deferred,
+            )?;
 
             let (nfs_ready_tx, nfs_ready_rx) = mpsc::channel();
             let (vm_pwd_prompt_tx, vm_pwd_prompt_rx) = mpsc::channel();
@@ -3155,119 +3287,16 @@ impl AppRunner {
                 OSType::FreeBSD => log::Prefix::GuestBSD,
             };
 
-            let pty_fd = forked.master_fd();
-            // Spawn a thread to read from the pipe
-            _ = thread::spawn({
-                let config = config.clone();
-                move || {
-                    let mut nfs_ready = false;
-                    let mut fslabel: Option<String> = None;
-                    let mut fstype: Option<String> = None;
-                    let mut changed_to_ro = false;
-                    let mut exit_code = None;
-                    let mut buf_reader = PassthroughBufReader::new(
-                        unsafe { File::from_raw_fd(pty_fd) },
-                        guest_prefix,
-                    );
-                    let mut line = String::new();
-                    let mut exports = BTreeSet::new();
-
-                    loop {
-                        let bytes = match buf_reader.read_line(&mut line) {
-                            Ok(bytes) => bytes,
-                            Err(e) => {
-                                host_eprintln!("Error reading from pty: {}", e);
-                                break;
-                            }
-                        };
-                        if bytes == 0 {
-                            break; // EOF
-                        }
-                        if line.contains("READY AND WAITING FOR NFS CLIENT CONNECTIONS") {
-                            // Notify the main thread that NFS server is ready
-                            nfs_ready_tx
-                                .send(NfsStatus::Ready(NfsReadyState {
-                                    fslabel: fslabel.take(),
-                                    fstype: fstype.take(),
-                                    changed_to_ro,
-                                    exports: exports.iter().cloned().collect(),
-                                }))
-                                .unwrap();
-                            nfs_ready = true;
-                        } else if line.starts_with("<anylinuxfs-vmproxy-ready>") {
-                            _ = thread::spawn({
-                                let vm_report_tx = vm_report_tx.clone();
-                                let config = config.clone();
-                                move || {
-                                    let Ok(mut stream) = vm_network::connect_to_vm_ctrl_socket(
-                                        &config.common,
-                                        vm_native_ip,
-                                        None,
-                                    ) else {
-                                        return;
-                                    };
-
-                                    if let Err(e) = ipc::Client::write_request(
-                                        &mut stream,
-                                        &vmctrl::Request::SubscribeEvents,
-                                    ) {
-                                        host_eprintln!(
-                                            "Failed to send SubscribeEvents to vmctrl: {:#}",
-                                            e
-                                        );
-                                        return;
-                                    };
-
-                                    match ipc::Client::read_response(&mut stream) {
-                                        Ok(response) => {
-                                            if let vmctrl::Response::ReportEvent(info) = response {
-                                                if let Err(e) = vm_report_tx.send(info) {
-                                                    host_eprintln!(
-                                                        "Failed to send VM report to channel: {:#}",
-                                                        e
-                                                    );
-                                                }
-                                            }
-                                        }
-                                        Err(e) => {
-                                            host_eprintln!(
-                                                "Failed to read VM report from vmctrl: {:#}",
-                                                e
-                                            );
-                                        }
-                                    }
-                                }
-                            });
-                        } else if line.starts_with("<anylinuxfs-exit-code") {
-                            exit_code =
-                                parse_vm_tag_value(&line).and_then(|v| v.parse::<i32>().ok());
-                        } else if line.starts_with("<anylinuxfs-label") {
-                            fslabel = parse_vm_tag_value(&line).map(str::to_string);
-                        } else if line.starts_with("<anylinuxfs-type") {
-                            fstype = parse_vm_tag_value(&line).map(str::to_string);
-                        } else if line.starts_with("<anylinuxfs-mount:changed-to-ro>") {
-                            changed_to_ro = true;
-                        } else if line.starts_with("<anylinuxfs-nfs-export") {
-                            if let Some(export_path) = parse_vm_tag_value(&line) {
-                                exports.insert(export_path.to_string());
-                            }
-                        } else if line.starts_with("<anylinuxfs-passphrase-prompt:start>") {
-                            vm_pwd_prompt_tx.send(true).unwrap();
-                        } else if line.starts_with("<anylinuxfs-passphrase-prompt:end>") {
-                            vm_pwd_prompt_tx.send(false).unwrap();
-                        } else if !verbose && line.starts_with("<anylinuxfs-force-output:off>") {
-                            log::disable_console_log();
-                        } else if !verbose && line.starts_with("<anylinuxfs-force-output:on>") {
-                            log::enable_console_log();
-                        }
-
-                        line.clear();
-                    }
-                    if !nfs_ready {
-                        nfs_ready_tx.send(NfsStatus::Failed(exit_code)).unwrap();
-                    }
-                }
-            });
+            spawn_pty_reader(
+                forked.master_fd(),
+                guest_prefix,
+                verbose,
+                config.clone(),
+                vm_native_ip,
+                nfs_ready_tx,
+                vm_pwd_prompt_tx,
+                vm_report_tx,
+            );
 
             let signals = signal_hub.subscribe();
             let signal_subscr_id = signals.id().expect("just subscribed, ID should be set");
