@@ -904,9 +904,13 @@ impl AppRunner {
             labels = diskutil::WINDOWS_LABELS;
         }
 
+        // Parse multi-device syntax: split colon-separated devices
+        let devices: Option<Vec<String>> =
+            cmd.disk.map(|d| d.split(':').map(String::from).collect());
+
         println!(
             "{}",
-            diskutil::list_partitions(config, cmd.disk.as_deref(), cmd.decrypt.as_deref(), labels)?
+            diskutil::list_partitions(config, devices.as_deref(), cmd.decrypt.as_deref(), labels)?
         );
         Ok(())
     }

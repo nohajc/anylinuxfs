@@ -285,7 +285,7 @@ pub const ALL_LABELS: Labels = Labels {
     fs_types: FsTypes(&ALL_FS_TYPES),
 };
 
-fn partitions_with_part_type(plist: &Plist, part_types: PartTypes) -> Vec<String> {
+fn partitions_with_part_type(plist: &Plist, part_types: &PartTypes) -> Vec<String> {
     let mut partitions = Vec::new();
     for disk in &plist.all_disks_and_partitions {
         if let Some(partitions_list) = &disk.partitions {
@@ -485,7 +485,7 @@ impl PvCollector {
 
 pub fn list_partitions(
     config: Config,
-    disk: Option<&str>,
+    disks: Option<&[String]>,
     enc_partitions: Option<&[String]>,
     filter: Labels,
 ) -> anyhow::Result<List> {
@@ -495,168 +495,177 @@ pub fn list_partitions(
 
     let mut pv = PvCollector::new(enc_partitions);
 
-    if let Some((path, p)) = disk.map(|d| (d, Path::new(d)))
-        && p.exists()
-        && p.is_file()
-    {
-        // It's an image file — probe directly with libblkid, bypassing diskutil.
-        use bstr::BString;
-        let probe_devs = DevInfo::probe_image(BString::from(p.as_bytes()))?;
+    // Convert disks parameter to iterator: either None (single entry for all disks) or slice of devices
+    let device_iter: Vec<Option<&str>> = match disks {
+        None => vec![None], // Process all disks
+        Some(slice) => slice.iter().map(|d| Some(d.as_str())).collect(), // Process each device
+    };
 
-        if !probe_devs.is_empty() {
-            let whole = &probe_devs[0];
-            let is_partitioned = whole.pt_type().is_some();
+    // Process each device (or all if None)
+    for disk in device_iter {
+        if let Some((path, p)) = disk.map(|d| (d, Path::new(d)))
+            && p.exists()
+            && p.is_file()
+        {
+            // It's an image file — probe directly with libblkid, bypassing diskutil.
+            use bstr::BString;
+            let probe_devs = DevInfo::probe_image(BString::from(p.as_bytes()))?;
 
-            let image_name = p
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| path.to_string());
+            if !probe_devs.is_empty() {
+                let whole = &probe_devs[0];
+                let is_partitioned = whole.pt_type().is_some();
 
-            let mut entry = Entry::new(format!("{} (disk image):", path));
-            entry.header_mut().push_str(
-                "   #:                       TYPE NAME                    SIZE       IDENTIFIER",
-            );
+                let image_name = p
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.to_string());
 
-            if is_partitioned {
-                let pt_type = whole.pt_type().unwrap_or("unknown");
-                let normalized_pt = normalize_pt_type(pt_type);
-                let whole_size = whole.size().map(format_partition_size).unwrap_or_default();
-                *entry.scheme_mut() = format!(
-                    "   0: {:>26} {:<22} +{:<10} {}",
-                    normalized_pt, "", whole_size, image_name,
+                let mut entry = Entry::new(format!("{} (disk image):", path));
+                entry.header_mut().push_str(
+                    "   #:                       TYPE NAME                    SIZE       IDENTIFIER",
                 );
-                for (i, dev_info) in probe_devs[1..].iter().enumerate() {
-                    let fs_type = dev_info.fs_type().unwrap_or("");
 
-                    // Filter by filesystem type to match diskutil behavior
-                    if !filter.fs_types.iter().any(|t| t == &fs_type) {
-                        continue;
-                    }
-
-                    pv.try_collect(dev_info, &image_name, path, fs_type);
-
-                    let label = dev_info.label().unwrap_or("");
-                    let truncated_label = trunc_with_ellipsis(label, 23);
-                    let size_str = dev_info
-                        .size()
-                        .map(format_partition_size)
-                        .unwrap_or_default();
-                    let ident = format!("{}@s{}", image_name, i + 1);
-                    entry.partitions_mut().push(format!(
-                        "{:>4}: {:>26} {:<23} {:<10} {}",
-                        i + 1,
-                        fs_type,
-                        truncated_label,
-                        size_str,
-                        ident,
-                    ));
-                }
-            } else {
-                // Whole-disk image without partition table
-                let dev_info = whole;
-                let fs_type = dev_info.fs_type().unwrap_or("");
-
-                // Filter by filesystem type to match diskutil behavior
-                if filter.fs_types.iter().any(|t| t == &fs_type) {
-                    pv.try_collect(dev_info, &image_name, path, fs_type);
-
-                    let label = dev_info.label().unwrap_or("");
-                    let truncated_label = trunc_with_ellipsis(label, 23);
-                    let size_str = dev_info
-                        .size()
-                        .map(format_partition_size)
-                        .unwrap_or_default();
-                    entry.partitions_mut().push(format!(
+                if is_partitioned {
+                    let pt_type = whole.pt_type().unwrap_or("unknown");
+                    let normalized_pt = normalize_pt_type(pt_type);
+                    let whole_size = whole.size().map(format_partition_size).unwrap_or_default();
+                    *entry.scheme_mut() = format!(
                         "   0: {:>26} {:<22} +{:<10} {}",
-                        fs_type, truncated_label, size_str, image_name,
-                    ));
-                }
-            }
+                        normalized_pt, "", whole_size, image_name,
+                    );
+                    for (i, dev_info) in probe_devs[1..].iter().enumerate() {
+                        let fs_type = dev_info.fs_type().unwrap_or("");
 
-            disk_entries.push(entry);
-        }
-    } else {
-        let plist_out = diskutil_list_from_plist(disk)?;
-        let selected_partitions = partitions_with_part_type(&plist_out, filter.part_types);
-        let disks_without_part_table = disks_without_partition_table(&plist_out);
-
-        let output = Command::new("diskutil")
-            .arg("list")
-            .args(disk)
-            .output()
-            .expect("Failed to execute diskutil");
-
-        if !output.status.success() {
-            return Err(anyhow!("diskutil command failed"));
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let mut current_entry = None;
-
-        for line in stdout.lines() {
-            if line.starts_with("/dev/disk") {
-                disk_entries.push(Entry::new(line));
-                let last_idx = disk_entries.len() - 1;
-                current_entry = disk_entries.get_mut(last_idx)
-            } else if line.trim_start().starts_with("#:") {
-                current_entry.as_mut().map(|entry| {
-                    entry.header_mut().push_str(line);
-                });
-            } else if numbered_pattern.is_match(line) {
-                let Some(dev_ident) = line.split_whitespace().last() else {
-                    continue;
-                };
-                if let Some(part_type) = part_type_pattern.find(line).map(|m| m.as_str()) {
-                    // check the device identifier against partition list we parsed from plist
-                    // (otherwise regex matching alone might give false positives)
-                    if !selected_partitions.iter().any(|p| p == dev_ident) {
-                        continue;
-                    }
-                    let disk_path = format!("/dev/{dev_ident}");
-                    let dev_info = DevInfo::pv(disk_path.as_str(), false).ok();
-
-                    let line = match dev_info {
-                        Some(dev_info) => {
-                            let fs_type = dev_info.fs_type().unwrap_or(part_type);
-                            pv.try_collect(&dev_info, dev_ident, &disk_path, fs_type);
-
-                            augment_line(line, part_type, Some(&dev_info), fs_type)
-                        }
-                        None => line.to_owned(),
-                    };
-                    current_entry.as_mut().map(|entry| {
-                        entry.partitions_mut().push(line);
-                    });
-                } else if line.trim_start().starts_with("0:") {
-                    if disks_without_part_table.iter().any(|d| d == dev_ident) {
-                        // This is a disk without partition table, it might still contain a Linux filesystem
-                        let disk_path = format!("/dev/{dev_ident}");
-                        let dev_info = DevInfo::pv(disk_path.as_str(), false).ok();
-
-                        let fs_type = dev_info
-                            .as_ref()
-                            .map(|di| di.fs_type())
-                            .flatten()
-                            .unwrap_or("Unknown");
-                        // if DevInfo is available, show linux fs types only
-                        if fs_type != "Unknown"
-                            && !filter.fs_types.iter().cloned().any(|t| t == fs_type)
-                        {
+                        // Filter by filesystem type to match diskutil behavior
+                        if !filter.fs_types.iter().any(|t| t == &fs_type) {
                             continue;
                         }
 
-                        if let Some(ref dev_info) = dev_info {
-                            pv.try_collect(dev_info, dev_ident, &disk_path, fs_type);
-                        }
+                        pv.try_collect(dev_info, &image_name, path, fs_type);
 
-                        let line = augment_line(line, "", dev_info.as_ref(), fs_type);
+                        let label = dev_info.label().unwrap_or("");
+                        let truncated_label = trunc_with_ellipsis(label, 23);
+                        let size_str = dev_info
+                            .size()
+                            .map(format_partition_size)
+                            .unwrap_or_default();
+                        let ident = format!("{}@s{}", image_name, i + 1);
+                        entry.partitions_mut().push(format!(
+                            "{:>4}: {:>26} {:<23} {:<10} {}",
+                            i + 1,
+                            fs_type,
+                            truncated_label,
+                            size_str,
+                            ident,
+                        ));
+                    }
+                } else {
+                    // Whole-disk image without partition table
+                    let dev_info = whole;
+                    let fs_type = dev_info.fs_type().unwrap_or("");
+
+                    // Filter by filesystem type to match diskutil behavior
+                    if filter.fs_types.iter().any(|t| t == &fs_type) {
+                        pv.try_collect(dev_info, &image_name, path, fs_type);
+
+                        let label = dev_info.label().unwrap_or("");
+                        let truncated_label = trunc_with_ellipsis(label, 23);
+                        let size_str = dev_info
+                            .size()
+                            .map(format_partition_size)
+                            .unwrap_or_default();
+                        entry.partitions_mut().push(format!(
+                            "   0: {:>26} {:<22} +{:<10} {}",
+                            fs_type, truncated_label, size_str, image_name,
+                        ));
+                    }
+                }
+
+                disk_entries.push(entry);
+            }
+        } else {
+            let plist_out = diskutil_list_from_plist(disk)?;
+            let selected_partitions = partitions_with_part_type(&plist_out, &filter.part_types);
+            let disks_without_part_table = disks_without_partition_table(&plist_out);
+
+            let output = Command::new("diskutil")
+                .arg("list")
+                .args(disk)
+                .output()
+                .expect("Failed to execute diskutil");
+
+            if !output.status.success() {
+                return Err(anyhow!("diskutil command failed"));
+            }
+
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let mut current_entry = None;
+
+            for line in stdout.lines() {
+                if line.starts_with("/dev/disk") {
+                    disk_entries.push(Entry::new(line));
+                    let last_idx = disk_entries.len() - 1;
+                    current_entry = disk_entries.get_mut(last_idx)
+                } else if line.trim_start().starts_with("#:") {
+                    current_entry.as_mut().map(|entry| {
+                        entry.header_mut().push_str(line);
+                    });
+                } else if numbered_pattern.is_match(line) {
+                    let Some(dev_ident) = line.split_whitespace().last() else {
+                        continue;
+                    };
+                    if let Some(part_type) = part_type_pattern.find(line).map(|m| m.as_str()) {
+                        // check the device identifier against partition list we parsed from plist
+                        // (otherwise regex matching alone might give false positives)
+                        if !selected_partitions.iter().any(|p| p == dev_ident) {
+                            continue;
+                        }
+                        let disk_path = format!("/dev/{dev_ident}");
+                        let dev_info = DevInfo::pv(disk_path.as_str(), false).ok();
+
+                        let line = match dev_info {
+                            Some(dev_info) => {
+                                let fs_type = dev_info.fs_type().unwrap_or(part_type);
+                                pv.try_collect(&dev_info, dev_ident, &disk_path, fs_type);
+
+                                augment_line(line, part_type, Some(&dev_info), fs_type)
+                            }
+                            None => line.to_owned(),
+                        };
                         current_entry.as_mut().map(|entry| {
                             entry.partitions_mut().push(line);
                         });
-                    } else {
-                        current_entry.as_mut().map(|entry| {
-                            entry.scheme_mut().push_str(line);
-                        });
+                    } else if line.trim_start().starts_with("0:") {
+                        if disks_without_part_table.iter().any(|d| d == dev_ident) {
+                            // This is a disk without partition table, it might still contain a Linux filesystem
+                            let disk_path = format!("/dev/{dev_ident}");
+                            let dev_info = DevInfo::pv(disk_path.as_str(), false).ok();
+
+                            let fs_type = dev_info
+                                .as_ref()
+                                .map(|di| di.fs_type())
+                                .flatten()
+                                .unwrap_or("Unknown");
+                            // if DevInfo is available, show linux fs types only
+                            if fs_type != "Unknown"
+                                && !filter.fs_types.iter().cloned().any(|t| t == fs_type)
+                            {
+                                continue;
+                            }
+
+                            if let Some(ref dev_info) = dev_info {
+                                pv.try_collect(dev_info, dev_ident, &disk_path, fs_type);
+                            }
+
+                            let line = augment_line(line, "", dev_info.as_ref(), fs_type);
+                            current_entry.as_mut().map(|entry| {
+                                entry.partitions_mut().push(line);
+                            });
+                        } else {
+                            current_entry.as_mut().map(|entry| {
+                                entry.scheme_mut().push_str(line);
+                            });
+                        }
                     }
                 }
             }
