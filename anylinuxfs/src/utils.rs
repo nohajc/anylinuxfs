@@ -954,128 +954,10 @@ impl StdinForwarder {
             let echo_newline = Arc::clone(&echo_newline);
             move || -> anyhow::Result<()> {
                 if is_tty {
-                    // TTY mode: use crossterm events for interactive input
-                    loop {
-                        // `poll()` waits for an `Event` for a given time period
-                        if event::poll(Duration::from_millis(50))? {
-                            // It's guaranteed that the `read()` won't block when the `poll()`
-                            // function returns `true`
-                            match event::read()? {
-                                Event::Key(event) => {
-                                    // _ = safe_print!("DEBUG: {:?}\r\n", event);
-
-                                    if event.is_press() {
-                                        if event.modifiers == event::KeyModifiers::empty()
-                                            || event.modifiers == event::KeyModifiers::SHIFT
-                                        {
-                                            match event.code {
-                                                event::KeyCode::Enter => unsafe {
-                                                    write_to_pipe(in_fd, b"\n")?;
-                                                    if echo_newline.load(Ordering::Relaxed) {
-                                                        _ = safe_print!("\r\n");
-                                                    }
-                                                },
-                                                event::KeyCode::Backspace => unsafe {
-                                                    write_to_pipe(in_fd, b"\x7f")?;
-                                                },
-                                                event::KeyCode::Char(c) => unsafe {
-                                                    write_to_pipe(in_fd, c.to_string().as_bytes())?;
-                                                },
-                                                _ => (),
-                                            }
-                                        } else if event.modifiers == event::KeyModifiers::CONTROL {
-                                            match event.code {
-                                                event::KeyCode::Char('c') => {
-                                                    // Send SIGINT (Ctrl+C)
-                                                    unsafe {
-                                                        write_to_pipe(in_fd, b"\x03")?;
-                                                    }
-                                                }
-                                                event::KeyCode::Char('d') => {
-                                                    // Send EOF (Ctrl+D)
-                                                    unsafe {
-                                                        write_to_pipe(in_fd, b"\x04")?;
-                                                    }
-                                                }
-                                                _ => (),
-                                            }
-                                        }
-                                    }
-                                }
-                                _ => (),
-                            };
-                        } else {
-                            // Timeout expired and no `Event` is available
-                            if let Ok(()) = close_rx.try_recv() {
-                                break;
-                            }
-                        }
-                    }
+                    Self::run_tty_forwarding(in_fd, close_rx, &echo_newline)
                 } else {
-                    // Pipe mode: read from stdin directly
-                    use std::io::{BufRead, BufReader, stdin};
-                    use std::sync::mpsc;
-
-                    // Create a channel for stdin data
-                    let (stdin_tx, stdin_rx) = mpsc::channel();
-
-                    // Spawn a thread to read from stdin
-                    thread::spawn(move || {
-                        let mut reader = BufReader::new(stdin());
-                        let mut line = String::new();
-
-                        loop {
-                            line.clear();
-                            match reader.read_line(&mut line) {
-                                Ok(0) => {
-                                    // EOF reached
-                                    let _ = stdin_tx.send(None);
-                                    break;
-                                }
-                                Ok(_) => {
-                                    if stdin_tx.send(Some(line.clone())).is_err() {
-                                        break; // Receiver dropped
-                                    }
-                                }
-                                Err(_) => {
-                                    let _ = stdin_tx.send(None);
-                                    break;
-                                }
-                            }
-                        }
-                    });
-
-                    // Main loop to handle both close signals and stdin data
-                    loop {
-                        // Check for close signal
-                        if let Ok(()) = close_rx.try_recv() {
-                            break;
-                        }
-
-                        // Check for stdin data with timeout
-                        match stdin_rx.recv_timeout(Duration::from_millis(50)) {
-                            Ok(Some(data)) => unsafe {
-                                write_to_pipe(in_fd, data.as_bytes())?;
-                            },
-                            Ok(None) => {
-                                // EOF from stdin
-                                unsafe {
-                                    write_to_pipe(in_fd, b"\x04")?; // Send EOF to VM
-                                }
-                                break;
-                            }
-                            Err(mpsc::RecvTimeoutError::Timeout) => {
-                                // No data available, continue loop
-                                continue;
-                            }
-                            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                                // Stdin thread terminated
-                                break;
-                            }
-                        }
-                    }
+                    Self::run_pipe_forwarding(in_fd, close_rx)
                 }
-                Ok(())
             }
         })));
 
@@ -1084,6 +966,113 @@ impl StdinForwarder {
             close_tx,
             echo_newline,
         })
+    }
+
+    /// TTY mode: use crossterm events for interactive input forwarding.
+    fn run_tty_forwarding(
+        in_fd: libc::c_int,
+        close_rx: mpsc::Receiver<()>,
+        echo_newline: &AtomicBool,
+    ) -> anyhow::Result<()> {
+        loop {
+            if event::poll(Duration::from_millis(50))? {
+                match event::read()? {
+                    Event::Key(event) => {
+                        if event.is_press() {
+                            if event.modifiers == event::KeyModifiers::empty()
+                                || event.modifiers == event::KeyModifiers::SHIFT
+                            {
+                                match event.code {
+                                    event::KeyCode::Enter => unsafe {
+                                        write_to_pipe(in_fd, b"\n")?;
+                                        if echo_newline.load(Ordering::Relaxed) {
+                                            _ = safe_print!("\r\n");
+                                        }
+                                    },
+                                    event::KeyCode::Backspace => unsafe {
+                                        write_to_pipe(in_fd, b"\x7f")?;
+                                    },
+                                    event::KeyCode::Char(c) => unsafe {
+                                        write_to_pipe(in_fd, c.to_string().as_bytes())?;
+                                    },
+                                    _ => (),
+                                }
+                            } else if event.modifiers == event::KeyModifiers::CONTROL {
+                                match event.code {
+                                    event::KeyCode::Char('c') => unsafe {
+                                        write_to_pipe(in_fd, b"\x03")?;
+                                    },
+                                    event::KeyCode::Char('d') => unsafe {
+                                        write_to_pipe(in_fd, b"\x04")?;
+                                    },
+                                    _ => (),
+                                }
+                            }
+                        }
+                    }
+                    _ => (),
+                };
+            } else if let Ok(()) = close_rx.try_recv() {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    /// Pipe mode: read from stdin directly and forward to VM.
+    fn run_pipe_forwarding(
+        in_fd: libc::c_int,
+        close_rx: mpsc::Receiver<()>,
+    ) -> anyhow::Result<()> {
+        use std::io::{BufRead, BufReader, stdin};
+        use std::sync::mpsc;
+
+        let (stdin_tx, stdin_rx) = mpsc::channel();
+
+        thread::spawn(move || {
+            let mut reader = BufReader::new(stdin());
+            let mut line = String::new();
+
+            loop {
+                line.clear();
+                match reader.read_line(&mut line) {
+                    Ok(0) => {
+                        let _ = stdin_tx.send(None);
+                        break;
+                    }
+                    Ok(_) => {
+                        if stdin_tx.send(Some(line.clone())).is_err() {
+                            break;
+                        }
+                    }
+                    Err(_) => {
+                        let _ = stdin_tx.send(None);
+                        break;
+                    }
+                }
+            }
+        });
+
+        loop {
+            if let Ok(()) = close_rx.try_recv() {
+                break;
+            }
+
+            match stdin_rx.recv_timeout(Duration::from_millis(50)) {
+                Ok(Some(data)) => unsafe {
+                    write_to_pipe(in_fd, data.as_bytes())?;
+                },
+                Ok(None) => {
+                    unsafe {
+                        write_to_pipe(in_fd, b"\x04")?;
+                    }
+                    break;
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        Ok(())
     }
 
     pub fn stop(&self) -> anyhow::Result<()> {
