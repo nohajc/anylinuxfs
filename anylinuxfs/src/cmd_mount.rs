@@ -968,6 +968,108 @@ fn setup_rpcbind_services<'a>(
     Ok(())
 }
 
+/// Build the NFS share path and mount options from the config.
+fn build_nfs_share_config(
+    config: &MountConfig,
+    mnt_dev_info: &DevInfo,
+    shared_volume: bool,
+) -> (BString, fsutil::NfsOptions) {
+    let share_name = match config.custom_mount_name() {
+        Some(name) => name.as_bytes().into(),
+        None => mnt_dev_info.auto_mount_name(),
+    };
+
+    let share_path = match config.get_action() {
+        Some(action) if !action.override_nfs_export().is_empty() => {
+            BString::from(action.override_nfs_export())
+        }
+        _ => [b"/mnt/", share_name.as_slice()].concat().into(),
+    };
+
+    let mut nfs_opts = fsutil::NfsOptions::default();
+    if shared_volume {
+        nfs_opts.remove("nolocks".as_bytes());
+    }
+    nfs_opts.extend(config.nfs_options.iter().map(|s| match s.split_once('=') {
+        Some((key, value)) => (key.as_bytes().into(), value.as_bytes().into()),
+        None => (s.as_bytes().into(), b"".into()),
+    }));
+
+    (share_path, nfs_opts)
+}
+
+/// Mount additional NFS subdirectory exports under the main mount point.
+fn mount_nfs_subdirectories(
+    config: &MountConfig,
+    vm_host_b: &[u8],
+    share_path: &BString,
+    exports: &[String],
+    mount_point: &diskutil::MountPoint,
+    nfs_opts: &fsutil::NfsOptions,
+    verbose: bool,
+) {
+    let mut additional_exports = exports
+        .iter()
+        .map(|item| item.as_str())
+        .filter(|&export_path| export_path != share_path)
+        .peekable();
+
+    let _log_guard = ConsoleLogGuard::enable_temporarily(verbose);
+    let elevate = config.common.sudo_uid.is_none() && config.common.invoker_uid != 0;
+
+    if elevate && additional_exports.peek().is_some() {
+        host_println!("need to use sudo to mount additional NFS exports");
+    }
+    match fsutil::mount_nfs_subdirs(
+        vm_host_b,
+        share_path,
+        additional_exports.into_iter(),
+        mount_point.display(),
+        nfs_opts,
+        elevate,
+    ) {
+        Ok(_) => {}
+        Err(e) => host_eprintln!("Failed to mount additional NFS exports: {:#}", e),
+    }
+}
+
+/// Build the list of passphrase prompt callbacks for encrypted devices.
+///
+/// Depending on the passphrase prompt config, one callback per encrypted device
+/// or a single shared callback is created. Also bumps RAM allocation for LUKS.
+fn prepare_passphrase_callbacks(
+    dev_info: &[DevInfo],
+    config: &mut MountConfig,
+    env_has_passphrase: bool,
+) -> Vec<Box<dyn FnOnce()>> {
+    let mut callbacks: Vec<Box<dyn FnOnce()>> = Vec::new();
+    let mut passphrase_needed = false;
+
+    if !env_has_passphrase && config.key_file.is_none() {
+        for di in dev_info {
+            let is_luks = di.fs_type() == Some("crypto_LUKS");
+            if di.fs_type().is_some_and(common_utils::is_encrypted_fs) {
+                if is_luks {
+                    ensure_enough_ram_for_luks(&mut config.common);
+                }
+                if config.common.passphrase_config == PassphrasePromptConfig::AskForEach {
+                    let disk = di.disk().to_owned();
+                    let prompt_fn = diskutil::passphrase_prompt(Some(disk));
+                    callbacks.push(Box::new(prompt_fn));
+                }
+                passphrase_needed = true;
+            }
+        }
+        if passphrase_needed && config.common.passphrase_config == PassphrasePromptConfig::OneForAll
+        {
+            let prompt_fn = diskutil::passphrase_prompt(None);
+            callbacks.push(Box::new(prompt_fn));
+        }
+    }
+
+    callbacks
+}
+
 impl super::AppRunner {
     pub(crate) fn run_mount(&mut self, cmd: MountCmd) -> anyhow::Result<()> {
         let _lock_file = LockFile::new(LOCK_FILE)?.acquire_lock(FlockKind::Shared)?;
@@ -1152,31 +1254,8 @@ impl super::AppRunner {
             config.mount_options = Some(opts);
         }
 
-        let mut passphrase_callbacks = Vec::new();
-        let mut passphrase_needed = false;
-
-        if !env_has_passphrase && config.key_file.is_none() {
-            for di in &dev_info {
-                let is_luks = di.fs_type() == Some("crypto_LUKS");
-                if di.fs_type().is_some_and(common_utils::is_encrypted_fs) {
-                    if is_luks {
-                        ensure_enough_ram_for_luks(&mut config.common);
-                    }
-                    if config.common.passphrase_config == PassphrasePromptConfig::AskForEach {
-                        let disk = di.disk().to_owned();
-                        let prompt_fn = diskutil::passphrase_prompt(Some(disk));
-                        passphrase_callbacks.push(prompt_fn);
-                    }
-                    passphrase_needed = true;
-                }
-            }
-            if passphrase_needed
-                && config.common.passphrase_config == PassphrasePromptConfig::OneForAll
-            {
-                let prompt_fn = diskutil::passphrase_prompt(None);
-                passphrase_callbacks.push(prompt_fn);
-            }
-        }
+        let passphrase_callbacks =
+            prepare_passphrase_callbacks(&dev_info, &mut config, env_has_passphrase);
 
         let mut can_detach = true;
         let session_pgid = unsafe { libc::setsid() };
@@ -1495,26 +1574,8 @@ impl super::AppRunner {
                     rt_info.lock().unwrap().mount_config.mount_options = Some(new_mount_opts);
                 }
 
-                let share_name = match config.custom_mount_name() {
-                    Some(name) => name.as_bytes().into(),
-                    None => mnt_dev_info.auto_mount_name(),
-                };
-
-                let share_path = match config.get_action() {
-                    Some(action) if !action.override_nfs_export().is_empty() => {
-                        BString::from(action.override_nfs_export())
-                    }
-                    _ => [b"/mnt/", share_name.as_slice()].concat().into(),
-                };
-
-                let mut nfs_opts = fsutil::NfsOptions::default();
-                if shared_volume {
-                    nfs_opts.remove("nolocks".as_bytes());
-                }
-                nfs_opts.extend(config.nfs_options.iter().map(|s| match s.split_once('=') {
-                    Some((key, value)) => (key.as_bytes().into(), value.as_bytes().into()),
-                    None => (s.as_bytes().into(), b"".into()),
-                }));
+                let (share_path, nfs_opts) =
+                    build_nfs_share_config(&config, &mnt_dev_info, shared_volume);
 
                 let mount_result = mount_nfs(&vm_host_b, &share_path, &config, &nfs_opts);
                 match &mount_result {
@@ -1554,34 +1615,15 @@ impl super::AppRunner {
 
                     rt_info.lock().unwrap().mount_point = Some(mount_point.display().into());
 
-                    let mut additional_exports = exports
-                        .iter()
-                        .map(|item| item.as_str())
-                        .filter(|&export_path| export_path != &share_path)
-                        .peekable();
-
-                    {
-                        let _log_guard = ConsoleLogGuard::enable_temporarily(verbose);
-                        let elevate =
-                            config.common.sudo_uid.is_none() && config.common.invoker_uid != 0;
-
-                        if elevate && additional_exports.peek().is_some() {
-                            host_println!("need to use sudo to mount additional NFS exports");
-                        }
-                        match fsutil::mount_nfs_subdirs(
-                            &vm_host_b,
-                            &share_path,
-                            additional_exports.into_iter(),
-                            mount_point.display(),
-                            &nfs_opts,
-                            elevate,
-                        ) {
-                            Ok(_) => {}
-                            Err(e) => {
-                                host_eprintln!("Failed to mount additional NFS exports: {:#}", e)
-                            }
-                        }
-                    }
+                    mount_nfs_subdirectories(
+                        &config,
+                        &vm_host_b,
+                        &share_path,
+                        exports,
+                        mount_point,
+                        &nfs_opts,
+                        verbose,
+                    );
                 }
 
                 // drop privileges back to the original user if he used sudo
