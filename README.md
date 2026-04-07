@@ -38,7 +38,7 @@ brew install anylinuxfs
 - A new virtual machine is needed for each mounted volume.
   You can configure RAM limit (512 MB by default), typical usage is around 256 MB per VM.
 - Multi-mount relies on file locks (to prevent data corruption) and we can only lock entire physical partitions.
-  So, practically, you won't be able to mount multiple logical volumes at once if they're backed by the same partition.
+  So, practically, you can only mount multiple logical volumes from the same partition if you mount all of them read-only.
 - Some disks with non-ASCII labels might fail to mount unless a custom mount point with "safe" characters is used (this is a macOS bug)
 - By design, any mounted volume is seen by macOS as a network drive shared by our virtual machine.
 - Microsoft Word cannot edit files directly on a mounted drive. This is a known issue with Word and network filesystems.
