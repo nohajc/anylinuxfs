@@ -203,11 +203,9 @@ pub(crate) struct ConfigCmd {
         .args(&["linux", "microsoft"]),
 ))]
 pub(crate) struct ListCmd {
-    /// List only the specified disk(s) or image(s), colon-separated for multiple values.
-    /// Examples: /dev/disk5, image.img, /dev/disk5:/dev/disk6, image1.img:image2.img
-    #[clap(verbatim_doc_comment)]
-    #[arg(value_name = "DISK|IMAGE")]
-    pub disk: Option<String>,
+    /// List only the specified disk(s) or image(s), delimited by space
+    #[arg(value_name = "DISK|IMAGE", value_delimiter = ' ', num_args = 0..)]
+    pub disk: Option<Vec<String>>,
     /// Decrypt LUKS partitions: comma-separated list of paths or "all"
     #[arg(short, long, value_delimiter = ',', num_args = 1..)]
     pub decrypt: Option<Vec<String>>,
