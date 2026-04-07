@@ -66,8 +66,15 @@ impl DevInfo {
             (path.to_owned(), path.to_owned())
         };
 
-        let Ok(mut probe) = BlkidProbe::new_from_filename(Path::from_bytes(&path)) else {
-            return Err(anyhow!("Cannot probe device. Insufficient permissions?"));
+        let mut probe = match BlkidProbe::new_from_filename(Path::from_bytes(&path)) {
+            Ok(probe) => probe,
+            Err(e) => {
+                return Err(anyhow!(
+                    "Cannot probe {}: {:?}; Insufficient permissions?",
+                    path.as_bstr(),
+                    e
+                ));
+            }
         };
         probe
             .enable_superblocks(true)
