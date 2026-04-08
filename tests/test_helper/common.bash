@@ -154,6 +154,30 @@ hdiutil_attach() {
   echo "$dev"
 }
 
+# hdiutil_attach_automount <image_path>
+#   Like hdiutil_attach but WITHOUT -nomount, so macOS's diskarbitrationd can
+#   auto-mount any recognisable volumes (e.g. NTFS read-only).  Used by the
+#   --remount tests that need a disk to already be mounted natively before
+#   anylinuxfs takes over.
+#   Prints the /dev/diskX device node to stdout and sets HDIUTIL_DEV.
+hdiutil_attach_automount() {
+  local image_path="$1"
+  local out
+  out="$(hdiutil attach \
+    -imagekey diskimage-class=CRawDiskImage \
+    "$image_path" 2>&1)"
+  local dev
+  dev="$(echo "$out" | awk 'NR==1{print $1}')"
+  if [[ -z "$dev" || ! -b "$dev" ]]; then
+    echo "ERROR: hdiutil_attach_automount failed for $image_path" >&2
+    echo "$out" >&2
+    return 1
+  fi
+  HDIUTIL_DEV="$dev"
+  export HDIUTIL_DEV
+  echo "$dev"
+}
+
 # hdiutil_detach <dev_node>
 #   Detaches a virtual disk. Note: hdiutil detach does not require sudo when
 #   the attach was performed by the same user.
