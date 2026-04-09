@@ -660,8 +660,10 @@ pub(crate) fn start_vm_forked(
     }
 }
 
-/// Raise the soft RLIMIT_NOFILE to the hard limit so that libkrun has enough
-/// file descriptors to set up virtiofs, virtio-net, serial console pipes, etc.
+const RLIMIT: libc::rlim_t = 16384;
+
+/// Raise the soft RLIMIT_NOFILE so that libkrun has enough file descriptors
+/// to set up virtiofs, virtio-net, serial console pipes, etc.
 /// On macOS the default soft limit is 256, but libkrun typically needs ~300+
 /// fds for a fully mounted VM (149 virtiofs pipes alone for the Alpine rootfs).
 fn raise_nofile_limit() {
@@ -669,8 +671,8 @@ fn raise_nofile_limit() {
         rlim_cur: 0,
         rlim_max: 0,
     };
-    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut rl) } == 0 && rl.rlim_cur < rl.rlim_max {
-        rl.rlim_cur = rl.rlim_max;
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut rl) } == 0 && rl.rlim_cur < RLIMIT {
+        rl.rlim_cur = RLIMIT;
         unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &rl) };
     }
 }
