@@ -8,7 +8,6 @@ use devinfo::DevInfo;
 use nanoid::nanoid;
 use toml_edit::{Document, DocumentMut};
 
-use std::borrow::Cow;
 use std::env;
 use std::ffi::OsStr;
 use std::fs::{self, File};
@@ -400,33 +399,37 @@ pub(crate) fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
 }
 
 pub(crate) fn hostname_from_disk_ident(disk_ident: &str) -> anyhow::Result<String> {
-    let disk_ident: Cow<'_, _> = if ["lvm:", "raid:"]
-        .into_iter()
-        .any(|p| disk_ident.starts_with(p))
-    {
-        disk_ident.replace(':', "-").into()
-    } else {
-        disk_ident.into()
-    };
+    let special = ["lvm", "raid"];
 
-    // Strip @s<digits> suffix from image partition identifiers
-    let first_token = disk_ident.split(':').next().unwrap();
-    let first_token = if let Some(at_pos) = first_token.rfind("@s") {
-        let suffix = &first_token[at_pos + 2..];
-        if suffix.chars().all(|c| c.is_ascii_digit()) {
-            &first_token[..at_pos]
-        } else {
-            first_token
-        }
-    } else {
-        first_token
-    };
+    let mut ident_iter = disk_ident.split(':');
+    let mut first_token = ident_iter.next().unwrap();
+    let mut prefix = String::new();
+
+    if let Some(second_token) = ident_iter.next()
+        && special.contains(&first_token)
+    {
+        prefix = first_token.into();
+        first_token = second_token;
+    }
 
     let disk_name = Path::new(first_token)
         .file_name()
-        .unwrap_or(OsStr::new("disk"));
+        .unwrap_or(OsStr::new("disk"))
+        .to_string_lossy();
+
+    // Strip @s<digits> suffix from image partition identifiers
+    let disk_name = if let Some(at_pos) = disk_name.rfind("@s") {
+        let suffix = &disk_name[at_pos + 2..];
+        if suffix.chars().all(|c| c.is_ascii_digit()) {
+            &disk_name[..at_pos]
+        } else {
+            &disk_name
+        }
+    } else {
+        &disk_name
+    };
+
     let mut vm_hostname: String = disk_name
-        .to_string_lossy()
         .replace(
             |c| {
                 matches!(
@@ -439,9 +442,14 @@ pub(crate) fn hostname_from_disk_ident(disk_ident: &str) -> anyhow::Result<Strin
         .chars()
         .filter(|&c| c.is_ascii_alphanumeric() || c == '-')
         .collect();
+
     if vm_hostname.is_empty() {
         vm_hostname = "disk".to_string();
-    } else if vm_hostname.len() > 63 {
+    }
+    if !prefix.is_empty() {
+        vm_hostname = format!("{}-{}", prefix, vm_hostname);
+    }
+    if vm_hostname.len() > 63 {
         vm_hostname.truncate(63);
     }
 
