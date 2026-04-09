@@ -326,6 +326,7 @@ depmod -a
 ln -sf /tmp/resolv.conf /etc/resolv.conf
 rm -v /etc/idmapd.conf /etc/exports
 ln -sf /tmp/exports /etc/exports
+mkdir /.config /.cache
 `, packagesStr)
 
 	err := os.WriteFile(vmSetupScriptPath, []byte(vmSetupScriptContent), 0755)

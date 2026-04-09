@@ -995,6 +995,8 @@ fn run() -> anyhow::Result<()> {
 
     #[cfg(target_os = "linux")]
     let tmpfs_dirs = &[
+        "/.config",
+        "/.cache",
         "/tmp",
         "/run",
         "/var/lib/nfs",
