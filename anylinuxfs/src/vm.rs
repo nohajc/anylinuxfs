@@ -539,6 +539,7 @@ pub(crate) fn start_vmproxy(
     host_println!("vmproxy args: {:?}", &args);
     set_vm_cmdline(ctx, &args, env)?;
 
+    raise_nofile_limit();
     before_start().context("Before start callback failed")?;
     unsafe { bindings::krun_start_enter(ctx.id) }.context("Failed to start VM")?;
 
@@ -659,12 +660,28 @@ pub(crate) fn start_vm_forked(
     }
 }
 
+/// Raise the soft RLIMIT_NOFILE to the hard limit so that libkrun has enough
+/// file descriptors to set up virtiofs, virtio-net, serial console pipes, etc.
+/// On macOS the default soft limit is 256, but libkrun typically needs ~300+
+/// fds for a fully mounted VM (149 virtiofs pipes alone for the Alpine rootfs).
+fn raise_nofile_limit() {
+    let mut rl = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut rl) } == 0 && rl.rlim_cur < rl.rlim_max {
+        rl.rlim_cur = rl.rlim_max;
+        unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &rl) };
+    }
+}
+
 pub(crate) fn start_vm(
     ctx: &VMContext,
     cmdline: &[BString],
     env: &[BString],
 ) -> anyhow::Result<()> {
     set_vm_cmdline(ctx, cmdline, env)?;
+    raise_nofile_limit();
     unsafe { bindings::krun_start_enter(ctx.id) }.context("Failed to start VM")?;
 
     Ok(())
