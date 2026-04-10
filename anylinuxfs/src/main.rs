@@ -102,15 +102,6 @@ pub(crate) fn rand_string(len: usize) -> String {
     )
 }
 
-/// Extracts the value from a `<tag:value>` line emitted by vmproxy.
-/// Returns `None` if the line has no `:` separator.
-pub(crate) fn parse_vm_tag_value(line: &str) -> Option<&str> {
-    line.split_once(':').map(|(_, rest)| {
-        let trimmed = rest.trim();
-        trimmed.strip_suffix('>').unwrap_or(trimmed)
-    })
-}
-
 pub(crate) fn is_read_only_set(mount_options: Option<&str>) -> bool {
     if let Some(options) = mount_options {
         options.split(',').any(|opt| opt == "ro")

@@ -38,8 +38,8 @@ use crate::utils::{
 use crate::vm::*;
 use crate::{
     ConsoleLogGuard, LOCK_FILE, api, cli::*, diskutil, drop_effective_privileges, drop_privileges,
-    elevate_effective_privileges, fsutil, load_mount_config, netutil, parse_vm_tag_value,
-    rand_string, rpcbind, to_exit_code, vm_image, vm_network,
+    elevate_effective_privileges, fsutil, load_mount_config, netutil, rand_string, rpcbind,
+    to_exit_code, vm_image, vm_network,
 };
 
 pub(crate) enum NfsStatus {
@@ -673,8 +673,54 @@ pub(crate) fn pick_unique_hostname(base: &str, active_vm_hosts: &HashSet<String>
     }
 }
 
-/// Reads PTY output from the VM, parses `<anylinuxfs-*>` tags, and dispatches
-/// NFS-ready / passphrase-prompt / report events to the parent process via channels.
+/// Drains all pending `VmEvent` messages from `rx` and updates the provided state variables.
+/// Called from `PtyReader::spawn()` before and after each PTY read.
+#[allow(clippy::too_many_arguments)]
+fn process_vm_events(
+    rx: &mut Option<mpsc::Receiver<vmctrl::VmEvent>>,
+    fslabel: &mut Option<String>,
+    fstype: &mut Option<String>,
+    exports: &mut BTreeSet<String>,
+    changed_to_ro: &mut bool,
+    exit_code: &mut Option<i32>,
+    pwd_prompt_tx: &mpsc::Sender<bool>,
+    verbose: bool,
+) {
+    let Some(rx) = rx else { return };
+    while let Ok(event) = rx.try_recv() {
+        match event {
+            vmctrl::VmEvent::FsType(fs) => *fstype = Some(fs),
+            vmctrl::VmEvent::FsLabel(label) => *fslabel = Some(label),
+            vmctrl::VmEvent::NfsExport(path) => {
+                exports.insert(path);
+            }
+            vmctrl::VmEvent::MountChangedToRo => *changed_to_ro = true,
+            vmctrl::VmEvent::PassphrasePromptStart => {
+                let _ = pwd_prompt_tx.send(true);
+            }
+            vmctrl::VmEvent::PassphrasePromptEnd => {
+                let _ = pwd_prompt_tx.send(false);
+            }
+            vmctrl::VmEvent::ForceOutputOn => {
+                if !verbose {
+                    log::enable_console_log();
+                }
+            }
+            vmctrl::VmEvent::ForceOutputOff => {
+                if !verbose {
+                    log::disable_console_log();
+                }
+            }
+            vmctrl::VmEvent::ExitCode(code) => *exit_code = Some(code),
+        }
+    }
+}
+
+/// Reads PTY output from the VM and dispatches NFS-ready / passphrase-prompt / report
+/// events to the parent process via channels.
+///
+/// VM state (filesystem type/label, NFS exports, etc.) is received via `VmEvent` IPC
+/// messages after `vmproxy-ready` is seen on stdout. Tag parsing has been removed.
 struct PtyReader {
     pty_fd: libc::c_int,
     guest_prefix: log::Prefix,
@@ -693,15 +739,29 @@ impl PtyReader {
             let mut fslabel: Option<String> = None;
             let mut fstype: Option<String> = None;
             let mut changed_to_ro = false;
-            let mut exit_code = None;
+            let mut exit_code: Option<i32> = None;
             let mut buf_reader = PassthroughBufReader::new(
                 unsafe { File::from_raw_fd(self.pty_fd) },
                 self.guest_prefix,
             );
             let mut line = String::new();
             let mut exports = BTreeSet::new();
+            // Populated when vmproxy-ready is received; drained with try_recv().
+            let mut vm_event_rx: Option<mpsc::Receiver<vmctrl::VmEvent>> = None;
 
             loop {
+                // Drain any pending IPC events before blocking on PTY read.
+                process_vm_events(
+                    &mut vm_event_rx,
+                    &mut fslabel,
+                    &mut fstype,
+                    &mut exports,
+                    &mut changed_to_ro,
+                    &mut exit_code,
+                    &self.vm_pwd_prompt_tx,
+                    self.verbose,
+                );
+
                 let bytes = match buf_reader.read_line(&mut line) {
                     Ok(bytes) => bytes,
                     Err(e) => {
@@ -712,7 +772,31 @@ impl PtyReader {
                 if bytes == 0 {
                     break; // EOF
                 }
+
+                // Drain again after the PTY line — events may have arrived while blocked.
+                process_vm_events(
+                    &mut vm_event_rx,
+                    &mut fslabel,
+                    &mut fstype,
+                    &mut exports,
+                    &mut changed_to_ro,
+                    &mut exit_code,
+                    &self.vm_pwd_prompt_tx,
+                    self.verbose,
+                );
+
                 if line.contains("READY AND WAITING FOR NFS CLIENT CONNECTIONS") {
+                    // Final drain — make sure all pre-NFS events are processed.
+                    process_vm_events(
+                        &mut vm_event_rx,
+                        &mut fslabel,
+                        &mut fstype,
+                        &mut exports,
+                        &mut changed_to_ro,
+                        &mut exit_code,
+                        &self.vm_pwd_prompt_tx,
+                        self.verbose,
+                    );
                     self.nfs_ready_tx
                         .send(NfsStatus::Ready(NfsReadyState {
                             fslabel: fslabel.take(),
@@ -723,31 +807,11 @@ impl PtyReader {
                         .unwrap();
                     nfs_ready = true;
                 } else if line.starts_with("<anylinuxfs-vmproxy-ready>") {
-                    subscribe_to_vm_events(
+                    vm_event_rx = Some(start_ipc_event_reader(
                         &self.config,
                         self.vm_native_ip,
                         self.vm_report_tx.clone(),
-                    );
-                } else if line.starts_with("<anylinuxfs-exit-code") {
-                    exit_code = parse_vm_tag_value(&line).and_then(|v| v.parse::<i32>().ok());
-                } else if line.starts_with("<anylinuxfs-label") {
-                    fslabel = parse_vm_tag_value(&line).map(str::to_string);
-                } else if line.starts_with("<anylinuxfs-type") {
-                    fstype = parse_vm_tag_value(&line).map(str::to_string);
-                } else if line.starts_with("<anylinuxfs-mount:changed-to-ro>") {
-                    changed_to_ro = true;
-                } else if line.starts_with("<anylinuxfs-nfs-export") {
-                    if let Some(export_path) = parse_vm_tag_value(&line) {
-                        exports.insert(export_path.to_string());
-                    }
-                } else if line.starts_with("<anylinuxfs-passphrase-prompt:start>") {
-                    self.vm_pwd_prompt_tx.send(true).unwrap();
-                } else if line.starts_with("<anylinuxfs-passphrase-prompt:end>") {
-                    self.vm_pwd_prompt_tx.send(false).unwrap();
-                } else if !self.verbose && line.starts_with("<anylinuxfs-force-output:off>") {
-                    log::disable_console_log();
-                } else if !self.verbose && line.starts_with("<anylinuxfs-force-output:on>") {
-                    log::enable_console_log();
+                    ));
                 }
 
                 line.clear();
@@ -761,12 +825,18 @@ impl PtyReader {
     }
 }
 
-/// Spawn a thread to connect to the VM control socket and subscribe to events.
-fn subscribe_to_vm_events(
+/// Connects to the VM control socket, sends `SubscribeEvents`, and loops reading
+/// `VmEvent` responses until the stream ends with a `ReportEvent`.
+///
+/// Returns a `Receiver` end of a channel that delivers `VmEvent` values as they
+/// arrive; the `Sender` lives in the spawned thread. The caller (`PtyReader`) drains
+/// events from the receiver with `try_recv()` between PTY reads.
+fn start_ipc_event_reader(
     config: &MountConfig,
     vm_native_ip: Option<Ipv4Addr>,
     vm_report_tx: mpsc::Sender<vmctrl::Report>,
-) {
+) -> mpsc::Receiver<vmctrl::VmEvent> {
+    let (event_tx, event_rx) = mpsc::channel::<vmctrl::VmEvent>();
     let config = config.clone();
     _ = thread::spawn(move || {
         let Ok(mut stream) =
@@ -778,21 +848,31 @@ fn subscribe_to_vm_events(
         if let Err(e) = ipc::Client::write_request(&mut stream, &vmctrl::Request::SubscribeEvents) {
             host_eprintln!("Failed to send SubscribeEvents to vmctrl: {:#}", e);
             return;
-        };
+        }
 
-        match ipc::Client::read_response(&mut stream) {
-            Ok(response) => {
-                if let vmctrl::Response::ReportEvent(info) = response {
-                    if let Err(e) = vm_report_tx.send(info) {
+        loop {
+            match ipc::Client::read_response(&mut stream) {
+                Ok(vmctrl::Response::VmEvent(event)) => {
+                    // Forward to PtyReader; ignore send errors (receiver may have dropped).
+                    let _ = event_tx.send(event);
+                }
+                Ok(vmctrl::Response::ReportEvent(report)) => {
+                    if let Err(e) = vm_report_tx.send(report) {
                         host_eprintln!("Failed to send VM report to channel: {:#}", e);
                     }
+                    break;
                 }
-            }
-            Err(e) => {
-                host_eprintln!("Failed to read VM report from vmctrl: {:#}", e);
+                Ok(vmctrl::Response::Ack) => {
+                    host_eprintln!("Unexpected Ack from vmctrl SubscribeEvents stream");
+                }
+                Err(e) => {
+                    host_eprintln!("Failed to read from vmctrl event stream: {:#}", e);
+                    break;
+                }
             }
         }
     });
+    event_rx
 }
 
 /// Set up rpcbind services for NFS when using GvProxy and host rpcbind is running.
