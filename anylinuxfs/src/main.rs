@@ -739,7 +739,6 @@ impl AppRunner {
 
     #[cfg(feature = "freebsd")]
     fn run_image(&mut self, cmd: ImageCmd) -> anyhow::Result<()> {
-        let _lock_file = LockFile::new(LOCK_FILE)?.acquire_lock(FlockKind::Exclusive)?;
         let config = load_config(&CommonArgs::default(), &DebugArgs::default())?;
         let images = config.preferences.images();
 
@@ -762,6 +761,8 @@ impl AppRunner {
             }
             ImageCmd::Install { name } => match images.get(name.as_str()) {
                 Some(&src) => {
+                    let _lock_file =
+                        LockFile::new(LOCK_FILE)?.acquire_lock(FlockKind::Exclusive)?;
                     let config = config.with_image_source(src);
                     vm_image::init(&config, true, src)
                         .context(format!("Failed to install image {}", name))?;
@@ -773,6 +774,8 @@ impl AppRunner {
             },
             ImageCmd::Uninstall { name } => match images.get(name.as_str()) {
                 Some(&src) => {
+                    let _lock_file =
+                        LockFile::new(LOCK_FILE)?.acquire_lock(FlockKind::Exclusive)?;
                     let config = config.with_image_source(src);
                     vm_image::remove(&config, src)
                         .context(format!("Failed to uninstall image {}", name))?;
