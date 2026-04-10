@@ -301,7 +301,7 @@ impl CtrlSocketServer {
                                 );
                                 _ = stream.flush();
 
-                                if !events_subscribed.load(Ordering::Relaxed) {
+                                if !events_subscribed.load(Ordering::Acquire) {
                                     if let Some(done_tx) = done_tx.lock().unwrap().take() {
                                         _ = done_tx.send(());
                                     }
@@ -311,9 +311,8 @@ impl CtrlSocketServer {
                             vmctrl::Request::SubscribeEvents => {
                                 let event_state = Arc::clone(&event_state_server);
 
+                                events_subscribed.store(true, Ordering::Release);
                                 s.spawn(move || {
-                                    events_subscribed.store(true, Ordering::Relaxed);
-
                                     // Create live channel and drain the buffer atomically.
                                     let (live_tx, live_rx) = mpsc::sync_channel(64);
                                     let buffered = {
@@ -338,10 +337,7 @@ impl CtrlSocketServer {
                                             &mut stream,
                                             &vmctrl::Response::VmEvent(event),
                                         ) {
-                                            eprintln!(
-                                                "Failed to write buffered event: {:#}",
-                                                e
-                                            );
+                                            eprintln!("Failed to write buffered event: {:#}", e);
                                             break;
                                         }
                                     }
@@ -413,7 +409,9 @@ impl CtrlSocketServer {
             .context("Failed to send report to ctrl socket")?;
 
         // Wait for the subscriber thread to finish writing everything.
-        _ = self.done_rx.recv();
+        // Use a timeout to avoid deadlocking when run() exits before any
+        // SubscribeEvents is processed (no subscriber thread fires done_tx).
+        let _ = self.done_rx.recv_timeout(Duration::from_secs(30));
         Ok(())
     }
 }
@@ -709,31 +707,30 @@ impl VmDiskContext {
         deferred: &mut Deferred,
     ) -> anyhow::Result<()> {
         let env_has_passphrase = self.env_has_passphrase();
-        let (pwd_for_all, input_mode_fn): (_, fn() -> _) = if reuse_passphrase
-            && self.key_file_path.is_none()
-        {
-            let pwd = if let Some(passphrase) = self.env_pwds.get(&1) {
-                BString::from(passphrase.as_bytes())
-            } else if env_has_passphrase {
-                return Err(anyhow!(
-                    "Missing environment variable {}",
-                    ALFS_PASSPHRASE_PREFIX.as_bstr()
-                ));
+        let (pwd_for_all, input_mode_fn): (_, fn() -> _) =
+            if reuse_passphrase && self.key_file_path.is_none() {
+                let pwd = if let Some(passphrase) = self.env_pwds.get(&1) {
+                    BString::from(passphrase.as_bytes())
+                } else if env_has_passphrase {
+                    return Err(anyhow!(
+                        "Missing environment variable {}",
+                        ALFS_PASSPHRASE_PREFIX.as_bstr()
+                    ));
+                } else {
+                    self.event_sink.send(vmctrl::VmEvent::PassphrasePromptStart);
+                    let event_sink_clone = self.event_sink.clone();
+                    let prompt_end = deferred
+                        .add(move || event_sink_clone.send(vmctrl::VmEvent::PassphrasePromptEnd));
+                    let pwd = BString::from(rpassword::read_password()?.as_bytes());
+                    deferred.call_now(prompt_end);
+                    pwd
+                };
+                (Some(pwd), || Stdio::piped())
+            } else if env_has_passphrase && self.key_file_path.is_none() {
+                (None, || Stdio::piped())
             } else {
-                self.event_sink.send(vmctrl::VmEvent::PassphrasePromptStart);
-                let event_sink_clone = self.event_sink.clone();
-                let prompt_end =
-                    deferred.add(move || event_sink_clone.send(vmctrl::VmEvent::PassphrasePromptEnd));
-                let pwd = BString::from(rpassword::read_password()?.as_bytes());
-                deferred.call_now(prompt_end);
-                pwd
+                (None, || Stdio::inherit())
             };
-            (Some(pwd), || Stdio::piped())
-        } else if env_has_passphrase && self.key_file_path.is_none() {
-            (None, || Stdio::piped())
-        } else {
-            (None, || Stdio::inherit())
-        };
 
         let key_file_args: &[&str] = if let Some(key_file) = self.key_file_path.as_deref() {
             &["--key-file", key_file]
@@ -769,8 +766,8 @@ impl VmDiskContext {
             } else {
                 self.event_sink.send(vmctrl::VmEvent::PassphrasePromptStart);
                 let event_sink_clone = self.event_sink.clone();
-                let prompt_end =
-                    deferred.add(move || event_sink_clone.send(vmctrl::VmEvent::PassphrasePromptEnd));
+                let prompt_end = deferred
+                    .add(move || event_sink_clone.send(vmctrl::VmEvent::PassphrasePromptEnd));
                 let res = cryptsetup.wait()?;
                 deferred.call_now(prompt_end);
                 res
@@ -852,8 +849,9 @@ impl VmDiskContext {
             }
             Some("zfs_member") => {
                 self.fs_type = Some("zfs".to_owned());
-                self.event_sink
-                    .send(vmctrl::VmEvent::FsType(self.fs_type.as_deref().unwrap().to_owned()));
+                self.event_sink.send(vmctrl::VmEvent::FsType(
+                    self.fs_type.as_deref().unwrap().to_owned(),
+                ));
             }
             _ => (),
         }
@@ -869,7 +867,8 @@ impl VmDiskContext {
                     .status()
                     .context("Failed to load zfs module")?;
                 let label = "zfs_root".to_owned();
-                self.event_sink.send(vmctrl::VmEvent::FsLabel(label.clone()));
+                self.event_sink
+                    .send(vmctrl::VmEvent::FsLabel(label.clone()));
                 self.mount_name = label;
             }
         } else {
@@ -886,7 +885,8 @@ impl VmDiskContext {
             if let Some(label) =
                 path_safe_label_name(&String::from_utf8_lossy(&label).trim().to_owned())
             {
-                self.event_sink.send(vmctrl::VmEvent::FsLabel(label.clone()));
+                self.event_sink
+                    .send(vmctrl::VmEvent::FsLabel(label.clone()));
                 self.mount_name = label;
             }
         }
@@ -1169,7 +1169,8 @@ fn run() -> anyhow::Result<()> {
         .map(|cfg| cfg.override_nfs_export().to_owned());
     let export_args_override = cli.nfs_export_opts.as_deref();
     let ignore_permissions = cli.ignore_permissions;
-    let mut custom_action = CustomActionRunner::new(custom_action_cfg, ctrl_server.event_sink.clone());
+    let mut custom_action =
+        CustomActionRunner::new(custom_action_cfg, ctrl_server.event_sink.clone());
 
     // Resolve key file path inside the VM.
     // For Linux: the path is directly accessible via the virtiofs rootfs (--key-file arg).
@@ -1263,7 +1264,7 @@ fn run() -> anyhow::Result<()> {
 
     let effective_mount_options = {
         let opts = script_output(&format!(
-            "mount | grep {} | awk -F'(' '{{ print $2 }}' | tr -d ')'",
+            "mount | grep -F -- '{}' | awk -F'(' '{{ print $2 }}' | tr -d ')'",
             &dsk.disk_path
         ))
         .with_context(|| format!("Failed to get mount options for {}", &dsk.disk_path))?
@@ -1285,7 +1286,9 @@ fn run() -> anyhow::Result<()> {
     };
 
     if dsk.specified_read_only() != effective_read_only {
-        ctrl_server.event_sink.send(vmctrl::VmEvent::MountChangedToRo);
+        ctrl_server
+            .event_sink
+            .send(vmctrl::VmEvent::MountChangedToRo);
     }
 
     let export_path = match nfs_export_override {
@@ -1316,7 +1319,7 @@ fn run() -> anyhow::Result<()> {
             }
         }
         Err(e) => {
-            eprintln!("Failed to start entrypoint.sh: {:#}", e);
+            return Err(anyhow!("Failed to start entrypoint.sh: {:#}", e));
         }
     }
 
