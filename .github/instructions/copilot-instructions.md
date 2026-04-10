@@ -221,3 +221,16 @@ When making changes to this file, apply the same changes to GEMINI.md, except th
 - **New features / non-trivial behavior changes**: After implementing, offer to write a new test case. If the user declines, offer to run the existing test suite. If the user agrees to add tests, first check whether the change is already covered by existing tests (which may need updating); then either fix the existing test or create a new one.
 - **"Please remember" / "take a note"**: When the user asks you to remember something, add it as a rule or note in this instructions file (and mirror it in GEMINI.md).
 - **`git add` new files**: After creating a new file, run `git add <file>` on it. When creating multiple files, batch them into a single `git add` command.
+
+## Context7 Library Resolution
+
+Whenever the assistant performs repository-related work — including answering library questions, creating implementation plans, writing code, selecting APIs, or generating examples — it MUST resolve and fetch authoritative documentation via the Context7 MCP server before relying on its internal training knowledge. Treat these rules as mandatory workspace-level guidance for Copilot Chat and other assistants that read repository instructions.
+
+- This is proactive: before producing code, examples, API choices, design decisions, or implementation steps, call `mcp_io_github_ups_resolve-library-id` to locate the most appropriate Context7-compatible library ID (format: `/org/project` or `/org/project/version`).
+- Prefer exact-name matches first; if multiple candidate IDs are returned prefer higher Source Reputation, then greater Code Snippet coverage.
+- For the selected ID, call `mcp_io_github_ups_get-library-docs` with `mode="code"` to fetch API docs, usage examples, and representative code snippets.
+- Summarize concisely in responses and implementation notes: one-line description, the Context7 library ID used, and 1–3 short code examples (if available). Include a reference to the fetched docs or the Context7 ID.
+- If the user requested a specific version and a `/org/project/version` ID exists, use that versioned ID.
+- If Context7 fails or returns no match, clearly state the fallback (web search or canonical docs) and continue.
+
+Adding this guidance at the repository level ensures Copilot Chat follows Context7-first behavior for library-related reasoning and code generation across devices that open this workspace.
