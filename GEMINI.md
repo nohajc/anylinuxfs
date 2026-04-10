@@ -208,7 +208,7 @@ anylinuxfs image {list|install}   # Manage VM images (FreeBSD feature)
 - `tests/` — BATS integration tests
 - `etc/anylinuxfs.toml` — Default configuration file
 - `libexec/` — Bundled helper binaries (gvproxy, vmproxy, init-rootfs, etc.)
-- `kernel-builder/` — **Unmaintained.** Originally a Lua-based microVM launcher used for experiments during early development (before `anylinuxfs shell` was usable) and for building custom Linux kernels (libkrun-based config with additional filesystem drivers enabled). Superseded by `anylinuxfs shell`, which now serves the same purpose on both Linux and FreeBSD. Do not modify or depend on this directory.
+- `.kernel-builder/` — **Unmaintained.** Originally a Lua-based microVM launcher used for experiments during early development (before `anylinuxfs shell` was usable) and for building custom Linux kernels (libkrun-based config with additional filesystem drivers enabled). Superseded by `anylinuxfs shell`, which now serves the same purpose on both Linux and FreeBSD. Do not modify or depend on this directory.
 
 ## Workflow Rules
 - **New test cases**: After writing a new BATS test case, always attempt to run it and report the result. Run individual test files directly with `bats tests/<file>.bats`; use `./tests/run-tests.sh` only to run the full suite.
