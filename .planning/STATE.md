@@ -1,20 +1,37 @@
+---
+gsd_state_version: 1.0
+milestone: v1.0
+milestone_name: milestone
+status: executing
+last_updated: "2026-04-10T22:08:44.518Z"
+progress:
+  total_phases: 4
+  completed_phases: 0
+  total_plans: 1
+  completed_plans: 0
+  percent: 0
+---
+
 # State: anylinuxfs IPC Migration
 
 ## Project Reference
 
 **Core Value:** The host and vmproxy exchange structured data reliably — no stray VM output can corrupt the protocol.
-**Current Focus:** Phase 1 — Protocol Types (define `VmEvent` in `common-utils`)
+**Current Focus:** Phase 01 — protocol-types
 **Milestone:** 1
 
 ---
 
 ## Current Position
 
+Phase: 01 (protocol-types) — EXECUTING
+Plan: 1 of 1
 **Active Phase:** 1 — Protocol Types
 **Active Plan:** None (not started)
-**Status:** Planning
+**Status:** Executing Phase 01
 
 **Progress:**
+
 ```
 Phase 1 [          ] 0%   Protocol Types
 Phase 2 [          ] 0%   vmproxy Event Emission
