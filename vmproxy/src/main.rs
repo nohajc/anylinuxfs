@@ -225,10 +225,41 @@ impl StreamListener for TcpListener {
     }
 }
 
+/// Buffered-or-live state shared between the event emitters (main thread) and the subscriber thread.
+enum EventState {
+    /// No subscriber yet — events are queued for flush on first SubscribeEvents.
+    Buffering(Vec<vmctrl::VmEvent>),
+    /// A subscriber is connected — events go directly to its channel.
+    Live(mpsc::SyncSender<vmctrl::VmEvent>),
+    /// Channel has been closed (send_report was called). Events are silently dropped.
+    Closed,
+}
+
+/// Cheaply-cloneable handle for emitting `VmEvent` IPC events from any thread.
+#[derive(Clone)]
+struct EventSink(Arc<Mutex<EventState>>);
+
+impl EventSink {
+    fn send(&self, event: vmctrl::VmEvent) {
+        match &mut *self.0.lock().unwrap() {
+            EventState::Buffering(buf) => buf.push(event),
+            EventState::Live(tx) => {
+                let _ = tx.send(event);
+            }
+            EventState::Closed => {}
+        }
+    }
+
+    fn close(&self) {
+        *self.0.lock().unwrap() = EventState::Closed;
+    }
+}
+
 struct CtrlSocketServer {
     done_rx: mpsc::Receiver<()>,
     quit_rx: mpsc::Receiver<()>,
     report_tx: mpsc::Sender<vmctrl::Report>,
+    event_sink: EventSink,
 }
 
 impl CtrlSocketServer {
@@ -236,6 +267,8 @@ impl CtrlSocketServer {
         let (done_tx, done_rx) = mpsc::channel();
         let (quit_tx, quit_rx) = mpsc::channel();
         let (report_tx, report_rx) = mpsc::channel();
+        let event_state = Arc::new(Mutex::new(EventState::Buffering(vec![])));
+        let event_state_server = Arc::clone(&event_state);
 
         _ = thread::spawn(move || {
             let done_tx = Arc::new(Mutex::new(Some(done_tx)));
@@ -276,9 +309,57 @@ impl CtrlSocketServer {
                                 break;
                             }
                             vmctrl::Request::SubscribeEvents => {
+                                let event_state = Arc::clone(&event_state_server);
+
                                 s.spawn(move || {
                                     events_subscribed.store(true, Ordering::Relaxed);
 
+                                    // Create live channel and drain the buffer atomically.
+                                    let (live_tx, live_rx) = mpsc::sync_channel(64);
+                                    let buffered = {
+                                        let mut state = event_state.lock().unwrap();
+                                        match std::mem::replace(
+                                            &mut *state,
+                                            EventState::Live(live_tx),
+                                        ) {
+                                            EventState::Buffering(buf) => buf,
+                                            other => {
+                                                // Already subscribed or closed — restore and bail.
+                                                *state = other;
+                                                eprintln!("SubscribeEvents: unexpected state");
+                                                return;
+                                            }
+                                        }
+                                    };
+
+                                    // Flush buffered events.
+                                    for event in buffered {
+                                        if let Err(e) = ipc::Handler::write_response(
+                                            &mut stream,
+                                            &vmctrl::Response::VmEvent(event),
+                                        ) {
+                                            eprintln!(
+                                                "Failed to write buffered event: {:#}",
+                                                e
+                                            );
+                                            break;
+                                        }
+                                    }
+
+                                    // Stream live events until channel closes.
+                                    for event in live_rx {
+                                        if let Err(e) = ipc::Handler::write_response(
+                                            &mut stream,
+                                            &vmctrl::Response::VmEvent(event),
+                                        ) {
+                                            eprintln!("Failed to write live event: {:#}", e);
+                                            break;
+                                        }
+                                    }
+
+                                    _ = stream.flush();
+
+                                    // Finally send the kernel-log report.
                                     if let Some(report_rx) = report_rx.lock().unwrap().take() {
                                         let report = report_rx.recv().map_or_else(
                                             |e| vmctrl::Report {
@@ -298,11 +379,10 @@ impl CtrlSocketServer {
                                             _ = stream.flush();
                                             println!("Sent report to vmctrl client");
                                         }
-                                        if let Some(done_tx) = done_tx.lock().unwrap().take() {
-                                            _ = done_tx.send(());
-                                        }
-                                    } else {
-                                        eprintln!("Report channel already taken");
+                                    }
+
+                                    if let Some(done_tx) = done_tx.lock().unwrap().take() {
+                                        _ = done_tx.send(());
                                     }
                                 });
                             }
@@ -316,6 +396,7 @@ impl CtrlSocketServer {
             done_rx,
             quit_rx,
             report_tx,
+            event_sink: EventSink(event_state),
         }
     }
 
@@ -324,11 +405,14 @@ impl CtrlSocketServer {
     }
 
     fn send_report(&self, report: vmctrl::Report) -> anyhow::Result<()> {
+        // Close the event channel — this unblocks the live_rx loop in the subscriber thread.
+        self.event_sink.close();
+
         self.report_tx
             .send(report)
             .context("Failed to send report to ctrl socket")?;
 
-        // wait for the thread that actually sends the data
+        // Wait for the subscriber thread to finish writing everything.
         _ = self.done_rx.recv();
         Ok(())
     }
@@ -345,13 +429,15 @@ fn terminate_child(child: &mut Child, child_name: &str) -> anyhow::Result<()> {
 struct CustomActionRunner {
     config: Option<CustomActionConfig>,
     env: HashMap<String, String>,
+    event_sink: EventSink,
 }
 
 impl CustomActionRunner {
-    pub fn new(config: Option<CustomActionConfig>) -> Self {
+    pub fn new(config: Option<CustomActionConfig>, event_sink: EventSink) -> Self {
         Self {
             config,
             env: HashMap::new(),
+            event_sink,
         }
     }
 
@@ -381,10 +467,10 @@ impl CustomActionRunner {
     pub fn before_mount(&self) -> anyhow::Result<()> {
         if let Some(action) = &self.config {
             if !action.before_mount().is_empty() {
-                println!("<anylinuxfs-force-output:on>");
+                self.event_sink.send(vmctrl::VmEvent::ForceOutputOn);
                 println!("Running before_mount action: `{}`", action.before_mount());
                 let result = self.execute_action(action.before_mount());
-                println!("<anylinuxfs-force-output:off>");
+                self.event_sink.send(vmctrl::VmEvent::ForceOutputOff);
                 result?;
             }
         }
@@ -394,10 +480,10 @@ impl CustomActionRunner {
     pub fn after_mount(&self) -> anyhow::Result<()> {
         if let Some(action) = &self.config {
             if !action.after_mount().is_empty() {
-                println!("<anylinuxfs-force-output:on>");
+                self.event_sink.send(vmctrl::VmEvent::ForceOutputOn);
                 println!("Running after_mount action: `{}`", action.after_mount());
                 let result = self.execute_action(action.after_mount());
-                println!("<anylinuxfs-force-output:off>");
+                self.event_sink.send(vmctrl::VmEvent::ForceOutputOff);
                 result?;
             }
         }
@@ -529,7 +615,6 @@ fn setup_key_file_path(
 fn main() -> ExitCode {
     if let Err(e) = run() {
         eprintln!("Error: {:#}", e);
-        eprintln!("<anylinuxfs-exit-code:1>");
         return ExitCode::FAILURE;
     }
     ExitCode::SUCCESS
@@ -570,10 +655,11 @@ struct VmDiskContext {
     is_zfs: bool,
     zfs_mountpoints: Vec<zfs::Mountpoint>,
     zfs_pools: Vec<String>,
+    event_sink: EventSink,
 }
 
 impl VmDiskContext {
-    fn new(cli: &Cli, key_file_path: Option<String>) -> Self {
+    fn new(cli: &Cli, key_file_path: Option<String>, event_sink: EventSink) -> Self {
         let (mapper_ident_prefix, cryptsetup_op) = match cli.fs_type.as_deref() {
             Some("crypto_LUKS") => ("luks", "open"),
             Some("BitLocker") => ("btlk", "bitlkOpen"),
@@ -596,6 +682,7 @@ impl VmDiskContext {
             is_zfs: false,
             zfs_mountpoints: vec![],
             zfs_pools: vec![],
+            event_sink,
         }
     }
 
@@ -633,8 +720,10 @@ impl VmDiskContext {
                     ALFS_PASSPHRASE_PREFIX.as_bstr()
                 ));
             } else {
-                println!("<anylinuxfs-passphrase-prompt:start>");
-                let prompt_end = deferred.add(|| println!("<anylinuxfs-passphrase-prompt:end>"));
+                self.event_sink.send(vmctrl::VmEvent::PassphrasePromptStart);
+                let event_sink_clone = self.event_sink.clone();
+                let prompt_end =
+                    deferred.add(move || event_sink_clone.send(vmctrl::VmEvent::PassphrasePromptEnd));
                 let pwd = BString::from(rpassword::read_password()?.as_bytes());
                 deferred.call_now(prompt_end);
                 pwd
@@ -678,8 +767,10 @@ impl VmDiskContext {
                     dev
                 ));
             } else {
-                println!("<anylinuxfs-passphrase-prompt:start>");
-                let prompt_end = deferred.add(|| println!("<anylinuxfs-passphrase-prompt:end>"));
+                self.event_sink.send(vmctrl::VmEvent::PassphrasePromptStart);
+                let event_sink_clone = self.event_sink.clone();
+                let prompt_end =
+                    deferred.add(move || event_sink_clone.send(vmctrl::VmEvent::PassphrasePromptEnd));
                 let res = cryptsetup.wait()?;
                 deferred.call_now(prompt_end);
                 res
@@ -756,12 +847,13 @@ impl VmDiskContext {
                     .stdout;
 
                 let fs = String::from_utf8_lossy(&fs).trim().to_owned();
-                println!("<anylinuxfs-type:{}>", &fs);
+                self.event_sink.send(vmctrl::VmEvent::FsType(fs.clone()));
                 self.fs_type = if !fs.is_empty() { Some(fs) } else { None };
             }
             Some("zfs_member") => {
                 self.fs_type = Some("zfs".to_owned());
-                println!("<anylinuxfs-type:{}>", self.fs_type.as_deref().unwrap());
+                self.event_sink
+                    .send(vmctrl::VmEvent::FsType(self.fs_type.as_deref().unwrap().to_owned()));
             }
             _ => (),
         }
@@ -777,7 +869,7 @@ impl VmDiskContext {
                     .status()
                     .context("Failed to load zfs module")?;
                 let label = "zfs_root".to_owned();
-                println!("<anylinuxfs-label:{}>", &label);
+                self.event_sink.send(vmctrl::VmEvent::FsLabel(label.clone()));
                 self.mount_name = label;
             }
         } else {
@@ -794,7 +886,7 @@ impl VmDiskContext {
             if let Some(label) =
                 path_safe_label_name(&String::from_utf8_lossy(&label).trim().to_owned())
             {
-                println!("<anylinuxfs-label:{}>", &label);
+                self.event_sink.send(vmctrl::VmEvent::FsLabel(label.clone()));
                 self.mount_name = label;
             }
         }
@@ -852,9 +944,10 @@ impl VmDiskContext {
 
         // we must show any output of mount command
         // in case there's a warning (e.g. NTFS cannot be accessed rw)
-        println!("<anylinuxfs-force-output:on>");
-        let force_output_off = deferred.add(|| {
-            println!("<anylinuxfs-force-output:off>");
+        self.event_sink.send(vmctrl::VmEvent::ForceOutputOn);
+        let event_sink_clone = self.event_sink.clone();
+        let force_output_off = deferred.add(move || {
+            event_sink_clone.send(vmctrl::VmEvent::ForceOutputOff);
         });
 
         let mnt_result = if self.is_zfs {
@@ -966,7 +1059,8 @@ impl VmDiskContext {
         let mut exports_content = String::new();
 
         for (export_path, export_args) in &all_exports {
-            println!("<anylinuxfs-nfs-export:{}>", export_path);
+            self.event_sink
+                .send(vmctrl::VmEvent::NfsExport(export_path.clone()));
             #[cfg(target_os = "linux")]
             {
                 exports_content += &format!("\"{}\"      *({})\n", export_path, export_args);
@@ -1028,6 +1122,9 @@ fn run() -> anyhow::Result<()> {
     let ctrl_server = CtrlSocketServer::new(listener);
     println!("<anylinuxfs-vmproxy-ready>");
 
+    let run_success = Arc::new(AtomicBool::new(false));
+    let run_success_deferred = Arc::clone(&run_success);
+
     let mut deferred = Deferred::new();
 
     deferred.add(|| {
@@ -1050,6 +1147,9 @@ fn run() -> anyhow::Result<()> {
             Ok(mut kernel_log_file) => _ = kernel_log_file.read_to_end(&mut kernel_log_content),
             Err(_) => {}
         }
+        if !run_success_deferred.load(Ordering::Relaxed) {
+            ctrl_server.event_sink.send(vmctrl::VmEvent::ExitCode(1));
+        }
         // we must move the log somewhere persistent where the host can access it;
         // guests such as FreeBSD might not be running from a virtiofs mounted root
         ctrl_server
@@ -1069,7 +1169,7 @@ fn run() -> anyhow::Result<()> {
         .map(|cfg| cfg.override_nfs_export().to_owned());
     let export_args_override = cli.nfs_export_opts.as_deref();
     let ignore_permissions = cli.ignore_permissions;
-    let mut custom_action = CustomActionRunner::new(custom_action_cfg);
+    let mut custom_action = CustomActionRunner::new(custom_action_cfg, ctrl_server.event_sink.clone());
 
     // Resolve key file path inside the VM.
     // For Linux: the path is directly accessible via the virtiofs rootfs (--key-file arg).
@@ -1077,7 +1177,7 @@ fn run() -> anyhow::Result<()> {
     let key_file_path = setup_key_file_path(cli.key_file.clone(), &mut deferred)
         .context("Failed to set up encryption key file")?;
 
-    let mut dsk = VmDiskContext::new(&cli, key_file_path);
+    let mut dsk = VmDiskContext::new(&cli, key_file_path, ctrl_server.event_sink.clone());
 
     // decrypt LUKS/BitLocker volumes if any
     if let Some(decrypt) = &cli.decrypt {
@@ -1133,7 +1233,7 @@ fn run() -> anyhow::Result<()> {
     {
         // Inform the user about ZFS crypto performance on Linux arm64 and suggest using FreeBSD
         if dsk.zfs_mountpoints.iter().any(|m| m.encrypted) {
-            println!("<anylinuxfs-force-output:on>");
+            ctrl_server.event_sink.send(vmctrl::VmEvent::ForceOutputOn);
             println!("Warning: Using encrypted ZFS datasets on Linux with ARM64 hardware results");
             println!("in degraded performance due to GPL/CDDL license incompatibility.");
             println!("You can use a FreeBSD VM which is not affected by this issue.");
@@ -1141,7 +1241,7 @@ fn run() -> anyhow::Result<()> {
                 "Simply run `anylinuxfs config --zfs-os freebsd` to set it as default for ZFS."
             );
             println!("For more information, see https://github.com/openzfs/zfs/issues/12171");
-            println!("<anylinuxfs-force-output:off>");
+            ctrl_server.event_sink.send(vmctrl::VmEvent::ForceOutputOff);
         }
     }
 
@@ -1185,7 +1285,7 @@ fn run() -> anyhow::Result<()> {
     };
 
     if dsk.specified_read_only() != effective_read_only {
-        println!("<anylinuxfs-mount:changed-to-ro>");
+        ctrl_server.event_sink.send(vmctrl::VmEvent::MountChangedToRo);
     }
 
     let export_path = match nfs_export_override {
@@ -1220,7 +1320,13 @@ fn run() -> anyhow::Result<()> {
         }
     }
 
+    run_success.store(true, Ordering::Relaxed);
     Ok(())
+}
+
+#[cfg(test)]
+fn test_event_sink() -> EventSink {
+    EventSink(Arc::new(Mutex::new(EventState::Buffering(vec![]))))
 }
 
 #[cfg(test)]
@@ -1240,18 +1346,18 @@ mod tests {
     #[test]
     fn test_vm_disk_context_specified_read_only() {
         let cli = Cli::parse_from(["vmproxy", "/dev/vda", "test"]);
-        let dsk = VmDiskContext::new(&cli, None);
+        let dsk = VmDiskContext::new(&cli, None, test_event_sink());
         assert!(!dsk.specified_read_only());
 
         let cli = Cli::parse_from(["vmproxy", "/dev/vda", "test", "-o", "ro,noatime"]);
-        let dsk = VmDiskContext::new(&cli, None);
+        let dsk = VmDiskContext::new(&cli, None, test_event_sink());
         assert!(dsk.specified_read_only());
     }
 
     #[test]
     fn test_vm_disk_context_mapper_prefix_luks() {
         let cli = Cli::parse_from(["vmproxy", "/dev/vda", "test", "-t", "crypto_LUKS"]);
-        let dsk = VmDiskContext::new(&cli, None);
+        let dsk = VmDiskContext::new(&cli, None, test_event_sink());
         assert_eq!(dsk.mapper_ident_prefix, "luks");
         assert_eq!(dsk.cryptsetup_op, "open");
     }
@@ -1259,7 +1365,7 @@ mod tests {
     #[test]
     fn test_vm_disk_context_mapper_prefix_bitlocker() {
         let cli = Cli::parse_from(["vmproxy", "/dev/vda", "test", "-t", "BitLocker"]);
-        let dsk = VmDiskContext::new(&cli, None);
+        let dsk = VmDiskContext::new(&cli, None, test_event_sink());
         assert_eq!(dsk.mapper_ident_prefix, "btlk");
         assert_eq!(dsk.cryptsetup_op, "bitlkOpen");
     }
@@ -1267,7 +1373,7 @@ mod tests {
     #[test]
     fn test_vm_disk_context_mapper_prefix_default() {
         let cli = Cli::parse_from(["vmproxy", "/dev/vda", "test", "-t", "ext4"]);
-        let dsk = VmDiskContext::new(&cli, None);
+        let dsk = VmDiskContext::new(&cli, None, test_event_sink());
         assert_eq!(dsk.mapper_ident_prefix, "luks");
         assert_eq!(dsk.cryptsetup_op, "open");
     }
@@ -1275,15 +1381,15 @@ mod tests {
     #[test]
     fn test_vm_disk_context_is_logical() {
         let cli = Cli::parse_from(["vmproxy", "/dev/mapper/luks0", "test"]);
-        let dsk = VmDiskContext::new(&cli, None);
+        let dsk = VmDiskContext::new(&cli, None, test_event_sink());
         assert!(dsk.is_logical());
 
         let cli = Cli::parse_from(["vmproxy", "/dev/vda", "test"]);
-        let dsk = VmDiskContext::new(&cli, None);
+        let dsk = VmDiskContext::new(&cli, None, test_event_sink());
         assert!(!dsk.is_logical());
 
         let cli = Cli::parse_from(["vmproxy", "/dev/vda", "test"]);
-        let mut dsk = VmDiskContext::new(&cli, None);
+        let mut dsk = VmDiskContext::new(&cli, None, test_event_sink());
         dsk.is_raid = true;
         assert!(dsk.is_logical());
     }
@@ -1291,7 +1397,7 @@ mod tests {
     #[test]
     fn test_vm_disk_context_env_has_passphrase() {
         let cli = Cli::parse_from(["vmproxy", "/dev/vda", "test"]);
-        let dsk = VmDiskContext::new(&cli, None);
+        let dsk = VmDiskContext::new(&cli, None, test_event_sink());
         // Without any ALFS_PASSPHRASE env vars set, env_pwds should be empty
         assert!(!dsk.env_has_passphrase());
     }
