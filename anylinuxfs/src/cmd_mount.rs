@@ -785,7 +785,7 @@ impl PtyReader {
                     self.verbose,
                 );
 
-                if line.contains("READY AND WAITING FOR NFS CLIENT CONNECTIONS") {
+                if !nfs_ready && line.contains("READY AND WAITING FOR NFS CLIENT CONNECTIONS") {
                     // Final drain — make sure all pre-NFS events are processed.
                     process_vm_events(
                         &mut vm_event_rx,
@@ -839,11 +839,17 @@ fn start_ipc_event_reader(
     let (event_tx, event_rx) = mpsc::channel::<vmctrl::VmEvent>();
     let config = config.clone();
     _ = thread::spawn(move || {
-        let Ok(mut stream) =
-            vm_network::connect_to_vm_ctrl_socket(&config.common, vm_native_ip, None)
-        else {
-            return;
-        };
+        let mut stream =
+            match vm_network::connect_to_vm_ctrl_socket(&config.common, vm_native_ip, None) {
+                Ok(s) => s,
+                Err(e) => {
+                    host_eprintln!(
+                        "Failed to connect to VM control socket for event subscription: {:#}",
+                        e
+                    );
+                    return;
+                }
+            };
 
         if let Err(e) = ipc::Client::write_request(&mut stream, &vmctrl::Request::SubscribeEvents) {
             host_eprintln!("Failed to send SubscribeEvents to vmctrl: {:#}", e);
