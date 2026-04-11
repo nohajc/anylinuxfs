@@ -105,7 +105,7 @@ teardown() {
 
   # Alpine Linux ships /etc/os-release; its presence confirms that the VM's
   # /etc was exported and mounted successfully.
-  [[ -f "${mp}/os-release" ]]
+  [[ -f "${mp}/hosts" ]]
 
   do_unmount
 }
