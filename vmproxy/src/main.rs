@@ -465,10 +465,10 @@ impl CustomActionRunner {
     pub fn before_mount(&self) -> anyhow::Result<()> {
         if let Some(action) = &self.config {
             if !action.before_mount().is_empty() {
-                self.event_sink.send(vmctrl::VmEvent::ForceOutputOn);
+                println!("<anylinuxfs-force-output:on>");
                 println!("Running before_mount action: `{}`", action.before_mount());
                 let result = self.execute_action(action.before_mount());
-                self.event_sink.send(vmctrl::VmEvent::ForceOutputOff);
+                println!("<anylinuxfs-force-output:off>");
                 result?;
             }
         }
@@ -478,10 +478,10 @@ impl CustomActionRunner {
     pub fn after_mount(&self) -> anyhow::Result<()> {
         if let Some(action) = &self.config {
             if !action.after_mount().is_empty() {
-                self.event_sink.send(vmctrl::VmEvent::ForceOutputOn);
+                println!("<anylinuxfs-force-output:on>");
                 println!("Running after_mount action: `{}`", action.after_mount());
                 let result = self.execute_action(action.after_mount());
-                self.event_sink.send(vmctrl::VmEvent::ForceOutputOff);
+                println!("<anylinuxfs-force-output:off>");
                 result?;
             }
         }
@@ -707,30 +707,29 @@ impl VmDiskContext {
         deferred: &mut Deferred,
     ) -> anyhow::Result<()> {
         let env_has_passphrase = self.env_has_passphrase();
-        let (pwd_for_all, input_mode_fn): (_, fn() -> _) =
-            if reuse_passphrase && self.key_file_path.is_none() {
-                let pwd = if let Some(passphrase) = self.env_pwds.get(&1) {
-                    BString::from(passphrase.as_bytes())
-                } else if env_has_passphrase {
-                    return Err(anyhow!(
-                        "Missing environment variable {}",
-                        ALFS_PASSPHRASE_PREFIX.as_bstr()
-                    ));
-                } else {
-                    self.event_sink.send(vmctrl::VmEvent::PassphrasePromptStart);
-                    let event_sink_clone = self.event_sink.clone();
-                    let prompt_end = deferred
-                        .add(move || event_sink_clone.send(vmctrl::VmEvent::PassphrasePromptEnd));
-                    let pwd = BString::from(rpassword::read_password()?.as_bytes());
-                    deferred.call_now(prompt_end);
-                    pwd
-                };
-                (Some(pwd), || Stdio::piped())
-            } else if env_has_passphrase && self.key_file_path.is_none() {
-                (None, || Stdio::piped())
+        let (pwd_for_all, input_mode_fn): (_, fn() -> _) = if reuse_passphrase
+            && self.key_file_path.is_none()
+        {
+            let pwd = if let Some(passphrase) = self.env_pwds.get(&1) {
+                BString::from(passphrase.as_bytes())
+            } else if env_has_passphrase {
+                return Err(anyhow!(
+                    "Missing environment variable {}",
+                    ALFS_PASSPHRASE_PREFIX.as_bstr()
+                ));
             } else {
-                (None, || Stdio::inherit())
+                println!("<anylinuxfs-passphrase-prompt:start>");
+                let prompt_end = deferred.add(|| println!("<anylinuxfs-passphrase-prompt:end>"));
+                let pwd = BString::from(rpassword::read_password()?.as_bytes());
+                deferred.call_now(prompt_end);
+                pwd
             };
+            (Some(pwd), || Stdio::piped())
+        } else if env_has_passphrase && self.key_file_path.is_none() {
+            (None, || Stdio::piped())
+        } else {
+            (None, || Stdio::inherit())
+        };
 
         let key_file_args: &[&str] = if let Some(key_file) = self.key_file_path.as_deref() {
             &["--key-file", key_file]
@@ -764,10 +763,8 @@ impl VmDiskContext {
                     dev
                 ));
             } else {
-                self.event_sink.send(vmctrl::VmEvent::PassphrasePromptStart);
-                let event_sink_clone = self.event_sink.clone();
-                let prompt_end = deferred
-                    .add(move || event_sink_clone.send(vmctrl::VmEvent::PassphrasePromptEnd));
+                println!("<anylinuxfs-passphrase-prompt:start>");
+                let prompt_end = deferred.add(|| println!("<anylinuxfs-passphrase-prompt:end>"));
                 let res = cryptsetup.wait()?;
                 deferred.call_now(prompt_end);
                 res
@@ -944,11 +941,8 @@ impl VmDiskContext {
 
         // we must show any output of mount command
         // in case there's a warning (e.g. NTFS cannot be accessed rw)
-        self.event_sink.send(vmctrl::VmEvent::ForceOutputOn);
-        let event_sink_clone = self.event_sink.clone();
-        let force_output_off = deferred.add(move || {
-            event_sink_clone.send(vmctrl::VmEvent::ForceOutputOff);
-        });
+        println!("<anylinuxfs-force-output:on>");
+        let force_output_off = deferred.add(|| println!("<anylinuxfs-force-output:off>"));
 
         let mnt_result = if self.is_zfs {
             zfs::mount_datasets(
@@ -1234,7 +1228,7 @@ fn run() -> anyhow::Result<()> {
     {
         // Inform the user about ZFS crypto performance on Linux arm64 and suggest using FreeBSD
         if dsk.zfs_mountpoints.iter().any(|m| m.encrypted) {
-            ctrl_server.event_sink.send(vmctrl::VmEvent::ForceOutputOn);
+            println!("<anylinuxfs-force-output:on>");
             println!("Warning: Using encrypted ZFS datasets on Linux with ARM64 hardware results");
             println!("in degraded performance due to GPL/CDDL license incompatibility.");
             println!("You can use a FreeBSD VM which is not affected by this issue.");
@@ -1242,7 +1236,7 @@ fn run() -> anyhow::Result<()> {
                 "Simply run `anylinuxfs config --zfs-os freebsd` to set it as default for ZFS."
             );
             println!("For more information, see https://github.com/openzfs/zfs/issues/12171");
-            ctrl_server.event_sink.send(vmctrl::VmEvent::ForceOutputOff);
+            println!("<anylinuxfs-force-output:off>");
         }
     }
 

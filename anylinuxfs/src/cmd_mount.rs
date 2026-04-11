@@ -683,8 +683,6 @@ fn process_vm_events(
     exports: &mut BTreeSet<String>,
     changed_to_ro: &mut bool,
     exit_code: &mut Option<i32>,
-    pwd_prompt_tx: &mpsc::Sender<bool>,
-    verbose: bool,
 ) {
     let Some(rx) = rx else { return };
     while let Ok(event) = rx.try_recv() {
@@ -695,22 +693,6 @@ fn process_vm_events(
                 exports.insert(path);
             }
             vmctrl::VmEvent::MountChangedToRo => *changed_to_ro = true,
-            vmctrl::VmEvent::PassphrasePromptStart => {
-                let _ = pwd_prompt_tx.send(true);
-            }
-            vmctrl::VmEvent::PassphrasePromptEnd => {
-                let _ = pwd_prompt_tx.send(false);
-            }
-            vmctrl::VmEvent::ForceOutputOn => {
-                if !verbose {
-                    log::enable_console_log();
-                }
-            }
-            vmctrl::VmEvent::ForceOutputOff => {
-                if !verbose {
-                    log::disable_console_log();
-                }
-            }
             vmctrl::VmEvent::ExitCode(code) => *exit_code = Some(code),
         }
     }
@@ -758,8 +740,6 @@ impl PtyReader {
                     &mut exports,
                     &mut changed_to_ro,
                     &mut exit_code,
-                    &self.vm_pwd_prompt_tx,
-                    self.verbose,
                 );
 
                 let bytes = match buf_reader.read_line(&mut line) {
@@ -781,11 +761,25 @@ impl PtyReader {
                     &mut exports,
                     &mut changed_to_ro,
                     &mut exit_code,
-                    &self.vm_pwd_prompt_tx,
-                    self.verbose,
                 );
 
-                if !nfs_ready && line.contains("READY AND WAITING FOR NFS CLIENT CONNECTIONS") {
+                // Handle synchronization-sensitive inline tags. These are kept as PTY tags
+                // (not IPC events) so they remain ordered with the surrounding text output.
+                if line.starts_with("<anylinuxfs-force-output:on>") {
+                    if !self.verbose {
+                        log::enable_console_log();
+                    }
+                } else if line.starts_with("<anylinuxfs-force-output:off>") {
+                    if !self.verbose {
+                        log::disable_console_log();
+                    }
+                } else if line.starts_with("<anylinuxfs-passphrase-prompt:start>") {
+                    let _ = self.vm_pwd_prompt_tx.send(true);
+                } else if line.starts_with("<anylinuxfs-passphrase-prompt:end>") {
+                    let _ = self.vm_pwd_prompt_tx.send(false);
+                } else if !nfs_ready
+                    && line.contains("READY AND WAITING FOR NFS CLIENT CONNECTIONS")
+                {
                     // Final drain — make sure all pre-NFS events are processed.
                     process_vm_events(
                         &mut vm_event_rx,
@@ -794,8 +788,6 @@ impl PtyReader {
                         &mut exports,
                         &mut changed_to_ro,
                         &mut exit_code,
-                        &self.vm_pwd_prompt_tx,
-                        self.verbose,
                     );
                     self.nfs_ready_tx
                         .send(NfsStatus::Ready(NfsReadyState {

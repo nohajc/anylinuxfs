@@ -44,15 +44,6 @@ pub enum VmEvent {
     NfsExport(String),
     /// Filesystem was remounted read-only (replaces `<anylinuxfs-mount:changed-to-ro>`).
     MountChangedToRo,
-    /// vmproxy is about to prompt for a passphrase on the TTY
-    /// (replaces `<anylinuxfs-passphrase-prompt:start>`).
-    PassphrasePromptStart,
-    /// Passphrase entry is complete (replaces `<anylinuxfs-passphrase-prompt:end>`).
-    PassphrasePromptEnd,
-    /// Host should start showing all VM log output (replaces `<anylinuxfs-force-output:on>`).
-    ForceOutputOn,
-    /// Host should suppress verbose VM log output (replaces `<anylinuxfs-force-output:off>`).
-    ForceOutputOff,
     /// vmproxy exited with an error (replaces `<anylinuxfs-exit-code:N>`).
     ExitCode(i32),
 }
