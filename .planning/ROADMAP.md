@@ -61,7 +61,11 @@
   1. All existing BATS integration tests pass: ext4, btrfs, exFAT, f2fs, NTFS, ZFS, UFS, partitioned disk, LVM, LUKS, hdiutil-attach, multi-disk btrfs, multi-instance, RAID, keyfile, image-partition, subcommands, mount-options
   2. `cargo check -F freebsd` passes for both `anylinuxfs` and `vmproxy` with zero errors
   3. Grepping `anylinuxfs` host log output for `<anylinuxfs-` during a live mount returns no matches (only `vmproxy-ready` is permitted)
-**Plans**: TBD
+**Plans**: 2 plans
+
+Plans:
+- [ ] 04-01-PLAN.md — Static checks: tag remnant grep scan + cargo check (anylinuxfs + vmproxy) + unit tests
+- [ ] 04-02-PLAN.md — BATS integration test suite: prerequisite verification + full 19-file test run (requires macOS hardware)
 
 ---
 
