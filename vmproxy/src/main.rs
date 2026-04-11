@@ -427,15 +427,13 @@ fn terminate_child(child: &mut Child, child_name: &str) -> anyhow::Result<()> {
 struct CustomActionRunner {
     config: Option<CustomActionConfig>,
     env: HashMap<String, String>,
-    event_sink: EventSink,
 }
 
 impl CustomActionRunner {
-    pub fn new(config: Option<CustomActionConfig>, event_sink: EventSink) -> Self {
+    pub fn new(config: Option<CustomActionConfig>) -> Self {
         Self {
             config,
             env: HashMap::new(),
-            event_sink,
         }
     }
 
@@ -1163,8 +1161,7 @@ fn run() -> anyhow::Result<()> {
         .map(|cfg| cfg.override_nfs_export().to_owned());
     let export_args_override = cli.nfs_export_opts.as_deref();
     let ignore_permissions = cli.ignore_permissions;
-    let mut custom_action =
-        CustomActionRunner::new(custom_action_cfg, ctrl_server.event_sink.clone());
+    let mut custom_action = CustomActionRunner::new(custom_action_cfg);
 
     // Resolve key file path inside the VM.
     // For Linux: the path is directly accessible via the virtiofs rootfs (--key-file arg).
