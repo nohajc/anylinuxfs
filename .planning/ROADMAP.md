@@ -10,9 +10,9 @@
 
 ## Phases
 
-- [ ] **Phase 1: Protocol Types** - Define `VmEvent` enum and extend `Response` in `common-utils` so both crates share the new type definitions
-- [ ] **Phase 2: vmproxy Event Emission** - Replace all stdout tag `println!` calls in vmproxy with typed `VmEvent` IPC events, including buffer/flush for pre-subscription events
-- [ ] **Phase 3: Host IPC Consumer** - Rewrite `cmd_mount.rs` to subscribe to IPC events and remove all stdout tag parsing
+- [x] **Phase 1: Protocol Types** - Define `VmEvent` enum and extend `Response` in `common-utils` so both crates share the new type definitions
+- [x] **Phase 2: vmproxy Event Emission** - Replace all stdout tag `println!` calls in vmproxy with typed `VmEvent` IPC events, including buffer/flush for pre-subscription events
+- [x] **Phase 3: Host IPC Consumer** - Rewrite `cmd_mount.rs` to subscribe to IPC events and remove all stdout tag parsing
 - [ ] **Phase 4: Integration Verification** - Confirm end-to-end correctness: all integration tests pass, no tag remnants
 
 ---
@@ -69,12 +69,12 @@
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Protocol Types | 0/? | Not started | - |
-| 2. vmproxy Event Emission | 0/? | Not started | - |
-| 3. Host IPC Consumer | 0/? | Not started | - |
+| 1. Protocol Types | 1/1 | Complete | 2026-04-10 |
+| 2. vmproxy Event Emission | 1/1 | Complete | 2026-04-11 |
+| 3. Host IPC Consumer | 1/1 | Complete | 2026-04-11 |
 | 4. Integration Verification | 0/? | Not started | - |
 
 ---
 
 *Roadmap created: 2026-04-10*
-*Last updated: 2026-04-10 after initialization*
+*Last updated: 2026-04-11 after phase 3 completion*
