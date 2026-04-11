@@ -33,8 +33,8 @@
 ### Quality
 
 - [ ] **QUAL-01**: All existing BATS integration tests pass after migration (ext4, btrfs, NTFS, LUKS, LVM, RAID, ZFS, UFS, etc.)
-- [ ] **QUAL-02**: `cargo check -F freebsd` passes for both `anylinuxfs` and `vmproxy` targets
-- [ ] **QUAL-03**: No `<anylinuxfs-*>` tagged lines appear in host stdout or log output after migration (except `vmproxy-ready`)
+- [x] **QUAL-02**: `cargo check -F freebsd` passes for both `anylinuxfs` and `vmproxy` targets
+- [x] **QUAL-03**: No `<anylinuxfs-*>` tagged lines appear in host stdout or log output after migration (except `vmproxy-ready`)
 
 ## v2 Requirements
 
@@ -75,8 +75,8 @@
 | HOST-03 | Phase 3 | Pending |
 | HOST-04 | Phase 3 | Pending |
 | QUAL-01 | Phase 4 | Pending |
-| QUAL-02 | Phase 4 | Pending |
-| QUAL-03 | Phase 4 | Pending |
+| QUAL-02 | Phase 4 | Complete |
+| QUAL-03 | Phase 4 | Complete |
 
 **Coverage:**
 - v1 requirements: 19 total

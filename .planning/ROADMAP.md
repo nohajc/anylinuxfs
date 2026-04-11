@@ -64,7 +64,7 @@
 **Plans**: 2 plans
 
 Plans:
-- [ ] 04-01-PLAN.md — Static checks: tag remnant grep scan + cargo check (anylinuxfs + vmproxy) + unit tests
+- [x] 04-01-PLAN.md — Static checks: tag remnant grep scan + cargo check (anylinuxfs + vmproxy) + unit tests
 - [ ] 04-02-PLAN.md — BATS integration test suite: prerequisite verification + full 19-file test run (requires macOS hardware)
 
 ---
