@@ -2,6 +2,7 @@ use anyhow::{Context, anyhow};
 use bstr::BString;
 use common_utils::{Deferred, FromPath, NetHelper, OSType, host_eprintln, host_println};
 use ipnet::Ipv4Net;
+use krun as bindings;
 use serde::Serialize;
 use serde_with::{DisplayFromStr, serde_as};
 
@@ -16,13 +17,13 @@ use std::path::{Path, PathBuf};
 use std::ptr::null;
 use std::sync::Once;
 
+use crate::ResultWithCtx;
 use crate::cmd_mount::NetworkEnv;
 use crate::devinfo::DevInfo;
 use crate::settings::{Config, MountConfig, PassphrasePromptConfig, Preferences};
 use crate::utils::{HasPipeInFd, HasPipeOutFds};
 use crate::vm_image::{self, IsoAdd};
 use crate::vm_network::{self, VmnetConfig};
-use crate::{ResultWithCtx, bindings};
 use crate::{rand_string, to_exit_code, utils};
 
 pub(crate) struct VMOpts {
@@ -139,21 +140,20 @@ pub(crate) fn setup_vm(
     use_vsock: bool,
     opts: VMOpts,
 ) -> anyhow::Result<VMContext> {
-    let ctx_id = unsafe { bindings::krun_create_ctx() }.context("Failed to create context")?;
+    let ctx_id = bindings::krun_create_ctx().context("Failed to create context")?;
 
     let level = config.preferences.krun_log_level_numeric();
     KRUN_LOG_LEVEL_INIT.call_once(|| {
-        _ = unsafe { bindings::krun_set_log_level(level) };
+        _ = bindings::krun_set_log_level(level);
     });
 
     let num_vcpus = config.preferences.krun_num_vcpus();
     let ram_mib = config.preferences.krun_ram_size_mib();
-    unsafe { bindings::krun_set_vm_config(ctx_id, num_vcpus, ram_mib) }
-        .context("Failed to set VM config")?;
+    bindings::krun_set_vm_config(ctx_id, num_vcpus, ram_mib).context("Failed to set VM config")?;
 
     #[cfg(feature = "freebsd")]
     if opts.legacy_console {
-        unsafe { bindings::krun_disable_implicit_console(ctx_id) }
+        bindings::krun_disable_implicit_console(ctx_id)
             .context("Failed to disable implicit console")?;
         unsafe { bindings::krun_add_serial_console_default(ctx_id, 0, 1) }
             .context("Failed to add serial console")?;
@@ -161,11 +161,11 @@ pub(crate) fn setup_vm(
 
     // run vmm as the original user if he used sudo
     if let Some(uid) = config.sudo_uid {
-        unsafe { bindings::krun_setuid(ctx_id, uid) }.context("Failed to set vmm uid")?;
+        bindings::krun_setuid(ctx_id, uid).context("Failed to set vmm uid")?;
     }
 
     if let Some(gid) = config.sudo_gid {
-        unsafe { bindings::krun_setgid(ctx_id, gid) }.context("Failed to set vmm gid")?;
+        bindings::krun_setgid(ctx_id, gid).context("Failed to set vmm gid")?;
     }
 
     if opts.root_device.is_none() {
@@ -541,7 +541,7 @@ pub(crate) fn start_vmproxy(
 
     raise_nofile_limit();
     before_start().context("Before start callback failed")?;
-    unsafe { bindings::krun_start_enter(ctx.id) }.context("Failed to start VM")?;
+    bindings::krun_start_enter(ctx.id).context("Failed to start VM")?;
 
     Ok(())
 }
@@ -684,7 +684,7 @@ pub(crate) fn start_vm(
 ) -> anyhow::Result<()> {
     set_vm_cmdline(ctx, cmdline, env)?;
     raise_nofile_limit();
-    unsafe { bindings::krun_start_enter(ctx.id) }.context("Failed to start VM")?;
+    bindings::krun_start_enter(ctx.id).context("Failed to start VM")?;
 
     Ok(())
 }

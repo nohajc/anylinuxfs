@@ -1,0 +1,7 @@
+[env]
+# util-linux (from Homebrew) provides libblkid, needed by libblkid-rs-sys.
+PKG_CONFIG_PATH = "/opt/homebrew/opt/util-linux/lib/pkgconfig"
+# Cross-compiler for building libkrun's init/init.c for Linux AArch64.
+# Using a wrapper script so the sysroot path is resolved at runtime (Cargo
+# does not expand ~ or $HOME in [env] values).
+CC_LINUX = { value = "cc_linux", relative = true }
