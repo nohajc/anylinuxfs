@@ -538,7 +538,14 @@ impl AppRunner {
                 let freebsd_base_path = config.common.profile_path.join(&src.base_dir);
                 let vm_disk_image = "freebsd-microvm-disk.img";
                 let disk_path = freebsd_base_path.join(vm_disk_image);
-                host_println!("root_disk: {}", disk_path.display());
+                match src.os_type {
+                    OSType::Linux => {
+                        host_println!("root_path: {}", config.common.root_path.display());
+                    }
+                    OSType::FreeBSD => {
+                        host_println!("root_disk: {}", disk_path.display());
+                    }
+                }
 
                 (config.with_image_source(src), src, Some(disk_path))
             }
