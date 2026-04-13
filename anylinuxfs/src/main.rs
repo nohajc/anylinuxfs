@@ -22,8 +22,6 @@ use utils::{AcquireLock, FlockKind, LockFile, StatusError, write_to_pipe};
 use crate::settings::{Config, ImageSource, KernelConfig, MountConfig, Preferences};
 
 mod api;
-#[allow(unused)]
-mod bindings;
 mod cli;
 mod cmd_mount;
 mod devinfo;

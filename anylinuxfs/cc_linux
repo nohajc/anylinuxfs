@@ -1,0 +1,17 @@
+#!/bin/bash
+# CC_LINUX wrapper: cross-compiles C code for Linux AArch64 from macOS.
+# Referenced by .cargo/config.toml so `cargo build` works without exporting
+# CC_LINUX manually. The sysroot path is resolved relative to this script.
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)
+# TODO: build sysroot automatically from debian packages
+SYSROOT="${SCRIPT_DIR}/../../3rd-party/libkrun/linux-sysroot"
+GCC_LIB_DIR="${SYSROOT}/usr/lib/gcc/aarch64-linux-gnu/12"
+exec /usr/bin/clang \
+    -target aarch64-linux-gnu \
+    -fuse-ld=lld \
+    -Wl,-strip-debug \
+    --sysroot "${SYSROOT}" \
+    -B"${GCC_LIB_DIR}" \
+    -L"${GCC_LIB_DIR}" \
+    -Wno-c23-extensions \
+    "$@"
