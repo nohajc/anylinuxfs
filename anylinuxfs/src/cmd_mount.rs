@@ -1223,7 +1223,7 @@ impl super::AppRunner {
                 .get(bsd_image)
                 .map(|&s| s.to_owned())
                 .with_context(|| format!("FreeBSD image {} not found", bsd_image))?;
-            mnt_dev_info.set_vm_path("/dev/vtbd1".to_string());
+            mnt_dev_info.set_vm_disk("/dev/vtbd1".to_string());
 
             config = config.with_image_source(&src);
             let freebsd_base_path = config.common.profile_path.join(&src.base_dir);

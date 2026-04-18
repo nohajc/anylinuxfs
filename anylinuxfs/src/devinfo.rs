@@ -20,7 +20,8 @@ pub struct DevInfo {
     uuid: Option<String>,
     pt_type: Option<String>,
     vm_path: String,
-    fs_driver: Option<String>, // will be auto-detected if not set
+    vm_part_idx: Option<usize>, // the partition index in the microVM
+    fs_driver: Option<String>,  // will be auto-detected if not set
     da_info: diskutil::DiskInfo,
     size_bytes: Option<u64>, // partition size in bytes (for image probes)
 }
@@ -44,6 +45,7 @@ impl DevInfo {
             uuid: None,
             pt_type: None,
             vm_path: vm_path.into(),
+            vm_part_idx: None,
             fs_driver: None,
             da_info: diskutil::DiskInfo::default(),
             size_bytes: None,
@@ -112,6 +114,7 @@ impl DevInfo {
             uuid,
             pt_type: None,
             vm_path: "/dev/vda".to_owned(),
+            vm_part_idx: None,
             fs_driver: None,
             da_info,
             size_bytes: None,
@@ -173,6 +176,7 @@ impl DevInfo {
             uuid,
             pt_type,
             vm_path: "/dev/vda".to_owned(),
+            vm_part_idx: None,
             fs_driver: None,
             da_info: diskutil::DiskInfo::default(),
             size_bytes: Some(whole_probe.get_size() as u64),
@@ -232,6 +236,7 @@ impl DevInfo {
                         fs_driver: None,
                         da_info: diskutil::DiskInfo::default(),
                         size_bytes,
+                        vm_part_idx: Some((i + 1) as usize),
                     });
                 }
             }
@@ -292,8 +297,18 @@ impl DevInfo {
         &self.vm_path
     }
 
-    pub fn set_vm_path(&mut self, vm_path: String) {
-        self.vm_path = vm_path;
+    pub fn set_vm_disk(&mut self, disk: String) {
+        self.vm_path = if let Some(idx) = self.vm_part_idx {
+            if disk.starts_with("/dev/vtbd") {
+                // FreeBSD
+                format!("{}p{}", disk, idx)
+            } else {
+                // Linux
+                format!("{}{}", disk, idx)
+            }
+        } else {
+            disk
+        };
     }
 
     pub fn auto_mount_name(&self) -> BString {
