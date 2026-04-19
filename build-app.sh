@@ -21,7 +21,6 @@ if [ -n "$FEATURES" ]; then
     FEATURE_ARG="-F $FEATURES"
 fi
 
-export PKG_CONFIG_PATH="/opt/homebrew/opt/util-linux/lib/pkgconfig"
 (cd "anylinuxfs" && cargo build $BUILD_ARGS $FEATURE_ARG)
 mkdir -p bin && cp "anylinuxfs/target/$BUILD_DIR/anylinuxfs" bin/
 codesign --entitlements "anylinuxfs.entitlements" --force -s - bin/anylinuxfs

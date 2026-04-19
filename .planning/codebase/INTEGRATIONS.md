@@ -58,7 +58,6 @@
 **libblkid** (Homebrew `util-linux`):
 - Bindings: `libblkid-rs` 0.4.1 in `anylinuxfs/src/devinfo.rs`
 - Purpose: Probe block devices and disk images for UUID, label, filesystem type, partition type
-- Requires: `PKG_CONFIG_PATH=/opt/homebrew/opt/util-linux/lib/pkgconfig` at build time
 
 ## NFS Server (Inside Guest VM)
 

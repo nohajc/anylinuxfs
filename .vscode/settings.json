@@ -1,10 +1,4 @@
 {
-    "rust-analyzer.cargo.extraEnv": {
-        "PKG_CONFIG_PATH": "/opt/homebrew/opt/util-linux/lib/pkgconfig"
-    },
-    "rust-analyzer.runnables.extraEnv": {
-        "PKG_CONFIG_PATH": "/opt/homebrew/opt/util-linux/lib/pkgconfig"
-    },
     "rust-analyzer.cargo.features": [
         "freebsd"
     ],

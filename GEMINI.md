@@ -93,7 +93,6 @@ let _cleanup = Deferred::add(|| { let _ = fs::remove_file(&socket_path); });
 Requires `util-linux` for `libblkid` (via Homebrew) and must be built with the `freebsd` feature:
 
 ```sh
-export PKG_CONFIG_PATH="/opt/homebrew/opt/util-linux/lib/pkgconfig"
 cargo build -F freebsd            # from anylinuxfs/
 cargo check -F freebsd            # for type-checking only
 ```

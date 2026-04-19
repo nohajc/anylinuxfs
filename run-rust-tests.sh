@@ -12,8 +12,6 @@ if [ -n "$FEATURES" ]; then
     FEATURE_ARG="-F $FEATURES"
 fi
 
-export PKG_CONFIG_PATH="/opt/homebrew/opt/util-linux/lib/pkgconfig"
-
 # Rust Unit Tests
 # Unit tests are generally run on the host architecture even for cross-compiled projects
 # to verify logic and algorithms, unless they contain platform-specific assembly or syscalls.

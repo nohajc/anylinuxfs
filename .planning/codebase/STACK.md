@@ -108,7 +108,6 @@
 **libblkid** (from Homebrew `util-linux`):
 - Bound via `libblkid-rs` 0.4.1
 - Used in `anylinuxfs/src/devinfo.rs` to probe device UUID, label, filesystem type
-- Requires `PKG_CONFIG_PATH=/opt/homebrew/opt/util-linux/lib/pkgconfig`
 
 **libc** 0.2.177:
 - Direct POSIX syscall access (`getfsstat`, `kill`, `SIGTERM`, uid/gid)
@@ -143,7 +142,6 @@
 **Key environment variables:**
 - `ALFS_PASSPHRASE` (or `ALFS_PASSPHRASE1`, `ALFS_PASSPHRASE2`, ...) — LUKS passphrases
 - `SUDO_UID`, `SUDO_GID` — original invoker identity captured at startup
-- `PKG_CONFIG_PATH` — must point to Homebrew `util-linux` for `libblkid`
 
 **macOS entitlement:**
 - `com.apple.security.hypervisor` — required for libkrun microVM execution
