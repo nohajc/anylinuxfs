@@ -103,9 +103,9 @@ teardown() {
   local mp
   mp="$(get_mount_point "etc")"
 
-  # Alpine Linux ships /etc/os-release; its presence confirms that the VM's
+  # Alpine Linux ships /etc/hosts; its presence confirms that the VM's
   # /etc was exported and mounted successfully.
-  [[ -f "${mp}/os-release" ]]
+  [[ -f "${mp}/hosts" ]]
 
   do_unmount
 }
