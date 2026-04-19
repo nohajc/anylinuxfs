@@ -1,4 +1,4 @@
-use anyhow::{Context, anyhow};
+use anyhow::Context;
 use bstr::{BStr, BString, ByteSlice};
 use clap::ValueEnum;
 use percent_encoding::{NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
@@ -345,16 +345,16 @@ mod tests {
 pub fn fail_for_known_nonmountable_types(fs_type: Option<&str>) -> anyhow::Result<()> {
     let err_prefix = "partition cannot be mounted directly.";
     match fs_type {
-        Some(fs @ "LVM2_member") => Err(anyhow!(
+        Some(fs @ "LVM2_member") => anyhow::bail!(
             "`{}` {}\nIf the drive is encrypted, run `sudo anylinuxfs list -d all` to see available `lvm:...` volumes.",
             fs,
             err_prefix
-        )),
-        Some(fs @ "linux_raid_member") => Err(anyhow!(
+        ),
+        Some(fs @ "linux_raid_member") => anyhow::bail!(
             "`{}` {}\nRun `sudo anylinuxfs list` to see available `raid:...` volumes.",
             fs,
             err_prefix
-        )),
+        ),
         _ => Ok(()),
     }
 }

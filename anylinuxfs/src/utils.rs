@@ -22,7 +22,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{Context, anyhow};
+use anyhow::Context;
 use bstr::{BStr, BString, ByteSlice, ByteVec};
 use common_utils::{
     host_println,
@@ -895,7 +895,7 @@ pub fn disable_raw_mode() -> anyhow::Result<()> {
             return Err(io::Error::last_os_error()).context("tcsetattr failed");
         }
     } else {
-        return Err(anyhow!("Original terminal attributes not set"));
+        anyhow::bail!("Original terminal attributes not set");
     }
 
     RAW_MODE_ENABLED.store(false, Ordering::Relaxed);

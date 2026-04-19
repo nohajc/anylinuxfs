@@ -1,7 +1,7 @@
 use std::os::fd::AsRawFd;
 use std::path::Path;
 
-use anyhow::{Context, anyhow};
+use anyhow::Context;
 use bstr::{BStr, BString, ByteSlice};
 use common_utils::{PathExt, path_safe_label_name};
 use libblkid_rs::{BlkidProbe, BlkidSublks, BlkidSublksFlags};
@@ -55,7 +55,7 @@ impl DevInfo {
     pub fn pv(path: impl AsRef<BStr>, is_image: bool) -> anyhow::Result<DevInfo> {
         let path = path.as_ref();
         if path.is_empty() {
-            return Err(anyhow!("Empty device path"));
+            anyhow::bail!("Empty device path");
         }
         let (path, rpath) = if path.starts_with(BUF_PREFIX) {
             (
@@ -71,11 +71,11 @@ impl DevInfo {
         let mut probe = match BlkidProbe::new_from_filename(Path::from_bytes(&path)) {
             Ok(probe) => probe,
             Err(e) => {
-                return Err(anyhow!(
+                anyhow::bail!(
                     "Cannot probe {}: {:?}; Insufficient permissions?",
                     path.as_bstr(),
                     e
-                ));
+                );
             }
         };
         probe
@@ -128,7 +128,7 @@ impl DevInfo {
     pub fn probe_image(path: impl AsRef<BStr>) -> anyhow::Result<Vec<DevInfo>> {
         let path = path.as_ref();
         if path.is_empty() {
-            return Err(anyhow::anyhow!("Empty image path"));
+            anyhow::bail!("Empty image path");
         }
 
         let path_ref = Path::from_bytes(path);

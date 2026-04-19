@@ -1,4 +1,4 @@
-use anyhow::{Context, anyhow};
+use anyhow::Context;
 use bstr::BString;
 use common_utils::{OSType, PathExt, host_eprintln, host_println, log, safe_print, safe_println};
 
@@ -296,7 +296,7 @@ pub(crate) fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
                 .with_context(|| format!("Failed to get metadata for {}", &path.display()))?
                 .is_dir()
             {
-                return Err(anyhow!("{} is not a directory", &path.display()));
+                anyhow::bail!("{} is not a directory", &path.display());
             }
 
             Some(path)
@@ -317,10 +317,10 @@ pub(crate) fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
                 // check if the given bind address is assigned to any interface
                 if let Ok(interfaces) = if_addrs::get_if_addrs() {
                     if !interfaces.iter().any(|iface| iface.ip() == bind_addr) {
-                        return Err(anyhow::anyhow!(
+                        anyhow::bail!(
                             "Bind address {} is not assigned to any interface",
                             bind_addr
-                        ));
+                        );
                     }
                 }
             }
@@ -342,7 +342,7 @@ pub(crate) fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
         match common.preferences.custom_actions().get(&action_name) {
             Some(_) => Some(action_name.to_owned()),
             None => {
-                return Err(anyhow::anyhow!("unknown custom action: {}", action_name));
+                anyhow::bail!("unknown custom action: {}", action_name);
             }
         }
     } else {
@@ -356,16 +356,16 @@ pub(crate) fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
         .map(PathBuf::from)
         .map(|key_path| {
             if !key_path.exists() {
-                return Err(anyhow::anyhow!(
+                anyhow::bail!(
                     "Key file not found: {}",
                     key_path.display()
-                ));
+                );
             }
             if !key_path.is_file() {
-                return Err(anyhow::anyhow!(
+                anyhow::bail!(
                     "Key file path is not a file: {}",
                     key_path.display()
-                ));
+                );
             }
             Ok(key_path)
         })
@@ -528,11 +528,11 @@ impl AppRunner {
 
                 let src = match matched_images.len() {
                     2.. => {
-                        return Err(anyhow!("ambiguous image name: {}", image_name));
+                        anyhow::bail!("ambiguous image name: {}", image_name);
                     }
                     1 => matched_images[0],
                     0 => {
-                        return Err(anyhow!("unknown image: {}", image_name));
+                        anyhow::bail!("unknown image: {}", image_name);
                     }
                 };
                 let freebsd_base_path = config.common.profile_path.join(&src.base_dir);
@@ -733,10 +733,10 @@ impl AppRunner {
             start_vm_forked(&ctx, &cmdline, &[]).context("Failed to start microVM shell")?;
 
         if status != 0 {
-            return Err(anyhow::anyhow!(
+            anyhow::bail!(
                 "microVM shell exited with status {}",
                 status
-            ));
+            );
         }
         // preferences are only saved if apk command was successful
         settings::save_preferences(config.preferences.user(), config_file_path)?;
@@ -776,7 +776,7 @@ impl AppRunner {
                     safe_println!("Image {} installed successfully", name)?;
                 }
                 None => {
-                    return Err(anyhow::anyhow!("unknown image {}", name));
+                    anyhow::bail!("unknown image {}", name);
                 }
             },
             ImageCmd::Uninstall { name } => match images.get(name.as_str()) {
@@ -789,7 +789,7 @@ impl AppRunner {
                     safe_println!("Image {} uninstalled successfully", name)?;
                 }
                 None => {
-                    return Err(anyhow::anyhow!("unknown image {}", name));
+                    anyhow::bail!("unknown image {}", name);
                 }
             },
         }
@@ -1070,11 +1070,11 @@ impl AppRunner {
         // If no path specified, require exactly one running instance
         if cmd.path.is_none() && active_instances.len() != 1 {
             if active_instances.is_empty() {
-                return Err(anyhow!("No anylinuxfs instance is currently running"));
+                anyhow::bail!("No anylinuxfs instance is currently running");
             }
-            return Err(anyhow!(
+            anyhow::bail!(
                 "Multiple anylinuxfs instances are running; please specify the disk identifier or mount point."
-            ));
+            );
         }
 
         for rt_info in active_instances {
@@ -1183,10 +1183,10 @@ impl AppRunner {
         }
 
         // No matching instance found
-        Err(anyhow!(
+        anyhow::bail!(
             "No anylinuxfs instance found for: {}",
             cmd.path.as_deref().unwrap_or("<unknown>")
-        ))
+        )
     }
 
     fn run(&mut self) -> anyhow::Result<()> {

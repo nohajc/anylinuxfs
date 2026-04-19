@@ -1,16 +1,16 @@
 use std::io::{Read, Write};
 
-use anyhow::{Context, anyhow};
+use anyhow::Context;
 use serde::{Serialize, de::DeserializeOwned};
 
 const MAX_MSG_SIZE: usize = 1048576; // 1 MiB
 
 fn validate_msg_size(size: usize, direction: &str) -> anyhow::Result<()> {
     if size == 0 {
-        return Err(anyhow!("{} size is zero", direction));
+        anyhow::bail!("{} size is zero", direction);
     }
     if size > MAX_MSG_SIZE {
-        return Err(anyhow!("{} size is too large", direction));
+        anyhow::bail!("{} size is too large", direction);
     }
     Ok(())
 }

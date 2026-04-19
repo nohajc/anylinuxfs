@@ -188,11 +188,11 @@ pub fn mount_datasets(
                 .status()
                 .with_context(|| format!("Failed to load ZFS key for pool {}", mp.pool))?;
             if !status.success() {
-                return Err(anyhow::anyhow!(
+                anyhow::bail!(
                     "zfs load-key failed for pool {}: exit code {}",
                     mp.pool,
                     status.code().unwrap_or(-1)
-                ));
+                );
             }
             loaded_pools.insert(mp.pool.clone());
         }
@@ -217,11 +217,11 @@ pub fn mount_datasets(
         .with_context(|| format!("Failed to mount ZFS dataset {}", mp.name))?;
 
         if !status.success() {
-            return Err(anyhow::anyhow!(
+            anyhow::bail!(
                 "zfs mount failed for dataset {}: exit code {}",
                 mp.name,
                 status.code().unwrap_or(-1)
-            ));
+            );
         }
     }
 

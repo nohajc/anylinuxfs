@@ -1,4 +1,4 @@
-use anyhow::{Context, anyhow};
+use anyhow::Context;
 use bstr::{B, BStr, BString, ByteSlice};
 use common_utils::{FromPath, PathExt, host_println};
 use derive_more::{Deref, DerefMut};
@@ -232,13 +232,13 @@ fn parallel_mount_recursive(
         let status = Command::new(cmdline[0]).args(&cmdline[1..]).status()?;
 
         if !status.success() {
-            return Err(anyhow!(
+            anyhow::bail!(
                 "mount failed with exit code {}",
                 status
                     .code()
                     .map(|c| c.to_string())
                     .unwrap_or("unknown".to_owned())
-            ));
+            );
         }
         host_println!(
             "Mounted subdirectory: {}",
@@ -320,10 +320,10 @@ pub fn wait_for_file(file: impl AsRef<Path>) -> anyhow::Result<()> {
     let start = Instant::now();
     while !file.as_ref().exists() {
         if start.elapsed() > Duration::from_secs(5) {
-            return Err(anyhow!(
+            anyhow::bail!(
                 "Timeout waiting for file creation: {}",
                 file.as_ref().display()
-            ));
+            );
         }
         std::thread::sleep(Duration::from_millis(100));
     }

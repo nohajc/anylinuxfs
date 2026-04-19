@@ -13,7 +13,7 @@ use crate::{
     netutil,
     settings::{Config, Preferences},
 };
-use anyhow::{Context, anyhow};
+use anyhow::Context;
 use common_utils::{OSType, VM_CTRL_PORT, VM_IP, VMNET_PREFIX_LEN, host_println};
 use ipnet::Ipv4Net;
 use os_version::{MacOS, OsVersion};
@@ -104,9 +104,9 @@ pub fn start_vmnet_helper(config: &Config) -> anyhow::Result<(Child, VmnetConfig
 
     let need_elevation = !rootless && config.sudo_uid.is_none() && config.invoker_uid != 0;
     if need_elevation {
-        return Err(anyhow!(
+        anyhow::bail!(
             "anylinuxfs is configured to use vmnet-helper which needs sudo unless you're on macOS Tahoe or later"
-        ));
+        );
     }
 
     let known_networks =
@@ -296,7 +296,7 @@ pub fn connect_to_vm_ctrl_socket(
         let mut resp = [0; 2];
         stream.read_exact(&mut resp)?;
         if &resp != b"OK" {
-            return Err(anyhow!("Failed to establish VM control socket tunnel"));
+            anyhow::bail!("Failed to establish VM control socket tunnel");
         }
     }
 

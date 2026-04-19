@@ -1,5 +1,5 @@
 use crate::{Config, ImageSource, fsutil, vm_network};
-use anyhow::{Context, anyhow};
+use anyhow::Context;
 
 use common_utils::{Deferred, NetHelper, host_eprintln};
 use std::{fs, path::Path, process::Command};
@@ -10,7 +10,7 @@ pub const KERNEL_IMAGE: &str = "kernel/kernel.bin";
 mod alpine {
     use super::*;
     use crate::{Config, fsutil, netutil, utils};
-    use anyhow::{Context, anyhow};
+    use anyhow::Context;
     use common_utils::{host_eprintln, host_println};
     use std::{
         fs::{self},
@@ -84,13 +84,13 @@ mod alpine {
         let status = hnd.wait().context("Failed to wait for init-rootfs")?;
 
         if !status.success() {
-            return Err(anyhow!(
+            anyhow::bail!(
                 "init-rootfs failed with exit code {}",
                 status
                     .code()
                     .map(|c| c.to_string())
                     .unwrap_or("unknown".to_owned())
-            ));
+            );
         }
 
         if let Err(e) = fs::write(config.root_ver_file_path.as_path(), ROOTFS_CURRENT_VERSION) {
@@ -119,7 +119,7 @@ mod freebsd {
         settings::{Config, ImageSource},
         setup_vm, start_vm_forked,
     };
-    use anyhow::{Context, anyhow};
+    use anyhow::Context;
     use bstr::{BStr, BString};
     use common_utils::{Deferred, OSType, PathExt, host_eprintln, host_println};
     use serde::Serialize;
@@ -136,7 +136,7 @@ mod freebsd {
 
     pub fn init_rootfs(config: &Config, force: bool, src: &ImageSource) -> anyhow::Result<()> {
         if src.base_dir.is_empty() {
-            return Err(anyhow!("FreeBSD base directory not specified"));
+            anyhow::bail!("FreeBSD base directory not specified");
         }
 
         let base_path = config.profile_path.join(&src.base_dir);
@@ -217,23 +217,23 @@ mod freebsd {
         }
 
         let Some(iso_image_url) = src.iso_url.as_deref() else {
-            return Err(anyhow!("FreeBSD ISO URL not provided"));
+            anyhow::bail!("FreeBSD ISO URL not provided");
         };
         let Some(oci_image_url) = src.oci_url.as_deref() else {
-            return Err(anyhow!("FreeBSD OCI URL not provided"));
+            anyhow::bail!("FreeBSD OCI URL not provided");
         };
         let Some(kernel_bundle_url) = src.kernel.bundle_url.as_deref() else {
-            return Err(anyhow!("FreeBSD kernel bundle URL not provided"));
+            anyhow::bail!("FreeBSD kernel bundle URL not provided");
         };
 
         if iso_image_url.is_empty() {
-            return Err(anyhow!("FreeBSD ISO URL is empty"));
+            anyhow::bail!("FreeBSD ISO URL is empty");
         }
         if oci_image_url.is_empty() {
-            return Err(anyhow!("FreeBSD OCI URL is empty"));
+            anyhow::bail!("FreeBSD OCI URL is empty");
         }
         if kernel_bundle_url.is_empty() {
-            return Err(anyhow!("FreeBSD kernel bundle URL is empty"));
+            anyhow::bail!("FreeBSD kernel bundle URL is empty");
         }
 
         let oci_image = oci_image_url
@@ -388,10 +388,7 @@ mod freebsd {
             )
         })?;
         if bstrap_status != 0 {
-            return Err(anyhow!(
-                "FreeBSD bootstrap VM exited with status {}",
-                bstrap_status
-            ));
+            anyhow::bail!("FreeBSD bootstrap VM exited with status {}", bstrap_status);
         }
 
         // 2. boot it again to install third-party packages
@@ -406,10 +403,7 @@ mod freebsd {
             )
         })?;
         if setup_status != 0 {
-            return Err(anyhow!(
-                "FreeBSD VM setup exited with status {}",
-                setup_status
-            ));
+            anyhow::bail!("FreeBSD VM setup exited with status {}", setup_status);
         }
 
         // 3. write rootfs version file
@@ -442,13 +436,13 @@ mod freebsd {
             .context("Failed to execute curl command")?;
 
         if !curl_status.success() {
-            return Err(anyhow!(
+            anyhow::bail!(
                 "curl command failed with exit code {}",
                 curl_status
                     .code()
                     .map(|c| c.to_string())
                     .unwrap_or("unknown".to_owned())
-            ));
+            );
         }
 
         Ok(())
@@ -469,13 +463,13 @@ mod freebsd {
             .context("Failed to execute tar command")?;
 
         if !tar_status.success() {
-            return Err(anyhow!(
+            anyhow::bail!(
                 "tar command failed with exit code {}",
                 tar_status
                     .code()
                     .map(|c| c.to_string())
                     .unwrap_or("unknown".to_owned())
-            ));
+            );
         }
 
         Ok(())
@@ -490,13 +484,13 @@ mod freebsd {
             .context("Failed to execute truncate command")?;
 
         if !truncate_status.success() {
-            return Err(anyhow!(
+            anyhow::bail!(
                 "truncate command failed with exit code {}",
                 truncate_status
                     .code()
                     .map(|c| c.to_string())
                     .unwrap_or("unknown".to_owned())
-            ));
+            );
         }
 
         Ok(())
@@ -534,10 +528,7 @@ mod freebsd {
             .context("Failed to start FreeBSD bootstrap VM")?;
 
         if bstrap_status != 0 {
-            return Err(anyhow::anyhow!(
-                "bootstrap microVM exited with status {}",
-                bstrap_status
-            ));
+            anyhow::bail!("bootstrap microVM exited with status {}", bstrap_status);
         }
         Ok(bstrap_status)
     }
@@ -556,10 +547,7 @@ mod freebsd {
             start_vm_forked(&ctx, cmdline, &[]).context("Failed to start FreeBSD VM setup")?;
 
         if setup_status != 0 {
-            return Err(anyhow::anyhow!(
-                "FreeBSD VM setup exited with status {}",
-                setup_status
-            ));
+            anyhow::bail!("FreeBSD VM setup exited with status {}", setup_status);
         }
         Ok(setup_status)
     }
@@ -632,13 +620,13 @@ pub fn create_iso(
         .context("Failed to execute tar command")?;
 
     if !tar_status.success() {
-        return Err(anyhow!(
+        anyhow::bail!(
             "tar command failed with exit code {}",
             tar_status
                 .code()
                 .map(|c| c.to_string())
                 .unwrap_or("unknown".to_owned())
-        ));
+        );
     }
 
     Ok(())
@@ -651,7 +639,7 @@ pub fn init(config: &Config, force: bool, src: &ImageSource) -> anyhow::Result<(
         #[cfg(feature = "freebsd")]
         crate::OSType::FreeBSD => freebsd::init_rootfs(config, force, src),
         #[cfg(not(feature = "freebsd"))]
-        _ => Err(anyhow::anyhow!("unsupported OS type")),
+        _ => anyhow::bail!("unsupported OS type"),
     }
 }
 
@@ -705,13 +693,13 @@ pub fn setup_vmnet_helper(
     });
 
     if let Some(status) = vmnet_helper.try_wait().ok().flatten() {
-        return Err(anyhow!(
+        anyhow::bail!(
             "vmnet-helper failed with exit code: {}",
             status
                 .code()
                 .map(|c| c.to_string())
                 .unwrap_or("unknown".to_owned())
-        ));
+        );
     }
 
     _ = deferred.add(move || {
@@ -739,13 +727,13 @@ pub fn setup_gvproxy(
     });
 
     if let Some(status) = gvproxy.try_wait().ok().flatten() {
-        return Err(anyhow!(
+        anyhow::bail!(
             "gvproxy failed with exit code: {}",
             status
                 .code()
                 .map(|c| c.to_string())
                 .unwrap_or("unknown".to_owned())
-        ));
+        );
     }
 
     _ = deferred.add(move || {

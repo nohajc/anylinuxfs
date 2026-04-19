@@ -1,4 +1,4 @@
-use anyhow::{Context, anyhow};
+use anyhow::Context;
 use bstr::BString;
 use common_utils::{Deferred, FromPath, NetHelper, OSType, host_eprintln, host_println};
 use ipnet::Ipv4Net;
@@ -248,7 +248,7 @@ pub(crate) fn setup_vm(
                 )
             }
             None => {
-                return Err(anyhow!("root device must be specified for FreeBSD"));
+                anyhow::bail!("root device must be specified for FreeBSD");
             }
         },
     }).unwrap();

@@ -9,7 +9,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{Context, anyhow};
+use anyhow::Context;
 use bstr::{BString, ByteSlice, ByteVec};
 use clap::ValueEnum;
 use common_utils::{CustomActionConfig, CustomActionConfigOld, NetHelper, OSType};
@@ -444,7 +444,7 @@ impl CustomActionEnvironment for CustomActionConfig {
             let var_name = var_str
                 .split(|&c| c == b'=')
                 .next()
-                .ok_or_else(|| anyhow!("invalid environment variable format: {}", var_str))?;
+                .ok_or_else(|| anyhow::anyhow!("invalid environment variable format: {}", var_str))?;
             predefined_vars.insert(BString::from(var_name));
             env_vars.push(var_str.to_owned());
         }
@@ -472,10 +472,10 @@ impl CustomActionEnvironment for CustomActionConfig {
 
         if !undefined_vars.is_empty() {
             let var_list = bstr::join(", ", undefined_vars);
-            return Err(anyhow::anyhow!(
+            anyhow::bail!(
                 "required environment variables not defined: {}",
                 var_list.as_bstr()
-            ));
+            );
         }
         Ok(())
     }

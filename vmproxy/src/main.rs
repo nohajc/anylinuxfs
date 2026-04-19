@@ -1,4 +1,4 @@
-use anyhow::{Context, anyhow};
+use anyhow::Context;
 use bstr::{BString, ByteSlice};
 use clap::Parser;
 #[cfg(target_os = "linux")]
@@ -193,7 +193,7 @@ fn setup_fs_overlay(dir: &str) -> anyhow::Result<()> {
     .context(format!("Failed to setup overlay for {}", dir))?;
 
     if !status.success() {
-        return Err(anyhow!("Failed to setup overlay for {}", dir));
+        anyhow::bail!("Failed to setup overlay for {}", dir);
     }
 
     Ok(())
@@ -367,13 +367,13 @@ impl CustomActionRunner {
             .status()?;
 
         if !status.success() {
-            return Err(anyhow!(
+            anyhow::bail!(
                 "command failed with status: {}",
                 status
                     .code()
                     .map(|c| c.to_string())
                     .unwrap_or("unknown".to_owned())
-            ));
+            );
         }
         Ok(())
     }
@@ -508,11 +508,11 @@ fn setup_key_file_path(
             .status()
             .context("Failed to mount key file ISO")?;
         if !status.success() {
-            return Err(anyhow!(
+            anyhow::bail!(
                 "Failed to mount key file ISO {}: exit code {}",
                 KEY_FILE_ISO_DEV,
                 status.code().unwrap_or(-1)
-            ));
+            );
         }
         deferred.add(|| {
             let _ = Command::new("umount").arg(KEY_FILE_MOUNT_DIR).status();
@@ -542,7 +542,7 @@ fn mount_tmpfs(paths: &[&str]) -> anyhow::Result<()> {
             .context(format!("Failed to mount tmpfs on {path}"))?;
 
         if !status.success() {
-            return Err(anyhow!("Failed to mount tmpfs on {path}"));
+            anyhow::bail!("Failed to mount tmpfs on {path}");
         }
     }
     Ok(())
@@ -628,10 +628,10 @@ impl VmDiskContext {
             let pwd = if let Some(passphrase) = self.env_pwds.get(&1) {
                 BString::from(passphrase.as_bytes())
             } else if env_has_passphrase {
-                return Err(anyhow!(
+                anyhow::bail!(
                     "Missing environment variable {}",
                     ALFS_PASSPHRASE_PREFIX.as_bstr()
-                ));
+                );
             } else {
                 println!("<anylinuxfs-passphrase-prompt:start>");
                 let prompt_end = deferred.add(|| println!("<anylinuxfs-passphrase-prompt:end>"));
@@ -671,12 +671,12 @@ impl VmDiskContext {
             } else if self.key_file_path.is_some() {
                 cryptsetup.wait()?
             } else if env_has_passphrase {
-                return Err(anyhow!(
+                anyhow::bail!(
                     "Missing environment variable {}{} for device {}",
                     ALFS_PASSPHRASE_PREFIX.as_bstr(),
                     i + 1,
                     dev
-                ));
+                );
             } else {
                 println!("<anylinuxfs-passphrase-prompt:start>");
                 let prompt_end = deferred.add(|| println!("<anylinuxfs-passphrase-prompt:end>"));
@@ -686,14 +686,14 @@ impl VmDiskContext {
             };
 
             if !cryptsetup_result.success() {
-                return Err(anyhow!(
+                anyhow::bail!(
                     "Failed to open encrypted device '{}': {}",
                     dev,
                     cryptsetup_result
                         .code()
                         .map(|c| c.to_string())
                         .unwrap_or("unknown".to_owned())
-                ));
+                );
             }
         }
         Ok(())
@@ -809,13 +809,13 @@ impl VmDiskContext {
         let (status, mountpoints, zpools) =
             zfs::import_all_zpools(mount_point, self.specified_read_only())?;
         if !status.success() {
-            return Err(anyhow!(
+            anyhow::bail!(
                 "Importing zpools failed with error code {}",
                 status
                     .code()
                     .map(|c| c.to_string())
                     .unwrap_or("unknown".to_owned())
-            ));
+            );
         }
         self.zfs_mountpoints = mountpoints;
         self.zfs_pools = zpools;
@@ -876,7 +876,7 @@ impl VmDiskContext {
         };
 
         if !mnt_result.success() {
-            return Err(anyhow!(
+            anyhow::bail!(
                 "Mounting {} on {} failed with error code {}",
                 self.disk_path,
                 mount_point,
@@ -884,7 +884,7 @@ impl VmDiskContext {
                     .code()
                     .map(|c| c.to_string())
                     .unwrap_or("unknown".to_owned())
-            ));
+            );
         }
         deferred.call_now(force_output_off);
 
@@ -1110,7 +1110,7 @@ fn run() -> anyhow::Result<()> {
         .context("Failed to mount tmpfs on /mnt")?;
 
     if !mnt_tmp_status.success() {
-        return Err(anyhow!("Failed to mount tmpfs on /mnt"));
+        anyhow::bail!("Failed to mount tmpfs on /mnt");
     }
 
     common_utils::fail_for_known_nonmountable_types(dsk.fs_type.as_deref())?;

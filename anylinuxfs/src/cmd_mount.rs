@@ -1,4 +1,4 @@
-use anyhow::{Context, anyhow};
+use anyhow::Context;
 use bstr::{BString, ByteSlice, ByteVec};
 use common_utils::{
     Deferred, NetHelper, OSType, PathExt, host_eprintln, host_println, ipc, log, safe_println,
@@ -104,13 +104,13 @@ pub(crate) fn unmount_fs(volume_path: &Path) -> anyhow::Result<()> {
         .status()?;
 
     if !status.success() {
-        return Err(anyhow!(
+        anyhow::bail!(
             "umount failed with exit code {}",
             status
                 .code()
                 .map(|c| c.to_string())
                 .unwrap_or("unknown".to_owned())
-        ));
+        );
     }
     Ok(())
 }
@@ -156,7 +156,7 @@ fn wait_for_proc_exit_with_timeout(pid: libc::pid_t, timeout: Duration) -> anyho
     let start = Instant::now();
     loop {
         if start.elapsed() > timeout {
-            return Err(anyhow!("Timeout waiting for process exit"));
+            anyhow::bail!("Timeout waiting for process exit");
         }
         let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
         let buf_len = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
@@ -274,16 +274,16 @@ fn resolve_disk_token(token: &str, read_only: bool) -> anyhow::Result<(DevInfo, 
     // Try image partition syntax first: image@sN
     if let Some((image_path, part_num)) = parse_image_partition_ident(token) {
         if !Path::new(image_path).exists() {
-            return Err(anyhow!("Image file not found: {}", image_path));
+            anyhow::bail!("Image file not found: {}", image_path);
         }
         let probe_devs = DevInfo::probe_image(BString::from(image_path.as_bytes()))
             .context("Failed to probe image")?;
         if part_num == 0 || part_num >= probe_devs.len() {
-            return Err(anyhow!(
+            anyhow::bail!(
                 "Partition {} out of range (image has {} partitions)",
                 part_num,
                 probe_devs.len() - 1
-            ));
+            );
         }
         let partition_info = probe_devs[part_num].clone();
         let disk = File::open(partition_info.rdisk())
@@ -350,7 +350,7 @@ pub(crate) fn claim_devices(
         // example: lvm:vg1:disk7s1:lvol0 or lvm:vg1:disk7s1:image.img@s1:lvol0
         let disk_ident: Vec<&str> = disk_path.split(':').collect();
         if disk_ident.len() < 4 {
-            return Err(anyhow!("Invalid LVM disk path"));
+            anyhow::bail!("Invalid LVM disk path");
         }
 
         let vm_path = format!(
@@ -365,7 +365,7 @@ pub(crate) fn claim_devices(
             }
             let (dev_info, disk) = resolve_disk_token(di, config.read_only)?;
             if !dev_info.is_image() && mount_table.is_mounted(dev_info.disk()) {
-                return Err(anyhow!("{} is already mounted", dev_info.disk().display()));
+                anyhow::bail!("{} is already mounted", dev_info.disk().display());
             }
 
             if dev_info.fs_type() == Some("linux_raid_member") {
@@ -384,7 +384,7 @@ pub(crate) fn claim_devices(
         // example: raid:disk7s1:disk8s1 or raid:disk7s1:image.img@s1
         let disk_ident: Vec<&str> = disk_path.split(':').collect();
         if disk_ident.len() < 2 {
-            return Err(anyhow!("Invalid RAID disk path"));
+            anyhow::bail!("Invalid RAID disk path");
         }
 
         let vm_path = "/dev/md127";
@@ -393,7 +393,7 @@ pub(crate) fn claim_devices(
         for (_, &di) in disk_ident.iter().skip(1).enumerate() {
             let (dev_info, disk) = resolve_disk_token(di, config.read_only)?;
             if !dev_info.is_image() && mount_table.is_mounted(dev_info.disk()) {
-                return Err(anyhow!("{} is already mounted", dev_info.disk().display()));
+                anyhow::bail!("{} is already mounted", dev_info.disk().display());
             }
 
             dev_infos.push(dev_info);
@@ -430,14 +430,14 @@ pub(crate) fn claim_devices(
                     format!("/dev/{}", token)
                 };
                 if !Path::new(&dev_path).exists() {
-                    return Err(anyhow!("disk {} not found", dev_path));
+                    anyhow::bail!("disk {} not found", dev_path);
                 }
                 if mount_table.is_mounted(&dev_path) {
                     if config.allow_remount {
                         unmount_fs(Path::new(&dev_path))?;
                         println!("Remounting with anylinuxfs...");
                     } else {
-                        return Err(anyhow!("{} is already mounted", dev_path));
+                        anyhow::bail!("{} is already mounted", dev_path);
                     }
                 }
                 let (dev_info, disk) = resolve_disk_token(token, config.read_only)?;
@@ -860,7 +860,7 @@ fn setup_rpcbind_services<'a>(
             .gid(gid)
             .status()?;
         if !status.success() {
-            return Err(anyhow!("Failed to register NFS server to rpcbind"));
+            anyhow::bail!("Failed to register NFS server to rpcbind");
         }
     } else {
         rpcbind::services::register().context("Failed to register NFS server to rpcbind")?;
@@ -991,13 +991,13 @@ impl<'a> NfsShareSetup<'a> {
         }
 
         if !status.success() {
-            return Err(anyhow!(
+            anyhow::bail!(
                 "failed with exit code {}",
                 status
                     .code()
                     .map(|c| c.to_string())
                     .unwrap_or("unknown".to_owned())
-            ));
+            );
         }
 
         if self.config.open_finder {
@@ -1110,9 +1110,9 @@ impl super::AppRunner {
                 None => true,
             }
         {
-            return Err(anyhow!(
+            anyhow::bail!(
                 "mount with no disk isn't valid unless a custom action with NFS export override is specified"
-            ));
+            );
         }
 
         let log_file_path = &config.common.log_file_path;
@@ -1333,14 +1333,14 @@ impl super::AppRunner {
         });
 
         if let Some(status) = net_helper_proc.try_wait().ok().flatten() {
-            return Err(anyhow!(
+            anyhow::bail!(
                 "{} failed with exit code: {}",
                 net_helper_name,
                 status
                     .code()
                     .map(|c| c.to_string())
                     .unwrap_or("unknown".to_owned())
-            ));
+            );
         }
 
         _ = deferred.add(move || {

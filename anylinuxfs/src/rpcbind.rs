@@ -4,8 +4,6 @@ use std::ffi::CStr;
 use std::net::SocketAddr;
 use std::{ffi::CString, ptr};
 
-use anyhow::anyhow;
-
 #[link(name = "oncrpc", kind = "framework")]
 unsafe extern "C" {
     /// int rpcb_unset(const char *netid, unsigned int program, unsigned int version);
@@ -213,7 +211,7 @@ pub mod services {
                 &timeout_short,
             );
             if client.is_null() {
-                return Err(anyhow!("Error creating RPC client"));
+                anyhow::bail!("Error creating RPC client");
             }
 
             let mut head: *mut Rpcblist = ptr::null_mut();
@@ -223,13 +221,13 @@ pub mod services {
             };
 
             if client.is_null() {
-                return Err(anyhow!("client handle is null"));
+                anyhow::bail!("client handle is null");
             }
 
             let call_fn = {
                 let ops = (*client).cl_ops;
                 if ops.is_null() {
-                    return Err(anyhow!("client ops pointer is null"));
+                    anyhow::bail!("client ops pointer is null");
                 }
                 (*ops).cl_call
             };
@@ -341,8 +339,8 @@ pub mod services {
             };
             let svc_str = format!("{}/v{}/{}", svc, vers, nettype);
             match msg {
-                Some(m) => return Err(anyhow!("{} RPC call failed: {}", svc_str, m)),
-                None => return Err(anyhow!("{} RPC call failed", svc_str)),
+                Some(m) => anyhow::bail!("{} RPC call failed: {}", svc_str, m),
+                None => anyhow::bail!("{} RPC call failed", svc_str),
             }
         }
         Ok(())

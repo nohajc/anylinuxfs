@@ -8,7 +8,7 @@ use std::{
     ptr::null_mut,
 };
 
-use anyhow::{Context, anyhow};
+use anyhow::Context;
 use getifaddrs::{InterfaceFilter, InterfaceFlags};
 use ipnet::Ipv4Net;
 use objc2_core_foundation::{CFArray, CFDictionary, CFString};
@@ -63,12 +63,12 @@ pub fn get_interface_networks() -> anyhow::Result<Vec<Ipv4Net>> {
         }
         if let Some(ip) = iface.address.ip_addr() {
             let IpAddr::V4(ip) = ip else {
-                return Err(anyhow::anyhow!("unexpected non-IPv4 address: {}", ip));
+                anyhow::bail!("unexpected non-IPv4 address: {}", ip);
             };
 
             let netmask = iface.address.netmask().unwrap();
             let IpAddr::V4(netmask) = netmask else {
-                return Err(anyhow::anyhow!("unexpected non-IPv4 netmask: {}", netmask));
+                anyhow::bail!("unexpected non-IPv4 netmask: {}", netmask);
             };
 
             let net = Ipv4Net::with_netmask(ip, netmask)?.trunc();
@@ -86,11 +86,11 @@ pub fn pick_available_network_in_pool(
 ) -> anyhow::Result<Ipv4Net> {
     let pool_prefix_len = pool.prefix_len();
     if prefix_len <= pool_prefix_len {
-        return Err(anyhow::anyhow!(
+        anyhow::bail!(
             "invalid prefix length: {}, must be greater than {}",
             prefix_len,
             pool_prefix_len
-        ));
+        );
     }
 
     let candidate_base = Ipv4Net::new(pool.addr(), prefix_len)?;
@@ -131,13 +131,13 @@ pub fn pick_available_network_in_pool(
                         search_prefix_len = supernet.prefix_len();
                         // println!("broadened search space to: {}", supernet);
                     } else {
-                        return Err(anyhow::anyhow!("exhausted candidate IP ranges for VMs"));
+                        anyhow::bail!("exhausted candidate IP ranges for VMs");
                     }
                 } else {
                     break;
                 }
             } else {
-                return Err(anyhow::anyhow!("failed to autoconfigure IP range for VMs"));
+                anyhow::bail!("failed to autoconfigure IP range for VMs");
             }
         }
     }
@@ -230,9 +230,7 @@ fn make_new_loopback() -> anyhow::Result<Host> {
     if success {
         Ok(Host::from_ip(IpAddr::V6(addr), Some(1)))
     } else {
-        Err(anyhow!(
-            "unable to create loopback alias, please retry with sudo"
-        ))
+        anyhow::bail!("unable to create loopback alias, please retry with sudo");
     }
 }
 
@@ -259,9 +257,7 @@ pub fn pick_usable_loopback_ip(required_ports: &[u16]) -> anyhow::Result<Host> {
                         break;
                     }
                     Err(e) => {
-                        return Err(
-                            anyhow!("unexpected error checking port {}: {}", port, e).into()
-                        );
+                        anyhow::bail!("unexpected error checking port {}: {}", port, e);
                     }
                 }
             }
@@ -281,9 +277,9 @@ pub fn pick_usable_loopback_ip(required_ports: &[u16]) -> anyhow::Result<Host> {
 pub fn check_port_availability(ip: impl Into<IpAddr>, port: u16) -> anyhow::Result<()> {
     try_port((ip.into(), port)).map_err(|e| {
         if e.kind() == io::ErrorKind::AddrInUse {
-            anyhow!("port {port} already in use")
+            anyhow::anyhow!("port {port} already in use")
         } else {
-            anyhow!("unexpected error checking port {port}: {e}")
+            anyhow::anyhow!("unexpected error checking port {port}: {e}")
         }
     })
 }

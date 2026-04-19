@@ -1,4 +1,4 @@
-use anyhow::{Context, anyhow};
+use anyhow::Context;
 use bstr::BStr;
 use common_utils::{PathExt, host_println, is_encrypted_fs, safe_print};
 use derive_more::{AddAssign, Deref};
@@ -156,13 +156,13 @@ fn diskutil_list_from_plist(disk: Option<&str>) -> anyhow::Result<Plist> {
     let plist: Plist = plist::from_bytes(&output.stdout).context("Failed to parse plist")?;
 
     if !output.status.success() {
-        return Err(anyhow!(
+        anyhow::bail!(
             "{}",
             plist
                 .error_message
                 .as_deref()
                 .unwrap_or("diskutil command failed")
-        ));
+        );
     }
 
     Ok(plist)
@@ -446,7 +446,7 @@ impl FromStr for LvIdent {
         let lv_name = chars.collect::<String>().replace("--", "-");
 
         if vg_name.is_empty() || lv_name.is_empty() {
-            return Err(anyhow!("Invalid LV identifier: {}", s));
+            anyhow::bail!("Invalid LV identifier: {}", s);
         }
         Ok(LvIdent { vg_name, lv_name })
     }
@@ -617,7 +617,7 @@ pub fn list_partitions(
                 .expect("Failed to execute diskutil");
 
             if !output.status.success() {
-                return Err(anyhow!("diskutil command failed"));
+                anyhow::bail!("diskutil command failed");
             }
 
             let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1007,7 +1007,7 @@ fn virt_disk_to_decrypt(dev_info: &[DevInfo], partition: &str) -> anyhow::Result
                 .context("missing fs_type info")?
                 .into(),
         ),
-        None => Err(anyhow!("Partition {} not found", partition))?,
+        None => anyhow::bail!("Partition {} not found", partition),
     })
 }
 
@@ -1086,7 +1086,7 @@ fn get_lsblk_info(
     )
     .context("Failed to run command in microVM")?;
     if lsblk_cmd.status != 0 {
-        return Err(anyhow!("lsblk command failed"));
+        anyhow::bail!("lsblk command failed");
     }
 
     eprintln!("{}", String::from_utf8_lossy(&lsblk_cmd.stderr));
