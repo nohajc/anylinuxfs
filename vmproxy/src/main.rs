@@ -997,6 +997,7 @@ fn run() -> anyhow::Result<()> {
     let tmpfs_dirs = &[
         "/.config",
         "/.cache",
+        "/mnt",
         "/tmp",
         "/run",
         "/var/lib/nfs",
@@ -1005,13 +1006,18 @@ fn run() -> anyhow::Result<()> {
     ];
 
     #[cfg(any(target_os = "freebsd", target_os = "macos"))]
-    let tmpfs_dirs = &["/tmp"];
+    let tmpfs_dirs = &["/mnt", "/tmp"];
 
     mount_tmpfs(tmpfs_dirs)?;
 
     #[cfg(target_os = "linux")]
     for dir in ["/var/lib/nfs/rpc_pipefs", "/var/lib/nfs/sm"] {
         fs::create_dir_all(dir).with_context(|| format!("Failed to create directory '{}'", dir))?;
+    }
+
+    #[cfg(target_os = "freebsd")]
+    {
+        setup_writable_dirs_for_nfsd().context("Failed to setup writable dirs for nfsd")?;
     }
 
     init_network(&cli.bind_addrs, cli.host_rpcbind, cli.native_network)
@@ -1098,19 +1104,6 @@ fn run() -> anyhow::Result<()> {
             .args(["device", "scan"])
             .status()
             .context("Failed to run btrfs command")?;
-    }
-
-    #[cfg(target_os = "freebsd")]
-    {
-        setup_writable_dirs_for_nfsd().context("Failed to setup writable dirs for nfsd")?;
-    }
-
-    let mnt_tmp_status = script("mount -t tmpfs tmpfs /mnt")
-        .status()
-        .context("Failed to mount tmpfs on /mnt")?;
-
-    if !mnt_tmp_status.success() {
-        anyhow::bail!("Failed to mount tmpfs on /mnt");
     }
 
     common_utils::fail_for_known_nonmountable_types(dsk.fs_type.as_deref())?;
