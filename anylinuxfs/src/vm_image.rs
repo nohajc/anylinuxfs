@@ -1,4 +1,7 @@
-use crate::{Config, ImageSource, fsutil, vm_network};
+use crate::{
+    Config, ImageSource, fsutil,
+    vm_network::{self, VmnetConfig},
+};
 use anyhow::Context;
 
 use common_utils::{Deferred, NetHelper, host_eprintln};
@@ -379,7 +382,7 @@ mod freebsd {
         );
 
         // 1. boot the VM to run the bootstrap process and populate our disk image
-        let bstrap_status = setup_gvproxy(&config, || {
+        let bstrap_status = setup_gvproxy(&config, |_| {
             start_freebsd_bootstrap_vm(
                 &config,
                 bootstrap_image_path.as_bytes(),
@@ -392,7 +395,7 @@ mod freebsd {
         }
 
         // 2. boot it again to install third-party packages
-        let setup_status = setup_gvproxy(&config, || {
+        let setup_status = setup_gvproxy(&config, |_| {
             let devices = &[DevInfo::pv(vm_disk_image_path.as_bytes(), true)?];
             let cmdline = &["/usr/local/bin/vm-setup.sh".into()];
             start_freebsd_vm(
@@ -668,7 +671,7 @@ fn rootfs_version_matches(root_ver_file_path: &Path, current_version: &str) -> b
 
 pub fn setup_net_helper(
     config: &Config,
-    start_vm_fn: impl FnOnce() -> anyhow::Result<i32>,
+    start_vm_fn: impl FnOnce(Option<VmnetConfig>) -> anyhow::Result<i32>,
 ) -> anyhow::Result<i32> {
     match config.net_helper.os_override(config.kernel.os) {
         NetHelper::GvProxy => setup_gvproxy(config, start_vm_fn),
@@ -678,11 +681,11 @@ pub fn setup_net_helper(
 
 pub fn setup_vmnet_helper(
     config: &Config,
-    start_vm_fn: impl FnOnce() -> anyhow::Result<i32>,
+    start_vm_fn: impl FnOnce(Option<VmnetConfig>) -> anyhow::Result<i32>,
 ) -> anyhow::Result<i32> {
     let mut deferred = Deferred::new();
 
-    let (mut vmnet_helper, _vmnet_config) = vm_network::start_vmnet_helper(&config)?;
+    let (mut vmnet_helper, vmnet_config) = vm_network::start_vmnet_helper(&config)?;
     // host_println!("vmnet-helper started with config: {:?}", _vmnet_config);
     fsutil::wait_for_file(&config.unixgram_sock_path)?;
 
@@ -708,12 +711,12 @@ pub fn setup_vmnet_helper(
         }
     });
 
-    start_vm_fn()
+    start_vm_fn(Some(vmnet_config))
 }
 
 pub fn setup_gvproxy(
     config: &Config,
-    start_vm_fn: impl FnOnce() -> anyhow::Result<i32>,
+    start_vm_fn: impl FnOnce(Option<VmnetConfig>) -> anyhow::Result<i32>,
 ) -> anyhow::Result<i32> {
     let mut deferred = Deferred::new();
 
@@ -742,5 +745,5 @@ pub fn setup_gvproxy(
         }
     });
 
-    start_vm_fn()
+    start_vm_fn(None)
 }

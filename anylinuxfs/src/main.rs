@@ -356,16 +356,10 @@ pub(crate) fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
         .map(PathBuf::from)
         .map(|key_path| {
             if !key_path.exists() {
-                anyhow::bail!(
-                    "Key file not found: {}",
-                    key_path.display()
-                );
+                anyhow::bail!("Key file not found: {}", key_path.display());
             }
             if !key_path.is_file() {
-                anyhow::bail!(
-                    "Key file path is not a file: {}",
-                    key_path.display()
-                );
+                anyhow::bail!("Key file path is not a file: {}", key_path.display());
             }
             Ok(key_path)
         })
@@ -590,7 +584,7 @@ impl AppRunner {
                 .collect();
         }
         let net_mode = match cmd.no_tsi {
-            true => NetworkMode::default_virtio_net(os, config.common.net_helper, None),
+            true => NetworkMode::default_virtio_net(os, config.common.net_helper),
             false => NetworkMode::default_for_os(os),
         };
         // use_vsock must be true in virtio-net mode so the vsock device is present in the
@@ -599,34 +593,29 @@ impl AppRunner {
         let ctx = setup_vm(&config.common, &dev_info, net_mode, cmd.no_tsi, opts)
             .context("Failed to setup microVM")?;
 
-        if os == OSType::Linux {
+        let vmproxy_bin: BString = match os {
+            OSType::Linux => "/vmproxy",
+            OSType::FreeBSD => "/vmproxy-bsd",
+        }
+        .into();
+        let mut cmdline: Vec<BString> = vec![vmproxy_bin, "shell".into()];
+        // In TSI mode the host provides the DNS server; in gvproxy/vmnet modes
+        // the guest resolves it from its gateway so no --dns-server is needed.
+        if os == OSType::Linux && !cmd.no_tsi {
             let dns_server = netutil::get_dns_server_with_fallback();
-            let vm_prelude = format!(
-                "mount -t tmpfs tmpfs /tmp && echo nameserver {} > /tmp/resolv.conf",
-                dns_server
-            );
-            let mut cmdline: Vec<BString> = vec!["/bin/sh".into(), "-c".into()];
-            if let Some(command) = cmd.command {
-                cmdline.push(command.into());
-            } else {
-                cmdline.push((vm_prelude + " && /bin/bash -l").into());
-            }
-            if cmd.no_tsi {
-                vm_image::setup_net_helper(&config.common, || {
-                    start_vm_forked(&ctx, &cmdline, &vm_env)
-                        .context("Failed to start microVM shell")
-                })?;
-            } else {
-                start_vm(&ctx, &cmdline, &vm_env).context("Failed to start microVM shell")?;
-            }
-        } else {
-            let cmdline: Vec<BString> = if let Some(command) = cmd.command {
-                vec!["/bin/sh".into(), "-c".into(), command.into()]
-            } else {
-                vec!["/start-shell.sh".into()]
-            };
+            cmdline.extend(["--dns-server".into(), dns_server.as_ref().into()]);
+        }
+        if let Some(command) = cmd.command.as_deref() {
+            cmdline.extend(["--command".into(), command.into()]);
+        }
 
-            vm_image::setup_net_helper(&config.common, || {
+        if os == OSType::Linux && !cmd.no_tsi {
+            start_vm(&ctx, &cmdline, &vm_env).context("Failed to start microVM shell")?;
+        } else {
+            vm_image::setup_net_helper(&config.common, |cfg| {
+                if let Some(cidr) = cfg.map(|c| c.vmnet_cidr) {
+                    cmdline.extend(["-n".into(), cidr.to_string().into()]);
+                }
                 start_vm_forked(&ctx, &cmdline, &vm_env).context("Failed to start microVM shell")
             })?;
         }
@@ -733,10 +722,7 @@ impl AppRunner {
             start_vm_forked(&ctx, &cmdline, &[]).context("Failed to start microVM shell")?;
 
         if status != 0 {
-            anyhow::bail!(
-                "microVM shell exited with status {}",
-                status
-            );
+            anyhow::bail!("microVM shell exited with status {}", status);
         }
         // preferences are only saved if apk command was successful
         settings::save_preferences(config.preferences.user(), config_file_path)?;

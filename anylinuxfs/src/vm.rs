@@ -21,7 +21,7 @@ use crate::devinfo::DevInfo;
 use crate::settings::{Config, MountConfig, PassphrasePromptConfig, Preferences};
 use crate::utils::{HasPipeInFd, HasPipeOutFds};
 use crate::vm_image::{self, IsoAdd};
-use crate::vm_network::{self, VmnetConfig};
+use crate::vm_network;
 use crate::{ResultWithCtx, bindings};
 use crate::{rand_string, to_exit_code, utils};
 
@@ -85,10 +85,16 @@ pub(crate) struct VMContext {
     vmnet_cidr: Option<Ipv4Net>,
 }
 
+impl VMContext {
+    pub(crate) fn set_vmnet_cidr(&mut self, cidr: Option<Ipv4Net>) {
+        self.vmnet_cidr = cidr;
+    }
+}
+
 pub(crate) enum NetworkMode {
     Default,
     GvProxy,
-    VmNet(Option<Ipv4Net>),
+    VmNet,
 }
 
 impl NetworkMode {
@@ -99,16 +105,12 @@ impl NetworkMode {
         }
     }
 
-    pub(crate) fn default_virtio_net(
-        os: OSType,
-        net_helper: NetHelper,
-        cfg: Option<VmnetConfig>,
-    ) -> Self {
+    pub(crate) fn default_virtio_net(os: OSType, net_helper: NetHelper) -> Self {
         match os {
             OSType::FreeBSD => NetworkMode::GvProxy,
             OSType::Linux => match net_helper {
                 NetHelper::GvProxy => NetworkMode::GvProxy,
-                NetHelper::VmNet => NetworkMode::VmNet(cfg.map(|c| c.vmnet_cidr)),
+                NetHelper::VmNet => NetworkMode::VmNet,
             },
         }
     }
@@ -185,7 +187,7 @@ pub(crate) fn setup_vm(
         .context("Failed to add disk")?;
     }
 
-    let vmnet_cidr = match net_mode {
+    match net_mode {
         NetworkMode::GvProxy => {
             unsafe {
                 bindings::krun_set_gvproxy_path(
@@ -196,9 +198,8 @@ pub(crate) fn setup_vm(
                 )
             }
             .context("Failed to set gvproxy path")?;
-            None
         }
-        NetworkMode::VmNet(vmnet_cidr) => {
+        NetworkMode::VmNet => {
             unsafe {
                 bindings::krun_add_net_unixgram(
                     ctx_id,
@@ -210,9 +211,8 @@ pub(crate) fn setup_vm(
                 )
             }
             .context("Failed to add vmnet socket")?;
-            vmnet_cidr
         }
-        NetworkMode::Default => None,
+        NetworkMode::Default => (),
     };
 
     vm_network::vsock_cleanup(&config.vsock_path)?;
@@ -278,7 +278,7 @@ pub(crate) fn setup_vm(
         root_path,
         invoker_uid,
         invoker_gid,
-        vmnet_cidr,
+        vmnet_cidr: None,
     })
 }
 
@@ -448,6 +448,7 @@ pub(crate) fn start_vmproxy(
 
     let args: Vec<_> = [
         vmproxy,
+        "mount".into(),
         dev_info.vm_path().into(),
         mount_name,
         "-b".into(),

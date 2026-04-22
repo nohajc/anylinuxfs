@@ -1373,14 +1373,16 @@ impl super::AppRunner {
             // Child process
             deferred.remove_all(); // deferred actions must be only called in the parent process
 
-            let ctx = setup_vm(
+            let mut ctx = setup_vm(
                 &config.common,
                 &dev_info,
-                NetworkMode::default_virtio_net(os, config.common.net_helper, vmnet_config),
+                NetworkMode::default_virtio_net(os, config.common.net_helper),
                 true,
                 opts,
             )
             .context("Failed to setup microVM")?;
+
+            ctx.set_vmnet_cidr(vmnet_config.map(|c| c.vmnet_cidr));
 
             let to_decrypt: Vec<_> = iter::zip(dev_info.iter(), 'a'..='z')
                 .filter_map(|(di, letter)| {

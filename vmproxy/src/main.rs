@@ -21,6 +21,7 @@ use std::io::{self, Read, Write};
 #[cfg(any(target_os = "freebsd", target_os = "macos"))]
 use std::net::TcpListener;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Command, ExitCode, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -42,6 +43,19 @@ mod zfs;
 #[command(version, about, long_about = None)]
 #[clap(disable_help_flag = true)]
 struct Cli {
+    #[command(subcommand)]
+    command: SubCmd,
+}
+
+#[derive(clap::Subcommand)]
+enum SubCmd {
+    Mount(MountArgs),
+    Shell(ShellArgs),
+}
+
+#[derive(clap::Args)]
+#[clap(disable_help_flag = true)]
+struct MountArgs {
     disk_path: String,
     mount_name: String,
     #[arg(short, long)]
@@ -79,6 +93,21 @@ struct Cli {
     verbose: bool,
 }
 
+#[derive(clap::Args)]
+struct ShellArgs {
+    /// Optional command to execute instead of an interactive shell
+    #[arg(long)]
+    command: Option<String>,
+    /// DNS server to write to /etc/resolv.conf (Linux only)
+    #[arg(long)]
+    dns_server: Option<String>,
+    /// vmnet CIDR for network interface configuration (no-TSI mode)
+    #[arg(short, long)]
+    native_network: Option<Ipv4Net>,
+    #[arg(short, long)]
+    verbose: bool,
+}
+
 #[derive(Serialize, Debug)]
 struct PortDef<'a> {
     local: &'a str,
@@ -100,12 +129,8 @@ fn init_network(
     bind_addrs: &[String],
     host_rpcbind: bool,
     native_network: Option<Ipv4Net>,
+    #[allow(unused_variables)] dns_server: Option<&str>,
 ) -> anyhow::Result<()> {
-    // resolv.conf is already initialized and always the same on FreeBSD
-    #[cfg(target_os = "linux")]
-    fs::write("/tmp/resolv.conf", format!("nameserver {VM_GATEWAY_IP}\n"))
-        .context("Failed to write /tmp/resolv.conf")?;
-
     let vm_gateway_ip = native_network
         .map(|net| net.hosts().next())
         .flatten()
@@ -115,31 +140,52 @@ fn init_network(
                 .context("Failed to parse VM_GATEWAY_IP")?,
         );
 
-    let vm_ip = native_network
-        .map(|net| net.hosts().nth(1))
-        .flatten()
-        .unwrap_or(VM_IP.parse().context("Failed to parse VM_IP")?);
-
-    let net_prefix_len = native_network.map(|net| net.prefix_len()).unwrap_or(24);
-
+    // resolv.conf is already initialized and always the same on FreeBSD.
+    // In TSI mode dns_server is passed from the host; otherwise fall back to
+    // the gateway (native_network's first host, or the default VM_GATEWAY_IP).
     #[cfg(target_os = "linux")]
-    let script = format!(
-        "ip addr add {vm_ip}/{net_prefix_len} dev eth0 \
-            && ip link set eth0 up \
-            && ip route add default via {vm_gateway_ip} dev eth0",
-    );
-    #[cfg(any(target_os = "freebsd", target_os = "macos"))]
-    let script = format!(
-        "ifconfig vtnet0 inet {vm_ip}/{net_prefix_len} \
-            && route add default {vm_gateway_ip} \
-            && ifconfig lo0 up",
-    );
+    {
+        let dns = dns_server
+            .map(str::to_owned)
+            .unwrap_or_else(|| vm_gateway_ip.to_string());
+        fs::write("/tmp/resolv.conf", format!("nameserver {dns}\n"))
+            .context("Failed to write /tmp/resolv.conf")?;
+    }
 
-    Command::new("/bin/sh")
-        .arg("-c")
-        .arg(script)
-        .status()
-        .context("Failed to configure network interface")?;
+    // In TSI mode there is no virtual NIC to configure; the host kernel
+    // handles networking transparently.  dns_server being Some is the TSI signal.
+    #[cfg(target_os = "linux")]
+    let tsi = dns_server.is_some();
+    #[cfg(any(target_os = "freebsd", target_os = "macos"))]
+    let tsi = false;
+
+    if !tsi {
+        let vm_ip = native_network
+            .map(|net| net.hosts().nth(1))
+            .flatten()
+            .unwrap_or(VM_IP.parse().context("Failed to parse VM_IP")?);
+
+        let net_prefix_len = native_network.map(|net| net.prefix_len()).unwrap_or(24);
+
+        #[cfg(target_os = "linux")]
+        let script = format!(
+            "ip addr add {vm_ip}/{net_prefix_len} dev eth0 \
+                && ip link set eth0 up \
+                && ip route add default via {vm_gateway_ip} dev eth0",
+        );
+        #[cfg(any(target_os = "freebsd", target_os = "macos"))]
+        let script = format!(
+            "ifconfig vtnet0 inet {vm_ip}/{net_prefix_len} \
+                && route add default {vm_gateway_ip} \
+                && ifconfig lo0 up",
+        );
+
+        Command::new("/bin/sh")
+            .arg("-c")
+            .arg(script)
+            .status()
+            .context("Failed to configure network interface")?;
+    }
 
     if native_network.is_none() {
         let bind_addr_set: HashSet<_> = bind_addrs.iter().collect();
@@ -205,6 +251,22 @@ fn setup_writable_dirs_for_nfsd() -> anyhow::Result<()> {
         setup_fs_overlay(dir)?;
     }
     Ok(())
+}
+
+fn exec_shell(cmd: Option<&str>) -> anyhow::Result<()> {
+    let err = if let Some(cmd) = cmd {
+        Command::new("/bin/sh").args(["-c", cmd]).exec()
+    } else {
+        #[cfg(target_os = "linux")]
+        {
+            Command::new("/bin/bash").arg("-l").exec()
+        }
+        #[cfg(any(target_os = "freebsd", target_os = "macos"))]
+        {
+            Command::new("/start-shell.sh").exec()
+        }
+    };
+    Err(err).context("Failed to exec shell")
 }
 
 trait StreamListener: Send + Sync + 'static {
@@ -573,7 +635,7 @@ struct VmDiskContext {
 }
 
 impl VmDiskContext {
-    fn new(cli: &Cli, key_file_path: Option<String>) -> Self {
+    fn new(cli: &MountArgs, key_file_path: Option<String>) -> Self {
         let (mapper_ident_prefix, cryptsetup_op) = match cli.fs_type.as_deref() {
             Some("crypto_LUKS") => ("luks", "open"),
             Some("BitLocker") => ("btlk", "bitlkOpen"),
@@ -1020,7 +1082,19 @@ fn run() -> anyhow::Result<()> {
         setup_writable_dirs_for_nfsd().context("Failed to setup writable dirs for nfsd")?;
     }
 
-    init_network(&cli.bind_addrs, cli.host_rpcbind, cli.native_network)
+    if let SubCmd::Shell(ref args) = cli.command {
+        init_network(&[], true, args.native_network, args.dns_server.as_deref())
+            .context("Failed to initialize network")?;
+        exec_shell(args.command.as_deref())?;
+        unreachable!();
+    }
+
+    // Shadow `cli` with MountArgs for the rest of the function.
+    let SubCmd::Mount(ref cli) = cli.command else {
+        unreachable!()
+    };
+
+    init_network(&cli.bind_addrs, cli.host_rpcbind, cli.native_network, None)
         .context("Failed to initialize network")?;
 
     #[cfg(target_os = "linux")]
@@ -1083,7 +1157,7 @@ fn run() -> anyhow::Result<()> {
     let key_file_path = setup_key_file_path(cli.key_file.clone(), &mut deferred)
         .context("Failed to set up encryption key file")?;
 
-    let mut dsk = VmDiskContext::new(&cli, key_file_path);
+    let mut dsk = VmDiskContext::new(cli, key_file_path);
 
     // decrypt LUKS/BitLocker volumes if any
     if let Some(decrypt) = &cli.decrypt {
@@ -1220,6 +1294,18 @@ fn run() -> anyhow::Result<()> {
 mod tests {
     use super::*;
 
+    fn parse_mount(args: &[&str]) -> MountArgs {
+        let full: Vec<&str> = std::iter::once("vmproxy")
+            .chain(std::iter::once("mount"))
+            .chain(args.iter().copied())
+            .collect();
+        let cli = Cli::parse_from(full);
+        match cli.command {
+            SubCmd::Mount(mount_args) => mount_args,
+            _ => panic!("expected mount subcommand"),
+        }
+    }
+
     #[test]
     fn test_is_read_only_set() {
         assert!(is_read_only_set(["ro"].into_iter()));
@@ -1232,18 +1318,18 @@ mod tests {
 
     #[test]
     fn test_vm_disk_context_specified_read_only() {
-        let cli = Cli::parse_from(["vmproxy", "/dev/vda", "test"]);
+        let cli = parse_mount(&["/dev/vda", "test"]);
         let dsk = VmDiskContext::new(&cli, None);
         assert!(!dsk.specified_read_only());
 
-        let cli = Cli::parse_from(["vmproxy", "/dev/vda", "test", "-o", "ro,noatime"]);
+        let cli = parse_mount(&["/dev/vda", "test", "-o", "ro,noatime"]);
         let dsk = VmDiskContext::new(&cli, None);
         assert!(dsk.specified_read_only());
     }
 
     #[test]
     fn test_vm_disk_context_mapper_prefix_luks() {
-        let cli = Cli::parse_from(["vmproxy", "/dev/vda", "test", "-t", "crypto_LUKS"]);
+        let cli = parse_mount(&["/dev/vda", "test", "-t", "crypto_LUKS"]);
         let dsk = VmDiskContext::new(&cli, None);
         assert_eq!(dsk.mapper_ident_prefix, "luks");
         assert_eq!(dsk.cryptsetup_op, "open");
@@ -1251,7 +1337,7 @@ mod tests {
 
     #[test]
     fn test_vm_disk_context_mapper_prefix_bitlocker() {
-        let cli = Cli::parse_from(["vmproxy", "/dev/vda", "test", "-t", "BitLocker"]);
+        let cli = parse_mount(&["/dev/vda", "test", "-t", "BitLocker"]);
         let dsk = VmDiskContext::new(&cli, None);
         assert_eq!(dsk.mapper_ident_prefix, "btlk");
         assert_eq!(dsk.cryptsetup_op, "bitlkOpen");
@@ -1259,7 +1345,7 @@ mod tests {
 
     #[test]
     fn test_vm_disk_context_mapper_prefix_default() {
-        let cli = Cli::parse_from(["vmproxy", "/dev/vda", "test", "-t", "ext4"]);
+        let cli = parse_mount(&["/dev/vda", "test", "-t", "ext4"]);
         let dsk = VmDiskContext::new(&cli, None);
         assert_eq!(dsk.mapper_ident_prefix, "luks");
         assert_eq!(dsk.cryptsetup_op, "open");
@@ -1267,15 +1353,15 @@ mod tests {
 
     #[test]
     fn test_vm_disk_context_is_logical() {
-        let cli = Cli::parse_from(["vmproxy", "/dev/mapper/luks0", "test"]);
+        let cli = parse_mount(&["/dev/mapper/luks0", "test"]);
         let dsk = VmDiskContext::new(&cli, None);
         assert!(dsk.is_logical());
 
-        let cli = Cli::parse_from(["vmproxy", "/dev/vda", "test"]);
+        let cli = parse_mount(&["/dev/vda", "test"]);
         let dsk = VmDiskContext::new(&cli, None);
         assert!(!dsk.is_logical());
 
-        let cli = Cli::parse_from(["vmproxy", "/dev/vda", "test"]);
+        let cli = parse_mount(&["/dev/vda", "test"]);
         let mut dsk = VmDiskContext::new(&cli, None);
         dsk.is_raid = true;
         assert!(dsk.is_logical());
@@ -1283,7 +1369,7 @@ mod tests {
 
     #[test]
     fn test_vm_disk_context_env_has_passphrase() {
-        let cli = Cli::parse_from(["vmproxy", "/dev/vda", "test"]);
+        let cli = parse_mount(&["/dev/vda", "test"]);
         let dsk = VmDiskContext::new(&cli, None);
         // Without any ALFS_PASSPHRASE env vars set, env_pwds should be empty
         assert!(!dsk.env_has_passphrase());
