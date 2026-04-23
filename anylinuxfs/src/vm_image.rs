@@ -23,18 +23,22 @@ mod alpine {
 
     pub const ROOTFS_CURRENT_VERSION: &str = include_str!("../../share/alpine/rootfs.ver");
 
-    pub fn init_rootfs(config: &Config, force: bool) -> anyhow::Result<()> {
+    pub fn init_rootfs(config: &Config, force: bool, src: &ImageSource) -> anyhow::Result<()> {
+        let base_path = config.profile_path.join(&src.base_dir);
+        let root_path = base_path.join("rootfs");
+        let root_ver_file_path = base_path.join("rootfs.ver");
+
         if !force {
-            let bash_path = config.root_path.join("bin/bash");
-            let nfsd_path = config.root_path.join("usr/sbin/rpc.nfsd");
-            let entry_point_path = config.root_path.join("usr/local/bin/entrypoint.sh");
-            let vmproxy_guest_path = config.root_path.join("vmproxy");
+            let bash_path = root_path.join("bin/bash");
+            let nfsd_path = root_path.join("usr/sbin/rpc.nfsd");
+            let entry_point_path = root_path.join("usr/local/bin/entrypoint.sh");
+            let vmproxy_guest_path = root_path.join("vmproxy");
             let required_files_exist = bash_path.exists()
                 && nfsd_path.exists()
                 && entry_point_path.exists()
                 && vmproxy_guest_path.exists();
 
-            let fstab_path = config.root_path.join("etc/fstab");
+            let fstab_path = root_path.join("etc/fstab");
 
             // check if fstab contains rpc_pipefs and nfsd keywords
             let fstab_configured = match fstab_path.exists() {
@@ -49,7 +53,7 @@ mod alpine {
             };
             if required_files_exist
                 && fstab_configured
-                && rootfs_version_matches(&config.root_ver_file_path, ROOTFS_CURRENT_VERSION)
+                && rootfs_version_matches(&root_ver_file_path, ROOTFS_CURRENT_VERSION)
             {
                 // host_println!("VM root filesystem is initialized");
                 // rootfs is initialized but check if we need to update vmproxy executable
@@ -74,12 +78,20 @@ mod alpine {
         }
 
         let dns_server = netutil::get_dns_server_with_fallback();
+        let docker_ref = src.docker_ref.as_deref().unwrap_or("alpine:latest");
 
         let mut hnd = init_rootfs_cmd
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .args(&["-n", &dns_server])
+            .args(&[
+                "-n",
+                &dns_server,
+                "-docker-ref",
+                docker_ref,
+                "-base-dir",
+                &src.base_dir,
+            ])
             .spawn()
             .context("Failed to execute init-rootfs")?;
 
@@ -96,7 +108,7 @@ mod alpine {
             );
         }
 
-        if let Err(e) = fs::write(config.root_ver_file_path.as_path(), ROOTFS_CURRENT_VERSION) {
+        if let Err(e) = fs::write(root_ver_file_path.as_path(), ROOTFS_CURRENT_VERSION) {
             host_eprintln!("Failed to write rootfs version file: {}", e);
         }
 
@@ -637,8 +649,7 @@ pub fn create_iso(
 
 pub fn init(config: &Config, force: bool, src: &ImageSource) -> anyhow::Result<()> {
     match src.os_type {
-        // we ignore src.docker_ref for now (because only alpine:latest is supported)
-        crate::OSType::Linux => alpine::init_rootfs(config, force),
+        crate::OSType::Linux => alpine::init_rootfs(config, force, src),
         #[cfg(feature = "freebsd")]
         crate::OSType::FreeBSD => freebsd::init_rootfs(config, force, src),
         #[cfg(not(feature = "freebsd"))]

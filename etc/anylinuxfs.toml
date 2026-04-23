@@ -5,6 +5,13 @@ kernel.image_url = "https://github.com/nohajc/libkrunfw/releases/download/v6.12.
 kernel.modules_url = "https://github.com/nohajc/libkrunfw/releases/download/v6.12.62-rev1/modules.squashfs"
 os_type = "Linux"
 
+[images.alpine-edge]
+base_dir = "alpine-edge"
+docker_ref = "alpine:edge"
+kernel.image_url = "https://github.com/nohajc/libkrunfw/releases/download/v6.12.62-rev1/linux-aarch64-Images-v6.12.62-anylinuxfs.tar.gz"
+kernel.modules_url = "https://github.com/nohajc/libkrunfw/releases/download/v6.12.62-rev1/modules.squashfs"
+os_type = "Linux"
+
 [images."freebsd-15.0"]
 base_dir = "freebsd-15.0"
 iso_url = "https://download.freebsd.org/releases/ISO-IMAGES/15.0/FreeBSD-15.0-RELEASE-arm64-aarch64-bootonly.iso"

@@ -53,12 +53,32 @@ type AlpineConfig struct {
 	CustomPackages []string `toml:"custom_packages"`
 }
 
-func defaultConfig(userHomeDir, execDir string) Config {
-	imageName := "alpine"
+// baseDirFromDockerRef derives a filesystem-safe directory name from a docker
+// reference when no explicit base_dir is configured. Both the image name and
+// tag are included to avoid collisions (e.g. alpine:latest vs alpine:edge).
+// Characters '/' and ':' are replaced with '-'.
+func baseDirFromDockerRef(imageName, tag string) string {
+	ref := imageName + ":" + tag
+	ref = strings.ReplaceAll(ref, "/", "-")
+	ref = strings.ReplaceAll(ref, ":", "-")
+	return ref
+}
+
+func defaultConfig(userHomeDir, execDir, dockerRef, baseDir string) Config {
+	// Parse docker reference into image name and tag.
+	imageName := dockerRef
 	tag := "latest"
+	if idx := strings.LastIndex(dockerRef, ":"); idx >= 0 {
+		imageName = dockerRef[:idx]
+		tag = dockerRef[idx+1:]
+	}
+
+	if baseDir == "" {
+		baseDir = baseDirFromDockerRef(imageName, tag)
+	}
 
 	userStore := filepath.Join(userHomeDir, ".anylinuxfs")
-	imageBasePath := filepath.Join(userStore, imageName)
+	imageBasePath := filepath.Join(userStore, baseDir)
 	imageOciPath := filepath.Join(imageBasePath, "oci")
 	rootfsPath := filepath.Join(imageBasePath, "rootfs")
 
@@ -469,7 +489,11 @@ func resolveExecDir() (string, error) {
 
 func main() {
 	var nameserver string
+	var dockerRef string
+	var baseDir string
 	flag.StringVar(&nameserver, "n", DEFAULT_DNS_SERVER, "Nameserver IP to write into /etc/resolv.conf")
+	flag.StringVar(&dockerRef, "docker-ref", "alpine:latest", "Docker/OCI image reference (e.g. alpine:latest, alpine:edge)")
+	flag.StringVar(&baseDir, "base-dir", "", "Base directory name under ~/.anylinuxfs/ (derived from docker-ref if empty)")
 	flag.Parse()
 
 	execDir, err := resolveExecDir()
@@ -486,7 +510,7 @@ func main() {
 		fmt.Println("Current user does not have a home directory.")
 		os.Exit(1)
 	}
-	cfg := defaultConfig(currentUser.HomeDir, execDir)
+	cfg := defaultConfig(currentUser.HomeDir, execDir, dockerRef, baseDir)
 
 	err = initRootfs(&cfg, nameserver)
 	if err != nil {
