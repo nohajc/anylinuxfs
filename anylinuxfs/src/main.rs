@@ -546,7 +546,10 @@ impl AppRunner {
                 let disk_path = freebsd_base_path.join(vm_disk_image);
                 match src.os_type {
                     OSType::Linux => {
-                        host_println!("root_path: {}", config.common.root_path.display());
+                        let linux_base_path =
+                            config.common.profile_path.join(src.effective_base_dir());
+                        let root_path = linux_base_path.join("rootfs");
+                        host_println!("root_path: {}", root_path.display());
                     }
                     OSType::FreeBSD => {
                         host_println!("root_disk: {}", disk_path.display());

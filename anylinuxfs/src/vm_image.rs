@@ -663,7 +663,7 @@ pub fn init(config: &Config, force: bool, src: &ImageSource) -> anyhow::Result<(
 
 #[cfg(feature = "freebsd")]
 pub fn remove(config: &Config, src: &ImageSource) -> anyhow::Result<()> {
-    let base_path = config.profile_path.join(&src.base_dir);
+    let base_path = config.profile_path.join(&src.effective_base_dir());
     fs::remove_dir_all(&base_path)?;
     Ok(())
 }
