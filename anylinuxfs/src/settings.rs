@@ -505,6 +505,7 @@ pub struct ImageSource {
     pub oci_url: Option<String>,
     pub kernel: KernelSource,
     pub os_type: OSType,
+    pub setup_script: Option<String>,
 }
 
 impl ImageSource {
@@ -527,6 +528,7 @@ impl Default for ImageSource {
             oci_url: None,
             kernel: KernelSource::default(),
             os_type: OSType::Linux,
+            setup_script: None,
         }
     }
 }
