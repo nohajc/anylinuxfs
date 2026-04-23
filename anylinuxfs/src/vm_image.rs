@@ -24,9 +24,8 @@ mod alpine {
     pub const ROOTFS_CURRENT_VERSION: &str = include_str!("../../share/alpine/rootfs.ver");
 
     pub fn init_rootfs(config: &Config, force: bool, src: &ImageSource) -> anyhow::Result<()> {
-        let base_path = config.profile_path.join(&src.base_dir);
-        let root_path = base_path.join("rootfs");
-        let root_ver_file_path = base_path.join("rootfs.ver");
+        let root_path = &config.root_path;
+        let root_ver_file_path = &config.root_ver_file_path;
 
         if !force {
             let bash_path = root_path.join("bin/bash");
@@ -79,6 +78,7 @@ mod alpine {
 
         let dns_server = netutil::get_dns_server_with_fallback();
         let docker_ref = src.docker_ref.as_deref().unwrap_or("alpine:latest");
+        let effective_base_dir = src.effective_base_dir();
 
         init_rootfs_cmd.args(&[
             "-n",
@@ -86,7 +86,7 @@ mod alpine {
             "-docker-ref",
             docker_ref,
             "-base-dir",
-            &src.base_dir,
+            &effective_base_dir,
         ]);
         if let Some(script) = src.setup_script.as_deref() {
             init_rootfs_cmd.args(&["-setup-script", script]);

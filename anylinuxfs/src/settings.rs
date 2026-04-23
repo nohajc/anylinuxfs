@@ -80,10 +80,13 @@ impl Config {
         let mut new_config = self.clone();
         new_config.kernel.os = src.os_type;
 
-        if src.os_type == OSType::Linux && !src.base_dir.is_empty() {
-            let base_path = self.profile_path.join(&src.base_dir);
-            new_config.root_path = base_path.join("rootfs");
-            new_config.root_ver_file_path = base_path.join("rootfs.ver");
+        if src.os_type == OSType::Linux {
+            let effective_dir = src.effective_base_dir();
+            if !effective_dir.is_empty() {
+                let base_path = self.profile_path.join(&effective_dir);
+                new_config.root_path = base_path.join("rootfs");
+                new_config.root_ver_file_path = base_path.join("rootfs.ver");
+            }
         }
 
         #[cfg(feature = "freebsd")]
@@ -509,11 +512,28 @@ pub struct ImageSource {
 }
 
 impl ImageSource {
+    /// Returns the effective base directory for this image source.
+    ///
+    /// If `base_dir` is explicitly set, it is returned as-is. Otherwise the
+    /// directory is derived from `docker_ref` by replacing all `/` and `:`
+    /// characters with `-`, mirroring the `baseDirFromDockerRef` logic in the
+    /// `init-rootfs` Go binary so that both sides agree on the path.
+    pub fn effective_base_dir(&self) -> String {
+        if !self.base_dir.is_empty() {
+            return self.base_dir.clone();
+        }
+        if let Some(docker_ref) = &self.docker_ref {
+            docker_ref.replace('/', "-").replace(':', "-")
+        } else {
+            String::new()
+        }
+    }
+
     #[cfg(feature = "freebsd")]
     pub fn installed_in(&self, profile_path: impl AsRef<Path>) -> bool {
         profile_path
             .as_ref()
-            .join(&self.base_dir)
+            .join(self.effective_base_dir())
             .join("rootfs.ver")
             .exists()
     }

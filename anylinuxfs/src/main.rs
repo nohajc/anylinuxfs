@@ -231,7 +231,7 @@ fn load_config(common_args: &CommonArgs, debug_args: &DebugArgs) -> anyhow::Resu
     // Root paths are derived from the configured default Linux image so that
     // a non-Alpine image defined in config is used from the start.
     let linux_src = default_linux_image_source(&preferences);
-    let linux_base_path = profile_path.join(&linux_src.base_dir);
+    let linux_base_path = profile_path.join(linux_src.effective_base_dir());
     let root_path = linux_base_path.join("rootfs");
     let root_ver_file_path = linux_base_path.join("rootfs.ver");
 
