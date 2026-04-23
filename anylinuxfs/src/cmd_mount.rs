@@ -28,8 +28,7 @@ use std::{
 use crate::devinfo::DevInfo;
 use crate::netutil::Host;
 use crate::settings::{
-    Config, CustomActionEnvironment, ImageSource, KernelPage, MountConfig, PassphrasePromptConfig,
-    Preferences,
+    Config, CustomActionEnvironment, KernelPage, MountConfig, PassphrasePromptConfig, Preferences,
 };
 use crate::utils::{
     self, AcquireLock, CommFd, FlockKind, HasCommFd, HasPtyFd, LockFile, OutputAction,
@@ -1194,7 +1193,7 @@ impl super::AppRunner {
             .read_only_root(!config.common.rw_rootfs);
 
         #[allow(unused_mut)]
-        let mut img_src = ImageSource::default();
+        let mut img_src = crate::default_linux_image_source(&config.common.preferences);
 
         // Use FreeBSD when the filesystem requires or prefers it, and no
         // incompatible custom action has been specified.
@@ -1210,11 +1209,7 @@ impl super::AppRunner {
                 .unwrap_or(OSType::FreeBSD)
                 == OSType::FreeBSD
         {
-            let bsd_image = config
-                .common
-                .preferences
-                .default_image(OSType::FreeBSD)
-                .unwrap_or("freebsd-15.0");
+            let bsd_image = config.common.preferences.default_image(OSType::FreeBSD);
 
             let src = config
                 .common

@@ -146,6 +146,15 @@ impl Drop for ConsoleLogGuard {
     }
 }
 
+pub(crate) fn default_linux_image_source(prefs: &impl Preferences) -> ImageSource {
+    let default_name = prefs.default_image(OSType::Linux);
+    prefs
+        .images()
+        .get(default_name)
+        .map(|&s| s.to_owned())
+        .unwrap_or(ImageSource::default())
+}
+
 fn load_config(common_args: &CommonArgs, debug_args: &DebugArgs) -> anyhow::Result<Config> {
     let sudo_uid = env::var("SUDO_UID")
         .map_err(anyhow::Error::from)
@@ -192,11 +201,7 @@ fn load_config(common_args: &CommonArgs, debug_args: &DebugArgs) -> anyhow::Resu
     // Generate unique log file ID for this instance
     let log_file_id = rand_string(8);
 
-    // ~/.anylinuxfs/alpine/rootfs
     let profile_path = home_dir.join(".anylinuxfs");
-    let alpine_path = profile_path.join("alpine");
-    let root_path = alpine_path.join("rootfs");
-    let root_ver_file_path = alpine_path.join("rootfs.ver");
     let config_file_path = home_dir.join(".anylinuxfs").join("config.toml");
     let log_dir = home_dir.join("Library").join("Logs");
     let log_file_path = log_dir.join(format!("anylinuxfs-{}.log", log_file_id));
@@ -222,6 +227,13 @@ fn load_config(common_args: &CommonArgs, debug_args: &DebugArgs) -> anyhow::Resu
     let global_cfg_path = global_prefix_dir.join("etc").join("anylinuxfs.toml");
     let all_cfg_paths = [global_cfg_path.as_path(), config_file_path.as_path()];
     let preferences = settings::load_preferences(all_cfg_paths.iter().cloned())?;
+
+    // Root paths are derived from the configured default Linux image so that
+    // a non-Alpine image defined in config is used from the start.
+    let linux_src = default_linux_image_source(&preferences);
+    let linux_base_path = profile_path.join(&linux_src.base_dir);
+    let root_path = linux_base_path.join("rootfs");
+    let root_ver_file_path = linux_base_path.join("rootfs.ver");
 
     let passphrase_config = common_args
         .passphrase_config
@@ -541,18 +553,19 @@ impl AppRunner {
                     }
                 }
 
-                (config.with_image_source(src), src, Some(disk_path))
+                (config.with_image_source(src), src.clone(), Some(disk_path))
             }
             None => {
+                let default_src = default_linux_image_source(&config.common.preferences);
                 host_println!("root_path: {}", config.common.root_path.display());
-                (config, &ImageSource::default(), None)
+                (config.with_image_source(&default_src), default_src, None)
             }
         };
         #[cfg(not(feature = "freebsd"))]
-        let src = &ImageSource::default();
+        let src = default_linux_image_source(&config.common.preferences);
 
         if !cmd.skip_init {
-            vm_image::init(&config.common, false, src)?;
+            vm_image::init(&config.common, false, &src)?;
         }
 
         let (vm_env, _) = prepare_vm_environment(&config)?;
@@ -840,7 +853,8 @@ impl AppRunner {
     fn run_init(&mut self) -> anyhow::Result<()> {
         let _lock_file = LockFile::new(LOCK_FILE)?.acquire_lock(FlockKind::Exclusive)?;
         let config = load_config(&CommonArgs::default(), &DebugArgs::default())?;
-        vm_image::init(&config, true, &ImageSource::default())?;
+        let src = default_linux_image_source(&config.preferences);
+        vm_image::init(&config, true, &src)?;
 
         Ok(())
     }
@@ -895,7 +909,8 @@ impl AppRunner {
         let _lock_file = LockFile::new(LOCK_FILE)?.acquire_lock(FlockKind::Shared)?;
 
         let mut config = load_config(&cmd.common, &cmd.debug)?;
-        vm_image::init(&config, false, &ImageSource::default())?;
+        let linux_src = default_linux_image_source(&config.preferences);
+        vm_image::init(&config, false, &linux_src)?;
 
         if cmd.decrypt.is_some() && !cmd.microsoft {
             ensure_enough_ram_for_luks(&mut config);

@@ -76,15 +76,22 @@ impl Config {
         }
     }
 
-    #[cfg(feature = "freebsd")]
     pub fn with_image_source(&self, src: &ImageSource) -> Self {
         let mut new_config = self.clone();
         new_config.kernel.os = src.os_type;
 
+        if src.os_type == OSType::Linux && !src.base_dir.is_empty() {
+            let base_path = self.profile_path.join(&src.base_dir);
+            new_config.root_path = base_path.join("rootfs");
+            new_config.root_ver_file_path = base_path.join("rootfs.ver");
+        }
+
+        #[cfg(feature = "freebsd")]
         if src.os_type != OSType::Linux {
             let kernel_path = self.profile_path.join(&src.base_dir).join(KERNEL_IMAGE);
             new_config.kernel.path = kernel_path;
         }
+
         new_config
     }
 }
@@ -100,7 +107,7 @@ pub trait Preferences {
     fn krun_ram_size_mib(&self) -> u32;
     fn passphrase_prompt_config(&self) -> PassphrasePromptConfig;
     #[cfg(feature = "freebsd")]
-    fn default_image(&self, os_type: OSType) -> Option<&str>;
+    fn default_image(&self, os_type: OSType) -> &str;
     #[cfg(feature = "freebsd")]
     fn zfs_os(&self) -> OSType;
 
@@ -212,10 +219,20 @@ impl Preferences for [PrefsObject; 2] {
     }
 
     #[cfg(feature = "freebsd")]
-    fn default_image(&self, os_type: OSType) -> Option<&str> {
+    fn default_image(&self, os_type: OSType) -> &str {
         match os_type {
-            OSType::Linux => self[1].linux.default_image.as_deref(),
-            OSType::FreeBSD => self[1].freebsd.default_image.as_deref(),
+            OSType::Linux => self[1]
+                .linux
+                .default_image
+                .as_deref()
+                .or(self[0].linux.default_image.as_deref())
+                .unwrap_or("alpine-latest"),
+            OSType::FreeBSD => self[1]
+                .freebsd
+                .default_image
+                .as_deref()
+                .or(self[0].freebsd.default_image.as_deref())
+                .unwrap_or("freebsd-15.0"),
         }
     }
 
@@ -441,10 +458,9 @@ impl CustomActionEnvironment for CustomActionConfig {
         let mut undefined_vars = Vec::new();
 
         for var_str in self.environment() {
-            let var_name = var_str
-                .split(|&c| c == b'=')
-                .next()
-                .ok_or_else(|| anyhow::anyhow!("invalid environment variable format: {}", var_str))?;
+            let var_name = var_str.split(|&c| c == b'=').next().ok_or_else(|| {
+                anyhow::anyhow!("invalid environment variable format: {}", var_str)
+            })?;
             predefined_vars.insert(BString::from(var_name));
             env_vars.push(var_str.to_owned());
         }
@@ -741,7 +757,6 @@ impl MountConfig {
         }
     }
 
-    #[cfg(feature = "freebsd")]
     pub fn with_image_source(&self, src: &ImageSource) -> Self {
         let mut new_config = self.clone();
         new_config.common = new_config.common.with_image_source(src);
