@@ -322,7 +322,7 @@ func loadCustomPackages(userStore string) []string {
 	return preferences.Alpine.CustomPackages
 }
 
-func writeSetupScript(cfg *Config) error {
+func writeSetupScript(cfg *Config, setupScript string) error {
 	// Load custom packages from config
 	customPackages := loadCustomPackages(cfg.UserStore)
 
@@ -336,6 +336,7 @@ func writeSetupScript(cfg *Config) error {
 	vmSetupScriptPath := fmt.Sprintf("%s%s", cfg.RootfsPath, cfg.VmSetupScriptPath)
 	vmSetupScriptContent := fmt.Sprintf(`#!/bin/sh
 
+%s
 apk --update --no-cache add %s
 MOD_PATH="modules/$(uname -r)"
 cd /lib
@@ -347,7 +348,7 @@ ln -sf /tmp/resolv.conf /etc/resolv.conf
 rm -v /etc/idmapd.conf /etc/exports
 ln -sf /tmp/exports /etc/exports
 mkdir /.config /.cache
-`, packagesStr)
+`, setupScript, packagesStr)
 
 	err := os.WriteFile(vmSetupScriptPath, []byte(vmSetupScriptContent), 0755)
 	if err != nil {
@@ -429,7 +430,7 @@ func copyLinuxModules(prefixDir, rootfsPath string) error {
 	return nil
 }
 
-func initRootfs(cfg *Config, nameserver string) error {
+func initRootfs(cfg *Config, nameserver string, setupScript string) error {
 	if _, err := os.Stat(cfg.ImageBasePath); err == nil {
 		err = os.RemoveAll(cfg.ImageBasePath)
 		if err != nil {
@@ -458,7 +459,7 @@ func initRootfs(cfg *Config, nameserver string) error {
 		return err
 	}
 
-	if err := writeSetupScript(cfg); err != nil {
+	if err := writeSetupScript(cfg, setupScript); err != nil {
 		return err
 	}
 
@@ -491,9 +492,11 @@ func main() {
 	var nameserver string
 	var dockerRef string
 	var baseDir string
+	var setupScript string
 	flag.StringVar(&nameserver, "n", DEFAULT_DNS_SERVER, "Nameserver IP to write into /etc/resolv.conf")
 	flag.StringVar(&dockerRef, "docker-ref", "alpine:latest", "Docker/OCI image reference (e.g. alpine:latest, alpine:edge)")
 	flag.StringVar(&baseDir, "base-dir", "", "Base directory name under ~/.anylinuxfs/ (derived from docker-ref if empty)")
+	flag.StringVar(&setupScript, "setup-script", "", "Shell command(s) to run inside the VM before package installation")
 	flag.Parse()
 
 	execDir, err := resolveExecDir()
@@ -512,7 +515,7 @@ func main() {
 	}
 	cfg := defaultConfig(currentUser.HomeDir, execDir, dockerRef, baseDir)
 
-	err = initRootfs(&cfg, nameserver)
+	err = initRootfs(&cfg, nameserver, setupScript)
 	if err != nil {
 		os.Exit(1)
 	}

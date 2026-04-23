@@ -80,18 +80,22 @@ mod alpine {
         let dns_server = netutil::get_dns_server_with_fallback();
         let docker_ref = src.docker_ref.as_deref().unwrap_or("alpine:latest");
 
+        init_rootfs_cmd.args(&[
+            "-n",
+            &dns_server,
+            "-docker-ref",
+            docker_ref,
+            "-base-dir",
+            &src.base_dir,
+        ]);
+        if let Some(script) = src.setup_script.as_deref() {
+            init_rootfs_cmd.args(&["-setup-script", script]);
+        }
+
         let mut hnd = init_rootfs_cmd
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .args(&[
-                "-n",
-                &dns_server,
-                "-docker-ref",
-                docker_ref,
-                "-base-dir",
-                &src.base_dir,
-            ])
             .spawn()
             .context("Failed to execute init-rootfs")?;
 

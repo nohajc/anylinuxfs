@@ -11,6 +11,7 @@ docker_ref = "alpine:edge"
 kernel.image_url = "https://github.com/nohajc/libkrunfw/releases/download/v6.12.62-rev1/linux-aarch64-Images-v6.12.62-anylinuxfs.tar.gz"
 kernel.modules_url = "https://github.com/nohajc/libkrunfw/releases/download/v6.12.62-rev1/modules.squashfs"
 os_type = "Linux"
+setup_script = "echo '@testing https://dl-cdn.alpinelinux.org/alpine/edge/testing' >> /etc/apk/repositories"
 
 [images."freebsd-15.0"]
 base_dir = "freebsd-15.0"
