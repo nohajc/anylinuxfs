@@ -1184,10 +1184,10 @@ impl super::AppRunner {
         let _lock_file = LockFile::new(LOCK_FILE)?.acquire_lock(FlockKind::Shared)?;
         let mut network_env = NetworkEnv::default();
 
-        // If the host has rpcbind bound to :111 (e.g. nfs-common on Linux starts
-        // it via socket activation), tell vmproxy via -h to skip forwarding
-        // port 111 — the NFS client can reach the guest's NFS server using the
-        // manually-specified mountport/nfsport options instead.
+        // BISECTING: temporarily gate the rpcbind detection back to macOS so
+        // we don't pass -h to vmproxy and skip the libtirpc setup_rpcbind_services
+        // call on Linux. Reverts behaviour to the pre-libtirpc-port state.
+        #[cfg(target_os = "macos")]
         if let Err(e) = netutil::try_port((Ipv4Addr::from([0, 0, 0, 0]), 111))
             && e.kind() == io::ErrorKind::AddrInUse
         {
@@ -1590,20 +1590,37 @@ impl super::AppRunner {
                 }
             });
 
-            services_to_restore =
-                if config.common.net_helper == NetHelper::GvProxy && network_env.rpcbind_running {
-                    rpcbind::services::list()?
-                        .into_iter()
-                        .filter(|entry| {
-                            entry.prog == rpcbind::RPCPROG_MNT
-                                || entry.prog == rpcbind::RPCPROG_NFS
-                                || entry.prog == rpcbind::RPCPROG_STAT
-                        })
-                        .collect()
-                } else {
-                    Vec::new()
-                };
-            setup_rpcbind_services(&config, &network_env, &services_to_restore, &mut deferred)?;
+            // BISECTING: gate the libtirpc list+register flow back to macOS.
+            // services_to_restore is referenced in deferred actions, so keep
+            // declaring an empty vec on Linux.
+            #[cfg(target_os = "macos")]
+            {
+                services_to_restore =
+                    if config.common.net_helper == NetHelper::GvProxy
+                        && network_env.rpcbind_running
+                    {
+                        rpcbind::services::list()?
+                            .into_iter()
+                            .filter(|entry| {
+                                entry.prog == rpcbind::RPCPROG_MNT
+                                    || entry.prog == rpcbind::RPCPROG_NFS
+                                    || entry.prog == rpcbind::RPCPROG_STAT
+                            })
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
+                setup_rpcbind_services(
+                    &config,
+                    &network_env,
+                    &services_to_restore,
+                    &mut deferred,
+                )?;
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                services_to_restore = Vec::<rpcbind::Entry>::new();
+            }
 
             let (nfs_ready_tx, nfs_ready_rx) = mpsc::channel();
             let (vm_pwd_prompt_tx, vm_pwd_prompt_rx) = mpsc::channel();
