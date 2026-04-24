@@ -230,8 +230,10 @@ pub fn start_gvproxy(config: &Config) -> anyhow::Result<Child> {
         .stdout(gvproxy_out)
         .stderr(gvproxy_err);
 
+    // Run gvproxy with dropped privileges on macOS. On Linux, keep root so it
+    // can bind privileged ports (rpcbind on 111 is forwarded for NFSv3).
+    #[cfg(target_os = "macos")]
     if let (Some(uid), Some(gid)) = (config.sudo_uid, config.sudo_gid) {
-        // run gvproxy with dropped privileges
         gvproxy_cmd.uid(uid).gid(gid);
     }
 

@@ -215,7 +215,10 @@ impl PrintError {
 macro_rules! safe_println {
     ($($arg:tt)*) => {{
         use std::io::Write;
-        writeln!(std::io::stdout(), $($arg)*).map_err($crate::log::PrintError)
+        let mut out = std::io::stdout();
+        let r = writeln!(out, $($arg)*).map_err($crate::log::PrintError);
+        let _ = out.flush();
+        r
     }};
 }
 
@@ -223,7 +226,10 @@ macro_rules! safe_println {
 macro_rules! safe_print {
     ($($arg:tt)*) => {{
         use std::io::Write;
-        write!(std::io::stdout(), $($arg)*).map_err($crate::log::PrintError)
+        let mut out = std::io::stdout();
+        let r = write!(out, $($arg)*).map_err($crate::log::PrintError);
+        let _ = out.flush();
+        r
     }};
 }
 

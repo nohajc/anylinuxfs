@@ -1,19 +1,23 @@
-use libc::{c_char, c_int, c_uint, c_void, sockaddr, timeval};
+use libc::{c_char, c_int, c_uint, c_void};
 use os_socketaddr::OsSocketAddr;
 use std::ffi::CStr;
 use std::net::SocketAddr;
 use std::{ffi::CString, ptr};
 
+#[cfg(target_os = "macos")]
+use libc::{sockaddr, timeval};
+
+#[cfg(target_os = "macos")]
 #[link(name = "oncrpc", kind = "framework")]
 unsafe extern "C" {
     /// int rpcb_unset(const char *netid, unsigned int program, unsigned int version);
     #[link_name = "_newrpclib_rpcb_unset"]
-    pub fn rpcb_unset(netid: *const c_char, program: c_uint, version: c_uint) -> c_int;
+    pub fn rpcb_unset_mac(netid: *const c_char, program: c_uint, version: c_uint) -> c_int;
 
     /// int rpcb_set(const char *netid, unsigned int program, unsigned int version,
     ///              const struct sockaddr *addr);
     #[link_name = "_newrpclib_rpcb_set"]
-    pub fn rpcb_set(
+    pub fn rpcb_set_mac(
         netid: *const c_char,
         program: c_uint,
         version: c_uint,
@@ -38,13 +42,56 @@ unsafe extern "C" {
     pub fn getrpcbynumber(number: c_int) -> *mut Rpcent;
 }
 
+// Linux uses libtirpc. Its rpcb_* API differs from macOS's oncrpc:
+//   - takes `struct netconfig*` (from getnetconfigent("tcp")) instead of a netid string
+//   - takes `struct netbuf*` (wraps a sockaddr buffer) instead of `struct sockaddr*`
+#[cfg(not(target_os = "macos"))]
+#[repr(C)]
+pub struct Netbuf {
+    pub maxlen: c_uint,
+    pub len: c_uint,
+    pub buf: *mut c_void,
+}
+
+#[cfg(not(target_os = "macos"))]
+#[repr(C)]
+pub struct Netconfig {
+    // We only ever pass the pointer through; field layout is libtirpc-opaque
+    // for our purposes. Declaring an empty struct would make Rust treat it as
+    // ZST; this at least keeps the type distinct.
+    _opaque: [u8; 0],
+}
+
+#[cfg(not(target_os = "macos"))]
+unsafe extern "C" {
+    pub fn rpcb_set(
+        program: c_uint,
+        version: c_uint,
+        netconf: *const Netconfig,
+        addr: *const Netbuf,
+    ) -> c_int;
+
+    pub fn rpcb_unset(program: c_uint, version: c_uint, netconf: *const Netconfig) -> c_int;
+
+    pub fn rpcb_getmaps(netconf: *const Netconfig, host: *const c_char) -> *mut Rpcblist;
+
+    pub fn getnetconfigent(netid: *const c_char) -> *mut Netconfig;
+    pub fn freenetconfigent(netconf: *mut Netconfig);
+
+    // Shared libc helpers also available on Linux
+    pub fn getrpcbynumber(number: c_int) -> *mut Rpcent;
+}
+
 #[allow(non_camel_case_types)]
+#[cfg(target_os = "macos")]
 pub type xdrproc_t =
     unsafe extern "C" fn(xdrs: *mut c_void, addrp: *mut c_void, len: c_uint) -> c_int;
 
 #[allow(non_camel_case_types)]
+#[cfg(target_os = "macos")]
 pub type xdrproc_void_t = unsafe extern "C" fn() -> c_int;
 
+#[cfg(target_os = "macos")]
 #[repr(C)]
 pub struct ClntOps {
     pub cl_call: extern "C" fn(
@@ -64,6 +111,7 @@ pub struct ClntOps {
     pub cl_control: extern "C" fn(*mut CLIENT, c_int, *mut c_char) -> c_int,
 }
 
+#[cfg(target_os = "macos")]
 #[repr(C)]
 pub struct CLIENT {
     pub cl_auth: *mut c_void,
@@ -118,26 +166,54 @@ pub mod services {
     const MOUNT_PORT: u16 = 32767;
     const STAT_PORT: u16 = 32765;
 
+    #[cfg(target_os = "macos")]
     const RPCBVERS4: c_uint = 4;
+    #[cfg(target_os = "macos")]
     const RPCBPROC_DUMP: c_uint = 4;
     const RPC_SUCCESS: c_int = 0;
 
+    #[cfg(target_os = "macos")]
     pub fn rpcb_set_entry(entry: &Entry) -> anyhow::Result<()> {
         let c_netid = CString::new(entry.netid.as_bytes()).unwrap();
         let stat = unsafe {
-            rpcb_set(
+            rpcb_set_mac(
                 c_netid.as_ptr(),
                 entry.prog,
                 entry.vers,
                 entry.addr.as_ptr(),
             )
         };
-        Ok(handle_rpc_error(
-            entry.prog,
-            entry.vers,
-            &entry.netid,
-            stat.into(),
-        )?)
+        handle_rpc_error(entry.prog, entry.vers, &entry.netid, stat.into())
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub fn rpcb_set_entry(entry: &Entry) -> anyhow::Result<()> {
+        let c_netid = CString::new(entry.netid.as_bytes()).unwrap();
+        let nc = unsafe { getnetconfigent(c_netid.as_ptr()) };
+        if nc.is_null() {
+            anyhow::bail!(
+                "getnetconfigent returned null for netid {:?}",
+                entry.netid
+            );
+        }
+        // netbuf wraps a raw sockaddr buffer (OsSocketAddr already stores a
+        // sockaddr_storage-sized buffer, so we point netbuf at it).
+        let sockaddr_ptr = entry.addr.as_ptr() as *const c_void as *mut c_void;
+        let sockaddr_len = entry.addr.len() as c_uint;
+        let nb = Netbuf {
+            maxlen: sockaddr_len,
+            len: sockaddr_len,
+            buf: sockaddr_ptr,
+        };
+        let ok = unsafe { rpcb_set(entry.prog, entry.vers, nc, &nb) };
+        unsafe { freenetconfigent(nc) };
+        // libtirpc's rpcb_set returns bool_t (int) — nonzero means success.
+        let rpc_stat: RpcStatus = if ok != 0 {
+            RpcStatus::Success
+        } else {
+            RpcStatus::Failure(None)
+        };
+        handle_rpc_error(entry.prog, entry.vers, &entry.netid, rpc_stat)
     }
 
     pub fn rpcb_set_entries(entries: &[Entry]) -> anyhow::Result<()> {
@@ -148,18 +224,38 @@ pub mod services {
     }
 
     /// Unregister the NFS, MOUNT and STAT program/version pairs.
+    #[cfg(target_os = "macos")]
     pub fn unregister() {
         unsafe {
-            rpcb_unset(ptr::null(), RPCPROG_NFS, 3);
-            rpcb_unset(ptr::null(), RPCPROG_NFS, 4);
-            rpcb_unset(ptr::null(), RPCPROG_MNT, 1);
-            rpcb_unset(ptr::null(), RPCPROG_MNT, 2);
-            rpcb_unset(ptr::null(), RPCPROG_MNT, 3);
-            rpcb_unset(ptr::null(), RPCPROG_STAT, 1);
+            rpcb_unset_mac(ptr::null(), RPCPROG_NFS, 3);
+            rpcb_unset_mac(ptr::null(), RPCPROG_NFS, 4);
+            rpcb_unset_mac(ptr::null(), RPCPROG_MNT, 1);
+            rpcb_unset_mac(ptr::null(), RPCPROG_MNT, 2);
+            rpcb_unset_mac(ptr::null(), RPCPROG_MNT, 3);
+            rpcb_unset_mac(ptr::null(), RPCPROG_STAT, 1);
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub fn unregister() {
+        // libtirpc's rpcb_unset with a null netconfig unregisters all transports.
+        unsafe {
+            rpcb_unset(RPCPROG_NFS, 3, ptr::null());
+            rpcb_unset(RPCPROG_NFS, 4, ptr::null());
+            rpcb_unset(RPCPROG_MNT, 1, ptr::null());
+            rpcb_unset(RPCPROG_MNT, 2, ptr::null());
+            rpcb_unset(RPCPROG_MNT, 3, ptr::null());
+            rpcb_unset(RPCPROG_STAT, 1, ptr::null());
         }
     }
 
     /// Register NFS, MOUNT and STAT services.
+    ///
+    /// Individual rpcb_set failures are logged and tolerated (e.g. on Linux
+    /// the host's rpc.statd already owns the STAT entries and rpcbind refuses
+    /// to overwrite them). Bailing on the first conflict would leave NFS and
+    /// MOUNT only partially registered, which would then break mount.nfs
+    /// lookups. We only return an error if *no* NFS entry got registered.
     pub fn register() -> anyhow::Result<()> {
         let ip_props = [("", IpAddr::from([0; 4])), ("6", IpAddr::from([0; 16]))];
         let progs = [
@@ -168,6 +264,7 @@ pub mod services {
             (RPCPROG_STAT, STAT_PORT, vec![1]),
         ];
 
+        let mut nfs_ok = false;
         for (prog, port, versions) in progs {
             for proto in ["udp", "tcp"] {
                 for (ip_suffix, ip_any_addr) in ip_props {
@@ -183,16 +280,32 @@ pub mod services {
                             addr: SocketAddr::new(ip_any_addr, port).into(),
                             owner: "".into(),
                         };
-                        rpcb_set_entry(&e)?;
+                        match rpcb_set_entry(&e) {
+                            Ok(()) => {
+                                if prog == RPCPROG_NFS {
+                                    nfs_ok = true;
+                                }
+                            }
+                            Err(err) => {
+                                eprintln!(
+                                    "rpcbind: register {}/v{}/{} failed: {:#}",
+                                    prog, vers, e.netid, err
+                                );
+                            }
+                        }
                     }
                 }
             }
         }
 
+        if !nfs_ok {
+            anyhow::bail!("failed to register any NFS entry with rpcbind");
+        }
         Ok(())
     }
 
     /// List registered RPC services by querying rpcbind.
+    #[cfg(target_os = "macos")]
     pub fn list() -> anyhow::Result<Vec<Entry>> {
         unsafe {
             let host = CString::new("127.0.0.1").unwrap();
@@ -244,51 +357,68 @@ pub mod services {
 
             handle_rpc_error(RPCPROG_RPCB, RPCBVERS4, nettype, stat.into())?;
 
-            if head.is_null() {
-                return Ok(Vec::new());
-            }
-
-            let mut res = Vec::new();
-
-            let mut cur = head;
-            while !cur.is_null() {
-                let map = &(*cur).rpcb_map;
-                let prog = map.r_prog;
-                let vers = map.r_vers;
-
-                let netid = if map.r_netid.is_null() {
-                    "".to_string()
-                } else {
-                    CStr::from_ptr(map.r_netid).to_string_lossy().into_owned()
-                };
-                let addr_string = if map.r_addr.is_null() {
-                    "".to_string()
-                } else {
-                    CStr::from_ptr(map.r_addr).to_string_lossy().into_owned()
-                };
-                let owner = if map.r_owner.is_null() {
-                    "".to_string()
-                } else {
-                    CStr::from_ptr(map.r_owner).to_string_lossy().into_owned()
-                };
-
-                if netid.starts_with("tcp") || netid.starts_with("udp") {
-                    let addr = parse_rpcb_addr(&addr_string).into();
-
-                    res.push(Entry {
-                        prog,
-                        vers,
-                        netid,
-                        addr,
-                        owner,
-                    });
-                }
-
-                cur = (*cur).rpcb_next;
-            }
-
-            Ok(res)
+            collect_rpcblist_entries(head)
         }
+    }
+
+    /// List registered RPC services via libtirpc's rpcb_getmaps.
+    #[cfg(not(target_os = "macos"))]
+    pub fn list() -> anyhow::Result<Vec<Entry>> {
+        unsafe {
+            // "tcp" is enough for the lookup; rpcb_getmaps returns the full
+            // service map (all transports) regardless of which one we query on.
+            let c_netid = CString::new("tcp").unwrap();
+            let nc = getnetconfigent(c_netid.as_ptr());
+            if nc.is_null() {
+                anyhow::bail!("getnetconfigent(tcp) returned null");
+            }
+            let c_host = CString::new("127.0.0.1").unwrap();
+            let head = rpcb_getmaps(nc, c_host.as_ptr());
+            freenetconfigent(nc);
+            collect_rpcblist_entries(head)
+        }
+    }
+
+    unsafe fn collect_rpcblist_entries(head: *mut Rpcblist) -> anyhow::Result<Vec<Entry>> {
+        if head.is_null() {
+            return Ok(Vec::new());
+        }
+        let mut res = Vec::new();
+        let mut cur = head;
+        while !cur.is_null() {
+            let map = unsafe { &(*cur).rpcb_map };
+            let prog = map.r_prog;
+            let vers = map.r_vers;
+
+            let netid = if map.r_netid.is_null() {
+                String::new()
+            } else {
+                unsafe { CStr::from_ptr(map.r_netid).to_string_lossy().into_owned() }
+            };
+            let addr_string = if map.r_addr.is_null() {
+                String::new()
+            } else {
+                unsafe { CStr::from_ptr(map.r_addr).to_string_lossy().into_owned() }
+            };
+            let owner = if map.r_owner.is_null() {
+                String::new()
+            } else {
+                unsafe { CStr::from_ptr(map.r_owner).to_string_lossy().into_owned() }
+            };
+
+            if netid.starts_with("tcp") || netid.starts_with("udp") {
+                let addr = parse_rpcb_addr(&addr_string).into();
+                res.push(Entry {
+                    prog,
+                    vers,
+                    netid,
+                    addr,
+                    owner,
+                });
+            }
+            cur = unsafe { (*cur).rpcb_next };
+        }
+        Ok(res)
     }
 
     #[derive(Debug, Clone)]
@@ -297,6 +427,7 @@ pub mod services {
         Failure(Option<String>),
     }
 
+    #[cfg(target_os = "macos")]
     impl From<c_int> for RpcStatus {
         fn from(stat: c_int) -> Self {
             match stat {
@@ -314,9 +445,23 @@ pub mod services {
         }
     }
 
+    #[cfg(target_os = "macos")]
     impl From<bool> for RpcStatus {
         fn from(success: bool) -> Self {
             if success {
+                RpcStatus::Success
+            } else {
+                RpcStatus::Failure(None)
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    impl From<c_int> for RpcStatus {
+        fn from(stat: c_int) -> Self {
+            // libtirpc rpcb_set / rpcb_unset return bool_t (typedef int);
+            // nonzero means success.
+            if stat != 0 {
                 RpcStatus::Success
             } else {
                 RpcStatus::Failure(None)

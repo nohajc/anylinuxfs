@@ -29,7 +29,6 @@ mod diskutil;
 mod fsutil;
 mod netutil;
 mod pubsub;
-#[cfg(target_os = "macos")]
 mod rpcbind;
 mod settings;
 mod utils;
@@ -165,9 +164,18 @@ fn load_config(common_args: &CommonArgs, debug_args: &DebugArgs) -> anyhow::Resu
         .and_then(|s| Ok(s.parse::<libc::gid_t>()?))
         .ok();
 
-    let home_dir = homedir::my_home()
-        .context("Failed to get home directory")?
-        .context("Home directory not found")?;
+    // When invoked under sudo, `homedir::my_home()` resolves to root's home (/root)
+    // because $HOME is reset by sudo. Look up the invoking user's home via SUDO_UID.
+    let home_dir = match sudo_uid {
+        Some(uid) => nix::unistd::User::from_uid(nix::unistd::Uid::from_raw(uid))
+            .ok()
+            .flatten()
+            .map(|u| u.dir)
+            .context("Failed to resolve invoking user's home directory")?,
+        None => homedir::my_home()
+            .context("Failed to get home directory")?
+            .context("Home directory not found")?,
+    };
 
     let uid = unsafe { libc::getuid() };
     if uid == 0 && (sudo_uid.is_none() || sudo_gid.is_none()) {
@@ -175,6 +183,12 @@ fn load_config(common_args: &CommonArgs, debug_args: &DebugArgs) -> anyhow::Resu
         std::process::exit(1);
     }
     let gid = unsafe { libc::getgid() };
+
+    // Install the invoking user's supplementary groups up front, while we still
+    // have root, so every forked child inherits them. Required on Linux for
+    // libkrun's internal setuid() to land in a process that still has access
+    // to /dev/kvm and /dev/vhost-* (all mode 660, group=kvm).
+    install_invoker_supplementary_groups(sudo_uid, sudo_gid)?;
 
     let invoker_uid = match sudo_uid {
         Some(sudo_uid) => sudo_uid,
@@ -205,7 +219,12 @@ fn load_config(common_args: &CommonArgs, debug_args: &DebugArgs) -> anyhow::Resu
     #[cfg(target_os = "macos")]
     let log_dir = home_dir.join("Library").join("Logs");
     #[cfg(not(target_os = "macos"))]
-    let log_dir = home_dir.join(".anylinuxfs").join("logs");
+    let log_dir = {
+        let dir = home_dir.join(".anylinuxfs").join("logs");
+        fs::create_dir_all(&dir)
+            .with_context(|| format!("Failed to create log directory {}", dir.display()))?;
+        dir
+    };
     let log_file_path = log_dir.join(format!("anylinuxfs-{}.log", log_file_id));
     let kernel_log_file_path = log_dir.join(format!("anylinuxfs_kernel-{}.log", log_file_id));
     let nethelper_log_path = log_dir.join(format!("anylinuxfs_nethelper-{}.log", log_file_id));
@@ -483,6 +502,37 @@ pub(crate) fn drop_privileges(
             return Err(io::Error::last_os_error()).context("Failed to setuid");
         }
     }
+    Ok(())
+}
+
+// Install the invoking user's supplementary groups (from /etc/group) on the
+// current process. Needed on Linux before libkrun's krun_setuid drops root to
+// the invoker's uid: setuid alone doesn't touch supplementary groups, so
+// without this the post-setuid process has only root's groups (gid 0) and
+// can't open /dev/kvm (mode 660, group=kvm). Runs on macOS too but is a no-op
+// there because HVF doesn't require group membership.
+pub(crate) fn install_invoker_supplementary_groups(
+    sudo_uid: Option<libc::uid_t>,
+    sudo_gid: Option<libc::gid_t>,
+) -> anyhow::Result<()> {
+    let (Some(uid), Some(gid)) = (sudo_uid, sudo_gid) else {
+        return Ok(());
+    };
+    // initgroups requires CAP_SETGID — only meaningful when we're real-uid root
+    // (i.e. were sudo'd here). When this binary is invoked as the unprivileged
+    // user (e.g. the `rpcbind register` subinvocation we spawn with .uid(admin)),
+    // SUDO_UID is still in the env but we have no permission to change groups,
+    // and we don't need to: we already have the invoker's supplementary groups.
+    if unsafe { libc::geteuid() } != 0 {
+        return Ok(());
+    }
+    let user = nix::unistd::User::from_uid(nix::unistd::Uid::from_raw(uid))
+        .context("Failed to look up invoking user")?
+        .context("Invoking user not found in passwd database")?;
+    let user_cstr =
+        std::ffi::CString::new(user.name.as_bytes()).context("Invoking username contains NUL")?;
+    nix::unistd::initgroups(&user_cstr, nix::unistd::Gid::from_raw(gid))
+        .context("Failed to install invoker's supplementary groups")?;
     Ok(())
 }
 
@@ -813,7 +863,6 @@ impl AppRunner {
         Ok(())
     }
 
-    #[cfg(target_os = "macos")]
     fn run_rpcbind(&mut self, cmd: RpcBindCmd) -> anyhow::Result<()> {
         match cmd {
             RpcBindCmd::Register => rpcbind::services::register(),
@@ -1232,7 +1281,6 @@ impl AppRunner {
             Commands::Apk(cmd) => self.run_apk(cmd),
             #[cfg(feature = "freebsd")]
             Commands::Image(cmd) => self.run_image(cmd),
-            #[cfg(target_os = "macos")]
             Commands::Rpcbind(cmd) => self.run_rpcbind(cmd),
             Commands::UpgradeConfig(cmd) => self.run_upgrade_config(cmd),
         }

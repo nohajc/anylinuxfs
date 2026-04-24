@@ -239,6 +239,7 @@ impl Display for Host {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn make_new_loopback() -> anyhow::Result<Host> {
     let addr = Ipv6Addr::new(
         0xFE80,
@@ -264,6 +265,7 @@ fn make_new_loopback() -> anyhow::Result<Host> {
     }
 }
 
+#[cfg(target_os = "macos")]
 pub fn pick_usable_loopback_ip(required_ports: &[u16]) -> anyhow::Result<Host> {
     for itf in InterfaceFilter::new().name("lo0").get()? {
         let Some(addr) = itf.address.ip_addr() else {
@@ -301,6 +303,27 @@ pub fn pick_usable_loopback_ip(required_ports: &[u16]) -> anyhow::Result<Host> {
         }
     }
     make_new_loopback()
+}
+
+// On Linux 127.0.0.0/8 is fully routable on `lo` without aliasing — scan for
+// the first 127.0.0.x with all required ports free.
+#[cfg(not(target_os = "macos"))]
+pub fn pick_usable_loopback_ip(required_ports: &[u16]) -> anyhow::Result<Host> {
+    use std::net::Ipv4Addr;
+    for last_octet in 1u8..=254 {
+        let ip = Ipv4Addr::new(127, 0, 0, last_octet);
+        let mut all_free = true;
+        for &port in required_ports {
+            if try_port(SocketAddr::from((ip, port))).is_err() {
+                all_free = false;
+                break;
+            }
+        }
+        if all_free {
+            return Ok(Host::from_ip(IpAddr::V4(ip), None));
+        }
+    }
+    anyhow::bail!("no usable loopback IP in 127.0.0.0/24 for required ports")
 }
 
 #[allow(unused)]

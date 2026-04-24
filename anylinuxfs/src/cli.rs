@@ -65,7 +65,6 @@ Recognized environment variables:
     #[cfg(feature = "freebsd")]
     #[command(subcommand)]
     Image(ImageCmd),
-    #[cfg(target_os = "macos")]
     #[command(subcommand, hide = true)]
     Rpcbind(RpcBindCmd),
     #[command(hide = true)]
@@ -322,7 +321,6 @@ pub(crate) enum ImageCmd {
     },
 }
 
-#[cfg(target_os = "macos")]
 #[derive(Subcommand)]
 pub(crate) enum RpcBindCmd {
     /// Register RPC services
