@@ -1,6 +1,5 @@
 use std::{
     borrow::Cow,
-    cmp,
     fmt::Display,
     io,
     net::{IpAddr, SocketAddr, ToSocketAddrs},
@@ -8,9 +7,15 @@ use std::{
 };
 
 use anyhow::Context;
-use getifaddrs::{InterfaceFilter, InterfaceFlags};
-use ipnet::Ipv4Net;
+use getifaddrs::InterfaceFilter;
 use std::net::Ipv6Addr;
+
+#[cfg(target_os = "macos")]
+use std::cmp;
+#[cfg(target_os = "macos")]
+use getifaddrs::InterfaceFlags;
+#[cfg(target_os = "macos")]
+use ipnet::Ipv4Net;
 
 #[cfg(target_os = "macos")]
 use std::ptr::null_mut;
@@ -75,6 +80,7 @@ pub fn get_dns_server_with_fallback<'a>() -> Cow<'a, str> {
         .unwrap_or_else(|_| DEFAULT_DNS_SERVER.into())
 }
 
+#[cfg(target_os = "macos")]
 pub fn get_interface_networks() -> anyhow::Result<Vec<Ipv4Net>> {
     let mut networks = Vec::new();
     for iface in InterfaceFilter::new().v4().get()? {
@@ -99,6 +105,7 @@ pub fn get_interface_networks() -> anyhow::Result<Vec<Ipv4Net>> {
     Ok(networks)
 }
 
+#[cfg(target_os = "macos")]
 pub fn pick_available_network_in_pool(
     prefix_len: u8,
     used_networks: &[Ipv4Net],
@@ -173,10 +180,12 @@ pub fn try_port(addr: impl ToSocketAddrs) -> io::Result<()> {
 pub enum Host {
     IPv4(String),
     IPv6(String),
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     Hostname(String),
 }
 
 impl Host {
+    #[cfg(target_os = "macos")]
     pub fn new(hostname: &str) -> Self {
         Host::Hostname(hostname.into())
     }
@@ -204,6 +213,7 @@ impl Host {
         }
     }
 
+    #[cfg(target_os = "macos")]
     pub fn with_port(&self, port: u16) -> io::Result<SocketAddr> {
         let host = match self {
             Host::IPv4(addr) => addr,
@@ -304,7 +314,7 @@ pub fn check_port_availability(ip: impl Into<IpAddr>, port: u16) -> anyhow::Resu
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
     use crate::settings::DEFAULT_VMNET_POOL;

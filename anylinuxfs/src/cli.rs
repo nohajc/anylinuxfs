@@ -65,6 +65,7 @@ Recognized environment variables:
     #[cfg(feature = "freebsd")]
     #[command(subcommand)]
     Image(ImageCmd),
+    #[cfg(target_os = "macos")]
     #[command(subcommand, hide = true)]
     Rpcbind(RpcBindCmd),
     #[command(hide = true)]
@@ -113,6 +114,8 @@ pub(crate) struct DiskIdentArg {
 pub(crate) struct MountCmd {
     #[command(flatten)]
     pub d: DiskIdentArg,
+    // TODO: help text references /Volumes which is macOS-specific; on Linux the
+    // default mount base is /mnt. Rewrite as cfg_attr or make platform-neutral.
     /// Custom mount path to override the default under /Volumes
     pub mount_point: Option<String>,
     /// Options passed to the Linux mount command (comma-separated)
@@ -144,6 +147,7 @@ pub(crate) struct MountCmd {
     #[command(flatten)]
     pub common: CommonArgs,
     /// Open Finder window with the mounted drive
+    #[cfg(target_os = "macos")]
     #[arg(short, long, default_value = "true")]
     pub window: std::primitive::bool,
     /// Set this to share the mount to a different machine
@@ -223,6 +227,8 @@ pub(crate) struct ListCmd {
 
 #[derive(Args)]
 pub(crate) struct StopCmd {
+    // TODO: help text uses macOS naming (/dev/diskXsY, /Volumes/MountPoint); adjust
+    // or make platform-neutral for Linux (/dev/sdXN, /dev/nvmeXnYpZ, /mnt/...).
     /// Disk identifier or mount point to stop (e.g., /dev/diskXsY or /Volumes/MountPoint)
     pub path: Option<String>,
     /// Force stop the VM
@@ -270,6 +276,7 @@ impl From<ShellCmd> for MountCmd {
             action: None,
             fs_driver: None,
             common: CommonArgs::default(),
+            #[cfg(target_os = "macos")]
             window: false,
             bind_addr: None,
             kernel_page_size: shell_cmd.kernel_page_size,
@@ -315,6 +322,7 @@ pub(crate) enum ImageCmd {
     },
 }
 
+#[cfg(target_os = "macos")]
 #[derive(Subcommand)]
 pub(crate) enum RpcBindCmd {
     /// Register RPC services
