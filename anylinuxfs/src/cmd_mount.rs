@@ -5,6 +5,7 @@ use common_utils::{
     vmctrl,
 };
 
+#[cfg(target_os = "macos")]
 use dns_sd::{DNSRecord, DNSService};
 
 use std::borrow::Cow;
@@ -38,8 +39,10 @@ use crate::vm::*;
 use crate::{
     ConsoleLogGuard, LOCK_FILE, api, cli::*, diskutil, drop_effective_privileges, drop_privileges,
     elevate_effective_privileges, fsutil, load_mount_config, netutil, parse_vm_tag_value,
-    rand_string, rpcbind, to_exit_code, vm_image, vm_network,
+    rand_string, to_exit_code, vm_image, vm_network,
 };
+#[cfg(target_os = "macos")]
+use crate::rpcbind;
 
 pub(crate) enum NfsStatus {
     Ready(NfsReadyState),
@@ -63,7 +66,8 @@ impl NfsStatus {
 fn wait_for_nfs_server(
     vm_host: &str,
     port: u16,
-    vm_dns_rec: &mut Option<DNSRecord>,
+    #[cfg(target_os = "macos")] vm_dns_rec: &mut Option<DNSRecord>,
+    #[cfg(not(target_os = "macos"))] _vm_dns_rec: &mut (),
     nfs_notify_rx: mpsc::Receiver<NfsStatus>,
 ) -> anyhow::Result<NfsStatus> {
     // this will block until NFS server is ready or the VM exits
@@ -71,6 +75,7 @@ fn wait_for_nfs_server(
 
     if nfs_ready.ok() {
         // make sure DNS record is already set (if applicable)
+        #[cfg(target_os = "macos")]
         if let Some(rec) = vm_dns_rec.as_mut() {
             rec.wait_for_registration()
                 .context("Could not set DNS record for the VM")?;
@@ -97,10 +102,13 @@ fn wait_for_nfs_server(
 }
 
 pub(crate) fn unmount_fs(volume_path: &Path) -> anyhow::Result<()> {
+    #[cfg(target_os = "macos")]
     let status = Command::new("diskutil")
         .arg("unmount")
         .arg(volume_path)
         .status()?;
+    #[cfg(not(target_os = "macos"))]
+    let status = Command::new("umount").arg(volume_path).status()?;
 
     if !status.success() {
         anyhow::bail!(
@@ -796,6 +804,7 @@ fn subscribe_to_vm_events(
 
 /// Set up rpcbind services for NFS when using GvProxy and host rpcbind is running.
 /// `services_to_restore` must outlive `deferred` so cleanup can reference it.
+#[cfg(target_os = "macos")]
 fn setup_rpcbind_services<'a>(
     config: &MountConfig,
     network_env: &NetworkEnv,
@@ -1095,6 +1104,7 @@ impl super::AppRunner {
         let _lock_file = LockFile::new(LOCK_FILE)?.acquire_lock(FlockKind::Shared)?;
         let mut network_env = NetworkEnv::default();
 
+        #[cfg(target_os = "macos")]
         if let Err(e) = netutil::try_port((Ipv4Addr::from([0, 0, 0, 0]), 111))
             && e.kind() == io::ErrorKind::AddrInUse
         {
@@ -1174,6 +1184,7 @@ impl super::AppRunner {
     ) -> anyhow::Result<()> {
         // pre-declare so it can be referenced in a deferred action
         let stdin_forwarder;
+        #[cfg(target_os = "macos")]
         let services_to_restore: Vec<_>;
         let vm_native_ip;
         let api_socket_path: String;
@@ -1418,19 +1429,26 @@ impl super::AppRunner {
             config.vm_hostname =
                 pick_unique_hostname(&config.vm_hostname, &network_env.active_vm_hosts);
 
+            #[cfg(target_os = "macos")]
             let vm_fqdn = format!("{}.local", &config.vm_hostname);
+            #[cfg(target_os = "macos")]
             let conn = DNSService::create_connection().unwrap();
             // vm_dns_rec must remain in scope for the duration of the mount, otherwise the DNS record will be removed
+            #[cfg(target_os = "macos")]
             let mut vm_dns_rec: Option<DNSRecord> = conn
                 .register_record(&vm_fqdn, vm_ip.with_port(0)?, Some("lo0"))
                 .inspect_err(|e| eprintln!("DNS registration error: {e}"))
                 .ok();
 
+            #[cfg(target_os = "macos")]
             let vm_host = if vm_dns_rec.is_some() {
                 Host::new(&vm_fqdn)
             } else {
                 vm_ip
             };
+            // On non-macOS platforms there is no mDNS registration; use the IP directly.
+            #[cfg(not(target_os = "macos"))]
+            let vm_host = vm_ip;
 
             let vm_host_b = vm_host.to_string().into_bytes();
 
@@ -1462,20 +1480,23 @@ impl super::AppRunner {
                 }
             });
 
-            services_to_restore =
-                if config.common.net_helper == NetHelper::GvProxy && network_env.rpcbind_running {
-                    rpcbind::services::list()?
-                        .into_iter()
-                        .filter(|entry| {
-                            entry.prog == rpcbind::RPCPROG_MNT
-                                || entry.prog == rpcbind::RPCPROG_NFS
-                                || entry.prog == rpcbind::RPCPROG_STAT
-                        })
-                        .collect()
-                } else {
-                    Vec::new()
-                };
-            setup_rpcbind_services(&config, &network_env, &services_to_restore, &mut deferred)?;
+            #[cfg(target_os = "macos")]
+            {
+                services_to_restore =
+                    if config.common.net_helper == NetHelper::GvProxy && network_env.rpcbind_running {
+                        rpcbind::services::list()?
+                            .into_iter()
+                            .filter(|entry| {
+                                entry.prog == rpcbind::RPCPROG_MNT
+                                    || entry.prog == rpcbind::RPCPROG_NFS
+                                    || entry.prog == rpcbind::RPCPROG_STAT
+                            })
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
+                setup_rpcbind_services(&config, &network_env, &services_to_restore, &mut deferred)?;
+            }
 
             let (nfs_ready_tx, nfs_ready_rx) = mpsc::channel();
             let (vm_pwd_prompt_tx, vm_pwd_prompt_rx) = mpsc::channel();
@@ -1545,8 +1566,12 @@ impl super::AppRunner {
             }
             stdin_forwarder.echo_newline(false);
 
+            #[cfg(target_os = "macos")]
+            let nfs_dns_rec_arg = &mut vm_dns_rec;
+            #[cfg(not(target_os = "macos"))]
+            let nfs_dns_rec_arg = &mut ();
             let nfs_status =
-                wait_for_nfs_server(vm_host.raw_str(), 2049, &mut vm_dns_rec, nfs_ready_rx)
+                wait_for_nfs_server(vm_host.raw_str(), 2049, nfs_dns_rec_arg, nfs_ready_rx)
                     .inspect_err(|e| {
                         host_eprintln!("Error waiting for NFS server: {:#}", e);
                     })

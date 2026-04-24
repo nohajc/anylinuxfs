@@ -1,18 +1,22 @@
 use anyhow::Context;
 use bstr::{B, BStr, BString, ByteSlice};
-use common_utils::{FromPath, PathExt, host_println};
+use common_utils::{PathExt, host_println};
 use derive_more::{Deref, DerefMut};
 use rayon::prelude::*;
 use std::{
     collections::{BTreeMap, HashSet},
-    ffi::{CStr, CString, OsStr, OsString},
-    fs, io, mem,
+    ffi::{OsStr, OsString},
+    fs, io,
     os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
     process::Command,
-    ptr::null_mut,
     time::{Duration, Instant},
 };
+
+#[cfg(target_os = "macos")]
+use common_utils::FromPath;
+#[cfg(target_os = "macos")]
+use std::{ffi::{CStr, CString}, mem, ptr::null_mut};
 
 #[derive(Debug, Clone)]
 pub struct MountTable {
@@ -21,6 +25,7 @@ pub struct MountTable {
 }
 
 impl MountTable {
+    #[cfg(target_os = "macos")]
     pub fn new() -> io::Result<Self> {
         let count = unsafe { libc::getfsstat(null_mut(), 0, libc::MNT_NOWAIT) };
         if count < 0 {
@@ -44,12 +49,32 @@ impl MountTable {
         for buf in mounts_raw {
             let mntfromname = os_str_from_c_chars(&buf.f_mntfromname).to_owned();
             let mntonname = os_str_from_c_chars(&buf.f_mntonname).to_owned();
-            // println!("mntfromname: {:?}", mntfromname);
-            // println!("mntonname: {:?}", mntonname);
 
             if !mntfromname.is_empty() && !mntonname.is_empty() {
                 disks.insert(mntfromname);
                 mount_points.insert(mntonname);
+            }
+        }
+        Ok(MountTable {
+            disks,
+            mount_points,
+        })
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub fn new() -> io::Result<Self> {
+        use std::io::BufRead;
+        let file = fs::File::open("/proc/mounts")?;
+        let mut disks = HashSet::new();
+        let mut mount_points = HashSet::new();
+        for line in io::BufReader::new(file).lines() {
+            let line = line?;
+            let mut fields = line.splitn(3, ' ');
+            let mntfromname = fields.next().unwrap_or("").to_owned();
+            let mntonname = fields.next().unwrap_or("").to_owned();
+            if !mntfromname.is_empty() && !mntonname.is_empty() {
+                disks.insert(OsString::from(mntfromname));
+                mount_points.insert(OsString::from(mntonname));
             }
         }
         Ok(MountTable {
@@ -99,30 +124,60 @@ impl NfsOptions {
     }
 }
 
+// Only needed on macOS where the disk-event callback uses it.
+#[cfg(target_os = "macos")]
 pub fn mounted_from(path: impl AsRef<Path>) -> io::Result<PathBuf> {
     let buf = statfs(path.as_ref())?;
-    let mntfromname = os_str_from_c_chars(&buf.f_mntfromname);
-    let mntonname = os_str_from_c_chars(&buf.f_mntonname);
-    // println!("mntfromname: {:?}", mntfromname);
-    // println!("mntonname: {:?}", mntonname);
 
-    if path.as_ref() != mntonname {
+    if path.as_ref() != buf.mntonname.as_os_str() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("Path '{}' is not a mount point.", path.as_ref().display(),),
         ));
     }
 
-    Ok(mntfromname.into())
+    Ok(buf.mntfromname.into())
 }
 
-fn statfs(path: impl AsRef<Path>) -> io::Result<libc::statfs> {
+struct StatfsBuf {
+    mntfromname: OsString,
+    mntonname: OsString,
+}
+
+#[cfg(target_os = "macos")]
+fn statfs(path: impl AsRef<Path>) -> io::Result<StatfsBuf> {
     let c_path = CString::from_path(path.as_ref());
     let mut buf: libc::statfs = unsafe { std::mem::zeroed() };
     if unsafe { libc::statfs(c_path.as_ptr(), &mut buf) } != 0 {
         return Err(io::Error::last_os_error());
     }
-    Ok(buf)
+    Ok(StatfsBuf {
+        mntfromname: os_str_from_c_chars(&buf.f_mntfromname).to_owned(),
+        mntonname: os_str_from_c_chars(&buf.f_mntonname).to_owned(),
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn statfs(path: impl AsRef<Path>) -> io::Result<StatfsBuf> {
+    use std::io::BufRead;
+    let path_str = path.as_ref().to_string_lossy().into_owned();
+    let file = fs::File::open("/proc/mounts")?;
+    for line in io::BufReader::new(file).lines() {
+        let line = line?;
+        let mut fields = line.splitn(3, ' ');
+        let from = fields.next().unwrap_or("").to_owned();
+        let on = fields.next().unwrap_or("").to_owned();
+        if on == path_str {
+            return Ok(StatfsBuf {
+                mntfromname: OsString::from(from),
+                mntonname: OsString::from(on),
+            });
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        format!("'{}' not found in /proc/mounts", path_str),
+    ))
 }
 
 // If `copied` refers to a file which should be synchronized with `orig`,
@@ -149,6 +204,7 @@ pub fn files_likely_differ(
     Ok(false)
 }
 
+#[cfg(target_os = "macos")]
 fn os_str_from_c_chars(chars: &[i8]) -> &OsStr {
     let cstr = unsafe { CStr::from_ptr(chars.as_ptr()) };
     OsStr::from_bytes(cstr.to_bytes())
@@ -288,8 +344,10 @@ fn parallel_unmount_recursive(trie: &dirtrie::Node) -> anyhow::Result<()> {
         .try_for_each(|(_, child)| parallel_unmount_recursive(child))?;
 
     if let Some((_, mount_path)) = &trie.paths {
+        #[cfg(target_os = "macos")]
         let shell_script = format!("diskutil unmount \"{}\"", mount_path);
-        // host_println!("Running NFS unmount command: `{}`", &shell_script);
+        #[cfg(not(target_os = "macos"))]
+        let shell_script = format!("umount \"{}\"", mount_path);
         // exit status ignored, we don't want to exit early if one unmount fails
         let _ = Command::new("sh").arg("-c").arg(&shell_script).status()?;
     }

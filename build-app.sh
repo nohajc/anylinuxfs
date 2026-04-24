@@ -14,6 +14,8 @@ fi
 
 cd "$SCRIPT_DIR"
 
+HOST_OS="$(uname -s)"
+
 FEATURES="freebsd"
 
 FEATURE_ARG=""
@@ -23,15 +25,19 @@ fi
 
 (cd "anylinuxfs" && cargo build $BUILD_ARGS $FEATURE_ARG)
 mkdir -p bin && cp "anylinuxfs/target/$BUILD_DIR/anylinuxfs" bin/
-codesign --entitlements "anylinuxfs.entitlements" --force -s - bin/anylinuxfs
 
-ROOTFS_PATH=~/.anylinuxfs/alpine/rootfs
+if [[ "$HOST_OS" == "Darwin" ]]; then
+    codesign --entitlements "anylinuxfs.entitlements" --force -s - bin/anylinuxfs
+fi
 
 (cd "vmproxy" && cargo build $BUILD_ARGS $FEATURE_ARG)
 mkdir -p libexec && cp "vmproxy/target/aarch64-unknown-linux-musl/$BUILD_DIR/vmproxy" libexec/
 
 (cd "init-rootfs" && go build -ldflags="-w -s" -tags containers_image_openpgp -o ../libexec/)
-codesign --entitlements "anylinuxfs.entitlements" --force -s - libexec/init-rootfs
+
+if [[ "$HOST_OS" == "Darwin" ]]; then
+    codesign --entitlements "anylinuxfs.entitlements" --force -s - libexec/init-rootfs
+fi
 
 (cd "freebsd-bootstrap" && CGO_ENABLED=0 GOOS=freebsd GOARCH=arm64 go build -tags netgo -ldflags '-extldflags "-static" -w -s' -o ../libexec/)
 
