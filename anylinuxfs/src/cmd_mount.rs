@@ -888,20 +888,32 @@ fn setup_rpcbind_services<'a>(
     };
     unregister_fn()?;
 
-    // make sure to always run this as regular user
-    // because cleanup code runs after we've dropped privileges
-    // (regular user cannot unregister services registered by root)
-    if let (Some(uid), Some(gid)) = (config.common.sudo_uid, config.common.sudo_gid) {
-        let status = Command::new(&config.common.exec_path)
-            .arg("rpcbind")
-            .arg("register")
-            .uid(uid)
-            .gid(gid)
-            .status()?;
-        if !status.success() {
-            anyhow::bail!("Failed to register NFS server to rpcbind");
+    // On macOS the local rpcbind is owned by a regular user, so we re-exec
+    // ourselves with .uid()/.gid() to make our entries regular-user-owned;
+    // otherwise the deferred unregister (which runs after privilege drop)
+    // can't remove root-owned entries it didn't create.
+    //
+    // On Linux, root can register and root can unregister, and the spawn-self
+    // detour stalls the VM child when it's done concurrently with VM startup.
+    // Just register inline as root.
+    #[cfg(target_os = "macos")]
+    {
+        if let (Some(uid), Some(gid)) = (config.common.sudo_uid, config.common.sudo_gid) {
+            let status = Command::new(&config.common.exec_path)
+                .arg("rpcbind")
+                .arg("register")
+                .uid(uid)
+                .gid(gid)
+                .status()?;
+            if !status.success() {
+                anyhow::bail!("Failed to register NFS server to rpcbind");
+            }
+        } else {
+            rpcbind::services::register().context("Failed to register NFS server to rpcbind")?;
         }
-    } else {
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
         rpcbind::services::register().context("Failed to register NFS server to rpcbind")?;
     }
 
@@ -1184,10 +1196,9 @@ impl super::AppRunner {
         let _lock_file = LockFile::new(LOCK_FILE)?.acquire_lock(FlockKind::Shared)?;
         let mut network_env = NetworkEnv::default();
 
-        // BISECTING: temporarily gate the rpcbind detection back to macOS so
-        // we don't pass -h to vmproxy and skip the libtirpc setup_rpcbind_services
-        // call on Linux. Reverts behaviour to the pre-libtirpc-port state.
-        #[cfg(target_os = "macos")]
+        // If host rpcbind is bound to :111, vmproxy gets the -h flag (skip
+        // forwarding port 111 from the guest) and we register the guest NFS
+        // service with the host rpcbind so mount.nfs's portmap lookups resolve.
         if let Err(e) = netutil::try_port((Ipv4Addr::from([0, 0, 0, 0]), 111))
             && e.kind() == io::ErrorKind::AddrInUse
         {
@@ -1590,37 +1601,20 @@ impl super::AppRunner {
                 }
             });
 
-            // BISECTING: gate the libtirpc list+register flow back to macOS.
-            // services_to_restore is referenced in deferred actions, so keep
-            // declaring an empty vec on Linux.
-            #[cfg(target_os = "macos")]
-            {
-                services_to_restore =
-                    if config.common.net_helper == NetHelper::GvProxy
-                        && network_env.rpcbind_running
-                    {
-                        rpcbind::services::list()?
-                            .into_iter()
-                            .filter(|entry| {
-                                entry.prog == rpcbind::RPCPROG_MNT
-                                    || entry.prog == rpcbind::RPCPROG_NFS
-                                    || entry.prog == rpcbind::RPCPROG_STAT
-                            })
-                            .collect()
-                    } else {
-                        Vec::new()
-                    };
-                setup_rpcbind_services(
-                    &config,
-                    &network_env,
-                    &services_to_restore,
-                    &mut deferred,
-                )?;
-            }
-            #[cfg(not(target_os = "macos"))]
-            {
-                services_to_restore = Vec::<rpcbind::Entry>::new();
-            }
+            services_to_restore =
+                if config.common.net_helper == NetHelper::GvProxy && network_env.rpcbind_running {
+                    rpcbind::services::list()?
+                        .into_iter()
+                        .filter(|entry| {
+                            entry.prog == rpcbind::RPCPROG_MNT
+                                || entry.prog == rpcbind::RPCPROG_NFS
+                                || entry.prog == rpcbind::RPCPROG_STAT
+                        })
+                        .collect()
+                } else {
+                    Vec::<rpcbind::Entry>::new()
+                };
+            setup_rpcbind_services(&config, &network_env, &services_to_restore, &mut deferred)?;
 
             let (nfs_ready_tx, nfs_ready_rx) = mpsc::channel();
             let (vm_pwd_prompt_tx, vm_pwd_prompt_rx) = mpsc::channel();
