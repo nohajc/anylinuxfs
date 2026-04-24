@@ -12,7 +12,7 @@ objc2-disk-arbitration = "0.3.1"
 url = "2.5.4"
 nanoid = "0.5.0"
 libblkid-rs = "0.4.1"
-libkrun = { git = "https://github.com/nohajc/libkrun", branch = "v1.17.4-rust-lib", features = [
+libkrun = { git = "https://github.com/containers/libkrun", tag = "v1.18.0", features = [
     "blk",
     "net",
 ] }
