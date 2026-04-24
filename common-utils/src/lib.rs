@@ -192,6 +192,8 @@ pub struct CustomActionConfig {
     capture_environment: Vec<String>,
     #[serde(default)]
     override_nfs_export: String,
+    #[serde(default)]
+    nfs_export_subdirs: Vec<String>,
     required_os: Option<OSType>,
 }
 
@@ -228,6 +230,10 @@ impl CustomActionConfig {
 
     pub fn override_nfs_export(&self) -> &str {
         &self.override_nfs_export
+    }
+
+    pub fn nfs_export_subdirs(&self) -> &[String] {
+        &self.nfs_export_subdirs
     }
 
     pub fn required_os(&self) -> Option<OSType> {
@@ -282,6 +288,7 @@ impl From<CustomActionConfigOld> for CustomActionConfig {
                 .map(|e| e.to_str_lossy().into())
                 .collect(),
             override_nfs_export: old.override_nfs_export,
+            nfs_export_subdirs: vec![],
             required_os: None,
         }
     }
