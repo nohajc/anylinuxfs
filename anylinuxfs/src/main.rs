@@ -29,6 +29,7 @@ mod diskutil;
 mod fsutil;
 mod netutil;
 mod pubsub;
+#[cfg(target_os = "macos")]
 mod rpcbind;
 mod settings;
 mod utils;
@@ -169,7 +170,7 @@ fn load_config(common_args: &CommonArgs, debug_args: &DebugArgs) -> anyhow::Resu
         .context("Home directory not found")?;
 
     let uid = unsafe { libc::getuid() };
-    if uid == 0 && (sudo_uid.is_none() || sudo_gid.is_none() || !home_dir.starts_with("/Users")) {
+    if uid == 0 && (sudo_uid.is_none() || sudo_gid.is_none()) {
         eprintln!("This program must not be run directly by root but you can use sudo");
         std::process::exit(1);
     }
@@ -201,7 +202,10 @@ fn load_config(common_args: &CommonArgs, debug_args: &DebugArgs) -> anyhow::Resu
 
     let profile_path = home_dir.join(".anylinuxfs");
     let config_file_path = home_dir.join(".anylinuxfs").join("config.toml");
+    #[cfg(target_os = "macos")]
     let log_dir = home_dir.join("Library").join("Logs");
+    #[cfg(not(target_os = "macos"))]
+    let log_dir = home_dir.join(".anylinuxfs").join("logs");
     let log_file_path = log_dir.join(format!("anylinuxfs-{}.log", log_file_id));
     let kernel_log_file_path = log_dir.join(format!("anylinuxfs_kernel-{}.log", log_file_id));
     let nethelper_log_path = log_dir.join(format!("anylinuxfs_nethelper-{}.log", log_file_id));
@@ -639,7 +643,10 @@ impl AppRunner {
 
     fn run_dmesg(&mut self) -> anyhow::Result<()> {
         let config = load_config(&CommonArgs::default(), &DebugArgs::default())?;
+        #[cfg(target_os = "macos")]
         let log_dir = config.home_dir.join("Library").join("Logs");
+        #[cfg(not(target_os = "macos"))]
+        let log_dir = config.home_dir.join(".anylinuxfs").join("logs");
 
         // Find the most recently modified kernel log file (if it exists)
         let Some(kernel_log_path) = find_latest_log(&log_dir, "anylinuxfs_kernel-", ".log") else {

@@ -3,38 +3,49 @@ use bstr::BStr;
 use common_utils::{PathExt, host_println, is_encrypted_fs, safe_print};
 use derive_more::{AddAssign, Deref};
 use indexmap::IndexMap;
-use objc2_core_foundation::{
-    CFBoolean, CFDictionary, CFRetained, CFRunLoop, CFString, CFURL, kCFRunLoopDefaultMode,
-};
-use objc2_disk_arbitration::{
-    DADisk, DARegisterDiskAppearedCallback, DARegisterDiskDisappearedCallback, DASession,
-    DAUnregisterCallback,
-};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::{
     cmp,
-    ffi::{CString, c_void},
     fmt::Display,
     hash::{Hash, Hasher},
     io::{self, Write},
     iter,
-    marker::PhantomData,
     path::{Path, PathBuf},
     process::Command,
-    ptr::{NonNull, null_mut},
     str::FromStr,
     thread,
 };
+
+#[cfg(target_os = "macos")]
+use std::{
+    ffi::{CString, c_void},
+    marker::PhantomData,
+    ptr::{NonNull, null_mut},
+};
+#[cfg(target_os = "macos")]
+use objc2_core_foundation::{
+    CFBoolean, CFDictionary, CFRetained, CFRunLoop, CFString, CFURL, kCFRunLoopDefaultMode,
+};
+#[cfg(target_os = "macos")]
+use objc2_disk_arbitration::{
+    DADisk, DARegisterDiskAppearedCallback, DARegisterDiskDisappearedCallback, DASession,
+    DAUnregisterCallback,
+};
+#[cfg(target_os = "macos")]
 use url::Url;
 
 use crate::{
     devinfo::DevInfo,
-    fsutil,
     pubsub::Subscription,
     settings::{Config, PassphrasePromptConfig},
-    utils::{cfdict_get_value, is_stdin_tty},
+    utils::is_stdin_tty,
     vm::{NetworkMode, VMOpts},
+};
+#[cfg(target_os = "macos")]
+use crate::{
+    fsutil,
+    utils::cfdict_get_value,
 };
 
 pub struct Entry(String, String, String, Vec<String>);
@@ -146,6 +157,7 @@ fn format_partition_size(size_bytes: u64) -> String {
     format!("{:.1} {}B", size, UNITS[unit_idx])
 }
 
+#[cfg(target_os = "macos")]
 fn diskutil_list_from_plist(disk: Option<&str>) -> anyhow::Result<Plist> {
     let mut cmd = Command::new("diskutil");
     cmd.arg("list").arg("-plist");
@@ -168,6 +180,7 @@ fn diskutil_list_from_plist(disk: Option<&str>) -> anyhow::Result<Plist> {
     Ok(plist)
 }
 
+#[cfg(target_os = "macos")]
 fn disks_without_partition_table(plist: &Plist) -> Vec<String> {
     let mut disks = Vec::new();
     for disk in &plist.all_disks_and_partitions {
@@ -307,6 +320,7 @@ pub const ALL_LABELS: Labels = Labels {
     fs_types: FsTypes(&ALL_FS_TYPES),
 };
 
+#[cfg(target_os = "macos")]
 fn partitions_with_part_type(plist: &Plist, part_types: &PartTypes) -> Vec<String> {
     let mut partitions = Vec::new();
     for disk in &plist.all_disks_and_partitions {
@@ -606,23 +620,34 @@ pub fn list_partitions(
                 disk_entries.push(entry);
             }
         } else {
+            #[cfg(not(target_os = "macos"))]
+            anyhow::bail!("listing physical block devices is not yet supported on this platform; pass an image file path instead");
+
+            #[cfg(target_os = "macos")]
             let plist_out = diskutil_list_from_plist(disk)?;
+            #[cfg(target_os = "macos")]
             let selected_partitions = partitions_with_part_type(&plist_out, &filter.part_types);
+            #[cfg(target_os = "macos")]
             let disks_without_part_table = disks_without_partition_table(&plist_out);
 
+            #[cfg(target_os = "macos")]
             let output = Command::new("diskutil")
                 .arg("list")
                 .args(disk)
                 .output()
                 .expect("Failed to execute diskutil");
 
+            #[cfg(target_os = "macos")]
             if !output.status.success() {
                 anyhow::bail!("diskutil command failed");
             }
 
+            #[cfg(target_os = "macos")]
             let stdout = String::from_utf8_lossy(&output.stdout);
+            #[cfg(target_os = "macos")]
             let mut current_entry = None;
 
+            #[cfg(target_os = "macos")]
             for line in stdout.lines() {
                 if line.starts_with("/dev/disk") {
                     disk_entries.push(Entry::new(line));
@@ -1097,12 +1122,14 @@ fn get_lsblk_info(
     Ok(lsblk)
 }
 
+#[cfg(target_os = "macos")]
 struct DaDiskArgs<ContextType> {
     context: *mut c_void,
     descr: Option<CFRetained<CFDictionary>>,
     phantom: PhantomData<ContextType>,
 }
 
+#[cfg(target_os = "macos")]
 impl<ContextType> DaDiskArgs<ContextType> {
     fn new(disk: NonNull<DADisk>, context: *mut c_void) -> Self {
         let descr = unsafe { DADisk::description(disk.as_ref()) };
@@ -1143,6 +1170,7 @@ impl<ContextType> DaDiskArgs<ContextType> {
     }
 }
 
+#[cfg(target_os = "macos")]
 unsafe extern "C-unwind" fn disk_mount_event(disk: NonNull<DADisk>, context: *mut c_void) {
     let mut args = DaDiskArgs::<MountContext>::new(disk, context);
 
@@ -1159,6 +1187,7 @@ unsafe extern "C-unwind" fn disk_mount_event(disk: NonNull<DADisk>, context: *mu
     }
 }
 
+#[cfg(target_os = "macos")]
 unsafe extern "C-unwind" fn disk_unmount_event(disk: NonNull<DADisk>, context: *mut c_void) {
     let args = DaDiskArgs::<UnmountContext>::new(disk, context);
 
@@ -1196,12 +1225,14 @@ unsafe extern "C-unwind" fn disk_unmount_event(disk: NonNull<DADisk>, context: *
 //     result.deref()
 // }
 
+#[cfg(target_os = "macos")]
 struct MountContext<'a> {
     nfs_path: &'a Path,
     // what the OS assigned after resolving any potential conflicts
     real_mount_point: Option<String>,
 }
 
+#[cfg(target_os = "macos")]
 impl<'a> MountContext<'a> {
     fn new(nfs_path: &'a Path) -> Self {
         Self {
@@ -1211,10 +1242,12 @@ impl<'a> MountContext<'a> {
     }
 }
 
+#[cfg(target_os = "macos")]
 struct UnmountContext<'a> {
     mount_point: &'a str,
 }
 
+#[cfg(target_os = "macos")]
 fn stop_run_loop_on_signal(signals: Subscription<libc::c_int>) -> anyhow::Result<()> {
     _ = thread::spawn(move || {
         for _ in signals {
@@ -1234,17 +1267,19 @@ impl MountPoint {
         self.0.as_str()
     }
 
-    // macOS disk events contain mount points with trailing slashes
-    // however, we want to remove them for display purposes
+    // On macOS, disk events contain mount points with trailing slashes;
+    // trim them for display purposes on all platforms.
     pub fn display(&self) -> &str {
         self.0.as_str().trim_end_matches('/')
     }
 }
 
+#[cfg(target_os = "macos")]
 pub struct EventSession {
     session: CFRetained<DASession>,
 }
 
+#[cfg(target_os = "macos")]
 impl EventSession {
     pub fn new(signals: Subscription<libc::c_int>) -> anyhow::Result<Self> {
         let session = unsafe { DASession::new(None).unwrap() };
@@ -1294,15 +1329,6 @@ impl EventSession {
             )
         };
 
-        // unsafe {
-        //     DARegisterDiskEjectApprovalCallback(
-        //         &session,
-        //         None,
-        //         Some(disk_unmount_approval),
-        //         mount_ctx_ptr as *mut c_void,
-        //     )
-        // }
-
         unsafe {
             DASession::schedule_with_run_loop(
                 &self.session,
@@ -1319,6 +1345,85 @@ impl EventSession {
     }
 }
 
+// Linux EventSession: polls /proc/mounts to detect NFS share mount/unmount.
+// mount(8) is synchronous on Linux so wait_for_mount normally returns quickly.
+#[cfg(not(target_os = "macos"))]
+pub struct EventSession {
+    signals: Subscription<libc::c_int>,
+}
+
+#[cfg(not(target_os = "macos"))]
+impl EventSession {
+    pub fn new(signals: Subscription<libc::c_int>) -> anyhow::Result<Self> {
+        Ok(Self { signals })
+    }
+
+    // Returns None when interrupted by SIGINT/SIGTERM.
+    pub fn wait_for_mount(&self, nfs_path: &Path) -> Option<MountPoint> {
+        let target = nfs_path.to_string_lossy().into_owned();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            if self.signals.try_recv().is_ok() {
+                host_println!("Termination requested, give up waiting for mount");
+                return None;
+            }
+            if let Ok(mp) = find_mount_point_in_proc_mounts(&target) {
+                return Some(MountPoint(mp));
+            }
+            if std::time::Instant::now() > deadline {
+                return None;
+            }
+            thread::sleep(std::time::Duration::from_millis(200));
+        }
+    }
+
+    pub fn wait_for_unmount(&self, mount_point: &str) {
+        loop {
+            if self.signals.try_recv().is_ok() {
+                host_println!("Termination requested");
+                return;
+            }
+            if !is_mounted_at(mount_point) {
+                return;
+            }
+            thread::sleep(std::time::Duration::from_millis(500));
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn find_mount_point_in_proc_mounts(nfs_from: &str) -> io::Result<String> {
+    use std::io::BufRead;
+    let file = std::fs::File::open("/proc/mounts")?;
+    for line in io::BufReader::new(file).lines() {
+        let line = line?;
+        let mut fields = line.splitn(3, ' ');
+        let from = fields.next().unwrap_or("");
+        let on = fields.next().unwrap_or("");
+        if from == nfs_from {
+            return Ok(on.to_owned());
+        }
+    }
+    Err(io::Error::new(io::ErrorKind::NotFound, "not mounted yet"))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn is_mounted_at(mount_point: &str) -> bool {
+    use std::io::BufRead;
+    let Ok(file) = std::fs::File::open("/proc/mounts") else {
+        return false;
+    };
+    for line in io::BufReader::new(file).lines().flatten() {
+        let mut fields = line.splitn(3, ' ');
+        let _ = fields.next();
+        let on = fields.next().unwrap_or("");
+        if on == mount_point {
+            return true;
+        }
+    }
+    false
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DiskInfo {
     pub media_writable: bool,
@@ -1332,6 +1437,7 @@ impl Default for DiskInfo {
     }
 }
 
+#[cfg(target_os = "macos")]
 pub fn get_info(bsd_name: impl AsRef<BStr>) -> DiskInfo {
     let session = unsafe { DASession::new(None).unwrap() };
     let c_bsd_name = CString::new(bsd_name.as_ref().to_owned()).unwrap();
@@ -1358,6 +1464,21 @@ pub fn get_info(bsd_name: impl AsRef<BStr>) -> DiskInfo {
     DiskInfo { media_writable }
 }
 
+#[cfg(not(target_os = "macos"))]
+pub fn get_info(dev_path: impl AsRef<BStr>) -> DiskInfo {
+    // Read /sys/block/<name>/ro: "1" means read-only.
+    let name = std::path::Path::new(std::ffi::OsStr::from_bytes(dev_path.as_ref().as_bytes()))
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let ro_path = format!("/sys/block/{}/ro", name);
+    let media_writable = std::fs::read_to_string(&ro_path)
+        .map(|s| s.trim() == "0")
+        .unwrap_or(true);
+    DiskInfo { media_writable }
+}
+
+#[cfg(target_os = "macos")]
 #[derive(Debug, Deserialize)]
 struct Plist {
     #[serde(default, rename = "AllDisksAndPartitions")]
@@ -1366,6 +1487,7 @@ struct Plist {
     error_message: Option<String>,
 }
 
+#[cfg(target_os = "macos")]
 #[allow(unused)]
 #[derive(Debug, Deserialize)]
 struct Disk {
@@ -1385,6 +1507,7 @@ struct Disk {
     apfs_volumes: Option<Vec<ApfsVolume>>,
 }
 
+#[cfg(target_os = "macos")]
 #[allow(unused)]
 #[derive(Debug, Deserialize)]
 struct Partition {
@@ -1402,6 +1525,7 @@ struct Partition {
     volume_uuid: Option<String>,
 }
 
+#[cfg(target_os = "macos")]
 #[allow(unused)]
 #[derive(Debug, Deserialize)]
 struct PhysicalStore {
@@ -1409,6 +1533,7 @@ struct PhysicalStore {
     device_identifier: String,
 }
 
+#[cfg(target_os = "macos")]
 #[allow(unused)]
 #[derive(Debug, Deserialize)]
 struct ApfsVolume {
@@ -1432,6 +1557,7 @@ struct ApfsVolume {
     volume_uuid: Option<String>,
 }
 
+#[cfg(target_os = "macos")]
 #[allow(unused)]
 #[derive(Debug, Deserialize)]
 struct Snapshot {

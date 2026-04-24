@@ -1,7 +1,8 @@
-use crate::{
-    Config, ImageSource, fsutil,
-    vm_network::{self, VmnetConfig},
-};
+use crate::{Config, ImageSource, fsutil, vm_network};
+#[cfg(target_os = "macos")]
+use crate::vm_network::VmnetConfig;
+#[cfg(not(target_os = "macos"))]
+type VmnetConfig = ();
 use anyhow::Context;
 
 use common_utils::{Deferred, NetHelper, host_eprintln};
@@ -690,10 +691,14 @@ pub fn setup_net_helper(
 ) -> anyhow::Result<i32> {
     match config.net_helper.os_override(config.kernel.os) {
         NetHelper::GvProxy => setup_gvproxy(config, start_vm_fn),
+        #[cfg(target_os = "macos")]
         NetHelper::VmNet => setup_vmnet_helper(config, start_vm_fn),
+        #[cfg(not(target_os = "macos"))]
+        NetHelper::VmNet => anyhow::bail!("vmnet-helper is not supported on Linux"),
     }
 }
 
+#[cfg(target_os = "macos")]
 pub fn setup_vmnet_helper(
     config: &Config,
     start_vm_fn: impl FnOnce(Option<VmnetConfig>) -> anyhow::Result<i32>,

@@ -9,17 +9,24 @@ use std::{
 
 use std::{io::BufReader, process::Stdio};
 
-use crate::{
-    netutil,
-    settings::{Config, Preferences},
-};
+use crate::settings::{Config, Preferences};
 use anyhow::Context;
-use common_utils::{OSType, VM_CTRL_PORT, VM_IP, VMNET_PREFIX_LEN, host_println};
-use ipnet::Ipv4Net;
-use os_version::{MacOS, OsVersion};
+use common_utils::{OSType, VM_CTRL_PORT, VM_IP, host_println};
 use rand::prelude::*;
+
+#[cfg(target_os = "macos")]
+use crate::netutil;
+#[cfg(target_os = "macos")]
+use common_utils::VMNET_PREFIX_LEN;
+#[cfg(target_os = "macos")]
+use ipnet::Ipv4Net;
+#[cfg(target_os = "macos")]
+use os_version::{MacOS, OsVersion};
+#[cfg(target_os = "macos")]
 use serde::Deserialize;
+#[cfg(target_os = "macos")]
 use serde_json::Deserializer;
+#[cfg(target_os = "macos")]
 use versions::{SemVer, Versioning};
 
 pub fn random_mac_address() -> [u8; 6] {
@@ -58,6 +65,7 @@ pub fn vsock_cleanup(vsock_path: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
 #[allow(unused)]
 #[derive(Debug, Deserialize)]
 pub struct VmnetConfigJson {
@@ -73,17 +81,20 @@ pub struct VmnetConfigJson {
     pub vmnet_mac_address: String,
 }
 
+#[cfg(target_os = "macos")]
 pub struct VmnetConfig {
     pub _helper_output: VmnetConfigJson,
     pub vmnet_cidr: Ipv4Net,
 }
 
+#[cfg(target_os = "macos")]
 impl VmnetConfig {
     pub fn vm_ip(&self) -> Ipv4Addr {
         self.vmnet_cidr.hosts().nth(1).unwrap()
     }
 }
 
+#[cfg(target_os = "macos")]
 const MACOS_TAHOE_MIN_VER: Versioning = Versioning::Ideal(SemVer {
     major: 26,
     minor: 0,
@@ -92,6 +103,7 @@ const MACOS_TAHOE_MIN_VER: Versioning = Versioning::Ideal(SemVer {
     meta: None,
 });
 
+#[cfg(target_os = "macos")]
 pub fn start_vmnet_helper(config: &Config) -> anyhow::Result<(Child, VmnetConfig)> {
     vfkit_sock_cleanup(&config.unixgram_sock_path)?;
 

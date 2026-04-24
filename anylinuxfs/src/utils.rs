@@ -34,6 +34,7 @@ use nix::{
     sys::signal::Signal,
     unistd::{Uid, User},
 };
+#[cfg(target_os = "macos")]
 use objc2_core_foundation::{
     CFCopyTypeIDDescription, CFDictionary, CFGetTypeID, CFRetained, CFString, CFType,
 };
@@ -546,6 +547,7 @@ impl AcquireLock for File {
     }
 }
 
+#[cfg(target_os = "macos")]
 pub unsafe fn cfdict_get_value<'a, T>(dict: &'a CFDictionary, key: &str) -> Option<&'a T> {
     let key = CFString::from_str(key);
     let key_ptr: *const CFString = unsafe { CFRetained::as_ptr(&key).as_ref() };
@@ -558,6 +560,7 @@ pub unsafe fn cfdict_get_value<'a, T>(dict: &'a CFDictionary, key: &str) -> Opti
     unsafe { (value_ptr as *const T).as_ref() }
 }
 
+#[cfg(target_os = "macos")]
 #[allow(unused)]
 pub fn inspect_cf_dictionary_values(dict: &CFDictionary) {
     let count = dict.count() as usize;

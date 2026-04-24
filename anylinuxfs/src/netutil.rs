@@ -5,20 +5,25 @@ use std::{
     io,
     net::{IpAddr, SocketAddr, ToSocketAddrs},
     process::Command,
-    ptr::null_mut,
 };
 
 use anyhow::Context;
 use getifaddrs::{InterfaceFilter, InterfaceFlags};
 use ipnet::Ipv4Net;
-use objc2_core_foundation::{CFArray, CFDictionary, CFString};
-use objc2_system_configuration::SCDynamicStore;
 use std::net::Ipv6Addr;
 
+#[cfg(target_os = "macos")]
+use std::ptr::null_mut;
+#[cfg(target_os = "macos")]
+use objc2_core_foundation::{CFArray, CFDictionary, CFString};
+#[cfg(target_os = "macos")]
+use objc2_system_configuration::SCDynamicStore;
+#[cfg(target_os = "macos")]
 use crate::utils::cfdict_get_value;
 
 const DEFAULT_DNS_SERVER: &str = "1.1.1.1";
 
+#[cfg(target_os = "macos")]
 pub fn get_configured_dns_server() -> anyhow::Result<String> {
     let name = CFString::from_str("anylinuxfs");
     let dyn_store = unsafe { SCDynamicStore::new(None, &name, None, null_mut()) }
@@ -31,7 +36,6 @@ pub fn get_configured_dns_server() -> anyhow::Result<String> {
     let dict: &CFDictionary = dns_settings
         .downcast_ref()
         .with_context(|| format!("{} is not a CFDictionary", global_dns_key))?;
-    // inspect_cf_dictionary_values(&dict);
 
     let srv_addrs: &CFArray<CFString> = unsafe { cfdict_get_value(dict, "ServerAddresses") }
         .context("failed to retrieve DNS ServerAddresses")?;
@@ -47,6 +51,22 @@ pub fn get_configured_dns_server() -> anyhow::Result<String> {
         .map(|ip| ip.to_string())
         .next()
         .context("no DNS server addresses found")
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn get_configured_dns_server() -> anyhow::Result<String> {
+    use std::io::BufRead;
+    let file = std::fs::File::open("/etc/resolv.conf").context("failed to open /etc/resolv.conf")?;
+    for line in std::io::BufReader::new(file).lines() {
+        let line = line.context("failed to read /etc/resolv.conf")?;
+        let line = line.trim();
+        if let Some(addr) = line.strip_prefix("nameserver").map(str::trim) {
+            if let Ok(ip) = addr.parse::<IpAddr>() {
+                return Ok(ip.to_string());
+            }
+        }
+    }
+    anyhow::bail!("no nameserver found in /etc/resolv.conf")
 }
 
 pub fn get_dns_server_with_fallback<'a>() -> Cow<'a, str> {
