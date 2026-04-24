@@ -124,8 +124,6 @@ impl NfsOptions {
     }
 }
 
-// Only needed on macOS where the disk-event callback uses it.
-#[cfg(target_os = "macos")]
 pub fn mounted_from(path: impl AsRef<Path>) -> io::Result<PathBuf> {
     let buf = statfs(path.as_ref())?;
 

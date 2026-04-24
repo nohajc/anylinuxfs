@@ -226,7 +226,12 @@ fn load_config(common_args: &CommonArgs, debug_args: &DebugArgs) -> anyhow::Resu
     } else {
         prefix_dir.to_owned()
     };
+    #[cfg(target_os = "macos")]
     let global_cfg_path = global_prefix_dir.join("etc").join("anylinuxfs.toml");
+    #[cfg(not(target_os = "macos"))]
+    let global_cfg_path = global_prefix_dir
+        .join("etc")
+        .join("anylinuxfs-linux.toml");
     let all_cfg_paths = [global_cfg_path.as_path(), config_file_path.as_path()];
     let preferences = settings::load_preferences(all_cfg_paths.iter().cloned())?;
 
@@ -349,6 +354,7 @@ pub(crate) fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
 
     let fs_driver = cmd.fs_driver;
 
+    #[cfg(target_os = "macos")]
     let open_finder = cmd.window;
     let kernel_page_size = cmd.kernel_page_size;
 
@@ -398,6 +404,7 @@ pub(crate) fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
         assemble_raid,
         bind_addr,
         verbose,
+        #[cfg(target_os = "macos")]
         open_finder,
         kernel_page_size,
         common,
@@ -631,9 +638,12 @@ impl AppRunner {
             start_vm(&ctx, &cmdline, &vm_env).context("Failed to start microVM shell")?;
         } else {
             vm_image::setup_net_helper(&config.common, |cfg| {
+                #[cfg(target_os = "macos")]
                 if let Some(cidr) = cfg.map(|c| c.vmnet_cidr) {
                     cmdline.extend(["-n".into(), cidr.to_string().into()]);
                 }
+                #[cfg(not(target_os = "macos"))]
+                let _ = cfg;
                 start_vm_forked(&ctx, &cmdline, &vm_env).context("Failed to start microVM shell")
             })?;
         }
@@ -803,6 +813,7 @@ impl AppRunner {
         Ok(())
     }
 
+    #[cfg(target_os = "macos")]
     fn run_rpcbind(&mut self, cmd: RpcBindCmd) -> anyhow::Result<()> {
         match cmd {
             RpcBindCmd::Register => rpcbind::services::register(),
@@ -821,7 +832,10 @@ impl AppRunner {
     }
 
     fn run_upgrade_config(&mut self, cmd: UpgradeConfigCmd) -> anyhow::Result<()> {
+        #[cfg(target_os = "macos")]
         let default_cfg_str = include_str!("../../etc/anylinuxfs.toml");
+        #[cfg(not(target_os = "macos"))]
+        let default_cfg_str = include_str!("../../etc/anylinuxfs-linux.toml");
         let mut target_cfg = default_cfg_str
             .parse::<DocumentMut>()
             .context("Failed to parse default config")?;
@@ -1218,6 +1232,7 @@ impl AppRunner {
             Commands::Apk(cmd) => self.run_apk(cmd),
             #[cfg(feature = "freebsd")]
             Commands::Image(cmd) => self.run_image(cmd),
+            #[cfg(target_os = "macos")]
             Commands::Rpcbind(cmd) => self.run_rpcbind(cmd),
             Commands::UpgradeConfig(cmd) => self.run_upgrade_config(cmd),
         }

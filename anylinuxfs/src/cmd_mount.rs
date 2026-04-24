@@ -1,9 +1,10 @@
 use anyhow::Context;
 use bstr::{BString, ByteSlice, ByteVec};
 use common_utils::{
-    Deferred, NetHelper, OSType, PathExt, host_eprintln, host_println, ipc, log, safe_println,
-    vmctrl,
+    Deferred, NetHelper, OSType, PathExt, host_eprintln, host_println, ipc, log, vmctrl,
 };
+#[cfg(target_os = "macos")]
+use common_utils::safe_println;
 
 #[cfg(target_os = "macos")]
 use dns_sd::{DNSRecord, DNSService};
@@ -23,8 +24,10 @@ use std::time::{Duration, Instant, SystemTime};
 use std::{env, iter, thread};
 use std::{
     io::{self, BufRead, BufReader, Write},
-    net::{IpAddr, Ipv4Addr, TcpStream, ToSocketAddrs},
+    net::{Ipv4Addr, TcpStream, ToSocketAddrs},
 };
+#[cfg(target_os = "macos")]
+use std::net::IpAddr;
 
 use crate::devinfo::DevInfo;
 use crate::netutil::Host;
@@ -43,6 +46,11 @@ use crate::{
 };
 #[cfg(target_os = "macos")]
 use crate::rpcbind;
+
+#[cfg(target_os = "macos")]
+const MOUNT_BASE: &str = "Volumes";
+#[cfg(not(target_os = "macos"))]
+const MOUNT_BASE: &str = "mnt";
 
 pub(crate) enum NfsStatus {
     Ready(NfsReadyState),
@@ -159,6 +167,7 @@ pub(crate) fn wait_for_proc_exit(pid: libc::pid_t) -> anyhow::Result<()> {
     wait_for_proc_exit_with_timeout(pid, Duration::from_secs(5))
 }
 
+#[cfg(target_os = "macos")]
 fn wait_for_proc_exit_with_timeout(pid: libc::pid_t, timeout: Duration) -> anyhow::Result<()> {
     let start = Instant::now();
     loop {
@@ -184,10 +193,35 @@ fn wait_for_proc_exit_with_timeout(pid: libc::pid_t, timeout: Duration) -> anyho
             }
             return Err(last_error).context("failed to get process info");
         }
-        // println!("pbi_status: {}", info.pbi_status);
         if info.pbi_status == libc::SZOMB {
-            // process became a zombie
             break;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn wait_for_proc_exit_with_timeout(pid: libc::pid_t, timeout: Duration) -> anyhow::Result<()> {
+    let start = Instant::now();
+    let stat_path = format!("/proc/{}/stat", pid);
+    loop {
+        if start.elapsed() > timeout {
+            anyhow::bail!("Timeout waiting for process exit");
+        }
+        match std::fs::read_to_string(&stat_path) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => break,
+            Err(e) => return Err(e).context("failed to read /proc/<pid>/stat"),
+            Ok(contents) => {
+                // /proc/<pid>/stat: "<pid> (<comm>) <state> ..." — comm can contain
+                // spaces and parens, so find the last ')' then read the next token.
+                if let Some(rparen) = contents.rfind(')')
+                    && let Some(state) = contents[rparen + 1..].split_whitespace().next()
+                    && state == "Z"
+                {
+                    break;
+                }
+            }
         }
         thread::sleep(Duration::from_millis(100));
     }
@@ -934,7 +968,7 @@ impl<'a> NfsShareSetup<'a> {
                 } else {
                     self.config.common.home_dir.clone()
                 }
-                .join("Volumes");
+                .join(MOUNT_BASE);
 
                 let mut mount_name = self.share_path.split(|&b| b == b'/').last().unwrap();
                 if mount_name.is_empty() {
@@ -1008,6 +1042,7 @@ impl<'a> NfsShareSetup<'a> {
             );
         }
 
+        #[cfg(target_os = "macos")]
         if self.config.open_finder {
             let mut shell_script =
             br#"afplay /System/Library/Components/CoreAudio.component/Contents/SharedSupport/SystemSounds/system/Volume\ Mount.aif \
@@ -1300,31 +1335,53 @@ impl super::AppRunner {
             .bind_addr_override(shared_volume)
             .os_override(os);
 
-        let (mut net_helper_proc, net_helper_name, vmnet_config, vm_ip) =
-            match config.common.net_helper {
-                NetHelper::GvProxy => {
-                    let loopback_ip = netutil::pick_usable_loopback_ip(&[2049, 32765, 32767])?;
-                    network_env.usable_loopback_ip = Some(loopback_ip.clone());
-                    (
-                        vm_network::start_gvproxy(&config.common)?,
-                        "gvproxy",
-                        None,
-                        loopback_ip,
-                    )
-                }
-                NetHelper::VmNet => {
-                    let (child, vmnet_cfg) = vm_network::start_vmnet_helper(&config.common)?;
-                    let vm_ip = vmnet_cfg.vm_ip();
-                    (
-                        child,
-                        "vmnet-helper",
-                        Some(vmnet_cfg),
-                        Host::from_ip(IpAddr::V4(vm_ip), None),
-                    )
-                }
-            };
+        #[cfg(target_os = "macos")]
+        type VmnetCfgTy = vm_network::VmnetConfig;
+        #[cfg(not(target_os = "macos"))]
+        type VmnetCfgTy = ();
 
-        vm_native_ip = vmnet_config.as_ref().map(|cfg| cfg.vm_ip());
+        let (mut net_helper_proc, net_helper_name, vmnet_config, vm_ip): (
+            _,
+            _,
+            Option<VmnetCfgTy>,
+            _,
+        ) = match config.common.net_helper {
+            NetHelper::GvProxy => {
+                let loopback_ip = netutil::pick_usable_loopback_ip(&[2049, 32765, 32767])?;
+                network_env.usable_loopback_ip = Some(loopback_ip.clone());
+                (
+                    vm_network::start_gvproxy(&config.common)?,
+                    "gvproxy",
+                    None,
+                    loopback_ip,
+                )
+            }
+            #[cfg(target_os = "macos")]
+            NetHelper::VmNet => {
+                let (child, vmnet_cfg) = vm_network::start_vmnet_helper(&config.common)?;
+                let vm_ip = vmnet_cfg.vm_ip();
+                (
+                    child,
+                    "vmnet-helper",
+                    Some(vmnet_cfg),
+                    Host::from_ip(IpAddr::V4(vm_ip), None),
+                )
+            }
+            #[cfg(not(target_os = "macos"))]
+            NetHelper::VmNet => {
+                anyhow::bail!("vmnet-helper is not supported on Linux")
+            }
+        };
+
+        #[cfg(target_os = "macos")]
+        {
+            vm_native_ip = vmnet_config.as_ref().map(|cfg| cfg.vm_ip());
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = &vmnet_config;
+            vm_native_ip = None;
+        }
 
         let net_helper_pid = net_helper_proc.id() as libc::pid_t;
         fsutil::wait_for_file(&config.common.unixgram_sock_path)?;
@@ -1388,7 +1445,13 @@ impl super::AppRunner {
             )
             .context("Failed to setup microVM")?;
 
+            #[cfg(target_os = "macos")]
             ctx.set_vmnet_cidr(vmnet_config.map(|c| c.vmnet_cidr));
+            #[cfg(not(target_os = "macos"))]
+            {
+                let _ = &vmnet_config;
+                ctx.set_vmnet_cidr(None);
+            }
 
             let to_decrypt: Vec<_> = iter::zip(dev_info.iter(), 'a'..='z')
                 .filter_map(|(di, letter)| {

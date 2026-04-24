@@ -7,6 +7,7 @@ use std::{
     time::Duration,
 };
 
+#[cfg(target_os = "macos")]
 use std::{io::BufReader, process::Stdio};
 
 use crate::settings::{Config, Preferences};

@@ -1,21 +1,24 @@
 use anyhow::Context;
 use bstr::BStr;
+#[cfg(not(target_os = "macos"))]
+use bstr::ByteSlice;
 use common_utils::{PathExt, host_println, is_encrypted_fs, safe_print};
 use derive_more::{AddAssign, Deref};
 use indexmap::IndexMap;
+#[cfg(target_os = "macos")]
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::{
-    cmp,
     fmt::Display,
     hash::{Hash, Hasher},
     io::{self, Write},
     iter,
     path::{Path, PathBuf},
-    process::Command,
     str::FromStr,
     thread,
 };
+#[cfg(target_os = "macos")]
+use std::{cmp, process::Command};
 
 #[cfg(target_os = "macos")]
 use std::{
@@ -199,6 +202,7 @@ pub struct FsTypes(&'static [&'static str]);
 
 pub struct Labels {
     // normally, we match any filesystem with the following partition type
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub part_types: PartTypes,
     // static fs list only used for matching drives without any partition table
     pub fs_types: FsTypes,
@@ -339,6 +343,7 @@ fn partitions_with_part_type(plist: &Plist, part_types: &PartTypes) -> Vec<Strin
     partitions
 }
 
+#[cfg(target_os = "macos")]
 fn augment_line(line: &str, part_type: &str, dev_info: Option<&DevInfo>, fs_type: &str) -> String {
     let label = trunc_with_ellipsis(
         dev_info
@@ -525,7 +530,9 @@ pub fn list_partitions(
     enc_partitions: Option<&[String]>,
     filter: Labels,
 ) -> anyhow::Result<List> {
+    #[cfg(target_os = "macos")]
     let numbered_pattern = Regex::new(r"^\s+\d+:").unwrap();
+    #[cfg(target_os = "macos")]
     let part_type_pattern = Regex::new(&format!(r"({})", filter.part_types.join("|"))).unwrap();
     let mut disk_entries = Vec::new();
 
@@ -1466,8 +1473,9 @@ pub fn get_info(bsd_name: impl AsRef<BStr>) -> DiskInfo {
 
 #[cfg(not(target_os = "macos"))]
 pub fn get_info(dev_path: impl AsRef<BStr>) -> DiskInfo {
-    // Read /sys/block/<name>/ro: "1" means read-only.
-    let name = std::path::Path::new(std::ffi::OsStr::from_bytes(dev_path.as_ref().as_bytes()))
+    use std::os::unix::ffi::OsStrExt;
+    let bytes: &[u8] = dev_path.as_ref().as_bytes();
+    let name = std::path::Path::new(std::ffi::OsStr::from_bytes(bytes))
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();

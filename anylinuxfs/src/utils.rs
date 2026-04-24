@@ -2,7 +2,6 @@ use std::{
     cell::Cell,
     collections::HashSet,
     error::Error,
-    ffi::c_void,
     fs::{File, Permissions},
     io::{self, BufRead, BufReader, Read, Write},
     mem::ManuallyDrop,
@@ -12,7 +11,6 @@ use std::{
     },
     path::Path,
     process::Child,
-    ptr::null,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -21,6 +19,8 @@ use std::{
     thread::{self, JoinHandle},
     time::Duration,
 };
+#[cfg(target_os = "macos")]
+use std::{ffi::c_void, ptr::null};
 
 use anyhow::Context;
 use bstr::{BStr, BString, ByteSlice, ByteVec};
@@ -466,7 +466,7 @@ pub fn fork_with_comm_pipe() -> anyhow::Result<ForkOutput<(), (), CommFd>> {
 
 #[allow(unused)]
 pub fn redirect_to_null(fd: libc::c_int) -> anyhow::Result<()> {
-    let dev_null_fd = unsafe { libc::open(b"/dev/null\0".as_ptr() as *const i8, libc::O_RDONLY) };
+    let dev_null_fd = unsafe { libc::open(c"/dev/null".as_ptr(), libc::O_RDONLY) };
     if dev_null_fd < 0 {
         return Err(io::Error::last_os_error()).context("Failed to open /dev/null");
     }
