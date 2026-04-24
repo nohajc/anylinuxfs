@@ -12,27 +12,27 @@ fn main() {
             println!("cargo:rerun-if-env-changed=PKG_CONFIG_PATH");
         }
         "linux" => {
-            // Try pkg-config first; fall back to default lib search paths.
-            if std::process::Command::new("pkg-config")
+            // libkrun via pkg-config (pkg-config emits -L<libdir>).
+            if let Ok(out) = std::process::Command::new("pkg-config")
                 .args(["--libs-only-L", "libkrun"])
                 .output()
-                .map(|o| {
-                    if o.status.success() {
-                        let path = String::from_utf8_lossy(&o.stdout)
-                            .trim()
-                            .trim_start_matches("-L")
-                            .to_string();
-                        if !path.is_empty() {
-                            println!("cargo:rustc-link-search={}", path);
-                        }
-                        true
-                    } else {
-                        false
-                    }
-                })
-                .unwrap_or(false)
-            {}
+                && out.status.success()
+            {
+                let path = String::from_utf8_lossy(&out.stdout)
+                    .trim()
+                    .trim_start_matches("-L")
+                    .to_string();
+                if !path.is_empty() {
+                    println!("cargo:rustc-link-search={}", path);
+                }
+            }
             println!("cargo:rustc-link-lib=krun");
+
+            // libtirpc provides the SunRPC / rpcbind client API on Linux
+            // (rpcb_set / rpcb_unset / rpcb_getmaps / getnetconfigent).
+            // libtirpc is installed to a standard path, so linker search
+            // dirs don't need tweaking.
+            println!("cargo:rustc-link-lib=tirpc");
         }
         _ => {}
     }

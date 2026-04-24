@@ -1,10 +1,9 @@
 use anyhow::Context;
 use bstr::{BString, ByteSlice, ByteVec};
 use common_utils::{
-    Deferred, NetHelper, OSType, PathExt, host_eprintln, host_println, ipc, log, vmctrl,
+    Deferred, NetHelper, OSType, PathExt, host_eprintln, host_println, ipc, log, safe_println,
+    vmctrl,
 };
-#[cfg(target_os = "macos")]
-use common_utils::safe_println;
 
 #[cfg(target_os = "macos")]
 use dns_sd::{DNSRecord, DNSService};
@@ -44,7 +43,6 @@ use crate::{
     elevate_effective_privileges, fsutil, load_mount_config, netutil, parse_vm_tag_value,
     rand_string, to_exit_code, vm_image, vm_network,
 };
-#[cfg(target_os = "macos")]
 use crate::rpcbind;
 
 #[cfg(target_os = "macos")]
@@ -838,7 +836,6 @@ fn subscribe_to_vm_events(
 
 /// Set up rpcbind services for NFS when using GvProxy and host rpcbind is running.
 /// `services_to_restore` must outlive `deferred` so cleanup can reference it.
-#[cfg(target_os = "macos")]
 fn setup_rpcbind_services<'a>(
     config: &MountConfig,
     network_env: &NetworkEnv,
@@ -1018,7 +1015,7 @@ impl<'a> NfsShareSetup<'a> {
         host_println!("NFS mount command: {}", shell_script.display());
         // try to run mount as regular user first
         // (if that succeeds, umount will work without sudo)
-        let mut status = Command::new("sh")
+        let status = Command::new("sh")
             .arg("-c")
             .arg(shell_script)
             .uid(self.config.common.invoker_uid)
@@ -1028,18 +1025,33 @@ impl<'a> NfsShareSetup<'a> {
             .status()?;
 
         if !status.success() {
-            // otherwise run as root (probably the mount point wasn't accessible)
-            status = Command::new("sh").arg("-c").arg(shell_script).status()?;
-        }
+            // otherwise run as root (probably the mount point wasn't accessible).
+            // Capture stderr so the actual failure reason is visible in the bail message
+            // instead of just "exit code 32".
+            let output = Command::new("sh")
+                .arg("-c")
+                .arg(shell_script)
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .output()?;
 
-        if !status.success() {
-            anyhow::bail!(
-                "failed with exit code {}",
-                status
-                    .code()
-                    .map(|c| c.to_string())
-                    .unwrap_or("unknown".to_owned())
-            );
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let stderr = stderr.trim();
+                anyhow::bail!(
+                    "failed with exit code {}{}",
+                    output
+                        .status
+                        .code()
+                        .map(|c| c.to_string())
+                        .unwrap_or("unknown".to_owned()),
+                    if stderr.is_empty() {
+                        String::new()
+                    } else {
+                        format!(": {}", stderr)
+                    }
+                );
+            }
         }
 
         #[cfg(target_os = "macos")]
@@ -1061,6 +1073,39 @@ impl<'a> NfsShareSetup<'a> {
                 .status();
         }
 
+        Ok(())
+    }
+
+    /// Best-effort: if /proc/mounts has an entry for our NFS export, force-umount
+    /// it. Used on the failure path to avoid leaving a client-side NFS mount that
+    /// points at a VM we're about to tear down. Linux's default `hard` NFS client
+    /// would hang indefinitely on server death, freezing any shell that later
+    /// stats the mount point.
+    #[cfg(not(target_os = "macos"))]
+    fn force_umount_if_mounted(&self) -> anyhow::Result<()> {
+        use std::io::BufRead;
+        let mut device = Vec::with_capacity(self.vm_host_b.len() + 1 + self.share_path.len());
+        device.extend_from_slice(self.vm_host_b);
+        device.push(b':');
+        device.extend_from_slice(self.share_path.as_slice());
+        let device_str = String::from_utf8_lossy(&device).into_owned();
+
+        let file = std::fs::File::open("/proc/mounts")?;
+        for line in std::io::BufReader::new(file).lines() {
+            let line = line?;
+            let mut fields = line.splitn(3, ' ');
+            let from = fields.next().unwrap_or("");
+            let on = fields.next().unwrap_or("");
+            if from == device_str && !on.is_empty() {
+                let _ = Command::new("umount").arg("-f").arg(on).status();
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    fn force_umount_if_mounted(&self) -> anyhow::Result<()> {
+        // macOS relies on DiskArbitration teardown; no-op.
         Ok(())
     }
 
@@ -1139,7 +1184,10 @@ impl super::AppRunner {
         let _lock_file = LockFile::new(LOCK_FILE)?.acquire_lock(FlockKind::Shared)?;
         let mut network_env = NetworkEnv::default();
 
-        #[cfg(target_os = "macos")]
+        // If the host has rpcbind bound to :111 (e.g. nfs-common on Linux starts
+        // it via socket activation), tell vmproxy via -h to skip forwarding
+        // port 111 — the NFS client can reach the guest's NFS server using the
+        // manually-specified mountport/nfsport options instead.
         if let Err(e) = netutil::try_port((Ipv4Addr::from([0, 0, 0, 0]), 111))
             && e.kind() == io::ErrorKind::AddrInUse
         {
@@ -1219,7 +1267,6 @@ impl super::AppRunner {
     ) -> anyhow::Result<()> {
         // pre-declare so it can be referenced in a deferred action
         let stdin_forwarder;
-        #[cfg(target_os = "macos")]
         let services_to_restore: Vec<_>;
         let vm_native_ip;
         let api_socket_path: String;
@@ -1543,23 +1590,20 @@ impl super::AppRunner {
                 }
             });
 
-            #[cfg(target_os = "macos")]
-            {
-                services_to_restore =
-                    if config.common.net_helper == NetHelper::GvProxy && network_env.rpcbind_running {
-                        rpcbind::services::list()?
-                            .into_iter()
-                            .filter(|entry| {
-                                entry.prog == rpcbind::RPCPROG_MNT
-                                    || entry.prog == rpcbind::RPCPROG_NFS
-                                    || entry.prog == rpcbind::RPCPROG_STAT
-                            })
-                            .collect()
-                    } else {
-                        Vec::new()
-                    };
-                setup_rpcbind_services(&config, &network_env, &services_to_restore, &mut deferred)?;
-            }
+            services_to_restore =
+                if config.common.net_helper == NetHelper::GvProxy && network_env.rpcbind_running {
+                    rpcbind::services::list()?
+                        .into_iter()
+                        .filter(|entry| {
+                            entry.prog == rpcbind::RPCPROG_MNT
+                                || entry.prog == rpcbind::RPCPROG_NFS
+                                || entry.prog == rpcbind::RPCPROG_STAT
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+            setup_rpcbind_services(&config, &network_env, &services_to_restore, &mut deferred)?;
 
             let (nfs_ready_tx, nfs_ready_rx) = mpsc::channel();
             let (vm_pwd_prompt_tx, vm_pwd_prompt_rx) = mpsc::channel();
@@ -1691,6 +1735,11 @@ impl super::AppRunner {
                     Err(e) => {
                         let _log_guard = ConsoleLogGuard::enable_temporarily(verbose);
                         host_eprintln!("Failed to request NFS mount: {:#}", e);
+                        // Best-effort: force-umount in case the mount actually
+                        // landed (e.g. partial success) — otherwise the client-side
+                        // entry becomes a zombie pointing at a VM we are about to
+                        // shut down, and any later access hangs (hard,nolock).
+                        let _ = nfs_share.force_umount_if_mounted();
                     }
                 };
 

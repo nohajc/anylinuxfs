@@ -99,10 +99,17 @@ pub struct NfsOptions(BTreeMap<BString, BString>);
 impl Default for NfsOptions {
     fn default() -> Self {
         let mut opts = BTreeMap::new();
-        opts.insert("deadtimeout".into(), "45".into()); // this if what Finder uses
-        opts.insert("nfc".into(), "".into());
+        #[cfg(target_os = "macos")]
+        {
+            opts.insert("deadtimeout".into(), "45".into()); // this if what Finder uses
+            opts.insert("nfc".into(), "".into()); // NFC Unicode normalization (macOS-only)
+            opts.insert("nolocks".into(), "".into());
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            opts.insert("nolock".into(), "".into()); // Linux spelling (no 's')
+        }
         opts.insert("vers".into(), "3".into());
-        opts.insert("nolocks".into(), "".into());
         opts.insert("port".into(), "2049".into());
         opts.insert("mountport".into(), "32767".into());
         NfsOptions(opts)

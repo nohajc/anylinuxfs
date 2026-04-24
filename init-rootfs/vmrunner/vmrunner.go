@@ -3,8 +3,7 @@ package vmrunner
 /*
 #include <stdlib.h>
 #include "vmrunner.h"
-#cgo CFLAGS: -I /opt/homebrew/opt/libkrun/include
-#cgo LDFLAGS: -L /opt/homebrew/opt/libkrun/lib -lkrun
+#cgo pkg-config: libkrun
 */
 import "C"
 import (
