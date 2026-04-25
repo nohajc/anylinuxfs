@@ -248,9 +248,7 @@ fn load_config(common_args: &CommonArgs, debug_args: &DebugArgs) -> anyhow::Resu
     #[cfg(target_os = "macos")]
     let global_cfg_path = global_prefix_dir.join("etc").join("anylinuxfs.toml");
     #[cfg(not(target_os = "macos"))]
-    let global_cfg_path = global_prefix_dir
-        .join("etc")
-        .join("anylinuxfs-linux.toml");
+    let global_cfg_path = global_prefix_dir.join("etc").join("anylinuxfs-linux.toml");
     let all_cfg_paths = [global_cfg_path.as_path(), config_file_path.as_path()];
     let preferences = settings::load_preferences(all_cfg_paths.iter().cloned())?;
 
@@ -490,16 +488,42 @@ pub(crate) fn hostname_from_disk_ident(disk_ident: &str) -> anyhow::Result<Strin
     Ok(vm_hostname)
 }
 
+// Long-term privilege drop intended for the surviving daemon after mount.
+//
+// macOS: full setuid/setgid — the saved uid is also cleared, so this is a
+// permanent, irreversible drop. macOS gvproxy and the vsock control socket
+// were started under the invoker's uid, so cleanup doesn't need root.
+//
+// Linux: effective-only drop (seteuid/setegid). Real and saved uid stay at
+// 0 because several deferred cleanups still need root: SIGTERM to a
+// root-owned gvproxy (it must run as root to bind port 111), removal of
+// libkrun's root:root vsock socket under /tmp's sticky bit, and the
+// auto-created /mnt/<name>. Those callers wrap with EffectiveRootGuard /
+// ElevateOnDrop to re-elevate just for the privileged op. The trade-off is
+// that the daemon retains the *capability* to regain root; that's an
+// acceptable cost on a sudo-launched VM-supervisor process.
 pub(crate) fn drop_privileges(
     sudo_uid: Option<libc::uid_t>,
     sudo_gid: Option<libc::gid_t>,
 ) -> anyhow::Result<()> {
     if let (Some(sudo_uid), Some(sudo_gid)) = (sudo_uid, sudo_gid) {
-        if unsafe { libc::setgid(sudo_gid) } < 0 {
-            return Err(io::Error::last_os_error()).context("Failed to setgid");
+        #[cfg(not(target_os = "macos"))]
+        {
+            if unsafe { libc::setegid(sudo_gid) } < 0 {
+                return Err(io::Error::last_os_error()).context("Failed to setegid");
+            }
+            if unsafe { libc::seteuid(sudo_uid) } < 0 {
+                return Err(io::Error::last_os_error()).context("Failed to seteuid");
+            }
         }
-        if unsafe { libc::setuid(sudo_uid) } < 0 {
-            return Err(io::Error::last_os_error()).context("Failed to setuid");
+        #[cfg(target_os = "macos")]
+        {
+            if unsafe { libc::setgid(sudo_gid) } < 0 {
+                return Err(io::Error::last_os_error()).context("Failed to setgid");
+            }
+            if unsafe { libc::setuid(sudo_uid) } < 0 {
+                return Err(io::Error::last_os_error()).context("Failed to setuid");
+            }
         }
     }
     Ok(())
@@ -536,6 +560,11 @@ pub(crate) fn install_invoker_supplementary_groups(
     Ok(())
 }
 
+// Effective-only privilege drop, paired with `elevate_effective_privileges`.
+// Real and saved uid/gid stay at root, so callers can later re-elevate via
+// seteuid(0) / EffectiveRootGuard. Used around code that should run as the
+// invoker (DNS record creation, etc.) inside a session that still needs to
+// reclaim root afterwards. Identical on macOS and Linux.
 pub(crate) fn drop_effective_privileges(
     sudo_uid: Option<libc::uid_t>,
     sudo_gid: Option<libc::gid_t>,
@@ -551,6 +580,10 @@ pub(crate) fn drop_effective_privileges(
     Ok(())
 }
 
+// Re-elevate effective uid/gid to the real (process) values. Only succeeds
+// if the saved uid/gid are root — i.e. only after `drop_effective_privileges`
+// (or after `drop_privileges` on Linux, which preserves saved uid; not after
+// macOS `drop_privileges`, which clears it).
 pub(crate) fn elevate_effective_privileges() -> anyhow::Result<()> {
     let real_uid = unsafe { libc::getuid() };
     let real_gid = unsafe { libc::getgid() };
