@@ -39,9 +39,12 @@ brew install anylinuxfs
   You can configure RAM limit (512 MB by default), typical usage is around 256 MB per VM.
 - Multi-mount relies on file locks (to prevent data corruption) and we can only lock entire physical partitions.
   That means you can only mount multiple logical volumes from the same partition if you mount all of them read-only.
-- Some disks with non-ASCII labels might fail to mount unless a custom mount point with "safe" characters is used (this is a macOS bug)
 - By design, any mounted volume is seen by macOS as a network drive shared by our virtual machine.
 - Microsoft Word cannot edit files directly on a mounted drive. This is a known issue with Word and network filesystems.
+
+## Known issues
+- Some disks with non-ASCII labels might fail to mount unless a custom mount point with "safe" characters is used (this is a macOS bug)
+- When copying large number of files over an extended period of time, NTFS drives can throw I/O errors (retry usually fixes it). This only happens with the default `ntfs-3g` driver which misbehaves in combination with NFS (used for exposing the files to macOS). Instead, you can use `ntfs3` driver which doesn't have this issue. If you're wondering why that one is not the default, it's explained in NTFS notes below. There's hope the situation might improve once [yet another new NTFS driver](https://www.phoronix.com/news/New-NTFS-Driver-Submitted-Linux) lands in Linux kernel. 
 
 > [!CAUTION]
 > Before using anylinuxfs with **NTFS**, please read [the notes](docs/important-notes.md#ntfs)
