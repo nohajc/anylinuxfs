@@ -12,6 +12,8 @@ use std::borrow::Cow;
 use std::collections::{BTreeSet, HashSet};
 use std::ffi::OsStr;
 use std::fs::{self, File};
+#[cfg(target_os = "macos")]
+use std::net::IpAddr;
 use std::os::fd::FromRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::chown;
@@ -25,11 +27,10 @@ use std::{
     io::{self, BufRead, BufReader, Write},
     net::{Ipv4Addr, TcpStream, ToSocketAddrs},
 };
-#[cfg(target_os = "macos")]
-use std::net::IpAddr;
 
 use crate::devinfo::DevInfo;
 use crate::netutil::Host;
+use crate::rpcbind;
 use crate::settings::{
     Config, CustomActionEnvironment, KernelPage, MountConfig, PassphrasePromptConfig, Preferences,
 };
@@ -43,7 +44,6 @@ use crate::{
     elevate_effective_privileges, fsutil, load_mount_config, netutil, parse_vm_tag_value,
     rand_string, to_exit_code, vm_image, vm_network,
 };
-use crate::rpcbind;
 
 #[cfg(target_os = "macos")]
 const MOUNT_BASE: &str = "Volumes";
@@ -129,8 +129,15 @@ pub(crate) fn unmount_fs(volume_path: &Path) -> anyhow::Result<()> {
 }
 
 pub(crate) fn send_quit_cmd(config: &Config, vm_native_ip: Option<Ipv4Addr>) -> anyhow::Result<()> {
-    let mut stream =
-        vm_network::connect_to_vm_ctrl_socket(config, vm_native_ip, Some(Duration::from_secs(5)))?;
+    // On Linux this may run after drop_privileges (parent is now euid=invoker)
+    // while the libkrun-created vsock socket is root:root mode 0755 — connect(2)
+    // would return EACCES. Briefly re-elevate just for the connect; once the
+    // stream is open, send/recv don't recheck. No-op on macOS / non-sudo runs.
+    let mut stream = {
+        #[cfg(not(target_os = "macos"))]
+        let _guard = EffectiveRootGuard::acquire();
+        vm_network::connect_to_vm_ctrl_socket(config, vm_native_ip, Some(Duration::from_secs(5)))?
+    };
 
     ipc::Client::write_request(&mut stream, &vmctrl::Request::Quit)?;
     stream.flush()?;
@@ -899,6 +906,23 @@ impl Drop for EffectiveRootGuard {
     }
 }
 
+/// Marker whose Drop re-elevates effective uid/gid to 0. Used to ensure
+/// deferred cleanups in `run_mount_child` run as root after the long-running
+/// parent has dropped effective privileges to the invoker. Requires
+/// drop_privileges to have used seteuid/setegid (saved uid still 0).
+#[cfg(not(target_os = "macos"))]
+struct ElevateOnDrop;
+
+#[cfg(not(target_os = "macos"))]
+impl Drop for ElevateOnDrop {
+    fn drop(&mut self) {
+        if unsafe { libc::getuid() } == 0 {
+            unsafe { libc::seteuid(0) };
+            unsafe { libc::setegid(0) };
+        }
+    }
+}
+
 /// Set up rpcbind services for NFS when using GvProxy and host rpcbind is running.
 /// `services_to_restore` must outlive `deferred` so cleanup can reference it.
 fn setup_rpcbind_services<'a>(
@@ -1347,6 +1371,16 @@ impl super::AppRunner {
         let vm_native_ip;
         let api_socket_path: String;
         let mut deferred = Deferred::new();
+
+        // After drop_privileges runs the long-running parent has euid=invoker.
+        // On Linux several deferred cleanups need root: SIGTERM to a root-owned
+        // gvproxy, removal of libkrun's root:root socket files in /tmp (sticky
+        // bit), removal of the auto-created /mnt/<name>. Declare the guard
+        // AFTER `deferred` so it drops FIRST: at scope exit it re-elevates
+        // euid to 0, then `deferred` drops and runs cleanups as root.
+        // No-op on macOS.
+        #[cfg(not(target_os = "macos"))]
+        let _elevate_for_cleanup = ElevateOnDrop;
 
         let verbose = config.verbose;
         if !verbose {
@@ -1851,7 +1885,12 @@ impl super::AppRunner {
                     nfs_share.mount_subdirectories(exports, mount_point, verbose);
                 }
 
-                // drop privileges back to the original user if he used sudo
+                // Drop privileges back to the original user if he used sudo.
+                // On Linux this is an effective-only drop (saved uid stays 0)
+                // because the deferred cleanups below — SIGTERM to root-owned
+                // gvproxy, removal of root:root vsock socket in /tmp, removal
+                // of /mnt/<name> — need to re-elevate via the ElevateOnDrop
+                // guard declared right after `Deferred::new()` above.
                 drop_privileges(config.common.sudo_uid, config.common.sudo_gid)?;
 
                 if can_detach {
