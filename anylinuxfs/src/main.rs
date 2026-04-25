@@ -1046,7 +1046,10 @@ impl AppRunner {
 
     fn run_log(&mut self, cmd: LogCmd) -> anyhow::Result<()> {
         let config = load_config(&CommonArgs::default(), &DebugArgs::default())?;
+        #[cfg(target_os = "macos")]
         let log_dir = config.home_dir.join("Library").join("Logs");
+        #[cfg(not(target_os = "macos"))]
+        let log_dir = config.home_dir.join(".anylinuxfs").join("logs");
 
         // Find the most recently modified log file
         let Some(log_file_path) = find_latest_log(&log_dir, "anylinuxfs-", ".log") else {
