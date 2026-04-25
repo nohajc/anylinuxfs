@@ -435,6 +435,39 @@ mod freebsd {
         write_mtime_files(&base_path, &[&init_src_path, &vmproxy_src_path])
             .context("Failed to write mtime files")?;
 
+        // Install runs as root (sudo), but the disk image and kernel files
+        // need to be owned by the invoking user so subsequent unprivileged
+        // `anylinuxfs shell -i freebsd` runs can open the disk read-write.
+        // Alpine gets the same end-state for free because its init-rootfs
+        // is spawned with the invoker's uid; the FreeBSD bootstrap path
+        // can't do that (libkrun host-side stays root) so we chown after.
+        if let (Some(uid), Some(gid)) = (config.sudo_uid, config.sudo_gid) {
+            if let Err(e) = chown_tree_to_invoker(&base_path, uid, gid) {
+                host_eprintln!(
+                    "Failed to chown {} to invoker: {:#}",
+                    base_path.display(),
+                    e
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    fn chown_tree_to_invoker(
+        path: &Path,
+        uid: libc::uid_t,
+        gid: libc::gid_t,
+    ) -> anyhow::Result<()> {
+        use std::os::unix::fs::chown;
+        chown(path, Some(uid), Some(gid)).with_context(|| format!("chown {}", path.display()))?;
+        let meta = fs::symlink_metadata(path)?;
+        if meta.is_dir() {
+            for entry in fs::read_dir(path)? {
+                let entry = entry?;
+                chown_tree_to_invoker(&entry.path(), uid, gid)?;
+            }
+        }
         Ok(())
     }
 
