@@ -11,20 +11,20 @@ use getifaddrs::InterfaceFilter;
 use std::net::Ipv6Addr;
 
 #[cfg(target_os = "macos")]
-use std::cmp;
-#[cfg(target_os = "macos")]
 use getifaddrs::InterfaceFlags;
 #[cfg(target_os = "macos")]
 use ipnet::Ipv4Net;
+#[cfg(target_os = "macos")]
+use std::cmp;
 
 #[cfg(target_os = "macos")]
-use std::ptr::null_mut;
+use crate::utils::cfdict_get_value;
 #[cfg(target_os = "macos")]
 use objc2_core_foundation::{CFArray, CFDictionary, CFString};
 #[cfg(target_os = "macos")]
 use objc2_system_configuration::SCDynamicStore;
 #[cfg(target_os = "macos")]
-use crate::utils::cfdict_get_value;
+use std::ptr::null_mut;
 
 const DEFAULT_DNS_SERVER: &str = "1.1.1.1";
 
@@ -61,7 +61,8 @@ pub fn get_configured_dns_server() -> anyhow::Result<String> {
 #[cfg(not(target_os = "macos"))]
 pub fn get_configured_dns_server() -> anyhow::Result<String> {
     use std::io::BufRead;
-    let file = std::fs::File::open("/etc/resolv.conf").context("failed to open /etc/resolv.conf")?;
+    let file =
+        std::fs::File::open("/etc/resolv.conf").context("failed to open /etc/resolv.conf")?;
     for line in std::io::BufReader::new(file).lines() {
         let line = line.context("failed to read /etc/resolv.conf")?;
         let line = line.trim();

@@ -16,7 +16,11 @@ use std::{
 #[cfg(target_os = "macos")]
 use common_utils::FromPath;
 #[cfg(target_os = "macos")]
-use std::{ffi::{CStr, CString}, mem, ptr::null_mut};
+use std::{
+    ffi::{CStr, CString},
+    mem,
+    ptr::null_mut,
+};
 
 #[derive(Debug, Clone)]
 pub struct MountTable {
