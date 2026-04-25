@@ -97,14 +97,14 @@ pub(crate) struct DebugArgs {
 
 #[derive(Args, Clone)]
 pub(crate) struct DiskIdentArg {
-    /// File path(s), LVM identifier or RAID identifier, e.g.:
-    /// /dev/diskXsY[:/dev/diskYsZ:...]
-    /// path/to/disk.img@s1[:path/to/disk2.img@s2:...]
-    /// lvm:<vg-name>:diskXsY[:diskYsZ:...]:<lv-name>
-    /// lvm:<vg-name>:path/to/disk.img@s1[:path/to/disk2.img@s2:...]:<lv-name>
-    /// raid:diskXsY[:diskYsZ:...]
-    /// raid:path/to/disk.img@s1[:path/to/disk2.img@s2:...]
-    /// (see `list` command output for available volumes)
+    #[cfg_attr(
+        target_os = "macos",
+        doc = "File path(s), LVM identifier or RAID identifier, e.g.:\n/dev/diskXsY[:/dev/diskYsZ:...]\npath/to/disk.img@s1[:path/to/disk2.img@s2:...]\nlvm:<vg-name>:diskXsY[:diskYsZ:...]:<lv-name>\nlvm:<vg-name>:path/to/disk.img@s1[:path/to/disk2.img@s2:...]:<lv-name>\nraid:diskXsY[:diskYsZ:...]\nraid:path/to/disk.img@s1[:path/to/disk2.img@s2:...]\n(see `list` command output for available volumes)"
+    )]
+    #[cfg_attr(
+        not(target_os = "macos"),
+        doc = "File path(s), LVM identifier or RAID identifier, e.g.:\n/dev/sdXN[:/dev/sdYM:...]\n/dev/nvmeXnYpZ[:/dev/nvmeAnBpC:...]\npath/to/disk.img@s1[:path/to/disk2.img@s2:...]\nlvm:<vg-name>:/dev/sdXN[:/dev/sdYM:...]:<lv-name>\nlvm:<vg-name>:path/to/disk.img@s1[:path/to/disk2.img@s2:...]:<lv-name>\nraid:/dev/sdXN[:/dev/sdYM:...]\nraid:path/to/disk.img@s1[:path/to/disk2.img@s2:...]\n(see `list` command output for available volumes)"
+    )]
     #[clap(verbatim_doc_comment)]
     pub disk_ident: Option<String>,
 }
@@ -113,14 +113,19 @@ pub(crate) struct DiskIdentArg {
 pub(crate) struct MountCmd {
     #[command(flatten)]
     pub d: DiskIdentArg,
-    // TODO: help text references /Volumes which is macOS-specific; on Linux the
-    // default mount base is /mnt. Rewrite as cfg_attr or make platform-neutral.
-    /// Custom mount path to override the default under /Volumes
+    #[cfg_attr(
+        target_os = "macos",
+        doc = "Custom mount path to override the default under /Volumes"
+    )]
+    #[cfg_attr(
+        not(target_os = "macos"),
+        doc = "Custom mount path to override the default under /mnt"
+    )]
     pub mount_point: Option<String>,
     /// Options passed to the Linux mount command (comma-separated)
     #[arg(short, long)]
     pub options: Option<String>,
-    /// NFS options passed to the macOS mount command (comma-separated)
+    /// NFS options passed to the host mount command (comma-separated)
     #[arg(short, long, value_delimiter = ',', num_args = 1..)]
     pub nfs_options: Option<Vec<String>>,
     /// Override **ALL** NFS export options for the mounted drive (/etc/exports in the VM),
@@ -128,10 +133,10 @@ pub(crate) struct MountCmd {
     #[clap(verbatim_doc_comment)]
     #[arg(long = "nfs-export-opts")]
     pub nfs_export_opts: Option<String>,
-    /// Bypass Unix file permissions: files will appear to be owned by the current macOS user.
+    /// Bypass Unix file permissions: files will appear to be owned by the current host user.
     #[arg(long = "ignore-permissions", conflicts_with = "nfs_export_opts")]
     pub ignore_permissions: bool,
-    /// Allow remount: proceed even if the disk is already mounted by macOS (NTFS, exFAT)
+    /// Allow remount: proceed even if the disk is already mounted by the host (NTFS, exFAT)
     #[arg(short, long)]
     pub remount: bool,
     /// Name of a custom action to perform after mounting (defined in config.toml)
@@ -226,9 +231,14 @@ pub(crate) struct ListCmd {
 
 #[derive(Args)]
 pub(crate) struct StopCmd {
-    // TODO: help text uses macOS naming (/dev/diskXsY, /Volumes/MountPoint); adjust
-    // or make platform-neutral for Linux (/dev/sdXN, /dev/nvmeXnYpZ, /mnt/...).
-    /// Disk identifier or mount point to stop (e.g., /dev/diskXsY or /Volumes/MountPoint)
+    #[cfg_attr(
+        target_os = "macos",
+        doc = "Disk identifier or mount point to stop (e.g., /dev/diskXsY or /Volumes/MountPoint)"
+    )]
+    #[cfg_attr(
+        not(target_os = "macos"),
+        doc = "Disk identifier or mount point to stop (e.g., /dev/sda1 or /mnt/MountPoint)"
+    )]
     pub path: Option<String>,
     /// Force stop the VM
     #[arg(short, long)]
@@ -249,7 +259,7 @@ pub(crate) struct ShellCmd {
     pub image: Option<String>,
     #[command(flatten)]
     pub d: DiskIdentArg,
-    /// Allow remount: proceed even if the disk is already mounted by macOS (NTFS, exFAT)
+    /// Allow remount: proceed even if the disk is already mounted by the host (NTFS, exFAT)
     #[arg(short, long)]
     pub remount: bool,
     /// Linux kernel page size
