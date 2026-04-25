@@ -751,6 +751,15 @@ impl PtyReader {
                 if bytes == 0 {
                     break; // EOF
                 }
+                // libkrun's serial console on Linux prefixes the very first
+                // bytes with a literal "^@" caret-notation marker (printed by
+                // the kernel's serial driver as the boot banner). Tag matches
+                // need to allow that — locate the tag opener and slice from
+                // there. If no tag opener exists, fall back to the raw line.
+                let tagged = match line.find("<anylinuxfs-") {
+                    Some(i) => &line[i..],
+                    None => line.as_str(),
+                };
                 if line.contains("READY AND WAITING FOR NFS CLIENT CONNECTIONS") {
                     self.nfs_ready_tx
                         .send(NfsStatus::Ready(NfsReadyState {
@@ -761,31 +770,36 @@ impl PtyReader {
                         }))
                         .unwrap();
                     nfs_ready = true;
-                } else if line.starts_with("<anylinuxfs-vmproxy-ready>") {
+                } else if tagged.starts_with("<anylinuxfs-vmproxy-ready>") {
+                    host_println!(
+                        "DBG: dispatcher matched vmproxy-ready (line len={}, tagged starts {:?})",
+                        line.len(),
+                        &tagged.chars().take(40).collect::<String>()
+                    );
                     subscribe_to_vm_events(
                         &self.config,
                         self.vm_native_ip,
                         self.vm_report_tx.clone(),
                     );
-                } else if line.starts_with("<anylinuxfs-exit-code") {
-                    exit_code = parse_vm_tag_value(&line).and_then(|v| v.parse::<i32>().ok());
-                } else if line.starts_with("<anylinuxfs-label") {
-                    fslabel = parse_vm_tag_value(&line).map(str::to_string);
-                } else if line.starts_with("<anylinuxfs-type") {
-                    fstype = parse_vm_tag_value(&line).map(str::to_string);
-                } else if line.starts_with("<anylinuxfs-mount:changed-to-ro>") {
+                } else if tagged.starts_with("<anylinuxfs-exit-code") {
+                    exit_code = parse_vm_tag_value(tagged).and_then(|v| v.parse::<i32>().ok());
+                } else if tagged.starts_with("<anylinuxfs-label") {
+                    fslabel = parse_vm_tag_value(tagged).map(str::to_string);
+                } else if tagged.starts_with("<anylinuxfs-type") {
+                    fstype = parse_vm_tag_value(tagged).map(str::to_string);
+                } else if tagged.starts_with("<anylinuxfs-mount:changed-to-ro>") {
                     changed_to_ro = true;
-                } else if line.starts_with("<anylinuxfs-nfs-export") {
-                    if let Some(export_path) = parse_vm_tag_value(&line) {
+                } else if tagged.starts_with("<anylinuxfs-nfs-export") {
+                    if let Some(export_path) = parse_vm_tag_value(tagged) {
                         exports.insert(export_path.to_string());
                     }
-                } else if line.starts_with("<anylinuxfs-passphrase-prompt:start>") {
+                } else if tagged.starts_with("<anylinuxfs-passphrase-prompt:start>") {
                     self.vm_pwd_prompt_tx.send(true).unwrap();
-                } else if line.starts_with("<anylinuxfs-passphrase-prompt:end>") {
+                } else if tagged.starts_with("<anylinuxfs-passphrase-prompt:end>") {
                     self.vm_pwd_prompt_tx.send(false).unwrap();
-                } else if !self.verbose && line.starts_with("<anylinuxfs-force-output:off>") {
+                } else if !self.verbose && tagged.starts_with("<anylinuxfs-force-output:off>") {
                     log::disable_console_log();
-                } else if !self.verbose && line.starts_with("<anylinuxfs-force-output:on>") {
+                } else if !self.verbose && tagged.starts_with("<anylinuxfs-force-output:on>") {
                     log::enable_console_log();
                 }
 
@@ -808,10 +822,20 @@ fn subscribe_to_vm_events(
 ) {
     let config = config.clone();
     _ = thread::spawn(move || {
-        let Ok(mut stream) =
+        // On Linux the vsock control socket is owned by root with mode 0755,
+        // so `connect(2)` from the parent's dropped-effective-privileges euid
+        // (the invoking user) returns EACCES. Temporarily elevate for the
+        // connect itself; once the stream is open, send/recv don't recheck.
+        let connect_result = {
+            let _guard = EffectiveRootGuard::acquire();
             vm_network::connect_to_vm_ctrl_socket(&config.common, vm_native_ip, None)
-        else {
-            return;
+        };
+        let mut stream = match connect_result {
+            Ok(s) => s,
+            Err(e) => {
+                host_eprintln!("Failed to connect to VM control socket: {:#}", e);
+                return;
+            }
         };
 
         if let Err(e) = ipc::Client::write_request(&mut stream, &vmctrl::Request::SubscribeEvents) {
@@ -832,6 +856,47 @@ fn subscribe_to_vm_events(
             }
         }
     });
+}
+
+/// RAII guard: elevate effective uid/gid to the saved real-uid-root values on
+/// acquire, drop back to invoker on release. Used to open root-only resources
+/// (e.g. the libkrun-created vsock socket) from threads that otherwise run
+/// with dropped effective privileges. No-op on macOS / non-sudo invocations.
+struct EffectiveRootGuard {
+    prev_uid: Option<libc::uid_t>,
+    prev_gid: Option<libc::gid_t>,
+}
+
+impl EffectiveRootGuard {
+    fn acquire() -> Self {
+        let prev_uid = unsafe { libc::geteuid() };
+        let prev_gid = unsafe { libc::getegid() };
+        // Only elevate if our real uid is root (i.e. we were sudo'd). seteuid(0)
+        // fails with EPERM otherwise, and there's nothing to guard.
+        let is_real_root = unsafe { libc::getuid() } == 0;
+        let (set_uid, set_gid) = if is_real_root && prev_uid != 0 {
+            let _ = unsafe { libc::seteuid(0) };
+            let _ = unsafe { libc::setegid(0) };
+            (Some(prev_uid), Some(prev_gid))
+        } else {
+            (None, None)
+        };
+        Self {
+            prev_uid: set_uid,
+            prev_gid: set_gid,
+        }
+    }
+}
+
+impl Drop for EffectiveRootGuard {
+    fn drop(&mut self) {
+        if let Some(gid) = self.prev_gid {
+            unsafe { libc::setegid(gid) };
+        }
+        if let Some(uid) = self.prev_uid {
+            unsafe { libc::seteuid(uid) };
+        }
+    }
 }
 
 /// Set up rpcbind services for NFS when using GvProxy and host rpcbind is running.

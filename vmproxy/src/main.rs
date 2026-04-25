@@ -338,9 +338,14 @@ impl CtrlSocketServer {
                                 break;
                             }
                             vmctrl::Request::SubscribeEvents => {
+                                // Set the flag *before* spawning so a racing
+                                // Quit that arrives on the next iteration of
+                                // the accept loop sees the subscription as
+                                // active and defers the done_tx signal to the
+                                // subscriber (which will fire it after
+                                // writing the ReportEvent response).
+                                events_subscribed.store(true, Ordering::Relaxed);
                                 s.spawn(move || {
-                                    events_subscribed.store(true, Ordering::Relaxed);
-
                                     if let Some(report_rx) = report_rx.lock().unwrap().take() {
                                         let report = report_rx.recv().map_or_else(
                                             |e| vmctrl::Report {
