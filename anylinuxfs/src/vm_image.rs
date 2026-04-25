@@ -1,6 +1,6 @@
-use crate::{Config, ImageSource, fsutil, vm_network};
 #[cfg(target_os = "macos")]
 use crate::vm_network::VmnetConfig;
+use crate::{Config, ImageSource, fsutil, vm_network};
 #[cfg(not(target_os = "macos"))]
 type VmnetConfig = ();
 use anyhow::Context;

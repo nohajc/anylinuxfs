@@ -191,10 +191,7 @@ pub mod services {
         let c_netid = CString::new(entry.netid.as_bytes()).unwrap();
         let nc = unsafe { getnetconfigent(c_netid.as_ptr()) };
         if nc.is_null() {
-            anyhow::bail!(
-                "getnetconfigent returned null for netid {:?}",
-                entry.netid
-            );
+            anyhow::bail!("getnetconfigent returned null for netid {:?}", entry.netid);
         }
         // netbuf wraps a raw sockaddr buffer (OsSocketAddr already stores a
         // sockaddr_storage-sized buffer, so we point netbuf at it).

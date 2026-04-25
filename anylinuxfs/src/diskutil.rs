@@ -8,6 +8,8 @@ use indexmap::IndexMap;
 #[cfg(target_os = "macos")]
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+#[cfg(target_os = "macos")]
+use std::{cmp, process::Command};
 use std::{
     fmt::Display,
     hash::{Hash, Hasher},
@@ -17,15 +19,7 @@ use std::{
     str::FromStr,
     thread,
 };
-#[cfg(target_os = "macos")]
-use std::{cmp, process::Command};
 
-#[cfg(target_os = "macos")]
-use std::{
-    ffi::{CString, c_void},
-    marker::PhantomData,
-    ptr::{NonNull, null_mut},
-};
 #[cfg(target_os = "macos")]
 use objc2_core_foundation::{
     CFBoolean, CFDictionary, CFRetained, CFRunLoop, CFString, CFURL, kCFRunLoopDefaultMode,
@@ -34,6 +28,12 @@ use objc2_core_foundation::{
 use objc2_disk_arbitration::{
     DADisk, DARegisterDiskAppearedCallback, DARegisterDiskDisappearedCallback, DASession,
     DAUnregisterCallback,
+};
+#[cfg(target_os = "macos")]
+use std::{
+    ffi::{CString, c_void},
+    marker::PhantomData,
+    ptr::{NonNull, null_mut},
 };
 #[cfg(target_os = "macos")]
 use url::Url;
@@ -46,10 +46,7 @@ use crate::{
     vm::{NetworkMode, VMOpts},
 };
 #[cfg(target_os = "macos")]
-use crate::{
-    fsutil,
-    utils::cfdict_get_value,
-};
+use crate::{fsutil, utils::cfdict_get_value};
 
 pub struct Entry(String, String, String, Vec<String>);
 
@@ -628,7 +625,9 @@ pub fn list_partitions(
             }
         } else {
             #[cfg(not(target_os = "macos"))]
-            anyhow::bail!("listing physical block devices is not yet supported on this platform; pass an image file path instead");
+            anyhow::bail!(
+                "listing physical block devices is not yet supported on this platform; pass an image file path instead"
+            );
 
             #[cfg(target_os = "macos")]
             let plist_out = diskutil_list_from_plist(disk)?;
