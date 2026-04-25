@@ -22,7 +22,7 @@ use std::io::{self, Read, Write};
 use std::net::TcpListener;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::CommandExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitCode, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
@@ -999,7 +999,7 @@ impl VmDiskContext {
     /// Build NFS export configuration and write /etc/exports (or /tmp/exports).
     fn build_nfs_exports(
         &self,
-        export_path: String,
+        export_paths: Vec<String>,
         export_mode: &str,
         effective_export_args_override: Option<&str>,
     ) -> anyhow::Result<()> {
@@ -1010,8 +1010,8 @@ impl VmDiskContext {
                 .map(|m| m.path.clone())
                 .collect();
 
-            if !paths.contains(&export_path) {
-                paths.insert(export_path);
+            for path in &export_paths {
+                paths.insert(path.clone());
             }
 
             let mut exports = vec![];
@@ -1021,9 +1021,14 @@ impl VmDiskContext {
             }
             exports
         } else {
-            let export_args =
-                export_args_for_path(&export_path, export_mode, 0, effective_export_args_override)?;
-            vec![(export_path, export_args)]
+            let mut exports = vec![];
+            let paths: BTreeSet<_> = export_paths.into_iter().collect();
+            for (i, path) in paths.into_iter().enumerate() {
+                let args =
+                    export_args_for_path(&path, export_mode, i, effective_export_args_override)?;
+                exports.push((path, args));
+            }
+            exports
         };
         let mut exports_content = String::new();
 
@@ -1146,7 +1151,12 @@ fn run() -> anyhow::Result<()> {
     };
     let nfs_export_override = custom_action_cfg
         .as_ref()
-        .map(|cfg| cfg.override_nfs_export().to_owned());
+        .map(|cfg| cfg.override_nfs_export().to_owned())
+        .filter(|s| !s.is_empty());
+    let nfs_export_subdirs = custom_action_cfg
+        .as_ref()
+        .map(|cfg| cfg.nfs_export_subdirs().to_vec())
+        .unwrap_or_default();
     let export_args_override = cli.nfs_export_opts.as_deref();
     let ignore_permissions = cli.ignore_permissions;
     let mut custom_action = CustomActionRunner::new(custom_action_cfg);
@@ -1256,9 +1266,16 @@ fn run() -> anyhow::Result<()> {
     }
 
     let export_path = match nfs_export_override {
-        Some(path) if !path.is_empty() => path,
+        Some(path) => path,
         _ => mount_point,
     };
+    let export_paths: Vec<String> = std::iter::once(export_path.clone())
+        .chain(nfs_export_subdirs.iter().map(|s| {
+            PathBuf::from_iter([&export_path, s])
+                .to_string_lossy()
+                .into()
+        }))
+        .collect();
 
     let export_mode = if effective_read_only { "ro" } else { "rw" };
 
@@ -1271,7 +1288,7 @@ fn run() -> anyhow::Result<()> {
         export_args_override
     };
 
-    dsk.build_nfs_exports(export_path, export_mode, effective_export_args_override)?;
+    dsk.build_nfs_exports(export_paths, export_mode, effective_export_args_override)?;
 
     match Command::new("/usr/local/bin/entrypoint.sh").spawn() {
         Ok(mut hnd) => {

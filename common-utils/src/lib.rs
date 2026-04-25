@@ -192,6 +192,8 @@ pub struct CustomActionConfig {
     capture_environment: Vec<String>,
     #[serde(default)]
     override_nfs_export: String,
+    #[serde(default)]
+    nfs_export_subdirs: Vec<String>,
     required_os: Option<OSType>,
 }
 
@@ -230,8 +232,27 @@ impl CustomActionConfig {
         &self.override_nfs_export
     }
 
+    pub fn nfs_export_subdirs(&self) -> &[String] {
+        &self.nfs_export_subdirs
+    }
+
     pub fn required_os(&self) -> Option<OSType> {
         self.required_os
+    }
+
+    pub fn validate(self) -> anyhow::Result<Self> {
+        for subdir in &self.nfs_export_subdirs {
+            if subdir.is_empty() {
+                anyhow::bail!("nfs_export_subdirs entries must not be empty");
+            }
+            if Path::new(subdir).is_absolute() {
+                anyhow::bail!(
+                    "nfs_export_subdirs entry {:?} must be a relative path, not absolute",
+                    subdir
+                );
+            }
+        }
+        Ok(self)
     }
 
     pub fn percent_encode(&self) -> anyhow::Result<String> {
@@ -241,7 +262,8 @@ impl CustomActionConfig {
 
     pub fn percent_decode(encoded: &str) -> anyhow::Result<Self> {
         let decoded = percent_decode_str(encoded).decode_utf8()?;
-        Ok(ron::de::from_str(&decoded)?)
+        let config: Self = ron::de::from_str(&decoded)?;
+        Ok(config.validate()?)
     }
 }
 
@@ -282,6 +304,7 @@ impl From<CustomActionConfigOld> for CustomActionConfig {
                 .map(|e| e.to_str_lossy().into())
                 .collect(),
             override_nfs_export: old.override_nfs_export,
+            nfs_export_subdirs: vec![],
             required_os: None,
         }
     }
