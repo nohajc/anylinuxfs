@@ -157,6 +157,232 @@ fn format_partition_size(size_bytes: u64) -> String {
     format!("{:.1} {}B", size, UNITS[unit_idx])
 }
 
+// Linux block-device discovery via sysfs.
+//
+// `/sys/block/*` lists every whole disk the kernel knows about (partitions
+// live as subdirectories below). Filter to the physical-disk classes the
+// project supports — sd*, nvme*n*, vd*, mmcblk*, xvd*, hd* — and skip
+// loop/ram/dm/md/sr (loops are covered by the image-mount path; LVM/RAID/dm
+// are out of scope here).
+//
+// All sysfs reads are unprivileged; libblkid (called separately to fill in
+// fs type / label / uuid) is what needs sudo, exactly mirroring how the
+// macOS path uses DiskArbitration for structure and libblkid for FS detail.
+#[cfg(not(target_os = "macos"))]
+fn is_supported_disk_name(name: &str) -> bool {
+    if name.starts_with("sd")
+        || name.starts_with("vd")
+        || name.starts_with("xvd")
+        || name.starts_with("hd")
+    {
+        // sd/vd/xvd/hd: must be followed by a letter, not a digit
+        // (rules out artifacts like sda1 if anything ever shows up at top level)
+        return name
+            .chars()
+            .nth(if name.starts_with("xvd") { 3 } else { 2 })
+            .map(|c| c.is_ascii_alphabetic())
+            .unwrap_or(false);
+    }
+    if name.starts_with("nvme") {
+        // nvme<ctrl>n<ns> — keep only namespace nodes (no trailing partition)
+        return name.contains('n') && !name.contains('p');
+    }
+    if name.starts_with("mmcblk") {
+        // mmcblk<N> (no trailing 'p<part>')
+        return !name.contains('p');
+    }
+    false
+}
+
+#[cfg(not(target_os = "macos"))]
+fn enumerate_physical_disks() -> Vec<String> {
+    let entries = match std::fs::read_dir("/sys/block") {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
+    };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| is_supported_disk_name(n))
+        .collect();
+    names.sort();
+    names
+}
+
+#[cfg(not(target_os = "macos"))]
+fn read_sectors(path: &std::path::Path) -> Option<u64> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn read_disk_size(disk_name: &str) -> Option<u64> {
+    let p = std::path::PathBuf::from(format!("/sys/block/{}/size", disk_name));
+    read_sectors(&p).map(|sectors| sectors * 512)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn read_part_size(disk_name: &str, part_name: &str) -> Option<u64> {
+    let p = std::path::PathBuf::from(format!("/sys/block/{}/{}/size", disk_name, part_name));
+    read_sectors(&p).map(|sectors| sectors * 512)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn is_removable(disk_name: &str) -> bool {
+    let p = std::path::PathBuf::from(format!("/sys/block/{}/removable", disk_name));
+    std::fs::read_to_string(&p)
+        .map(|s| s.trim() == "1")
+        .unwrap_or(false)
+}
+
+// Partition subdirs under `/sys/block/<disk>/`. Each subdir that has a
+// `partition` file is a partition; the file's content is the partition number.
+// Returned ordered by partition number (so output matches the partition table
+// even if sysfs hands us subdirs in inode order).
+#[cfg(not(target_os = "macos"))]
+fn list_partition_names_sysfs(disk_name: &str) -> Vec<String> {
+    let dir = std::path::PathBuf::from(format!("/sys/block/{}", disk_name));
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
+    };
+    let mut parts: Vec<(u64, String)> = Vec::new();
+    for entry in entries.flatten() {
+        let name = match entry.file_name().into_string() {
+            Ok(n) => n,
+            Err(_) => continue,
+        };
+        let part_num_path = entry.path().join("partition");
+        let Some(num) = read_sectors(&part_num_path) else {
+            continue;
+        };
+        parts.push((num, name));
+    }
+    parts.sort_by_key(|(n, _)| *n);
+    parts.into_iter().map(|(_, n)| n).collect()
+}
+
+// Build an Entry for a single Linux block device using sysfs as the
+// structural source of truth and libblkid for fs metadata. Returns None if
+// no rows survive the filter (so the caller can skip empty disks).
+#[cfg(not(target_os = "macos"))]
+fn process_linux_block_device(
+    disk_path: &str,
+    filter: &Labels,
+    pv: &mut PvCollector,
+) -> Option<Entry> {
+    use bstr::BString;
+    let disk_name = std::path::Path::new(disk_path)
+        .file_name()?
+        .to_str()?
+        .to_string();
+
+    let location = if is_removable(&disk_name) {
+        "external"
+    } else {
+        "internal"
+    };
+    let mut entry = Entry::new(format!("{} ({}, physical):", disk_path, location));
+    entry
+        .header_mut()
+        .push_str("   #:                       TYPE NAME                    SIZE       IDENTIFIER");
+
+    // Whole-disk libblkid probe — gives PT type, fs type (for whole-disk
+    // FS), and labels. Failure (e.g. EACCES without sudo) is fine: we still
+    // show structure from sysfs.
+    let probe = DevInfo::probe_image(BString::from(disk_path.as_bytes())).ok();
+    let whole = probe.as_ref().and_then(|p| p.first());
+
+    let pt_type = whole.and_then(|w| w.pt_type());
+    let whole_fs_type = whole.and_then(|w| w.fs_type());
+    let whole_size = whole
+        .and_then(|w| w.size())
+        .or_else(|| read_disk_size(&disk_name));
+
+    if let Some(pt) = pt_type {
+        // Partitioned disk
+        let normalized_pt = normalize_pt_type(pt);
+        let size_str = whole_size.map(format_partition_size).unwrap_or_default();
+        *entry.scheme_mut() = format!(
+            "   0: {:>26} {:<22} +{:<10} {}",
+            normalized_pt, "", size_str, disk_name,
+        );
+
+        let part_names = list_partition_names_sysfs(&disk_name);
+        for (i, part_name) in part_names.iter().enumerate() {
+            let part_path = format!("/dev/{}", part_name);
+            let part_info = DevInfo::pv(part_path.as_str(), false).ok();
+            let fs_type = part_info.as_ref().and_then(|p| p.fs_type()).unwrap_or("");
+
+            // Filter by fs type (matches macOS image-mode behaviour: empty
+            // fs_type means libblkid couldn't read it — keep the row in
+            // that case so the user sees structure).
+            if !fs_type.is_empty() && !filter.fs_types.iter().any(|t| t == &fs_type) {
+                continue;
+            }
+
+            if let Some(ref dev_info) = part_info {
+                pv.try_collect(dev_info, part_name, &part_path, fs_type);
+            }
+
+            let label = part_info.as_ref().and_then(|p| p.label()).unwrap_or("");
+            let truncated_label = trunc_with_ellipsis(label, 23);
+            let part_size = read_part_size(&disk_name, part_name);
+            let size_str = part_size.map(format_partition_size).unwrap_or_default();
+            entry.partitions_mut().push(format!(
+                "{:>4}: {:>26} {:<23} {:<10} {}",
+                i + 1,
+                fs_type,
+                truncated_label,
+                size_str,
+                part_name,
+            ));
+        }
+    } else if let Some(fs_type) = whole_fs_type {
+        // Whole-disk filesystem (no partition table)
+        if !filter.fs_types.iter().any(|t| t == &fs_type) {
+            return None;
+        }
+        if let Some(w) = whole {
+            pv.try_collect(w, &disk_name, disk_path, fs_type);
+        }
+        let label = whole.and_then(|w| w.label()).unwrap_or("");
+        let truncated_label = trunc_with_ellipsis(label, 23);
+        let size_str = whole_size.map(format_partition_size).unwrap_or_default();
+        entry.partitions_mut().push(format!(
+            "   0: {:>26} {:<22} +{:<10} {}",
+            fs_type, truncated_label, size_str, disk_name,
+        ));
+    } else {
+        // No probe info (unprivileged or unknown content). Show structure
+        // from sysfs only — partition list with sizes, no fs/label.
+        let part_names = list_partition_names_sysfs(&disk_name);
+        if part_names.is_empty() {
+            return None;
+        }
+        let size_str = whole_size.map(format_partition_size).unwrap_or_default();
+        *entry.scheme_mut() = format!(
+            "   0: {:>26} {:<22} +{:<10} {}",
+            "", "", size_str, disk_name,
+        );
+        for (i, part_name) in part_names.iter().enumerate() {
+            let part_size = read_part_size(&disk_name, part_name);
+            let size_str = part_size.map(format_partition_size).unwrap_or_default();
+            entry.partitions_mut().push(format!(
+                "{:>4}: {:>26} {:<23} {:<10} {}",
+                i + 1,
+                "",
+                "",
+                size_str,
+                part_name,
+            ));
+        }
+    }
+
+    Some(entry)
+}
+
 #[cfg(target_os = "macos")]
 fn diskutil_list_from_plist(disk: Option<&str>) -> anyhow::Result<Plist> {
     let mut cmd = Command::new("diskutil");
@@ -535,9 +761,34 @@ pub fn list_partitions(
 
     let mut pv = PvCollector::new(enc_partitions);
 
+    // On Linux, expand `disks=None` (= all) into the actual sysfs-discovered
+    // disk paths up front so the per-disk loop below can drive a uniform
+    // path. Storage must outlive `device_iter` (which borrows from it).
+    #[cfg(not(target_os = "macos"))]
+    let enumerated_disk_paths: Vec<String> = if disks.is_none() {
+        enumerate_physical_disks()
+            .into_iter()
+            .map(|n| format!("/dev/{}", n))
+            .collect()
+    } else {
+        Vec::new()
+    };
+
     // Convert disks parameter to iterator: either None (single entry for all disks) or slice of devices
     let device_iter: Vec<Option<&str>> = match disks {
-        None => vec![None], // Process all disks
+        None => {
+            #[cfg(target_os = "macos")]
+            {
+                vec![None]
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                enumerated_disk_paths
+                    .iter()
+                    .map(|s| Some(s.as_str()))
+                    .collect()
+            }
+        }
         Some(slice) => slice.iter().map(|d| Some(d.as_str())).collect(), // Process each device
     };
 
@@ -625,9 +876,20 @@ pub fn list_partitions(
             }
         } else {
             #[cfg(not(target_os = "macos"))]
-            anyhow::bail!(
-                "listing physical block devices is not yet supported on this platform; pass an image file path instead"
-            );
+            {
+                // Linux block device path: sysfs gives us the disk/partition
+                // structure unprivileged; libblkid (when accessible) adds fs
+                // type / label / uuid. `disk` is None only when called via
+                // image-mode for a path that doesn't exist as a file —
+                // skip rather than crash, since we already enumerated all
+                // physical disks above.
+                if let Some(path) = disk {
+                    if let Some(entry) = process_linux_block_device(path, &filter, &mut pv) {
+                        disk_entries.push(entry);
+                    }
+                }
+                continue;
+            }
 
             #[cfg(target_os = "macos")]
             let plist_out = diskutil_list_from_plist(disk)?;
