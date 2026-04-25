@@ -559,6 +559,7 @@ pub(crate) fn start_vmproxy(
 
     raise_nofile_limit();
     before_start().context("Before start callback failed")?;
+    #[cfg(not(target_os = "macos"))]
     crate::install_invoker_supplementary_groups(ctx.sudo_uid(), ctx.sudo_gid())?;
     bindings::krun_start_enter(ctx.id).context("Failed to start VM")?;
 
@@ -703,6 +704,7 @@ pub(crate) fn start_vm(
 ) -> anyhow::Result<()> {
     set_vm_cmdline(ctx, cmdline, env)?;
     raise_nofile_limit();
+    #[cfg(not(target_os = "macos"))]
     crate::install_invoker_supplementary_groups(ctx.sudo_uid(), ctx.sudo_gid())?;
     bindings::krun_start_enter(ctx.id).context("Failed to start VM")?;
 

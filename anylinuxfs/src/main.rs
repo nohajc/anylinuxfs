@@ -188,6 +188,7 @@ fn load_config(common_args: &CommonArgs, debug_args: &DebugArgs) -> anyhow::Resu
     // have root, so every forked child inherits them. Required on Linux for
     // libkrun's internal setuid() to land in a process that still has access
     // to /dev/kvm and /dev/vhost-* (all mode 660, group=kvm).
+    #[cfg(not(target_os = "macos"))]
     install_invoker_supplementary_groups(sudo_uid, sudo_gid)?;
 
     let invoker_uid = match sudo_uid {
@@ -535,6 +536,7 @@ pub(crate) fn drop_privileges(
 // without this the post-setuid process has only root's groups (gid 0) and
 // can't open /dev/kvm (mode 660, group=kvm). Runs on macOS too but is a no-op
 // there because HVF doesn't require group membership.
+#[cfg(not(target_os = "macos"))]
 pub(crate) fn install_invoker_supplementary_groups(
     sudo_uid: Option<libc::uid_t>,
     sudo_gid: Option<libc::gid_t>,
@@ -555,6 +557,7 @@ pub(crate) fn install_invoker_supplementary_groups(
         .context("Invoking user not found in passwd database")?;
     let user_cstr =
         std::ffi::CString::new(user.name.as_bytes()).context("Invoking username contains NUL")?;
+    #[cfg(not(target_os = "macos"))]
     nix::unistd::initgroups(&user_cstr, nix::unistd::Gid::from_raw(gid))
         .context("Failed to install invoker's supplementary groups")?;
     Ok(())
