@@ -22,7 +22,7 @@ use std::io::{self, Read, Write};
 use std::net::TcpListener;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::CommandExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitCode, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
@@ -1022,10 +1022,11 @@ impl VmDiskContext {
             exports
         } else {
             let mut exports = vec![];
-            for (i, path) in export_paths.iter().enumerate() {
+            let paths: BTreeSet<_> = export_paths.into_iter().collect();
+            for (i, path) in paths.into_iter().enumerate() {
                 let args =
-                    export_args_for_path(path, export_mode, i, effective_export_args_override)?;
-                exports.push((path.clone(), args));
+                    export_args_for_path(&path, export_mode, i, effective_export_args_override)?;
+                exports.push((path, args));
             }
             exports
         };
@@ -1269,11 +1270,11 @@ fn run() -> anyhow::Result<()> {
         _ => mount_point,
     };
     let export_paths: Vec<String> = std::iter::once(export_path.clone())
-        .chain(
-            nfs_export_subdirs
-                .iter()
-                .map(|s| format!("{}/{}", export_path.trim_end_matches('/'), s)),
-        )
+        .chain(nfs_export_subdirs.iter().map(|s| {
+            PathBuf::from_iter([&export_path, s])
+                .to_string_lossy()
+                .into()
+        }))
         .collect();
 
     let export_mode = if effective_read_only { "ro" } else { "rw" };

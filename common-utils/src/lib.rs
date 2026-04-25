@@ -240,6 +240,21 @@ impl CustomActionConfig {
         self.required_os
     }
 
+    pub fn validate(self) -> anyhow::Result<Self> {
+        for subdir in &self.nfs_export_subdirs {
+            if subdir.is_empty() {
+                anyhow::bail!("nfs_export_subdirs entries must not be empty");
+            }
+            if Path::new(subdir).is_absolute() {
+                anyhow::bail!(
+                    "nfs_export_subdirs entry {:?} must be a relative path, not absolute",
+                    subdir
+                );
+            }
+        }
+        Ok(self)
+    }
+
     pub fn percent_encode(&self) -> anyhow::Result<String> {
         let ron_encoded = ron::ser::to_string(&self)?;
         Ok(utf8_percent_encode(&ron_encoded, NON_ALPHANUMERIC).to_string())
@@ -247,7 +262,8 @@ impl CustomActionConfig {
 
     pub fn percent_decode(encoded: &str) -> anyhow::Result<Self> {
         let decoded = percent_decode_str(encoded).decode_utf8()?;
-        Ok(ron::de::from_str(&decoded)?)
+        let config: Self = ron::de::from_str(&decoded)?;
+        Ok(config.validate()?)
     }
 }
 

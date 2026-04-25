@@ -309,6 +309,20 @@ impl PrefsObject {
             ram_size_mib: other.ram_size_mib.or(self.ram_size_mib),
         }
     }
+
+    pub fn validate(mut self) -> anyhow::Result<Self> {
+        let custom_actions = std::mem::take(&mut self.custom_actions);
+        self.custom_actions = custom_actions
+            .into_iter()
+            .map(|(name, action)| {
+                action
+                    .validate()
+                    .context(format!("Invalid custom action {:?}", name))
+                    .map(|a| (name, a))
+            })
+            .collect::<anyhow::Result<_>>()?;
+        Ok(self)
+    }
 }
 
 impl Display for PrefsObject {
@@ -398,7 +412,7 @@ pub fn load_preferences<'a>(
 }
 
 pub fn parse_toml_config(config_str: &str, path: impl AsRef<Path>) -> anyhow::Result<PrefsObject> {
-    let res = match toml::from_str::<PrefsObject>(config_str) {
+    match toml::from_str::<PrefsObject>(config_str) {
         Ok(config) => Ok(config),
         Err(_) => {
             // this could be a config affected by the byte string serialization bug
@@ -412,8 +426,8 @@ pub fn parse_toml_config(config_str: &str, path: impl AsRef<Path>) -> anyhow::Re
 
             Ok(fixed_config)
         }
-    };
-    res
+    }
+    .and_then(PrefsObject::validate)
 }
 
 pub fn save_preferences(preferences: &PrefsObject, config_file_path: &Path) -> anyhow::Result<()> {
