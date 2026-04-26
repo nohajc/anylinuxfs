@@ -18,10 +18,10 @@ export PATH="$PATH:/opt/homebrew/opt/rustup/bin"
 
 ## Runtime dependencies
 
-You should already have these if you installed `anylinuxfs` from Homebrew (`libblkid` and the hypervisor):
+You should already have these if you installed `anylinuxfs` from Homebrew:
 
 ```sh
-brew install util-linux slp/krun/libkrun
+brew install util-linux
 ```
 
 ## Building
