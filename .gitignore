@@ -30,6 +30,8 @@ tmp/
 /sandbox-test
 /generated
 
+/anylinuxfs/linux-sysroot
+
 *.img
 *.iso
 *.raw
