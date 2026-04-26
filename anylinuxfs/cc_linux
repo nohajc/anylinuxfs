@@ -52,7 +52,7 @@ if [ ! -f "${SYSROOT}/.sysroot_ready" ]; then
     bootstrap_sysroot
 fi
 
-exec /usr/bin/clang \
+exec /opt/homebrew/opt/llvm/bin/clang \
     -target aarch64-linux-gnu \
     -fuse-ld=lld \
     -Wl,-strip-debug \
