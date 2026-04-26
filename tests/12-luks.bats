@@ -29,7 +29,6 @@ setup_file() {
           /dev/mapper/alfsluks \
      && cryptsetup close alfsluks"
 
-  # TODO: why does lvm-on-luks layout setup fail?
   # --- LVM-on-LUKS ---
   # The LV is explicitly sized (-L 200M) and sits well within the container,
   # so it is unaffected by the 64 KiB device size discrepancy.

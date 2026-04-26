@@ -2,10 +2,56 @@
 # CC_LINUX wrapper: cross-compiles C code for Linux AArch64 from macOS.
 # Referenced by .cargo/config.toml so `cargo build` works without exporting
 # CC_LINUX manually. The sysroot path is resolved relative to this script.
+# On first invocation the sysroot is bootstrapped automatically from Debian
+# packages (bookworm/arm64) — no make or pre-built sysroot required.
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)
-# TODO: build sysroot automatically from debian packages
-SYSROOT="${SCRIPT_DIR}/../../3rd-party/libkrun/linux-sysroot"
+SYSROOT="${SCRIPT_DIR}/linux-sysroot"
 GCC_LIB_DIR="${SYSROOT}/usr/lib/gcc/aarch64-linux-gnu/12"
+
+bootstrap_sysroot() {
+    local ROOTFS_TMP="${SYSROOT}/.tmp"
+    local DEBIAN_DIST="bookworm"
+    local DEBIAN_ARCH="arm64"
+    local GCC_VERSION="12"
+    local DEBIAN_PACKAGES="libc6 libc6-dev libgcc-${GCC_VERSION}-dev linux-libc-dev"
+    local PACKAGES_FILE="${ROOTFS_TMP}/Packages.xz"
+
+    mkdir -p "${ROOTFS_TMP}"
+
+    echo "cc_linux: downloading Debian package index (${DEBIAN_DIST}/${DEBIAN_ARCH})..." >&2
+    curl -fL -o "${PACKAGES_FILE}" \
+        "https://deb.debian.org/debian/dists/${DEBIAN_DIST}/main/binary-${DEBIAN_ARCH}/Packages.xz"
+
+    echo "cc_linux: extracting Debian packages into ${SYSROOT}..." >&2
+    for pkg in ${DEBIAN_PACKAGES}; do
+        DEB_PATH=$(xzcat "${PACKAGES_FILE}" \
+            | sed '1,/Package: '"${pkg}"'$/d' \
+            | grep 'Filename:' \
+            | sed 's/^Filename: //' \
+            | head -n1)
+        DEB_URL="https://deb.debian.org/debian/${DEB_PATH}"
+        DEB_NAME=$(basename "${DEB_PATH}")
+        if [ ! -f "${ROOTFS_TMP}/${DEB_NAME}" ]; then
+            echo "cc_linux: downloading ${DEB_URL}" >&2
+            curl -fL -o "${ROOTFS_TMP}/${DEB_NAME}" "${DEB_URL}"
+        fi
+        (cd "${ROOTFS_TMP}" && ar x "${DEB_NAME}")
+        tar xf "${ROOTFS_TMP}"/data.tar.* -C "${SYSROOT}"
+        rm -f "${ROOTFS_TMP}"/*.deb \
+              "${ROOTFS_TMP}"/data.tar.* \
+              "${ROOTFS_TMP}"/control.tar.* \
+              "${ROOTFS_TMP}"/debian-binary
+    done
+
+    rm -rf "${ROOTFS_TMP}"
+    touch "${SYSROOT}/.sysroot_ready"
+    echo "cc_linux: sysroot ready." >&2
+}
+
+if [ ! -f "${SYSROOT}/.sysroot_ready" ]; then
+    bootstrap_sysroot
+fi
+
 exec /usr/bin/clang \
     -target aarch64-linux-gnu \
     -fuse-ld=lld \
