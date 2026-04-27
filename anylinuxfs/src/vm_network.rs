@@ -8,7 +8,7 @@ use std::{
 };
 
 #[cfg(target_os = "macos")]
-use std::{io::BufReader, process::Stdio};
+use std::{io::BufReader, os::unix::process::CommandExt, process::Stdio};
 
 use crate::settings::{Config, Preferences};
 use anyhow::Context;
