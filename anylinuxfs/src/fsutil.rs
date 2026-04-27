@@ -1,6 +1,6 @@
 use anyhow::Context;
 use bstr::{B, BStr, BString, ByteSlice};
-use common_utils::{FromPath, PathExt, host_println};
+use common_utils::{FromPath, PathExt, host_eprintln, host_println};
 use derive_more::{Deref, DerefMut};
 use rayon::prelude::*;
 use std::{
@@ -301,15 +301,34 @@ pub fn unmount_nfs_subdirs<'a>(
     mnt_point_base: impl AsRef<Path>,
 ) -> anyhow::Result<()> {
     let mut trie = dirtrie::Node::default();
+    let base = mnt_point_base.as_ref().as_bytes();
 
     for subdir in subdirs {
-        let subdir = subdir.as_bytes();
-        let subdir_relative = subdir
-            .strip_prefix(mnt_point_base.as_ref().as_bytes())
+        let subdir_bytes = subdir.as_bytes();
+        // Compute the path relative to mnt_point_base. Two valid shapes:
+        //   - subdir == base                                     -> ""
+        //   - subdir == base + "/" + rest                        -> "rest"
+        // Anything else is a caller bug — distinct mount points can't share
+        // a trie key without one silently overwriting the other (the trie
+        // root collides on key=""). Skip with a warning rather than risk a
+        // dropped umount.
+        let subdir_relative: &[u8] = if subdir_bytes == base {
+            b""
+        } else if let Some(rest) = subdir_bytes
+            .strip_prefix(base)
             .and_then(|s| s.strip_prefix(b"/"))
-            .unwrap_or(b"");
+        {
+            rest
+        } else {
+            host_eprintln!(
+                "warning: unmount_nfs_subdirs: skipping {:?} — not under base {:?}",
+                <[u8]>::as_bstr(subdir_bytes),
+                <[u8]>::as_bstr(base),
+            );
+            continue;
+        };
 
-        trie.insert(&*subdir_relative.to_path_lossy(), subdir.into());
+        trie.insert(&*subdir_relative.to_path_lossy(), subdir_bytes.into());
     }
 
     parallel_unmount_recursive(&trie)?;

@@ -1769,7 +1769,18 @@ impl super::AppRunner {
             let our_mount_points = mount_table
                 .mount_points()
                 .map(|item| item.as_os_str())
-                .filter(|&mpt| mpt.as_bytes().starts_with(mount_point.as_bytes()));
+                .filter(|&mpt| {
+                    // Path-aware prefix match: either equal to mount_point or
+                    // a strict subdirectory under it. Plain byte-prefix
+                    // matching pulls in unrelated siblings like /mnt/foo-1
+                    // when iterating /mnt/foo, which then collide on the
+                    // empty-relative-path key inside unmount_nfs_subdirs and
+                    // cause one of them to be silently dropped.
+                    let mpt = mpt.as_bytes();
+                    let prefix = mount_point.as_bytes();
+                    mpt == prefix
+                        || (mpt.starts_with(prefix) && mpt.get(prefix.len()) == Some(&b'/'))
+                });
 
             fsutil::unmount_nfs_subdirs(our_mount_points, &mount_point)?;
 
