@@ -41,9 +41,11 @@ if [[ "$HOST_OS" == "Darwin" ]]; then
     curl -L -o libexec/gvproxy "$GVPROXY_URL"
     chmod +x libexec/gvproxy
 else
-    # Build gvproxy from the patched fork (vfkit mode support, no versioned release yet)
+    # Build gvproxy from upstream main. The vfkit-mode patch we needed is
+    # merged but not in a tagged release yet; switch back to a tagged tarball
+    # once a release ships.
     GVPROXY_TMP="$(mktemp -d "$SCRIPT_DIR/.gvproxy-build.XXXXXX")"
-    git clone --depth=1 https://github.com/nohajc/gvisor-tap-vsock.git "$GVPROXY_TMP"
+    git clone --depth=1 https://github.com/containers/gvisor-tap-vsock.git "$GVPROXY_TMP"
     (cd "$GVPROXY_TMP" && make)
     cp "$GVPROXY_TMP/bin/gvproxy" libexec/gvproxy
     chmod +x libexec/gvproxy
