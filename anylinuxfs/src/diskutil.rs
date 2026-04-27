@@ -303,11 +303,12 @@ fn process_linux_block_device(
         .to_string();
 
     // Loop devices are the Linux analogue of macOS hdiutil-attached images;
-    // mirror diskutil's "external, virtual" tag for them. Physical block
-    // devices keep the "physical" tag with an internal/external prefix
-    // driven by the kernel's `removable` flag.
+    // mirror diskutil's "disk image" tag for them — same as the image-mode
+    // path uses for file-based images. Physical block devices keep the
+    // "physical" tag with an internal/external prefix driven by the
+    // kernel's `removable` flag.
     let header_tag = if disk_name.starts_with("loop") {
-        "external, virtual".to_string()
+        "disk image".to_string()
     } else {
         let location = if is_removable(&disk_name) {
             "external"
@@ -320,6 +321,14 @@ fn process_linux_block_device(
     entry
         .header_mut()
         .push_str("   #:                       TYPE NAME                    SIZE       IDENTIFIER");
+
+    // Whole-disk size prefix mirrors macOS diskutil: `*` for physical block
+    // devices, `+` for disk images (loop / hdiutil-attached).
+    let size_prefix = if disk_name.starts_with("loop") {
+        '+'
+    } else {
+        '*'
+    };
 
     // Whole-disk libblkid probe — gives PT type, fs type (for whole-disk
     // FS), and labels. Failure (e.g. EACCES without sudo) is fine: we still
@@ -338,8 +347,8 @@ fn process_linux_block_device(
         let normalized_pt = normalize_pt_type(pt);
         let size_str = whole_size.map(format_partition_size).unwrap_or_default();
         *entry.scheme_mut() = format!(
-            "   0: {:>26} {:<22} +{:<10} {}",
-            normalized_pt, "", size_str, disk_name,
+            "   0: {:>26} {:<22} {}{:<10} {}",
+            normalized_pt, "", size_prefix, size_str, disk_name,
         );
 
         let part_names = list_partition_names_sysfs(&disk_name);
@@ -384,8 +393,8 @@ fn process_linux_block_device(
         let truncated_label = trunc_with_ellipsis(label, 23);
         let size_str = whole_size.map(format_partition_size).unwrap_or_default();
         entry.partitions_mut().push(format!(
-            "   0: {:>26} {:<22} +{:<10} {}",
-            fs_type, truncated_label, size_str, disk_name,
+            "   0: {:>26} {:<22} {}{:<10} {}",
+            fs_type, truncated_label, size_prefix, size_str, disk_name,
         ));
     } else {
         // No probe info (unprivileged or unknown content). Show structure
@@ -396,8 +405,8 @@ fn process_linux_block_device(
         }
         let size_str = whole_size.map(format_partition_size).unwrap_or_default();
         *entry.scheme_mut() = format!(
-            "   0: {:>26} {:<22} +{:<10} {}",
-            "", "", size_str, disk_name,
+            "   0: {:>26} {:<22} {}{:<10} {}",
+            "", "", size_prefix, size_str, disk_name,
         );
         for (i, part_name) in part_names.iter().enumerate() {
             let part_size = read_part_size(&disk_name, part_name);
