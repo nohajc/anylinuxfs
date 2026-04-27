@@ -2,7 +2,7 @@ use std::{
     fs::{self, File},
     io::{self, Read, Write},
     net::{Ipv4Addr, TcpStream},
-    os::unix::{fs::chown, net::UnixStream, process::CommandExt},
+    os::unix::{fs::chown, net::UnixStream},
     process::{Child, Command},
     time::Duration,
 };

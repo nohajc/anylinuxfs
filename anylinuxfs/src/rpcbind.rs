@@ -151,6 +151,7 @@ pub struct Entry {
 }
 
 /* Standard RPC program numbers */
+#[cfg(target_os = "macos")]
 pub const RPCPROG_RPCB: c_uint = 100000;
 pub const RPCPROG_NFS: c_uint = 100003;
 pub const RPCPROG_MNT: c_uint = 100005;
@@ -170,6 +171,7 @@ pub mod services {
     const RPCBVERS4: c_uint = 4;
     #[cfg(target_os = "macos")]
     const RPCBPROC_DUMP: c_uint = 4;
+    #[cfg(target_os = "macos")]
     const RPC_SUCCESS: c_int = 0;
 
     #[cfg(target_os = "macos")]

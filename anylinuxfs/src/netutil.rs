@@ -3,15 +3,16 @@ use std::{
     fmt::Display,
     io,
     net::{IpAddr, SocketAddr, ToSocketAddrs},
-    process::Command,
 };
 
 use anyhow::Context;
-use getifaddrs::InterfaceFilter;
-use std::net::Ipv6Addr;
 
 #[cfg(target_os = "macos")]
-use getifaddrs::InterfaceFlags;
+use getifaddrs::{InterfaceFilter, InterfaceFlags};
+#[cfg(target_os = "macos")]
+use std::net::Ipv6Addr;
+#[cfg(target_os = "macos")]
+use std::process::Command;
 #[cfg(target_os = "macos")]
 use ipnet::Ipv4Net;
 #[cfg(target_os = "macos")]
