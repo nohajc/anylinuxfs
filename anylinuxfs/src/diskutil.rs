@@ -161,9 +161,10 @@ fn format_partition_size(size_bytes: u64) -> String {
 //
 // `/sys/block/*` lists every whole disk the kernel knows about (partitions
 // live as subdirectories below). Filter to the physical-disk classes the
-// project supports — sd*, nvme*n*, vd*, mmcblk*, xvd*, hd* — and skip
-// loop/ram/dm/md/sr (loops are covered by the image-mount path; LVM/RAID/dm
-// are out of scope here).
+// project supports — sd*, nvme*n*, vd*, mmcblk*, xvd*, hd* — plus loop
+// devices that have a backing file attached (the Linux equivalent of a
+// macOS hdiutil-attached disk image, used by integration tests).
+// Skip ram/dm/md/sr (LVM/RAID/dm are out of scope here).
 //
 // All sysfs reads are unprivileged; libblkid (called separately to fill in
 // fs type / label / uuid) is what needs sudo, exactly mirroring how the
@@ -191,7 +192,30 @@ fn is_supported_disk_name(name: &str) -> bool {
         // mmcblk<N> (no trailing 'p<part>')
         return !name.contains('p');
     }
+    if let Some(rest) = name.strip_prefix("loop") {
+        // loop[0-9]+ — but only consider it "supported" when actually
+        // backed by a file. The kernel preallocates loop0..loop7 idle.
+        return !rest.is_empty()
+            && rest.chars().all(|c| c.is_ascii_digit())
+            && loop_backing_file(name).is_some();
+    }
     false
+}
+
+// Path of the file backing a loop device, or None if the device is idle.
+// `/sys/block/loopN/loop/backing_file` only exists once losetup has
+// associated a file; for idle preallocated loops the `loop/` subdir is
+// absent.
+#[cfg(not(target_os = "macos"))]
+fn loop_backing_file(disk_name: &str) -> Option<String> {
+    let p = std::path::PathBuf::from(format!("/sys/block/{}/loop/backing_file", disk_name));
+    let s = std::fs::read_to_string(&p).ok()?;
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -278,12 +302,21 @@ fn process_linux_block_device(
         .to_str()?
         .to_string();
 
-    let location = if is_removable(&disk_name) {
-        "external"
+    // Loop devices are the Linux analogue of macOS hdiutil-attached images;
+    // mirror diskutil's "external, virtual" tag for them. Physical block
+    // devices keep the "physical" tag with an internal/external prefix
+    // driven by the kernel's `removable` flag.
+    let header_tag = if disk_name.starts_with("loop") {
+        "external, virtual".to_string()
     } else {
-        "internal"
+        let location = if is_removable(&disk_name) {
+            "external"
+        } else {
+            "internal"
+        };
+        format!("{}, physical", location)
     };
-    let mut entry = Entry::new(format!("{} ({}, physical):", disk_path, location));
+    let mut entry = Entry::new(format!("{} ({}):", disk_path, header_tag));
     entry
         .header_mut()
         .push_str("   #:                       TYPE NAME                    SIZE       IDENTIFIER");
