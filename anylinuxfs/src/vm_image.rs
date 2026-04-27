@@ -435,12 +435,18 @@ mod freebsd {
         write_mtime_files(&base_path, &[&init_src_path, &vmproxy_src_path])
             .context("Failed to write mtime files")?;
 
-        // Install runs as root (sudo), but the disk image and kernel files
-        // need to be owned by the invoking user so subsequent unprivileged
-        // `anylinuxfs shell -i freebsd` runs can open the disk read-write.
-        // Alpine gets the same end-state for free because its init-rootfs
-        // is spawned with the invoker's uid; the FreeBSD bootstrap path
-        // can't do that (libkrun host-side stays root) so we chown after.
+        // Linux only: install runs as root (sudo) and the disk image / kernel
+        // files end up root-owned, but a later unprivileged `anylinuxfs shell
+        // -i freebsd` invocation needs to open the disk read-write. Alpine
+        // gets the same end-state for free because its init-rootfs is
+        // spawned with the invoker's uid; the FreeBSD bootstrap path can't
+        // do that (libkrun host-side stays root) so we chown after.
+        //
+        // macOS: krun_setuid drops the VM to the invoker before any disk
+        // open, and our install path already runs with effective uid =
+        // invoker, so the disk image is created invoker-owned and no
+        // chown fix-up is needed.
+        #[cfg(not(target_os = "macos"))]
         if let (Some(uid), Some(gid)) = (config.sudo_uid, config.sudo_gid) {
             if let Err(e) = chown_tree_to_invoker(&base_path, uid, gid) {
                 host_eprintln!(
@@ -454,6 +460,7 @@ mod freebsd {
         Ok(())
     }
 
+    #[cfg(not(target_os = "macos"))]
     fn chown_tree_to_invoker(
         path: &Path,
         uid: libc::uid_t,
