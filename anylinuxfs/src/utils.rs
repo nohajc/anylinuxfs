@@ -497,12 +497,29 @@ pub struct LockFile(File);
 
 impl LockFile {
     pub fn new(file_path: impl AsRef<Path>) -> anyhow::Result<Self> {
-        let file_already_existed = file_path.as_ref().exists();
-        let file = File::create(file_path).context("Failed to create lock file")?;
-        if !file_already_existed {
-            file.set_permissions(Permissions::from_mode(0o666))
-                .context("Failed to set file lock permissions")?;
-        }
+        // Try to open an existing lock file first, without O_CREAT/O_TRUNC.
+        // On Linux with fs.protected_regular = 2 (Debian default), opening
+        // a regular file with O_CREAT in /tmp (sticky+world-writable) is
+        // denied unless the file owner matches the directory owner — which
+        // breaks `sudo anylinuxfs` after a non-sudo run created the lock as
+        // the invoker, and vice versa. Plain O_RDWR is exempt from that
+        // check, so we use it for the common case where the file already
+        // exists. There's no content to truncate anyway; the file is used
+        // only for flock().
+        let opened = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&file_path);
+        let file = match opened {
+            Ok(f) => f,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                let f = File::create(&file_path).context("Failed to create lock file")?;
+                f.set_permissions(Permissions::from_mode(0o666))
+                    .context("Failed to set file lock permissions")?;
+                f
+            }
+            Err(e) => return Err(e).context("Failed to open lock file"),
+        };
 
         Ok(Self(file))
     }
