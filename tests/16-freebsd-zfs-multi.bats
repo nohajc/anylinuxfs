@@ -61,8 +61,12 @@ teardown() {
 #   fe80::1%lo0      (link-local default)
 # anylinuxfs adds fe80::-range aliases with random suffixes when the NFS ports
 # are exhausted on the existing lo0 addresses. All such extras are safe to
-# remove after the test.
+# remove after the test. macOS-only — the alias-multiplexing logic in
+# anylinuxfs is gated to target_os = "macos".
 cleanup_lo0_aliases() {
+  if [[ "$HOST_OS" != "Darwin" ]]; then
+    return
+  fi
   ifconfig lo0 | awk '/inet6/ {print $2}' \
     | grep -v '^::1$' \
     | grep -vE '^fe80::1(%lo0)?$' \
@@ -79,11 +83,15 @@ cleanup_lo0_aliases() {
   local zfs1_img="${BATS_FILE_TMPDIR}/zfs1.img"
   local zfs2_img="${BATS_FILE_TMPDIR}/zfs2.img"
 
-  # Count lo0 inet6 addresses before mounting; the fourth concurrent gvproxy
-  # instance will exhaust the three standard addresses (::1, fe80::1%lo0,
-  # 127.0.0.1 is IPv4 so not counted here) and force creation of a new one.
-  local lo0_before_count
-  lo0_before_count="$(ifconfig lo0 | grep -c 'inet6')"
+  # Count lo0 inet6 addresses before mounting; on macOS the fourth concurrent
+  # gvproxy instance will exhaust the three standard addresses (::1,
+  # fe80::1%lo0, 127.0.0.1 is IPv4 so not counted here) and force creation
+  # of a new one. The alias-multiplexing logic is gated to target_os =
+  # "macos" so this check only runs on Darwin.
+  local lo0_before_count=0
+  if [[ "$HOST_OS" == "Darwin" ]]; then
+    lo0_before_count="$(ifconfig lo0 | grep -c 'inet6')"
+  fi
 
   # Mount two ext4 filesystems, explicitly choosing gvproxy as the network
   # helper.
@@ -104,10 +112,12 @@ cleanup_lo0_aliases() {
   do_mount "$(partition_dev "$ZFS1_DEV" 1)" --zfs-os freebsd
   do_mount "$(partition_dev "$ZFS2_DEV" 1)" --zfs-os freebsd
 
-  # Verify that at least one new lo0 inet6 alias was created.
-  local lo0_after_count
-  lo0_after_count="$(ifconfig lo0 | grep -c 'inet6')"
-  [ "$lo0_after_count" -gt "$lo0_before_count" ]
+  # Verify that at least one new lo0 inet6 alias was created (macOS only).
+  if [[ "$HOST_OS" == "Darwin" ]]; then
+    local lo0_after_count
+    lo0_after_count="$(ifconfig lo0 | grep -c 'inet6')"
+    [ "$lo0_after_count" -gt "$lo0_before_count" ]
+  fi
 
   # Verify file I/O on all four mounts.
   assert_file_roundtrip "$(get_mount_point "$EXT_LABEL1")"
