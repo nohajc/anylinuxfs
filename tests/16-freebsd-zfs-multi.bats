@@ -74,8 +74,6 @@ cleanup_lo0_aliases() {
 # ---------------------------------------------------------------------------
 
 @test "freebsd-zfs-multi: four gvproxy mounts trigger loopback alias creation and cleanup" {
-  skip "TODO: need to make it more reliable"
-
   local ext1_img="${BATS_FILE_TMPDIR}/ext1.img"
   local ext2_img="${BATS_FILE_TMPDIR}/ext2.img"
   local zfs1_img="${BATS_FILE_TMPDIR}/zfs1.img"
