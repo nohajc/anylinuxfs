@@ -69,13 +69,16 @@ create_sparse_image() {
 # Mount wrapper
 # ---------------------------------------------------------------------------
 # do_mount [...args]
-#   Invokes anylinuxfs to mount a disk. Adds `-w false` on macOS to suppress
-#   the Finder window that would otherwise pop open for each test mount;
-#   that flag is macOS-only (gated behind #[cfg(target_os = "macos")] in
-#   cli.rs) and would error out on Linux.
+#   Invokes anylinuxfs to mount a disk. Appends `-w false` on macOS to
+#   suppress the Finder window that would otherwise pop open for each test
+#   mount; that flag belongs to the mount subcommand (gated behind
+#   #[cfg(target_os = "macos")] in cli.rs) and would error out on Linux.
+#   Append rather than prepend so the wrapper works whether the caller uses
+#   the implicit mount form (\`do_mount /tmp/x.img\`) or names the subcommand
+#   explicitly (\`do_mount mount -a action_name\`).
 do_mount() {
   if [[ "$HOST_OS" == "Darwin" ]]; then
-    "$ANYLINUXFS" -w false "$@"
+    "$ANYLINUXFS" "$@" -w false
   else
     "$ANYLINUXFS" "$@"
   fi
