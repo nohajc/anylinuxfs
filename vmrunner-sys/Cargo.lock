@@ -949,7 +949,7 @@ dependencies = [
 
 [[package]]
 name = "vmrunner-sys"
-version = "0.1.0"
+version = "0.16.1"
 dependencies = [
  "libc",
  "libkrun",
