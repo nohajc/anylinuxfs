@@ -52,7 +52,7 @@ teardown() {
 
 @test "image partition: mount partition 1 (@s1), verify mount, unmount" {
   # Mount the first partition — should succeed
-  "$ANYLINUXFS" "${BATS_FILE_TMPDIR}/test-partitioned.img@s1" -w false
+  do_mount "${BATS_FILE_TMPDIR}/test-partitioned.img@s1"
   
   # Check that the mount exists
   mount | grep -qE "(imgpart1|volumes/imgpart1)" || {
@@ -66,7 +66,7 @@ teardown() {
 
 @test "image partition: mount partition 2 (@s2), verify mount, unmount" {
   # Mount the second partition — should succeed
-  "$ANYLINUXFS" "${BATS_FILE_TMPDIR}/test-partitioned.img@s2" -w false
+  do_mount "${BATS_FILE_TMPDIR}/test-partitioned.img@s2"
   
   # Check that the mount exists
   mount | grep -qE "(imgpart2|volumes/imgpart2)" || {

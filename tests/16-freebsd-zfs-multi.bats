@@ -51,8 +51,8 @@ setup_file() {
 }
 
 teardown() {
-  [[ -n "${ZFS1_DEV:-}" ]] && hdiutil_detach "$ZFS1_DEV" && ZFS1_DEV=""
-  [[ -n "${ZFS2_DEV:-}" ]] && hdiutil_detach "$ZFS2_DEV" && ZFS2_DEV=""
+  [[ -n "${ZFS1_DEV:-}" ]] && detach_image "$ZFS1_DEV" && ZFS1_DEV=""
+  [[ -n "${ZFS2_DEV:-}" ]] && detach_image "$ZFS2_DEV" && ZFS2_DEV=""
   cleanup_lo0_aliases
 }
 
@@ -87,22 +87,22 @@ cleanup_lo0_aliases() {
 
   # Mount two ext4 filesystems, explicitly choosing gvproxy as the network
   # helper.
-  "$ANYLINUXFS" "$ext1_img" --net-helper gvproxy -w false
-  "$ANYLINUXFS" "$ext2_img" --net-helper gvproxy -w false
+  do_mount "$ext1_img" --net-helper gvproxy
+  do_mount "$ext2_img" --net-helper gvproxy
 
   # ZFS automatically creates a partition table, so anylinuxfs expects an
   # individual partition device rather than the whole image file.
-  hdiutil_attach "$zfs1_img"
-  ZFS1_DEV="$HDIUTIL_DEV"
+  attach_image "$zfs1_img"
+  ZFS1_DEV="$ATTACH_DEV"
   export ZFS1_DEV
-  hdiutil_attach "$zfs2_img"
-  ZFS2_DEV="$HDIUTIL_DEV"
+  attach_image "$zfs2_img"
+  ZFS2_DEV="$ATTACH_DEV"
   export ZFS2_DEV
 
   # Mount two FreeBSD ZFS pools. FreeBSD always uses gvproxy internally
   # regardless of the --net-helper flag, so these also go through gvproxy.
-  "$ANYLINUXFS" "${ZFS1_DEV}s1" --zfs-os freebsd -w false
-  "$ANYLINUXFS" "${ZFS2_DEV}s1" --zfs-os freebsd -w false
+  do_mount "$(partition_dev "$ZFS1_DEV" 1)" --zfs-os freebsd
+  do_mount "$(partition_dev "$ZFS2_DEV" 1)" --zfs-os freebsd
 
   # Verify that at least one new lo0 inet6 alias was created.
   local lo0_after_count

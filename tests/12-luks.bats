@@ -52,7 +52,7 @@ teardown() {
 
 @test "luks: mount with ALFS_PASSPHRASE env var, file roundtrip, unmount" {
   local img="${BATS_FILE_TMPDIR}/luks.img"
-  ALFS_PASSPHRASE="$PASSPHRASE" "$ANYLINUXFS" "$img" -w false
+  ALFS_PASSPHRASE="$PASSPHRASE" do_mount "$img"
 
   assert_file_roundtrip "$(get_mount_point "$LUKS_LABEL")"
 
@@ -78,7 +78,7 @@ teardown() {
 
 @test "luks: LVM-on-LUKS mount with env var, file roundtrip, unmount" {
   local disk_id="lvm:${LVM_ON_LUKS_VG}:${BATS_FILE_TMPDIR}/lvm-luks.img:${LVM_ON_LUKS_LV}"
-  ALFS_PASSPHRASE="$PASSPHRASE" "$ANYLINUXFS" "$disk_id" -w false
+  ALFS_PASSPHRASE="$PASSPHRASE" do_mount "$disk_id"
 
   assert_file_roundtrip "$(get_mount_point "$LVM_ON_LUKS_LABEL")"
 

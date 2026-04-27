@@ -14,7 +14,9 @@ LABEL="alfsmpopts"
 # Name for the temporary custom action injected into the user config.
 # Prefixed with "alfs_test_" to make its origin obvious and avoid collisions.
 TEST_ACTION_NAME="alfs_test_etc_export"
-USER_CONFIG="${HOME}/.anylinuxfs/config.toml"
+# anylinuxfs reads its per-user config from the SUDO_USER's home dir, not
+# $HOME (which sudo resets to /root on Linux).
+USER_CONFIG="$(user_home_dir)/.anylinuxfs/config.toml"
 
 # ---------------------------------------------------------------------------
 # Setup / teardown
@@ -77,7 +79,7 @@ teardown() {
 
   # Pass the custom directory as the [MOUNT_POINT] positional argument.
   # The directory must exist before calling mount.
-  "$ANYLINUXFS" "$img" "$custom_mp" -w false
+  do_mount "$img" "$custom_mp"
 
   # Verify the custom mount point is recorded in anylinuxfs status output.
   run "$ANYLINUXFS" status
@@ -97,7 +99,7 @@ teardown() {
 @test "mount-options: diskless custom action mounts VM /etc" {
   # No disk argument — the VM boots from its own Alpine rootfs and exports
   # /etc via the NFS export override defined in the custom action.
-  "$ANYLINUXFS" mount -a "$TEST_ACTION_NAME" -w false
+  do_mount mount -a "$TEST_ACTION_NAME"
 
   # Default mount point is ~/Volumes/etc (last path component of "/etc").
   local mp

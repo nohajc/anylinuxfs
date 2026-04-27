@@ -51,7 +51,7 @@ teardown() {
   local img="${BATS_FILE_TMPDIR}/luks-keyfile.img"
   local keyfile="${BATS_FILE_TMPDIR}/test.key"
 
-  "$ANYLINUXFS" "$img" --key-file "$keyfile" -w false
+  do_mount "$img" --key-file "$keyfile"
 
   assert_file_roundtrip "$(get_mount_point "$LUKS_LABEL")"
 
@@ -62,7 +62,7 @@ teardown() {
   local img="${BATS_FILE_TMPDIR}/luks-keyfile.img"
   local keyfile="${BATS_FILE_TMPDIR}/test.key"
 
-  ALFS_KEY_FILE="$keyfile" "$ANYLINUXFS" "$img" -w false
+  ALFS_KEY_FILE="$keyfile" do_mount "$img"
 
   assert_file_roundtrip "$(get_mount_point "$LUKS_LABEL")"
 
@@ -73,10 +73,10 @@ teardown() {
   local img="${BATS_FILE_TMPDIR}/zfs-keyfile.img"
   local keyfile="${BATS_FILE_TMPDIR}/test.key"
 
-  hdiutil_attach "$img"
-  local part_dev="${HDIUTIL_DEV}s1"
+  attach_image "$img"
+  local part_dev="$(partition_dev "$ATTACH_DEV" 1)"
 
-  "$ANYLINUXFS" "$part_dev" --key-file "$keyfile" --zfs-os linux -w false
+  do_mount "$part_dev" --key-file "$keyfile" --zfs-os linux
 
   assert_file_roundtrip "$(get_mount_point "zfs_root/${ZFS_POOL}")"
 
@@ -87,10 +87,10 @@ teardown() {
   local img="${BATS_FILE_TMPDIR}/zfs-keyfile.img"
   local keyfile="${BATS_FILE_TMPDIR}/test.key"
 
-  hdiutil_attach "$img"
-  local part_dev="${HDIUTIL_DEV}s1"
+  attach_image "$img"
+  local part_dev="$(partition_dev "$ATTACH_DEV" 1)"
 
-  "$ANYLINUXFS" "$part_dev" --key-file "$keyfile" --zfs-os freebsd -w false
+  do_mount "$part_dev" --key-file "$keyfile" --zfs-os freebsd
 
   assert_file_roundtrip "$(get_mount_point "zfs_root/${ZFS_POOL}")"
 

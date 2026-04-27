@@ -35,7 +35,7 @@ teardown() {
 
 @test "multi-disk btrfs: RAID1 mount, file roundtrip, unmount" {
   local disk_id="${BATS_FILE_TMPDIR}/btrfs0.img:${BATS_FILE_TMPDIR}/btrfs1.img"
-  "$ANYLINUXFS" "$disk_id" -w false
+  do_mount "$disk_id"
 
   assert_file_roundtrip "$(get_mount_point "$LABEL")"
 
@@ -44,7 +44,7 @@ teardown() {
 
 @test "multi-disk btrfs: RAID1 read-only mount" {
   local disk_id="${BATS_FILE_TMPDIR}/btrfs0.img:${BATS_FILE_TMPDIR}/btrfs1.img"
-  "$ANYLINUXFS" "$disk_id" -w false -o ro
+  do_mount "$disk_id" -o ro
 
   local mp
   mp="$(get_mount_point "$LABEL")"

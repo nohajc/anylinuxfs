@@ -45,8 +45,8 @@ teardown() {
   local img1="${BATS_FILE_TMPDIR}/multi1.img"
   local img2="${BATS_FILE_TMPDIR}/multi2.img"
 
-  "$ANYLINUXFS" "$img1" -w false
-  "$ANYLINUXFS" "$img2" -w false
+  do_mount "$img1"
+  do_mount "$img2"
 
   # Verify status shows both (image and mount point on the same line)
   run "$ANYLINUXFS" status
@@ -75,8 +75,8 @@ teardown() {
   local img1="${BATS_FILE_TMPDIR}/dup1.img"
   local img2="${BATS_FILE_TMPDIR}/dup2.img"
 
-  "$ANYLINUXFS" "$img1" -w false
-  "$ANYLINUXFS" "$img2" -w false
+  do_mount "$img1"
+  do_mount "$img2"
 
   local mp1="$(get_mount_point "$LABEL_DUP")"
   local mp2="$(get_mount_point "${LABEL_DUP}-1")"

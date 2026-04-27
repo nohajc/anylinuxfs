@@ -2,10 +2,13 @@
 # run-tests.sh — Entry point for the anylinuxfs end-to-end test suite.
 #
 # Prerequisites:
-#   brew install bats-core
-#   anylinuxfs built:  ./build-app.sh  (binary at bin/anylinuxfs)
-#   Alpine rootfs initialized:  anylinuxfs init
-#   macOS with hypervisor entitlement (local dev machine only)
+#   bats-core:                 macOS: brew install bats-core
+#                              Debian/Ubuntu: apt install bats
+#   anylinuxfs built:          ./build-app.sh  (binary at bin/anylinuxfs)
+#   Alpine rootfs initialized: anylinuxfs init
+#   macOS: hypervisor entitlement (local dev machine only)
+#   Linux: kvm group access, util-linux losetup
+#   Both:  run with sudo (some attach/mount operations are privileged)
 #
 # Usage:
 #   ./tests/run-tests.sh                      # run all tests
@@ -33,7 +36,9 @@ if [[ ! -x "$ANYLINUXFS" ]]; then
 fi
 
 if ! command -v bats &>/dev/null; then
-  echo "ERROR: bats not found. Install with: brew install bats-core"
+  echo "ERROR: bats not found."
+  echo "       macOS:          brew install bats-core"
+  echo "       Debian/Ubuntu:  apt install bats"
   exit 1
 fi
 

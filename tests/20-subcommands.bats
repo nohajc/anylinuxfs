@@ -24,13 +24,13 @@ setup_file() {
 }
 
 teardown() {
-  if [[ -n "${HDIUTIL_DEV:-}" ]]; then
-    hdiutil_detach "$HDIUTIL_DEV"
-    HDIUTIL_DEV=""
+  if [[ -n "${ATTACH_DEV:-}" ]]; then
+    detach_image "$ATTACH_DEV"
+    ATTACH_DEV=""
   fi
-  if [[ -n "${HDIUTIL_DEV2:-}" ]]; then
-    hdiutil_detach "$HDIUTIL_DEV2"
-    HDIUTIL_DEV2=""
+  if [[ -n "${ATTACH_DEV2:-}" ]]; then
+    detach_image "$ATTACH_DEV2"
+    ATTACH_DEV2=""
   fi
 }
 
@@ -48,7 +48,7 @@ teardown() {
 @test "subcommands: list identifies filesystem on attached image" {
   local img="${BATS_FILE_TMPDIR}/list_test.img"
   local dev
-  dev="$(hdiutil_attach "$img")"
+  dev="$(attach_image "$img")"
 
   # anylinuxfs list depends on diskutil/hdiutil for visibility
   run "$ANYLINUXFS" list
@@ -57,14 +57,14 @@ teardown() {
   echo "$output" | grep -F "ext4"
   echo "$output" | grep -F "$LABEL"
 
-  hdiutil_detach "$dev"
-  HDIUTIL_DEV=""
+  detach_image "$dev"
+  ATTACH_DEV=""
 }
 
 @test "subcommands: list --linux filter" {
   local img="${BATS_FILE_TMPDIR}/list_test.img"
   local dev
-  dev="$(hdiutil_attach "$img")"
+  dev="$(attach_image "$img")"
 
   run "$ANYLINUXFS" list --linux
   [ "$status" -eq 0 ]
@@ -75,8 +75,8 @@ teardown() {
   [ "$status" -eq 0 ]
   ! echo "$output" | grep -F "$dev"
 
-  hdiutil_detach "$dev"
-  HDIUTIL_DEV=""
+  detach_image "$dev"
+  ATTACH_DEV=""
 }
 
 @test "subcommands: list filters by disk identifier" {
@@ -84,10 +84,10 @@ teardown() {
   local img2="${BATS_FILE_TMPDIR}/list_test2.img"
   local dev1 dev2
 
-  dev1="$(hdiutil_attach "$img1")"
-  dev2="$(hdiutil_attach "$img2")"
-  HDIUTIL_DEV="$dev1"
-  HDIUTIL_DEV2="$dev2"
+  dev1="$(attach_image "$img1")"
+  dev2="$(attach_image "$img2")"
+  ATTACH_DEV="$dev1"
+  ATTACH_DEV2="$dev2"
 
   # list with both disks attached — should show all.
   run "$ANYLINUXFS" list
@@ -113,8 +113,8 @@ teardown() {
   ! echo "$output" | grep -F "$dev1"
   ! echo "$output" | grep -F "$LABEL"
 
-  hdiutil_detach "$dev1"
-  hdiutil_detach "$dev2"
-  HDIUTIL_DEV=""
-  HDIUTIL_DEV2=""
+  detach_image "$dev1"
+  detach_image "$dev2"
+  ATTACH_DEV=""
+  ATTACH_DEV2=""
 }
