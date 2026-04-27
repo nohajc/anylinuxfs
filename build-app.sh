@@ -30,6 +30,8 @@ ROOTFS_PATH=~/.anylinuxfs/alpine/rootfs
 (cd "vmproxy" && cargo build $BUILD_ARGS $FEATURE_ARG)
 mkdir -p libexec && cp "vmproxy/target/aarch64-unknown-linux-musl/$BUILD_DIR/vmproxy" libexec/
 
+(cd "vmrunner-sys" && cargo build $BUILD_ARGS)
+cp "vmrunner-sys/target/$BUILD_DIR/libvmrunner_sys.a" "vmrunner-sys/target/"
 (cd "init-rootfs" && go build -ldflags="-w -s" -tags containers_image_openpgp -o ../libexec/)
 codesign --entitlements "anylinuxfs.entitlements" --force -s - libexec/init-rootfs
 

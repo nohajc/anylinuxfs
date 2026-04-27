@@ -1,0 +1,2 @@
+[env]
+CC_LINUX = { value = "../anylinuxfs/cc_linux", relative = true }
