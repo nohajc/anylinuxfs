@@ -55,7 +55,7 @@ if [[ "$HOST_OS" == "Darwin" ]]; then
     codesign --entitlements "anylinuxfs.entitlements" --force -s - bin/anylinuxfs
 fi
 
-(cd "vmproxy" && RUSTFLAGS="$VMPROXY_LINUX_RUSTFLAGS" cargo build "${VMPROXY_LINUX_LINKER_CFG[@]}" $BUILD_ARGS $FEATURE_ARG)
+(cd "vmproxy" && ${VMPROXY_LINUX_RUSTFLAGS:+RUSTFLAGS="$VMPROXY_LINUX_RUSTFLAGS"} cargo build "${VMPROXY_LINUX_LINKER_CFG[@]}" $BUILD_ARGS $FEATURE_ARG)
 mkdir -p libexec && cp "vmproxy/target/aarch64-unknown-linux-musl/$BUILD_DIR/vmproxy" libexec/
 
 (cd "vmrunner-sys" && cargo build $BUILD_ARGS)
@@ -74,5 +74,5 @@ SYSROOT=freebsd-sysroot
     || (mkdir $SYSROOT && cd $SYSROOT \
         && curl -LO http://ftp.cz.freebsd.org/pub/FreeBSD/releases/arm64/14.3-RELEASE/base.txz \
         && tar xJf base.txz 2>/dev/null || true && rm base.txz) \
-    && RUSTFLAGS="$VMPROXY_BSD_RUSTFLAGS" cargo +nightly-2026-01-25 build "${VMPROXY_BSD_LINKER_CFG[@]}" -Z build-std --target aarch64-unknown-freebsd $BUILD_ARGS)
+    && ${VMPROXY_BSD_RUSTFLAGS:+RUSTFLAGS="$VMPROXY_BSD_RUSTFLAGS"} cargo +nightly-2026-01-25 build "${VMPROXY_BSD_LINKER_CFG[@]}" -Z build-std --target aarch64-unknown-freebsd $BUILD_ARGS)
 cp "vmproxy/target/aarch64-unknown-freebsd/$BUILD_DIR/vmproxy" libexec/vmproxy-bsd
