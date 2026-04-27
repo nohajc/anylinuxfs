@@ -184,12 +184,6 @@ fn load_config(common_args: &CommonArgs, debug_args: &DebugArgs) -> anyhow::Resu
     }
     let gid = unsafe { libc::getgid() };
 
-    // Install the invoking user's supplementary groups up front, while we still
-    // have root, so every forked child inherits them. Required on Linux for
-    // libkrun's internal setuid() to land in a process that still has access
-    // to /dev/kvm and /dev/vhost-* (all mode 660, group=kvm).
-    install_invoker_supplementary_groups(sudo_uid, sudo_gid)?;
-
     let invoker_uid = match sudo_uid {
         Some(sudo_uid) => sudo_uid,
         None => uid,
@@ -526,37 +520,6 @@ pub(crate) fn drop_privileges(
             }
         }
     }
-    Ok(())
-}
-
-// Install the invoking user's supplementary groups (from /etc/group) on the
-// current process. Needed on Linux before libkrun's krun_setuid drops root to
-// the invoker's uid: setuid alone doesn't touch supplementary groups, so
-// without this the post-setuid process has only root's groups (gid 0) and
-// can't open /dev/kvm (mode 660, group=kvm). Runs on macOS too but is a no-op
-// there because HVF doesn't require group membership.
-pub(crate) fn install_invoker_supplementary_groups(
-    sudo_uid: Option<libc::uid_t>,
-    sudo_gid: Option<libc::gid_t>,
-) -> anyhow::Result<()> {
-    let (Some(uid), Some(gid)) = (sudo_uid, sudo_gid) else {
-        return Ok(());
-    };
-    // initgroups requires CAP_SETGID — only meaningful when we're real-uid root
-    // (i.e. were sudo'd here). When this binary is invoked as the unprivileged
-    // user (e.g. the `rpcbind register` subinvocation we spawn with .uid(admin)),
-    // SUDO_UID is still in the env but we have no permission to change groups,
-    // and we don't need to: we already have the invoker's supplementary groups.
-    if unsafe { libc::geteuid() } != 0 {
-        return Ok(());
-    }
-    let user = nix::unistd::User::from_uid(nix::unistd::Uid::from_raw(uid))
-        .context("Failed to look up invoking user")?
-        .context("Invoking user not found in passwd database")?;
-    let user_cstr =
-        std::ffi::CString::new(user.name.as_bytes()).context("Invoking username contains NUL")?;
-    nix::unistd::initgroups(&user_cstr, nix::unistd::Gid::from_raw(gid))
-        .context("Failed to install invoker's supplementary groups")?;
     Ok(())
 }
 

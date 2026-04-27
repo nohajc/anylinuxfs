@@ -83,22 +83,12 @@ pub(crate) struct VMContext {
     root_path: Option<PathBuf>,
     invoker_uid: libc::uid_t,
     invoker_gid: libc::gid_t,
-    sudo_uid: Option<libc::uid_t>,
-    sudo_gid: Option<libc::gid_t>,
     vmnet_cidr: Option<Ipv4Net>,
 }
 
 impl VMContext {
     pub(crate) fn set_vmnet_cidr(&mut self, cidr: Option<Ipv4Net>) {
         self.vmnet_cidr = cidr;
-    }
-
-    pub(crate) fn sudo_uid(&self) -> Option<libc::uid_t> {
-        self.sudo_uid
-    }
-
-    pub(crate) fn sudo_gid(&self) -> Option<libc::gid_t> {
-        self.sudo_gid
     }
 }
 
@@ -172,9 +162,10 @@ pub(crate) fn setup_vm(
     }
 
     // run vmm as the original user if he used sudo.
-    // Skip on Linux: libkrun's internal setuid() drops supplementary groups
-    // needed for /dev/kvm and /dev/vhost-* access, and root inside libkrun is
-    // fine on Linux (mirrors how libkrun's own tests run — they don't escalate).
+    // Skip on Linux: libkrun stays root inside the VM (mirrors how libkrun's
+    // own tests run — they don't escalate). Root is needed for /dev/kvm and
+    // /dev/vhost-* access (mode 660, group=kvm) without depending on the
+    // invoker being in the kvm group.
     #[cfg(target_os = "macos")]
     if let Some(uid) = config.sudo_uid {
         bindings::krun_setuid(ctx_id, uid).context("Failed to set vmm uid")?;
@@ -293,8 +284,6 @@ pub(crate) fn setup_vm(
         root_path,
         invoker_uid,
         invoker_gid,
-        sudo_uid: config.sudo_uid,
-        sudo_gid: config.sudo_gid,
         vmnet_cidr: None,
     })
 }
@@ -559,7 +548,6 @@ pub(crate) fn start_vmproxy(
 
     raise_nofile_limit();
     before_start().context("Before start callback failed")?;
-    crate::install_invoker_supplementary_groups(ctx.sudo_uid(), ctx.sudo_gid())?;
     bindings::krun_start_enter(ctx.id).context("Failed to start VM")?;
 
     Ok(())
@@ -703,7 +691,6 @@ pub(crate) fn start_vm(
 ) -> anyhow::Result<()> {
     set_vm_cmdline(ctx, cmdline, env)?;
     raise_nofile_limit();
-    crate::install_invoker_supplementary_groups(ctx.sudo_uid(), ctx.sudo_gid())?;
     bindings::krun_start_enter(ctx.id).context("Failed to start VM")?;
 
     Ok(())
