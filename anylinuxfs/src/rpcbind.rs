@@ -78,6 +78,11 @@ unsafe extern "C" {
     pub fn getnetconfigent(netid: *const c_char) -> *mut Netconfig;
     pub fn freenetconfigent(netconf: *mut Netconfig);
 
+    // libtirpc: bool_t xdr_rpcblist_ptr(XDR *, rpcblist_ptr *)
+    pub fn xdr_rpcblist_ptr(xdrs: *mut c_void, objp: *mut c_void) -> c_int;
+    // libtirpc: void xdr_free(xdrproc_t, char *)
+    pub fn xdr_free(proc: *const c_void, objp: *mut c_char);
+
     // Shared libc helpers also available on Linux
     pub fn getrpcbynumber(number: c_int) -> *mut Rpcent;
 }
@@ -356,7 +361,19 @@ pub mod services {
 
             handle_rpc_error(RPCPROG_RPCB, RPCBVERS4, nettype, stat.into())?;
 
-            collect_rpcblist_entries(head)
+            let entries = collect_rpcblist_entries(head);
+            // Free the linked list allocated by xdr_rpcblist_ptr during decode.
+            // CLNT_FREERES re-invokes the XDR proc with op=XDR_FREE, which
+            // walks the list and releases each node and its strings.
+            if !head.is_null() {
+                let cl_freeres = (*(*client).cl_ops).cl_freeres;
+                (cl_freeres)(
+                    client,
+                    xdr_rpcblist_ptr as *const c_void,
+                    &mut head as *mut _ as *mut c_void,
+                );
+            }
+            entries
         }
     }
 
@@ -372,9 +389,17 @@ pub mod services {
                 anyhow::bail!("getnetconfigent(tcp) returned null");
             }
             let c_host = CString::new("127.0.0.1").unwrap();
-            let head = rpcb_getmaps(nc, c_host.as_ptr());
+            let mut head = rpcb_getmaps(nc, c_host.as_ptr());
             freenetconfigent(nc);
-            collect_rpcblist_entries(head)
+            let entries = collect_rpcblist_entries(head);
+            // Free the linked list allocated by libtirpc.
+            if !head.is_null() {
+                xdr_free(
+                    xdr_rpcblist_ptr as *const c_void,
+                    &mut head as *mut _ as *mut c_char,
+                );
+            }
+            entries
         }
     }
 
