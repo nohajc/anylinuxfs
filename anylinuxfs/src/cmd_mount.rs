@@ -1462,6 +1462,13 @@ impl super::AppRunner {
                 }
             });
 
+            // this is needed before listing rpcbind services
+            // and also later for nfs mount operations
+            // (we dropped privileges above for DNS registration)
+            // weirdly, listing rpcbind services can get stuck
+            // if anylinuxfs mount was run with sudo but not
+            // for a regular user where this should be a no-op
+            elevate_effective_privileges()?;
             services_to_restore =
                 if config.common.net_helper == NetHelper::GvProxy && network_env.rpcbind_running {
                     rpcbind::services::list()?
@@ -1551,9 +1558,6 @@ impl super::AppRunner {
                         host_eprintln!("Error waiting for NFS server: {:#}", e);
                     })
                     .unwrap_or(NfsStatus::Failed(None));
-
-            // we need original permissions (possibly root) to execute mount_nfs
-            elevate_effective_privileges()?;
 
             if let NfsStatus::Ready(NfsReadyState {
                 fslabel,
