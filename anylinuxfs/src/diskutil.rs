@@ -1769,7 +1769,7 @@ pub fn get_info(dev_path: impl AsRef<BStr>) -> DiskInfo {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let ro_path = format!("/sys/block/{}/ro", name);
+    let ro_path = format!("/sys/class/block/{}/ro", name);
     let media_writable = std::fs::read_to_string(&ro_path)
         .map(|s| s.trim() == "0")
         .unwrap_or(true);
