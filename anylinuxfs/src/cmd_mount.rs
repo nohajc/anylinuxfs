@@ -778,11 +778,6 @@ impl PtyReader {
                         .unwrap();
                     nfs_ready = true;
                 } else if tagged.starts_with("<anylinuxfs-vmproxy-ready>") {
-                    host_println!(
-                        "DBG: dispatcher matched vmproxy-ready (line len={}, tagged starts {:?})",
-                        line.len(),
-                        &tagged.chars().take(40).collect::<String>()
-                    );
                     subscribe_to_vm_events(
                         &self.config,
                         self.vm_native_ip,
