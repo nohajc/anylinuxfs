@@ -52,6 +52,9 @@ dns-sd = "0.1.3"
 plist = "1.7.1"
 os-version = "0.2.1"
 
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+procfs = { version = "0.17.0", default-features = false }
+
 [features]
 default = ["freebsd"]
 freebsd = []

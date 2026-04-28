@@ -10,13 +10,13 @@ use anyhow::Context;
 #[cfg(target_os = "macos")]
 use getifaddrs::{InterfaceFilter, InterfaceFlags};
 #[cfg(target_os = "macos")]
-use std::net::Ipv6Addr;
-#[cfg(target_os = "macos")]
-use std::process::Command;
-#[cfg(target_os = "macos")]
 use ipnet::Ipv4Net;
 #[cfg(target_os = "macos")]
 use std::cmp;
+#[cfg(target_os = "macos")]
+use std::net::Ipv6Addr;
+#[cfg(target_os = "macos")]
+use std::process::Command;
 
 #[cfg(target_os = "macos")]
 use crate::utils::cfdict_get_value;

@@ -1703,15 +1703,11 @@ impl EventSession {
 
 #[cfg(not(target_os = "macos"))]
 fn find_mount_point_in_proc_mounts(nfs_from: &str) -> io::Result<String> {
-    use std::io::BufRead;
-    let file = std::fs::File::open("/proc/mounts")?;
-    for line in io::BufReader::new(file).lines() {
-        let line = line?;
-        let mut fields = line.splitn(3, ' ');
-        let from = fields.next().unwrap_or("");
-        let on = fields.next().unwrap_or("");
-        if from == nfs_from {
-            return Ok(on.to_owned());
+    let mounts =
+        procfs::mounts().map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+    for entry in mounts {
+        if entry.fs_spec == nfs_from {
+            return Ok(entry.fs_file);
         }
     }
     Err(io::Error::new(io::ErrorKind::NotFound, "not mounted yet"))
@@ -1719,19 +1715,10 @@ fn find_mount_point_in_proc_mounts(nfs_from: &str) -> io::Result<String> {
 
 #[cfg(not(target_os = "macos"))]
 fn is_mounted_at(mount_point: &str) -> bool {
-    use std::io::BufRead;
-    let Ok(file) = std::fs::File::open("/proc/mounts") else {
+    let Ok(mounts) = procfs::mounts() else {
         return false;
     };
-    for line in io::BufReader::new(file).lines().flatten() {
-        let mut fields = line.splitn(3, ' ');
-        let _ = fields.next();
-        let on = fields.next().unwrap_or("");
-        if on == mount_point {
-            return true;
-        }
-    }
-    false
+    mounts.iter().any(|entry| entry.fs_file == mount_point)
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

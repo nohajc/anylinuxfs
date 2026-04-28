@@ -67,19 +67,13 @@ impl MountTable {
 
     #[cfg(not(target_os = "macos"))]
     pub fn new() -> io::Result<Self> {
-        use std::io::BufRead;
-        let file = fs::File::open("/proc/mounts")?;
+        let mounts =
+            procfs::mounts().map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
         let mut disks = HashSet::new();
         let mut mount_points = HashSet::new();
-        for line in io::BufReader::new(file).lines() {
-            let line = line?;
-            let mut fields = line.splitn(3, ' ');
-            let mntfromname = fields.next().unwrap_or("").to_owned();
-            let mntonname = fields.next().unwrap_or("").to_owned();
-            if !mntfromname.is_empty() && !mntonname.is_empty() {
-                disks.insert(OsString::from(mntfromname));
-                mount_points.insert(OsString::from(mntonname));
-            }
+        for entry in mounts {
+            disks.insert(OsString::from(entry.fs_spec));
+            mount_points.insert(OsString::from(entry.fs_file));
         }
         Ok(MountTable {
             disks,
@@ -168,18 +162,14 @@ fn statfs(path: impl AsRef<Path>) -> io::Result<StatfsBuf> {
 
 #[cfg(not(target_os = "macos"))]
 fn statfs(path: impl AsRef<Path>) -> io::Result<StatfsBuf> {
-    use std::io::BufRead;
     let path_str = path.as_ref().to_string_lossy().into_owned();
-    let file = fs::File::open("/proc/mounts")?;
-    for line in io::BufReader::new(file).lines() {
-        let line = line?;
-        let mut fields = line.splitn(3, ' ');
-        let from = fields.next().unwrap_or("").to_owned();
-        let on = fields.next().unwrap_or("").to_owned();
-        if on == path_str {
+    let mounts =
+        procfs::mounts().map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+    for entry in mounts {
+        if entry.fs_file == path_str {
             return Ok(StatfsBuf {
-                mntfromname: OsString::from(from),
-                mntonname: OsString::from(on),
+                mntfromname: OsString::from(entry.fs_spec),
+                mntonname: OsString::from(entry.fs_file),
             });
         }
     }

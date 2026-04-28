@@ -1184,21 +1184,19 @@ impl<'a> NfsShareSetup<'a> {
     /// stats the mount point.
     #[cfg(not(target_os = "macos"))]
     fn force_umount_if_mounted(&self) -> anyhow::Result<()> {
-        use std::io::BufRead;
         let mut device = Vec::with_capacity(self.vm_host_b.len() + 1 + self.share_path.len());
         device.extend_from_slice(self.vm_host_b);
         device.push(b':');
         device.extend_from_slice(self.share_path.as_slice());
         let device_str = String::from_utf8_lossy(&device).into_owned();
 
-        let file = std::fs::File::open("/proc/mounts")?;
-        for line in std::io::BufReader::new(file).lines() {
-            let line = line?;
-            let mut fields = line.splitn(3, ' ');
-            let from = fields.next().unwrap_or("");
-            let on = fields.next().unwrap_or("");
-            if from == device_str && !on.is_empty() {
-                let _ = Command::new("umount").arg("-f").arg(on).status();
+        let mounts = procfs::mounts().context("Failed to read /proc/mounts")?;
+        for entry in mounts {
+            if entry.fs_spec == device_str {
+                let _ = Command::new("umount")
+                    .arg("-f")
+                    .arg(&entry.fs_file)
+                    .status();
             }
         }
         Ok(())
