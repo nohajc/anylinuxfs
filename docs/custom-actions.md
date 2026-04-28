@@ -2,9 +2,11 @@
 
 With custom actions, you're able to define sets of scripts which will run inside the virtual machine at specific points.
 Currently supported actions: `before_mount`, `after_mount`, `before_unmount` (typically to do cleanup).
-You can also override the path inside the virtual machine which gets shared with macOS via NFS. This is useful for mounting nested filesystems (from disk images, etc.).
+You can also override the path inside the virtual machine which gets shared with macOS via NFS (`override_nfs_export`). This is useful for mounting nested filesystems (from disk images, etc.).
 
 The path override even makes it possible to run a mount action without any device identifier. We call that a diskless custom action - let's say your script connects to a remote server and mounts a disk image from there for example.
+
+If you need to export additional paths, typically when you have nested mount points not picked up by NFS (FUSE filesystems have this issue), you can specify `nfs_export_subdirs` which is a list of relative paths under the primary export path (overriden or not); e.g. `override_nfs_export="/mnt"` with `nfs_export_subdirs = ["drive1", "drive2"]` will export `/mnt/drive1` and `/mnt/drive2` under `/Volumes/mnt` on the host.
 
 Your custom actions can also depend on additional packages not included in the base Linux installation by default. `anylinuxfs` exposes the Alpine package manager for that purpose. That means it can maintain a list of extra packages installed by the user and reinstall them again when you reinit your Linux image (or when reinit is forced by `anylinuxfs` upgrade).
 
