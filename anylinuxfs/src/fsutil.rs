@@ -99,7 +99,7 @@ impl Default for NfsOptions {
         let mut opts = BTreeMap::new();
         #[cfg(target_os = "macos")]
         {
-            opts.insert("deadtimeout".into(), "45".into()); // this if what Finder uses
+            opts.insert("deadtimeout".into(), "45".into()); // this is what Finder uses
             opts.insert("nfc".into(), "".into()); // NFC Unicode normalization (macOS-only)
             opts.insert("nolocks".into(), "".into());
         }
