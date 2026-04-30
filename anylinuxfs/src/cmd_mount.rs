@@ -9,8 +9,6 @@ use std::borrow::Cow;
 use std::collections::{BTreeSet, HashSet};
 use std::ffi::OsStr;
 use std::fs::{self, File};
-#[cfg(target_os = "macos")]
-use std::net::IpAddr;
 use std::os::fd::FromRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::CommandExt;
@@ -1397,53 +1395,26 @@ impl super::AppRunner {
             .bind_addr_override(shared_volume)
             .os_override(os);
 
-        #[cfg(target_os = "macos")]
-        type VmnetCfgTy = vm_network::VmnetConfig;
-        #[cfg(not(target_os = "macos"))]
-        type VmnetCfgTy = ();
-
-        let (mut net_helper_proc, net_helper_name, vmnet_config, vm_ip): (
-            _,
-            _,
-            Option<VmnetCfgTy>,
-            _,
-        ) = match config.common.net_helper {
+        let outcome = match config.common.net_helper {
             NetHelper::GvProxy => {
-                let loopback_ip = netutil::pick_usable_loopback_ip(&[2049, 32765, 32767])?;
-                network_env.usable_loopback_ip = Some(loopback_ip.clone());
-                (
-                    vm_network::start_gvproxy(&config.common)?,
-                    "gvproxy",
-                    None,
-                    loopback_ip,
-                )
+                let outcome = vm_network::start_gvproxy(&config.common)?;
+                network_env.usable_loopback_ip = Some(outcome.vm_host.clone());
+                outcome
             }
             #[cfg(target_os = "macos")]
-            NetHelper::VmNet => {
-                let (child, vmnet_cfg) = vm_network::start_vmnet_helper(&config.common)?;
-                let vm_ip = vmnet_cfg.vm_ip();
-                (
-                    child,
-                    "vmnet-helper",
-                    Some(vmnet_cfg),
-                    Host::from_ip(IpAddr::V4(vm_ip), None),
-                )
-            }
+            NetHelper::VmNet => vm_network::start_vmnet_helper(&config.common)?,
             #[cfg(not(target_os = "macos"))]
-            NetHelper::VmNet => {
-                anyhow::bail!("vmnet-helper is not supported on Linux")
-            }
+            NetHelper::VmNet => anyhow::bail!("vmnet-helper is not supported on Linux"),
         };
 
-        #[cfg(target_os = "macos")]
-        {
-            vm_native_ip = vmnet_config.as_ref().map(|cfg| cfg.vm_ip());
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            let _ = &vmnet_config;
-            vm_native_ip = None;
-        }
+        let vm_network::NetHelperOutcome {
+            proc: mut net_helper_proc,
+            name: net_helper_name,
+            vm_host: vm_ip,
+            vm_native_cidr,
+            vm_native_ip: helper_vm_native_ip,
+        } = outcome;
+        vm_native_ip = helper_vm_native_ip;
 
         let net_helper_pid = net_helper_proc.id() as libc::pid_t;
         fsutil::wait_for_file(&config.common.unixgram_sock_path)?;
@@ -1507,13 +1478,7 @@ impl super::AppRunner {
             )
             .context("Failed to setup microVM")?;
 
-            #[cfg(target_os = "macos")]
-            ctx.set_vmnet_cidr(vmnet_config.map(|c| c.vmnet_cidr));
-            #[cfg(not(target_os = "macos"))]
-            {
-                let _ = &vmnet_config;
-                ctx.set_vmnet_cidr(None);
-            }
+            ctx.set_vm_native_cidr(vm_native_cidr);
 
             let to_decrypt: Vec<_> = iter::zip(dev_info.iter(), 'a'..='z')
                 .filter_map(|(di, letter)| {

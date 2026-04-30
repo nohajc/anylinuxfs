@@ -10,12 +10,29 @@ use std::{
 use crate::settings::{Config, Preferences};
 use anyhow::Context;
 use common_utils::{OSType, VM_CTRL_PORT, VM_IP, host_println};
+use ipnet::Ipv4Net;
 use rand::prelude::*;
+
+use crate::netutil::Host;
 
 #[cfg(target_os = "macos")]
 mod darwin;
 #[cfg(target_os = "macos")]
-pub use darwin::{VmnetConfig, start_vmnet_helper};
+pub use darwin::start_vmnet_helper;
+
+/// Output of a network-helper bring-up: the spawned process plus enough
+/// platform-neutral info for the orchestrator to drive the rest of the
+/// mount. `vm_native_cidr` and `vm_native_ip` are populated only when the
+/// helper gives the VM a real subnet/IP (vmnet on macOS); for tunneled
+/// helpers like gvproxy they are `None` and the orchestrator falls back to
+/// the loopback `vm_host`.
+pub struct NetHelperOutcome {
+    pub proc: Child,
+    pub name: &'static str,
+    pub vm_host: Host,
+    pub vm_native_cidr: Option<Ipv4Net>,
+    pub vm_native_ip: Option<Ipv4Addr>,
+}
 
 pub fn random_mac_address() -> [u8; 6] {
     let mut rng = rand::rng();
@@ -53,7 +70,11 @@ pub fn vsock_cleanup(vsock_path: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn start_gvproxy(config: &Config) -> anyhow::Result<Child> {
+/// Ports gvproxy needs to forward through the loopback IP we select.
+/// 2049=NFS, 32765=statd, 32767=mountd.
+const GVPROXY_FORWARDED_PORTS: &[u16] = &[2049, 32765, 32767];
+
+pub fn start_gvproxy(config: &Config) -> anyhow::Result<NetHelperOutcome> {
     vfkit_sock_cleanup(&config.unixgram_sock_path)?;
 
     let net_sock_uri = format!("unix://{}", &config.gvproxy_net_sock_path);
@@ -98,7 +119,15 @@ pub fn start_gvproxy(config: &Config) -> anyhow::Result<Child> {
         .spawn()
         .context("Failed to start gvproxy process")?;
 
-    Ok(gvproxy_process)
+    let loopback_ip = crate::netutil::pick_usable_loopback_ip(GVPROXY_FORWARDED_PORTS)?;
+
+    Ok(NetHelperOutcome {
+        proc: gvproxy_process,
+        name: "gvproxy",
+        vm_host: loopback_ip,
+        vm_native_cidr: None,
+        vm_native_ip: None,
+    })
 }
 
 trait NetStream: Read + Write {

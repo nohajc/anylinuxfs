@@ -1,9 +1,6 @@
-#[cfg(target_os = "macos")]
-use crate::vm_network::VmnetConfig;
 use crate::{Config, ImageSource, fsutil, vm_network};
-#[cfg(not(target_os = "macos"))]
-type VmnetConfig = ();
 use anyhow::Context;
+use ipnet::Ipv4Net;
 
 use common_utils::{Deferred, NetHelper, host_eprintln};
 use std::{fs, path::Path, process::Command};
@@ -706,7 +703,7 @@ fn rootfs_version_matches(root_ver_file_path: &Path, current_version: &str) -> b
 
 pub fn setup_net_helper(
     config: &Config,
-    start_vm_fn: impl FnOnce(Option<VmnetConfig>) -> anyhow::Result<i32>,
+    start_vm_fn: impl FnOnce(Option<Ipv4Net>) -> anyhow::Result<i32>,
 ) -> anyhow::Result<i32> {
     match config.net_helper.os_override(config.kernel.os) {
         NetHelper::GvProxy => setup_gvproxy(config, start_vm_fn),
@@ -720,12 +717,12 @@ pub fn setup_net_helper(
 #[cfg(target_os = "macos")]
 pub fn setup_vmnet_helper(
     config: &Config,
-    start_vm_fn: impl FnOnce(Option<VmnetConfig>) -> anyhow::Result<i32>,
+    start_vm_fn: impl FnOnce(Option<Ipv4Net>) -> anyhow::Result<i32>,
 ) -> anyhow::Result<i32> {
     let mut deferred = Deferred::new();
 
-    let (mut vmnet_helper, vmnet_config) = vm_network::start_vmnet_helper(&config)?;
-    // host_println!("vmnet-helper started with config: {:?}", _vmnet_config);
+    let outcome = vm_network::start_vmnet_helper(&config)?;
+    let mut vmnet_helper = outcome.proc;
     fsutil::wait_for_file(&config.unixgram_sock_path)?;
 
     _ = deferred.add(|| {
@@ -750,16 +747,17 @@ pub fn setup_vmnet_helper(
         }
     });
 
-    start_vm_fn(Some(vmnet_config))
+    start_vm_fn(outcome.vm_native_cidr)
 }
 
 pub fn setup_gvproxy(
     config: &Config,
-    start_vm_fn: impl FnOnce(Option<VmnetConfig>) -> anyhow::Result<i32>,
+    start_vm_fn: impl FnOnce(Option<Ipv4Net>) -> anyhow::Result<i32>,
 ) -> anyhow::Result<i32> {
     let mut deferred = Deferred::new();
 
-    let mut gvproxy = vm_network::start_gvproxy(&config)?;
+    let outcome = vm_network::start_gvproxy(&config)?;
+    let mut gvproxy = outcome.proc;
     fsutil::wait_for_file(&config.unixgram_sock_path)?;
 
     _ = deferred.add(|| {
@@ -784,5 +782,5 @@ pub fn setup_gvproxy(
         }
     });
 
-    start_vm_fn(None)
+    start_vm_fn(outcome.vm_native_cidr)
 }

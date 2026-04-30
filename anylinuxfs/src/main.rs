@@ -608,13 +608,10 @@ impl AppRunner {
         if os == OSType::Linux && !cmd.no_tsi {
             start_vm(&ctx, &cmdline, &vm_env).context("Failed to start microVM shell")?;
         } else {
-            vm_image::setup_net_helper(&config.common, |cfg| {
-                #[cfg(target_os = "macos")]
-                if let Some(cidr) = cfg.map(|c| c.vmnet_cidr) {
+            vm_image::setup_net_helper(&config.common, |vm_native_cidr| {
+                if let Some(cidr) = vm_native_cidr {
                     cmdline.extend(["-n".into(), cidr.to_string().into()]);
                 }
-                #[cfg(not(target_os = "macos"))]
-                let _ = cfg;
                 start_vm_forked(&ctx, &cmdline, &vm_env).context("Failed to start microVM shell")
             })?;
         }

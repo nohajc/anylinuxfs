@@ -83,12 +83,12 @@ pub(crate) struct VMContext {
     root_path: Option<PathBuf>,
     invoker_uid: libc::uid_t,
     invoker_gid: libc::gid_t,
-    vmnet_cidr: Option<Ipv4Net>,
+    vm_native_cidr: Option<Ipv4Net>,
 }
 
 impl VMContext {
-    pub(crate) fn set_vmnet_cidr(&mut self, cidr: Option<Ipv4Net>) {
-        self.vmnet_cidr = cidr;
+    pub(crate) fn set_vm_native_cidr(&mut self, cidr: Option<Ipv4Net>) {
+        self.vm_native_cidr = cidr;
     }
 }
 
@@ -276,7 +276,7 @@ pub(crate) fn setup_vm(
         root_path,
         invoker_uid,
         invoker_gid,
-        vmnet_cidr: None,
+        vm_native_cidr: None,
     })
 }
 
@@ -454,7 +454,7 @@ pub(crate) fn start_vmproxy(
     .into_iter()
     .chain(custom_mount_point.then_some("-c".into()).into_iter())
     .chain(
-        ctx.vmnet_cidr
+        ctx.vm_native_cidr
             .as_ref()
             .into_iter()
             .flat_map(|cidr| ["-n".into(), cidr.to_string().into()]),
