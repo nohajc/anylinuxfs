@@ -51,8 +51,10 @@ impl MountTable {
         let mut disks = HashSet::new();
         let mut mount_points = HashSet::new();
         for buf in mounts_raw {
-            let mntfromname = os_str_from_c_chars(&buf.f_mntfromname).to_owned();
-            let mntonname = os_str_from_c_chars(&buf.f_mntonname).to_owned();
+            let StatfsBuf {
+                mntfromname,
+                mntonname,
+            } = buf.into();
 
             if !mntfromname.is_empty() && !mntonname.is_empty() {
                 disks.insert(mntfromname);
@@ -142,9 +144,25 @@ pub fn mounted_from(path: impl AsRef<Path>) -> io::Result<PathBuf> {
     Ok(buf.mntfromname.into())
 }
 
+#[cfg(target_os = "macos")]
+fn os_str_from_c_chars(chars: &[i8]) -> &OsStr {
+    let cstr = unsafe { CStr::from_ptr(chars.as_ptr()) };
+    OsStr::from_bytes(cstr.to_bytes())
+}
+
 struct StatfsBuf {
     mntfromname: OsString,
     mntonname: OsString,
+}
+
+#[cfg(target_os = "macos")]
+impl From<libc::statfs> for StatfsBuf {
+    fn from(buf: libc::statfs) -> Self {
+        StatfsBuf {
+            mntfromname: os_str_from_c_chars(&buf.f_mntfromname).to_owned(),
+            mntonname: os_str_from_c_chars(&buf.f_mntonname).to_owned(),
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -154,10 +172,7 @@ fn statfs(path: impl AsRef<Path>) -> io::Result<StatfsBuf> {
     if unsafe { libc::statfs(c_path.as_ptr(), &mut buf) } != 0 {
         return Err(io::Error::last_os_error());
     }
-    Ok(StatfsBuf {
-        mntfromname: os_str_from_c_chars(&buf.f_mntfromname).to_owned(),
-        mntonname: os_str_from_c_chars(&buf.f_mntonname).to_owned(),
-    })
+    Ok(buf.into())
 }
 
 #[cfg(target_os = "linux")]
@@ -225,12 +240,6 @@ pub fn files_likely_differ(
     }
 
     Ok(false)
-}
-
-#[cfg(target_os = "macos")]
-fn os_str_from_c_chars(chars: &[i8]) -> &OsStr {
-    let cstr = unsafe { CStr::from_ptr(chars.as_ptr()) };
-    OsStr::from_bytes(cstr.to_bytes())
 }
 
 mod dirtrie {
