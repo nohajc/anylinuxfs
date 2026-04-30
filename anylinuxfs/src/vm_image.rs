@@ -440,7 +440,7 @@ mod freebsd {
         // open, and our install path already runs with effective uid =
         // invoker, so the disk image is created invoker-owned and no
         // chown fix-up is needed.
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "linux")]
         if let (Some(uid), Some(gid)) = (config.sudo_uid, config.sudo_gid) {
             if let Err(e) = crate::privilege::chown_tree_to_invoker(&base_path, uid, gid) {
                 host_eprintln!(
@@ -709,7 +709,7 @@ pub fn setup_net_helper(
         NetHelper::GvProxy => setup_gvproxy(config, start_vm_fn),
         #[cfg(target_os = "macos")]
         NetHelper::VmNet => setup_vmnet_helper(config, start_vm_fn),
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "linux")]
         NetHelper::VmNet => anyhow::bail!("vmnet-helper is not supported on Linux"),
     }
 }

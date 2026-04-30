@@ -214,7 +214,7 @@ fn load_config(common_args: &CommonArgs, debug_args: &DebugArgs) -> anyhow::Resu
     let config_file_path = home_dir.join(".anylinuxfs").join("config.toml");
     #[cfg(target_os = "macos")]
     let log_dir = home_dir.join("Library").join("Logs");
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
     let log_dir = {
         let dir = home_dir.join(".anylinuxfs").join("logs");
         fs::create_dir_all(&dir)
@@ -243,7 +243,7 @@ fn load_config(common_args: &CommonArgs, debug_args: &DebugArgs) -> anyhow::Resu
     };
     #[cfg(target_os = "macos")]
     let global_cfg_path = global_prefix_dir.join("etc").join("anylinuxfs.toml");
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
     let global_cfg_path = global_prefix_dir.join("etc").join("anylinuxfs-linux.toml");
     let all_cfg_paths = [global_cfg_path.as_path(), config_file_path.as_path()];
     let preferences = settings::load_preferences(all_cfg_paths.iter().cloned())?;
@@ -623,7 +623,7 @@ impl AppRunner {
         let config = load_config(&CommonArgs::default(), &DebugArgs::default())?;
         #[cfg(target_os = "macos")]
         let log_dir = config.home_dir.join("Library").join("Logs");
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "linux")]
         let log_dir = config.home_dir.join(".anylinuxfs").join("logs");
 
         // Find the most recently modified kernel log file (if it exists)
@@ -801,7 +801,7 @@ impl AppRunner {
     fn run_upgrade_config(&mut self, cmd: UpgradeConfigCmd) -> anyhow::Result<()> {
         #[cfg(target_os = "macos")]
         let default_cfg_str = include_str!("../../etc/anylinuxfs.toml");
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "linux")]
         let default_cfg_str = include_str!("../../etc/anylinuxfs-linux.toml");
         let mut target_cfg = default_cfg_str
             .parse::<DocumentMut>()
@@ -933,7 +933,7 @@ impl AppRunner {
         let config = load_config(&CommonArgs::default(), &DebugArgs::default())?;
         #[cfg(target_os = "macos")]
         let log_dir = config.home_dir.join("Library").join("Logs");
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "linux")]
         let log_dir = config.home_dir.join(".anylinuxfs").join("logs");
 
         // Find the most recently modified log file

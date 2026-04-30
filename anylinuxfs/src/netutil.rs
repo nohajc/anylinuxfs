@@ -321,7 +321,7 @@ pub use darwin::{
     pick_usable_loopback_ip,
 };
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 mod linux {
     use super::*;
     use anyhow::Context;
@@ -363,7 +363,7 @@ mod linux {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 pub use linux::{get_configured_dns_server, pick_usable_loopback_ip};
 
 pub fn get_dns_server_with_fallback<'a>() -> Cow<'a, str> {
@@ -380,7 +380,7 @@ pub fn try_port(addr: impl ToSocketAddrs) -> io::Result<()> {
 pub enum Host {
     IPv4(String),
     IPv6(String),
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    #[cfg_attr(target_os = "linux", allow(dead_code))]
     Hostname(String),
 }
 

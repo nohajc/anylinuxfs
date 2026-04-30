@@ -65,7 +65,7 @@ impl MountTable {
         })
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
     pub fn new() -> io::Result<Self> {
         let mounts =
             procfs::mounts().map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
@@ -103,7 +103,7 @@ impl Default for NfsOptions {
             opts.insert("nfc".into(), "".into()); // NFC Unicode normalization (macOS-only)
             opts.insert("nolocks".into(), "".into());
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "linux")]
         {
             opts.insert("nolock".into(), "".into()); // Linux spelling (no 's')
         }
@@ -160,7 +160,7 @@ fn statfs(path: impl AsRef<Path>) -> io::Result<StatfsBuf> {
     })
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 fn statfs(path: impl AsRef<Path>) -> io::Result<StatfsBuf> {
     let path_str = path.as_ref().to_string_lossy().into_owned();
     let mounts =
@@ -184,7 +184,7 @@ fn statfs(path: impl AsRef<Path>) -> io::Result<StatfsBuf> {
 /// points at a VM we're about to tear down. Linux's default `hard` NFS client
 /// would hang indefinitely on server death, freezing any shell that later
 /// stats the mount point. macOS relies on DiskArbitration teardown — no-op.
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 pub fn cleanup_stale_nfs_client_mount(device: &str) -> anyhow::Result<()> {
     let mounts = procfs::mounts().context("Failed to read /proc/mounts")?;
     for entry in mounts {
@@ -369,7 +369,7 @@ fn parallel_unmount_recursive(trie: &dirtrie::Node) -> anyhow::Result<()> {
     if let Some((_, mount_path)) = &trie.paths {
         #[cfg(target_os = "macos")]
         let shell_script = format!("diskutil unmount \"{}\"", mount_path);
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "linux")]
         let shell_script = format!("umount \"{}\"", mount_path);
         // exit status ignored, we don't want to exit early if one unmount fails
         let _ = Command::new("sh").arg("-c").arg(&shell_script).status()?;

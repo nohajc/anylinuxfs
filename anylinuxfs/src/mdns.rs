@@ -68,7 +68,7 @@ pub fn register_vm_record(hostname: &str, vm_ip: Host) -> anyhow::Result<(Regist
     ))
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 pub fn register_vm_record(_hostname: &str, vm_ip: Host) -> anyhow::Result<(Registration, Host)> {
     Ok((Registration {}, vm_ip))
 }

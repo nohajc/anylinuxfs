@@ -24,7 +24,7 @@ pub(crate) fn drop_privileges(
     sudo_gid: Option<libc::gid_t>,
 ) -> anyhow::Result<()> {
     if let (Some(sudo_uid), Some(sudo_gid)) = (sudo_uid, sudo_gid) {
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "linux")]
         {
             if unsafe { libc::setegid(sudo_gid) } < 0 {
                 return Err(io::Error::last_os_error()).context("Failed to setegid");
@@ -127,10 +127,10 @@ impl Drop for EffectiveRootGuard {
 /// deferred cleanups in `run_mount_child` run as root after the long-running
 /// parent has dropped effective privileges to the invoker. Requires
 /// drop_privileges to have used seteuid/setegid (saved uid still 0).
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 pub(crate) struct ElevateOnDrop;
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 impl Drop for ElevateOnDrop {
     fn drop(&mut self) {
         if unsafe { libc::getuid() } == 0 {
@@ -140,7 +140,7 @@ impl Drop for ElevateOnDrop {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 pub(crate) fn chown_tree_to_invoker(
     path: &Path,
     uid: libc::uid_t,

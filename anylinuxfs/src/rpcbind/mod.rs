@@ -3,7 +3,7 @@ use os_socketaddr::OsSocketAddr;
 
 #[cfg(target_os = "macos")]
 mod darwin;
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 mod linux;
 
 #[repr(C)]
@@ -56,7 +56,7 @@ pub mod services {
     // Per-platform implementations of rpcb_set_entry / unregister / list.
     #[cfg(target_os = "macos")]
     pub use super::darwin::{list, rpcb_set_entry, unregister};
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
     pub use super::linux::{list, rpcb_set_entry, unregister};
 
     pub fn rpcb_set_entries(entries: &[Entry]) -> anyhow::Result<()> {
@@ -180,7 +180,7 @@ pub mod services {
         if let RpcStatus::Failure(msg) = stat {
             #[cfg(target_os = "macos")]
             let rpc = unsafe { super::darwin::getrpcbynumber(prog as c_int) };
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(target_os = "linux")]
             let rpc = unsafe { super::linux::getrpcbynumber(prog as c_int) };
             let svc = if rpc.is_null() || unsafe { (*rpc).r_name.is_null() } {
                 "-".to_string()

@@ -140,9 +140,9 @@ pub(super) fn format_partition_size(size_bytes: u64) -> String {
 // All sysfs reads are unprivileged; libblkid (called separately to fill in
 // fs type / label / uuid) is what needs sudo, exactly mirroring how the
 // macOS path uses DiskArbitration for structure and libblkid for FS detail.
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 mod linux;
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 pub use linux::{EventSession, get_info};
 
 #[cfg(target_os = "macos")]
@@ -158,7 +158,7 @@ pub struct FsTypes(&'static [&'static str]);
 
 pub struct Labels {
     // normally, we match any filesystem with the following partition type
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    #[cfg_attr(target_os = "linux", allow(dead_code))]
     pub part_types: PartTypes,
     // static fs list only used for matching drives without any partition table
     pub fs_types: FsTypes,
@@ -449,7 +449,7 @@ pub fn list_partitions(
     // On Linux, expand `disks=None` (= all) into the actual sysfs-discovered
     // disk paths up front so the per-disk loop below can drive a uniform
     // path. Storage must outlive `device_iter` (which borrows from it).
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
     let enumerated_disk_paths: Vec<String> = if disks.is_none() {
         linux::enumerate_physical_disks()
             .into_iter()
@@ -466,7 +466,7 @@ pub fn list_partitions(
             {
                 vec![None]
             }
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(target_os = "linux")]
             {
                 enumerated_disk_paths
                     .iter()
@@ -560,7 +560,7 @@ pub fn list_partitions(
                 disk_entries.push(entry);
             }
         } else {
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(target_os = "linux")]
             {
                 // Linux block device path: sysfs gives us the disk/partition
                 // structure unprivileged; libblkid (when accessible) adds fs

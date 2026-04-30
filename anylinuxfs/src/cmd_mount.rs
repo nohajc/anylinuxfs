@@ -24,7 +24,7 @@ use std::{
 
 use crate::devinfo::DevInfo;
 use crate::netutil::Host;
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 use crate::privilege::ElevateOnDrop;
 use crate::privilege::{
     self, EffectiveRootGuard, drop_effective_privileges, drop_privileges,
@@ -46,7 +46,7 @@ use crate::{
 
 #[cfg(target_os = "macos")]
 const MOUNT_BASE: &str = "Volumes";
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 const MOUNT_BASE: &str = "mnt";
 
 pub(crate) enum NfsStatus {
@@ -108,7 +108,7 @@ pub(crate) fn unmount_fs(volume_path: &Path) -> anyhow::Result<()> {
         .arg("unmount")
         .arg(volume_path)
         .status()?;
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
     let status = Command::new("umount").arg(volume_path).status()?;
 
     if !status.success() {
@@ -129,7 +129,7 @@ pub(crate) fn send_quit_cmd(config: &Config, vm_native_ip: Option<Ipv4Addr>) -> 
     // would return EACCES. Briefly re-elevate just for the connect; once the
     // stream is open, send/recv don't recheck. No-op on macOS / non-sudo runs.
     let mut stream = {
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "linux")]
         let _guard = EffectiveRootGuard::acquire();
         vm_network::connect_to_vm_ctrl_socket(config, vm_native_ip, Some(Duration::from_secs(5)))?
     };
@@ -201,7 +201,7 @@ fn wait_for_proc_exit_with_timeout(pid: libc::pid_t, timeout: Duration) -> anyho
     Ok(())
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 fn wait_for_proc_exit_with_timeout(pid: libc::pid_t, timeout: Duration) -> anyhow::Result<()> {
     let start = Instant::now();
     let stat_path = format!("/proc/{}/stat", pid);
@@ -933,7 +933,7 @@ fn setup_rpcbind_services<'a>(
             rpcbind::services::register().context("Failed to register NFS server to rpcbind")?;
         }
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
     {
         rpcbind::services::register().context("Failed to register NFS server to rpcbind")?;
     }
@@ -1282,7 +1282,7 @@ impl super::AppRunner {
         // AFTER `deferred` so it drops FIRST: at scope exit it re-elevates
         // euid to 0, then `deferred` drops and runs cleanups as root.
         // No-op on macOS.
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "linux")]
         let _elevate_for_cleanup = ElevateOnDrop;
 
         let verbose = config.verbose;
@@ -1403,7 +1403,7 @@ impl super::AppRunner {
             }
             #[cfg(target_os = "macos")]
             NetHelper::VmNet => vm_network::start_vmnet_helper(&config.common)?,
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(target_os = "linux")]
             NetHelper::VmNet => anyhow::bail!("vmnet-helper is not supported on Linux"),
         };
 
