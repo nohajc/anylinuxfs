@@ -55,9 +55,14 @@ pub mod services {
 
     // Per-platform implementations of rpcb_set_entry / unregister / list.
     #[cfg(target_os = "macos")]
-    pub use super::darwin::{list, rpcb_set_entry, unregister};
+    use super::darwin::{getrpcbynumber, rpcb_set_entry};
+    #[cfg(target_os = "macos")]
+    pub use super::darwin::{list, unregister};
+
     #[cfg(target_os = "linux")]
-    pub use super::linux::{list, rpcb_set_entry, unregister};
+    use super::linux::{getrpcbynumber, rpcb_set_entry};
+    #[cfg(target_os = "linux")]
+    pub use super::linux::{list, unregister};
 
     pub fn rpcb_set_entries(entries: &[Entry]) -> anyhow::Result<()> {
         for entry in entries {
@@ -178,10 +183,7 @@ pub mod services {
         stat: RpcStatus,
     ) -> anyhow::Result<()> {
         if let RpcStatus::Failure(msg) = stat {
-            #[cfg(target_os = "macos")]
-            let rpc = unsafe { super::darwin::getrpcbynumber(prog as c_int) };
-            #[cfg(target_os = "linux")]
-            let rpc = unsafe { super::linux::getrpcbynumber(prog as c_int) };
+            let rpc = unsafe { getrpcbynumber(prog as c_int) };
             let svc = if rpc.is_null() || unsafe { (*rpc).r_name.is_null() } {
                 "-".to_string()
             } else {
