@@ -15,7 +15,7 @@ use rand::prelude::*;
 #[cfg(target_os = "macos")]
 mod darwin;
 #[cfg(target_os = "macos")]
-pub use darwin::{VmnetConfig, VmnetConfigJson, start_vmnet_helper};
+pub use darwin::{VmnetConfig, start_vmnet_helper};
 
 pub fn random_mac_address() -> [u8; 6] {
     let mut rng = rand::rng();

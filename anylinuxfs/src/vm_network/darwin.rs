@@ -13,7 +13,7 @@ use versions::{SemVer, Versioning};
 
 use super::vfkit_sock_cleanup;
 use crate::netutil;
-use crate::settings::Config;
+use crate::settings::{Config, Preferences};
 
 #[allow(unused)]
 #[derive(Debug, Deserialize)]
