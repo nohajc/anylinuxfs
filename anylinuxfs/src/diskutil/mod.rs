@@ -1,15 +1,12 @@
 use anyhow::Context;
-use bstr::BStr;
-#[cfg(not(target_os = "macos"))]
-use bstr::ByteSlice;
-use common_utils::{PathExt, host_println, is_encrypted_fs, safe_print};
+use common_utils::{PathExt, is_encrypted_fs, safe_print};
 use derive_more::{AddAssign, Deref};
 use indexmap::IndexMap;
 #[cfg(target_os = "macos")]
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 #[cfg(target_os = "macos")]
-use std::{cmp, process::Command};
+use std::process::Command;
 use std::{
     fmt::Display,
     hash::{Hash, Hasher},
@@ -17,36 +14,14 @@ use std::{
     iter,
     path::{Path, PathBuf},
     str::FromStr,
-    thread,
 };
-
-#[cfg(target_os = "macos")]
-use objc2_core_foundation::{
-    CFBoolean, CFDictionary, CFRetained, CFRunLoop, CFString, CFURL, kCFRunLoopDefaultMode,
-};
-#[cfg(target_os = "macos")]
-use objc2_disk_arbitration::{
-    DADisk, DARegisterDiskAppearedCallback, DARegisterDiskDisappearedCallback, DASession,
-    DAUnregisterCallback,
-};
-#[cfg(target_os = "macos")]
-use std::{
-    ffi::{CString, c_void},
-    marker::PhantomData,
-    ptr::{NonNull, null_mut},
-};
-#[cfg(target_os = "macos")]
-use url::Url;
 
 use crate::{
     devinfo::DevInfo,
-    pubsub::Subscription,
     settings::{Config, PassphrasePromptConfig},
     utils::is_stdin_tty,
     vm::{NetworkMode, VMOpts},
 };
-#[cfg(target_os = "macos")]
-use crate::{fsutil, utils::cfdict_get_value};
 
 pub struct Entry(String, String, String, Vec<String>);
 
@@ -128,7 +103,7 @@ impl Display for List {
     }
 }
 
-fn trunc_with_ellipsis(s: &str, max_len: usize) -> String {
+pub(super) fn trunc_with_ellipsis(s: &str, max_len: usize) -> String {
     if s.len() > max_len {
         format!("{}...", &s[..max_len - 3])
     } else {
@@ -136,7 +111,7 @@ fn trunc_with_ellipsis(s: &str, max_len: usize) -> String {
     }
 }
 
-fn normalize_pt_type(pt_type: &str) -> String {
+pub(super) fn normalize_pt_type(pt_type: &str) -> String {
     match pt_type {
         "gpt" => "GUID_partition_scheme".to_string(),
         "dos" => "FDisk_partition_scheme".to_string(),
@@ -144,7 +119,7 @@ fn normalize_pt_type(pt_type: &str) -> String {
     }
 }
 
-fn format_partition_size(size_bytes: u64) -> String {
+pub(super) fn format_partition_size(size_bytes: u64) -> String {
     const UNITS: &[&str] = &["", "K", "M", "G", "T", "P"];
     let mut size = size_bytes as f64;
     let mut unit_idx = 0;
@@ -170,294 +145,14 @@ fn format_partition_size(size_bytes: u64) -> String {
 // fs type / label / uuid) is what needs sudo, exactly mirroring how the
 // macOS path uses DiskArbitration for structure and libblkid for FS detail.
 #[cfg(not(target_os = "macos"))]
-fn is_supported_disk_name(name: &str) -> bool {
-    if name.starts_with("sd")
-        || name.starts_with("vd")
-        || name.starts_with("xvd")
-        || name.starts_with("hd")
-    {
-        // sd/vd/xvd/hd: must be followed by a letter, not a digit
-        // (rules out artifacts like sda1 if anything ever shows up at top level)
-        return name
-            .chars()
-            .nth(if name.starts_with("xvd") { 3 } else { 2 })
-            .map(|c| c.is_ascii_alphabetic())
-            .unwrap_or(false);
-    }
-    if name.starts_with("nvme") {
-        // nvme<ctrl>n<ns> — keep only namespace nodes (no trailing partition)
-        return name.contains('n') && !name.contains('p');
-    }
-    if name.starts_with("mmcblk") {
-        // mmcblk<N> (no trailing 'p<part>')
-        return !name.contains('p');
-    }
-    if let Some(rest) = name.strip_prefix("loop") {
-        // loop[0-9]+ — but only consider it "supported" when actually
-        // backed by a file. The kernel preallocates loop0..loop7 idle.
-        return !rest.is_empty()
-            && rest.chars().all(|c| c.is_ascii_digit())
-            && loop_backing_file(name).is_some();
-    }
-    false
-}
-
-// Path of the file backing a loop device, or None if the device is idle.
-// `/sys/block/loopN/loop/backing_file` only exists once losetup has
-// associated a file; for idle preallocated loops the `loop/` subdir is
-// absent.
+mod linux;
 #[cfg(not(target_os = "macos"))]
-fn loop_backing_file(disk_name: &str) -> Option<String> {
-    let p = std::path::PathBuf::from(format!("/sys/block/{}/loop/backing_file", disk_name));
-    let s = std::fs::read_to_string(&p).ok()?;
-    let trimmed = s.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-fn enumerate_physical_disks() -> Vec<String> {
-    let entries = match std::fs::read_dir("/sys/block") {
-        Ok(e) => e,
-        Err(_) => return Vec::new(),
-    };
-    let mut names: Vec<String> = entries
-        .flatten()
-        .filter_map(|e| e.file_name().into_string().ok())
-        .filter(|n| is_supported_disk_name(n))
-        .collect();
-    names.sort();
-    names
-}
-
-#[cfg(not(target_os = "macos"))]
-fn read_sectors(path: &std::path::Path) -> Option<u64> {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|s| s.trim().parse::<u64>().ok())
-}
-
-#[cfg(not(target_os = "macos"))]
-fn read_disk_size(disk_name: &str) -> Option<u64> {
-    let p = std::path::PathBuf::from(format!("/sys/block/{}/size", disk_name));
-    read_sectors(&p).map(|sectors| sectors * 512)
-}
-
-#[cfg(not(target_os = "macos"))]
-fn read_part_size(disk_name: &str, part_name: &str) -> Option<u64> {
-    let p = std::path::PathBuf::from(format!("/sys/block/{}/{}/size", disk_name, part_name));
-    read_sectors(&p).map(|sectors| sectors * 512)
-}
-
-#[cfg(not(target_os = "macos"))]
-fn is_removable(disk_name: &str) -> bool {
-    let p = std::path::PathBuf::from(format!("/sys/block/{}/removable", disk_name));
-    std::fs::read_to_string(&p)
-        .map(|s| s.trim() == "1")
-        .unwrap_or(false)
-}
-
-// Partition subdirs under `/sys/block/<disk>/`. Each subdir that has a
-// `partition` file is a partition; the file's content is the partition number.
-// Returned ordered by partition number (so output matches the partition table
-// even if sysfs hands us subdirs in inode order).
-#[cfg(not(target_os = "macos"))]
-fn list_partition_names_sysfs(disk_name: &str) -> Vec<String> {
-    let dir = std::path::PathBuf::from(format!("/sys/block/{}", disk_name));
-    let entries = match std::fs::read_dir(&dir) {
-        Ok(e) => e,
-        Err(_) => return Vec::new(),
-    };
-    let mut parts: Vec<(u64, String)> = Vec::new();
-    for entry in entries.flatten() {
-        let name = match entry.file_name().into_string() {
-            Ok(n) => n,
-            Err(_) => continue,
-        };
-        let part_num_path = entry.path().join("partition");
-        let Some(num) = read_sectors(&part_num_path) else {
-            continue;
-        };
-        parts.push((num, name));
-    }
-    parts.sort_by_key(|(n, _)| *n);
-    parts.into_iter().map(|(_, n)| n).collect()
-}
-
-// Build an Entry for a single Linux block device using sysfs as the
-// structural source of truth and libblkid for fs metadata. Returns None if
-// no rows survive the filter (so the caller can skip empty disks).
-#[cfg(not(target_os = "macos"))]
-fn process_linux_block_device(
-    disk_path: &str,
-    filter: &Labels,
-    pv: &mut PvCollector,
-) -> Option<Entry> {
-    use bstr::BString;
-    let disk_name = std::path::Path::new(disk_path)
-        .file_name()?
-        .to_str()?
-        .to_string();
-
-    // Loop devices are the Linux analogue of macOS hdiutil-attached images;
-    // mirror diskutil's "disk image" tag for them — same as the image-mode
-    // path uses for file-based images. Physical block devices keep the
-    // "physical" tag with an internal/external prefix driven by the
-    // kernel's `removable` flag.
-    let header_tag = if disk_name.starts_with("loop") {
-        "disk image".to_string()
-    } else {
-        let location = if is_removable(&disk_name) {
-            "external"
-        } else {
-            "internal"
-        };
-        format!("{}, physical", location)
-    };
-    let mut entry = Entry::new(format!("{} ({}):", disk_path, header_tag));
-    entry
-        .header_mut()
-        .push_str("   #:                       TYPE NAME                    SIZE       IDENTIFIER");
-
-    // Whole-disk size prefix mirrors macOS diskutil: `*` for physical block
-    // devices, `+` for disk images (loop / hdiutil-attached).
-    let size_prefix = if disk_name.starts_with("loop") {
-        '+'
-    } else {
-        '*'
-    };
-
-    // Whole-disk libblkid probe — gives PT type, fs type (for whole-disk
-    // FS), and labels. Failure (e.g. EACCES without sudo) is fine: we still
-    // show structure from sysfs.
-    let probe = DevInfo::probe_image(BString::from(disk_path.as_bytes())).ok();
-    let whole = probe.as_ref().and_then(|p| p.first());
-
-    let pt_type = whole.and_then(|w| w.pt_type());
-    let whole_fs_type = whole.and_then(|w| w.fs_type());
-    let whole_size = whole
-        .and_then(|w| w.size())
-        .or_else(|| read_disk_size(&disk_name));
-
-    if let Some(pt) = pt_type {
-        // Partitioned disk
-        let normalized_pt = normalize_pt_type(pt);
-        let size_str = whole_size.map(format_partition_size).unwrap_or_default();
-        *entry.scheme_mut() = format!(
-            "   0: {:>26} {:<22} {}{:<10} {}",
-            normalized_pt, "", size_prefix, size_str, disk_name,
-        );
-
-        let part_names = list_partition_names_sysfs(&disk_name);
-        for (i, part_name) in part_names.iter().enumerate() {
-            let part_path = format!("/dev/{}", part_name);
-            let part_info = DevInfo::pv(part_path.as_str(), false).ok();
-            let fs_type = part_info.as_ref().and_then(|p| p.fs_type()).unwrap_or("");
-
-            // Filter by fs type (matches macOS image-mode behaviour: empty
-            // fs_type means libblkid couldn't read it — keep the row in
-            // that case so the user sees structure).
-            if !fs_type.is_empty() && !filter.fs_types.iter().any(|t| t == &fs_type) {
-                continue;
-            }
-
-            if let Some(ref dev_info) = part_info {
-                pv.try_collect(dev_info, part_name, &part_path, fs_type);
-            }
-
-            let label = part_info.as_ref().and_then(|p| p.label()).unwrap_or("");
-            let truncated_label = trunc_with_ellipsis(label, 23);
-            let part_size = read_part_size(&disk_name, part_name);
-            let size_str = part_size.map(format_partition_size).unwrap_or_default();
-            entry.partitions_mut().push(format!(
-                "{:>4}: {:>26} {:<23} {:<10} {}",
-                i + 1,
-                fs_type,
-                truncated_label,
-                size_str,
-                part_name,
-            ));
-        }
-    } else if let Some(fs_type) = whole_fs_type {
-        // Whole-disk filesystem (no partition table)
-        if !filter.fs_types.iter().any(|t| t == &fs_type) {
-            return None;
-        }
-        if let Some(w) = whole {
-            pv.try_collect(w, &disk_name, disk_path, fs_type);
-        }
-        let label = whole.and_then(|w| w.label()).unwrap_or("");
-        let truncated_label = trunc_with_ellipsis(label, 23);
-        let size_str = whole_size.map(format_partition_size).unwrap_or_default();
-        entry.partitions_mut().push(format!(
-            "   0: {:>26} {:<22} {}{:<10} {}",
-            fs_type, truncated_label, size_prefix, size_str, disk_name,
-        ));
-    } else {
-        // No probe info (unprivileged or unknown content). Show structure
-        // from sysfs only — partition list with sizes, no fs/label.
-        let part_names = list_partition_names_sysfs(&disk_name);
-        if part_names.is_empty() {
-            return None;
-        }
-        let size_str = whole_size.map(format_partition_size).unwrap_or_default();
-        *entry.scheme_mut() = format!(
-            "   0: {:>26} {:<22} {}{:<10} {}",
-            "", "", size_prefix, size_str, disk_name,
-        );
-        for (i, part_name) in part_names.iter().enumerate() {
-            let part_size = read_part_size(&disk_name, part_name);
-            let size_str = part_size.map(format_partition_size).unwrap_or_default();
-            entry.partitions_mut().push(format!(
-                "{:>4}: {:>26} {:<23} {:<10} {}",
-                i + 1,
-                "",
-                "",
-                size_str,
-                part_name,
-            ));
-        }
-    }
-
-    Some(entry)
-}
+pub use linux::{EventSession, get_info};
 
 #[cfg(target_os = "macos")]
-fn diskutil_list_from_plist(disk: Option<&str>) -> anyhow::Result<Plist> {
-    let mut cmd = Command::new("diskutil");
-    cmd.arg("list").arg("-plist");
-    if let Some(d) = disk {
-        cmd.arg(d);
-    }
-    let output = cmd.output().expect("Failed to execute diskutil");
-    let plist: Plist = plist::from_bytes(&output.stdout).context("Failed to parse plist")?;
-
-    if !output.status.success() {
-        anyhow::bail!(
-            "{}",
-            plist
-                .error_message
-                .as_deref()
-                .unwrap_or("diskutil command failed")
-        );
-    }
-
-    Ok(plist)
-}
-
+mod darwin;
 #[cfg(target_os = "macos")]
-fn disks_without_partition_table(plist: &Plist) -> Vec<String> {
-    let mut disks = Vec::new();
-    for disk in &plist.all_disks_and_partitions {
-        if disk.partitions.is_none() && disk.content.as_deref() == Some("") {
-            disks.push(disk.device_identifier.clone());
-        }
-    }
-    disks
-}
+pub use darwin::{EventSession, get_info};
 
 #[derive(Deref)]
 pub struct PartTypes(&'static [&'static str]);
@@ -589,50 +284,6 @@ pub const ALL_LABELS: Labels = Labels {
     fs_types: FsTypes(&ALL_FS_TYPES),
 };
 
-#[cfg(target_os = "macos")]
-fn partitions_with_part_type(plist: &Plist, part_types: &PartTypes) -> Vec<String> {
-    let mut partitions = Vec::new();
-    for disk in &plist.all_disks_and_partitions {
-        if let Some(partitions_list) = &disk.partitions {
-            for partition in partitions_list {
-                if part_types
-                    .iter()
-                    .cloned()
-                    .any(|fs_type| partition.content.as_deref() == Some(fs_type))
-                {
-                    partitions.push(partition.device_identifier.clone());
-                }
-            }
-        }
-    }
-    partitions
-}
-
-#[cfg(target_os = "macos")]
-fn augment_line(line: &str, part_type: &str, dev_info: Option<&DevInfo>, fs_type: &str) -> String {
-    let label = trunc_with_ellipsis(
-        dev_info
-            .map(|di| di.label())
-            .flatten()
-            .unwrap_or("                       "),
-        23,
-    );
-
-    // replace in two steps
-    // - part_type must be replaced with fs_type in any case
-    // - label might already be there (for fs_types supported by macOS)
-    let part_type_width = cmp::max(27, part_type.len() + 1);
-    let width_diff = part_type_width - 27;
-    line.replace(
-        &format!("{part_type:>part_type_width$}"),
-        &format!("{fs_type:>27}{:<width_diff$}", ""),
-    )
-    .replace(
-        &format!("{:>27} {:<23}", fs_type, ""),
-        &format!("{:>27} {:<23}", fs_type, label),
-    )
-}
-
 fn lv_size_split_val_and_units(size: &str) -> (&str, String) {
     let size_last_char = size.chars().last().unwrap_or('0');
     let (size_val, unit_prefix) = if size_last_char.is_digit(10) {
@@ -737,17 +388,17 @@ impl FromStr for LvIdent {
 }
 
 /// Accumulates physical volume entries (encrypted, RAID, LVM) discovered during partition listing.
-struct PvCollector {
-    dev_infos: Vec<DevInfo>,
-    dev_idents: Vec<String>,
-    enc_partitions: Vec<String>,
-    assemble_raid: bool,
-    decrypt_all: bool,
-    has_enc_filter: bool,
+pub(super) struct PvCollector {
+    pub(super) dev_infos: Vec<DevInfo>,
+    pub(super) dev_idents: Vec<String>,
+    pub(super) enc_partitions: Vec<String>,
+    pub(super) assemble_raid: bool,
+    pub(super) decrypt_all: bool,
+    pub(super) has_enc_filter: bool,
 }
 
 impl PvCollector {
-    fn new(enc_partitions: Option<&[String]>) -> Self {
+    pub(super) fn new(enc_partitions: Option<&[String]>) -> Self {
         let decrypt_all = enc_partitions.is_some_and(|p| !p.is_empty() && p[0] == "all");
         Self {
             dev_infos: Vec::new(),
@@ -761,7 +412,7 @@ impl PvCollector {
 
     /// Check a partition's fs_type and accumulate it if it's a PV (encrypted, RAID, or LVM).
     /// Returns `(is_enc, is_raid, is_lvm)`.
-    fn try_collect(
+    pub(super) fn try_collect(
         &mut self,
         dev_info: &DevInfo,
         dev_ident: &str,
@@ -808,7 +459,7 @@ pub fn list_partitions(
     // path. Storage must outlive `device_iter` (which borrows from it).
     #[cfg(not(target_os = "macos"))]
     let enumerated_disk_paths: Vec<String> = if disks.is_none() {
-        enumerate_physical_disks()
+        linux::enumerate_physical_disks()
             .into_iter()
             .map(|n| format!("/dev/{}", n))
             .collect()
@@ -926,7 +577,7 @@ pub fn list_partitions(
                 // skip rather than crash, since we already enumerated all
                 // physical disks above.
                 if let Some(path) = disk {
-                    if let Some(entry) = process_linux_block_device(path, &filter, &mut pv) {
+                    if let Some(entry) = linux::process_block_device(path, &filter, &mut pv) {
                         disk_entries.push(entry);
                     }
                 }
@@ -934,11 +585,12 @@ pub fn list_partitions(
             }
 
             #[cfg(target_os = "macos")]
-            let plist_out = diskutil_list_from_plist(disk)?;
+            let plist_out = darwin::diskutil_list_from_plist(disk)?;
             #[cfg(target_os = "macos")]
-            let selected_partitions = partitions_with_part_type(&plist_out, &filter.part_types);
+            let selected_partitions =
+                darwin::partitions_with_part_type(&plist_out, &filter.part_types);
             #[cfg(target_os = "macos")]
-            let disks_without_part_table = disks_without_partition_table(&plist_out);
+            let disks_without_part_table = darwin::disks_without_partition_table(&plist_out);
 
             #[cfg(target_os = "macos")]
             let output = Command::new("diskutil")
@@ -985,7 +637,7 @@ pub fn list_partitions(
                                 let fs_type = dev_info.fs_type().unwrap_or(part_type);
                                 pv.try_collect(&dev_info, dev_ident, &disk_path, fs_type);
 
-                                augment_line(line, part_type, Some(&dev_info), fs_type)
+                                darwin::augment_line(line, part_type, Some(&dev_info), fs_type)
                             }
                             None => line.to_owned(),
                         };
@@ -1014,7 +666,7 @@ pub fn list_partitions(
                                 pv.try_collect(dev_info, dev_ident, &disk_path, fs_type);
                             }
 
-                            let line = augment_line(line, "", dev_info.as_ref(), fs_type);
+                            let line = darwin::augment_line(line, "", dev_info.as_ref(), fs_type);
                             current_entry.as_mut().map(|entry| {
                                 entry.partitions_mut().push(line);
                             });
@@ -1432,147 +1084,13 @@ fn get_lsblk_info(
     Ok(lsblk)
 }
 
-#[cfg(target_os = "macos")]
-struct DaDiskArgs<ContextType> {
-    context: *mut c_void,
-    descr: Option<CFRetained<CFDictionary>>,
-    phantom: PhantomData<ContextType>,
-}
-
-#[cfg(target_os = "macos")]
-impl<ContextType> DaDiskArgs<ContextType> {
-    fn new(disk: NonNull<DADisk>, context: *mut c_void) -> Self {
-        let descr = unsafe { DADisk::description(disk.as_ref()) };
-        Self {
-            context,
-            descr,
-            phantom: PhantomData,
-        }
-    }
-
-    fn context(&self) -> &ContextType {
-        unsafe { (self.context as *const ContextType).as_ref().unwrap() }
-    }
-
-    fn context_mut(&mut self) -> &mut ContextType {
-        unsafe { (self.context as *mut ContextType).as_mut().unwrap() }
-    }
-
-    fn descr(&self) -> Option<&CFDictionary> {
-        self.descr
-            .as_ref()
-            .map(|d| unsafe { CFRetained::as_ptr(d).as_ref() })
-    }
-
-    fn volume_path(&self) -> Option<String> {
-        let volume_path: Option<&CFURL> =
-            unsafe { cfdict_get_value(self.descr()?, "DAVolumePath") };
-        volume_path
-            .map(|url| CFURL::string(url).to_string())
-            .and_then(|url_str| Url::parse(&url_str).ok())
-            .map(|url| url.path().to_string())
-    }
-
-    fn volume_kind(&self) -> Option<String> {
-        let volume_kind: Option<&CFString> =
-            unsafe { cfdict_get_value(self.descr()?, "DAVolumeKind") };
-        volume_kind.map(|kind| kind.to_string())
-    }
-}
-
-#[cfg(target_os = "macos")]
-unsafe extern "C-unwind" fn disk_mount_event(disk: NonNull<DADisk>, context: *mut c_void) {
-    let mut args = DaDiskArgs::<MountContext>::new(disk, context);
-
-    if let (Some(volume_path), Some(volume_kind)) = (args.volume_path(), args.volume_kind()) {
-        let expected_nfs_path = args.context().nfs_path;
-        if volume_kind == "nfs" {
-            if let Ok(dev_path) = fsutil::mounted_from(&volume_path) {
-                if dev_path == expected_nfs_path {
-                    args.context_mut().real_mount_point = Some(volume_path.clone());
-                    CFRunLoop::stop(&CFRunLoop::main().unwrap());
-                }
-            }
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
-unsafe extern "C-unwind" fn disk_unmount_event(disk: NonNull<DADisk>, context: *mut c_void) {
-    let args = DaDiskArgs::<UnmountContext>::new(disk, context);
-
-    if let (Some(volume_path), Some(volume_kind)) = (args.volume_path(), args.volume_kind()) {
-        let expected_mount_point = args.context().mount_point;
-        if volume_kind == "nfs" && volume_path == expected_mount_point {
-            CFRunLoop::stop(&CFRunLoop::main().unwrap());
-        }
-    }
-}
-
-// unsafe extern "C-unwind" fn disk_unmount_approval(
-//     disk: NonNull<DADisk>,
-//     context: *mut c_void,
-// ) -> *const DADissenter {
-//     let args = DaDiskArgs::new(disk, context);
-//     if let Some(descr) = args.descr() {
-//         inspect_cf_dictionary_values(descr);
-//     }
-//     if let (Some(volume_path), Some(volume_kind)) = (args.volume_path(), args.volume_kind()) {
-//         let expected_share_path = format!("/Volumes/{}/", args.share_name());
-//         if volume_kind == "nfs" && volume_path == expected_share_path {
-//             host_println!("Approve unmount of {}? [y/n]", &expected_share_path);
-//             let mut input = String::new();
-//             io::stdin().read_line(&mut input).unwrap();
-//             if input.trim() == "y" {
-//                 return null();
-//             }
-//         }
-//     }
-//     let msg = CFString::from_str("custom error message");
-//     let result = unsafe { DADissenterCreate(None, kDAReturnBusy, Some(&msg)) };
-//     msg.retain();
-//     result.retain();
-//     result.deref()
-// }
-
-#[cfg(target_os = "macos")]
-struct MountContext<'a> {
-    nfs_path: &'a Path,
-    // what the OS assigned after resolving any potential conflicts
-    real_mount_point: Option<String>,
-}
-
-#[cfg(target_os = "macos")]
-impl<'a> MountContext<'a> {
-    fn new(nfs_path: &'a Path) -> Self {
-        Self {
-            nfs_path,
-            real_mount_point: None,
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
-struct UnmountContext<'a> {
-    mount_point: &'a str,
-}
-
-#[cfg(target_os = "macos")]
-fn stop_run_loop_on_signal(signals: Subscription<libc::c_int>) -> anyhow::Result<()> {
-    _ = thread::spawn(move || {
-        for _ in signals {
-            host_println!("Termination requested, give up waiting for mount");
-            CFRunLoop::stop(&CFRunLoop::main().unwrap());
-            break;
-        }
-    });
-
-    Ok(())
-}
-
 pub struct MountPoint(String);
 
 impl MountPoint {
+    pub(crate) fn new(s: String) -> Self {
+        Self(s)
+    }
+
     pub fn real(&self) -> &str {
         self.0.as_str()
     }
@@ -1582,143 +1100,6 @@ impl MountPoint {
     pub fn display(&self) -> &str {
         self.0.as_str().trim_end_matches('/')
     }
-}
-
-#[cfg(target_os = "macos")]
-pub struct EventSession {
-    session: CFRetained<DASession>,
-}
-
-#[cfg(target_os = "macos")]
-impl EventSession {
-    pub fn new(signals: Subscription<libc::c_int>) -> anyhow::Result<Self> {
-        let session = unsafe { DASession::new(None).unwrap() };
-        stop_run_loop_on_signal(signals)?;
-        Ok(Self { session })
-    }
-
-    // returns None when interrupted by SIGINT/SIGTERM
-    pub fn wait_for_mount(&self, nfs_path: &Path) -> Option<MountPoint> {
-        let mut mount_ctx = MountContext::new(nfs_path);
-        let mount_ctx_ptr = &mut mount_ctx as *mut MountContext;
-        unsafe {
-            DARegisterDiskAppearedCallback(
-                &self.session,
-                None,
-                Some(disk_mount_event),
-                mount_ctx_ptr as *mut c_void,
-            )
-        };
-
-        unsafe {
-            DASession::schedule_with_run_loop(
-                &self.session,
-                &CFRunLoop::main().unwrap(),
-                kCFRunLoopDefaultMode.unwrap(),
-            )
-        };
-
-        CFRunLoop::run();
-
-        let callback_ptr = disk_mount_event as *const c_void as *mut c_void;
-        let callback_nonnull: NonNull<c_void> = NonNull::new(callback_ptr).unwrap();
-        unsafe { DAUnregisterCallback(&self.session, callback_nonnull, null_mut()) };
-
-        mount_ctx.real_mount_point.map(MountPoint)
-    }
-
-    pub fn wait_for_unmount(&self, mount_point: &str) {
-        let mut unmount_ctx = UnmountContext { mount_point };
-        let mount_ctx_ptr = &mut unmount_ctx as *mut UnmountContext;
-        unsafe {
-            DARegisterDiskDisappearedCallback(
-                &self.session,
-                None,
-                Some(disk_unmount_event),
-                mount_ctx_ptr as *mut c_void,
-            )
-        };
-
-        unsafe {
-            DASession::schedule_with_run_loop(
-                &self.session,
-                &CFRunLoop::main().unwrap(),
-                kCFRunLoopDefaultMode.unwrap(),
-            )
-        };
-
-        CFRunLoop::run();
-
-        let callback_ptr = disk_unmount_event as *const c_void as *mut c_void;
-        let callback_nonnull: NonNull<c_void> = NonNull::new(callback_ptr).unwrap();
-        unsafe { DAUnregisterCallback(&self.session, callback_nonnull, null_mut()) };
-    }
-}
-
-// Linux EventSession: polls /proc/mounts to detect NFS share mount/unmount.
-// mount(8) is synchronous on Linux so wait_for_mount normally returns quickly.
-#[cfg(not(target_os = "macos"))]
-pub struct EventSession {
-    signals: Subscription<libc::c_int>,
-}
-
-#[cfg(not(target_os = "macos"))]
-impl EventSession {
-    pub fn new(signals: Subscription<libc::c_int>) -> anyhow::Result<Self> {
-        Ok(Self { signals })
-    }
-
-    // Returns None when interrupted by SIGINT/SIGTERM.
-    pub fn wait_for_mount(&self, nfs_path: &Path) -> Option<MountPoint> {
-        let target = nfs_path.to_string_lossy().into_owned();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        loop {
-            if self.signals.try_recv().is_ok() {
-                host_println!("Termination requested, give up waiting for mount");
-                return None;
-            }
-            if let Ok(mp) = find_mount_point_in_proc_mounts(&target) {
-                return Some(MountPoint(mp));
-            }
-            if std::time::Instant::now() > deadline {
-                return None;
-            }
-            thread::sleep(std::time::Duration::from_millis(200));
-        }
-    }
-
-    pub fn wait_for_unmount(&self, mount_point: &str) {
-        loop {
-            if self.signals.try_recv().is_ok() {
-                host_println!("Termination requested");
-                return;
-            }
-            if !is_mounted_at(mount_point) {
-                return;
-            }
-            thread::sleep(std::time::Duration::from_millis(500));
-        }
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-fn find_mount_point_in_proc_mounts(nfs_from: &str) -> io::Result<String> {
-    let mounts =
-        procfs::mounts().map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
-    for entry in mounts {
-        if entry.fs_spec == nfs_from {
-            return Ok(entry.fs_file);
-        }
-    }
-    Err(io::Error::new(io::ErrorKind::NotFound, "not mounted yet"))
-}
-
-#[cfg(not(target_os = "macos"))]
-fn is_mounted_at(mount_point: &str) -> bool {
-    let Ok(mounts) = procfs::mounts() else {
-        return false;
-    };
-    mounts.iter().any(|entry| entry.fs_file == mount_point)
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -1732,143 +1113,6 @@ impl Default for DiskInfo {
             media_writable: true,
         }
     }
-}
-
-#[cfg(target_os = "macos")]
-pub fn get_info(bsd_name: impl AsRef<BStr>) -> DiskInfo {
-    let session = unsafe { DASession::new(None).unwrap() };
-    let c_bsd_name = CString::new(bsd_name.as_ref().to_owned()).unwrap();
-
-    let media_writable = match unsafe {
-        DADisk::from_bsd_name(
-            None,
-            &session,
-            NonNull::new_unchecked(c_bsd_name.into_raw()),
-        )
-    } {
-        Some(disk) => match unsafe { DADisk::description(disk.as_ref()) } {
-            Some(descr) => {
-                let media_writable: Option<&CFBoolean> =
-                    unsafe { cfdict_get_value(&descr, "DAMediaWritable") };
-
-                media_writable.map(|b| b.value()).unwrap_or(true)
-            }
-            None => true,
-        },
-        None => true,
-    };
-
-    DiskInfo { media_writable }
-}
-
-#[cfg(not(target_os = "macos"))]
-pub fn get_info(dev_path: impl AsRef<BStr>) -> DiskInfo {
-    use std::os::unix::ffi::OsStrExt;
-    let bytes: &[u8] = dev_path.as_ref().as_bytes();
-    let name = std::path::Path::new(std::ffi::OsStr::from_bytes(bytes))
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let ro_path = format!("/sys/class/block/{}/ro", name);
-    let media_writable = std::fs::read_to_string(&ro_path)
-        .map(|s| s.trim() == "0")
-        .unwrap_or(true);
-    DiskInfo { media_writable }
-}
-
-#[cfg(target_os = "macos")]
-#[derive(Debug, Deserialize)]
-struct Plist {
-    #[serde(default, rename = "AllDisksAndPartitions")]
-    all_disks_and_partitions: Vec<Disk>,
-    #[serde(rename = "ErrorMessage")]
-    error_message: Option<String>,
-}
-
-#[cfg(target_os = "macos")]
-#[allow(unused)]
-#[derive(Debug, Deserialize)]
-struct Disk {
-    #[serde(rename = "Content")]
-    content: Option<String>,
-    #[serde(rename = "DeviceIdentifier")]
-    device_identifier: String,
-    #[serde(rename = "OSInternal")]
-    os_internal: Option<bool>,
-    #[serde(rename = "Size")]
-    size: Option<u64>,
-    #[serde(rename = "Partitions")]
-    partitions: Option<Vec<Partition>>,
-    #[serde(rename = "APFSPhysicalStores")]
-    apfs_physical_stores: Option<Vec<PhysicalStore>>,
-    #[serde(rename = "APFSVolumes")]
-    apfs_volumes: Option<Vec<ApfsVolume>>,
-}
-
-#[cfg(target_os = "macos")]
-#[allow(unused)]
-#[derive(Debug, Deserialize)]
-struct Partition {
-    #[serde(rename = "Content")]
-    content: Option<String>,
-    #[serde(rename = "DeviceIdentifier")]
-    device_identifier: String,
-    #[serde(rename = "DiskUUID")]
-    disk_uuid: Option<String>,
-    #[serde(rename = "Size")]
-    size: Option<u64>,
-    #[serde(rename = "VolumeName")]
-    volume_name: Option<String>,
-    #[serde(rename = "VolumeUUID")]
-    volume_uuid: Option<String>,
-}
-
-#[cfg(target_os = "macos")]
-#[allow(unused)]
-#[derive(Debug, Deserialize)]
-struct PhysicalStore {
-    #[serde(rename = "DeviceIdentifier")]
-    device_identifier: String,
-}
-
-#[cfg(target_os = "macos")]
-#[allow(unused)]
-#[derive(Debug, Deserialize)]
-struct ApfsVolume {
-    #[serde(rename = "CapacityInUse")]
-    capacity_in_use: Option<u64>,
-    #[serde(rename = "DeviceIdentifier")]
-    device_identifier: String,
-    #[serde(rename = "DiskUUID")]
-    disk_uuid: Option<String>,
-    #[serde(rename = "MountPoint")]
-    mount_point: Option<String>,
-    #[serde(rename = "MountedSnapshots")]
-    mounted_snapshots: Option<Vec<Snapshot>>,
-    #[serde(rename = "OSInternal")]
-    os_internal: Option<bool>,
-    #[serde(rename = "Size")]
-    size: Option<u64>,
-    #[serde(rename = "VolumeName")]
-    volume_name: Option<String>,
-    #[serde(rename = "VolumeUUID")]
-    volume_uuid: Option<String>,
-}
-
-#[cfg(target_os = "macos")]
-#[allow(unused)]
-#[derive(Debug, Deserialize)]
-struct Snapshot {
-    #[serde(rename = "Sealed")]
-    sealed: Option<String>,
-    #[serde(rename = "SnapshotBSD")]
-    snapshot_bsd: Option<String>,
-    #[serde(rename = "SnapshotMountPoint")]
-    snapshot_mount_point: Option<String>,
-    #[serde(rename = "SnapshotName")]
-    snapshot_name: Option<String>,
-    #[serde(rename = "SnapshotUUID")]
-    snapshot_uuid: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
