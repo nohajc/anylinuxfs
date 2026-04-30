@@ -5,9 +5,6 @@ use common_utils::{
     vmctrl,
 };
 
-#[cfg(target_os = "macos")]
-use dns_sd::DNSRecord;
-
 use std::borrow::Cow;
 use std::collections::{BTreeSet, HashSet};
 use std::ffi::OsStr;
@@ -76,20 +73,16 @@ impl NfsStatus {
 fn wait_for_nfs_server(
     vm_host: &str,
     port: u16,
-    #[cfg(target_os = "macos")] vm_dns_rec: &mut Option<DNSRecord>,
-    #[cfg(not(target_os = "macos"))] _vm_dns_rec: &mut (),
+    registration: &mut crate::mdns::Registration,
     nfs_notify_rx: mpsc::Receiver<NfsStatus>,
 ) -> anyhow::Result<NfsStatus> {
     // this will block until NFS server is ready or the VM exits
     let nfs_ready = nfs_notify_rx.recv()?;
 
     if nfs_ready.ok() {
-        // make sure DNS record is already set (if applicable)
-        #[cfg(target_os = "macos")]
-        if let Some(rec) = vm_dns_rec.as_mut() {
-            rec.wait_for_registration()
-                .context("Could not set DNS record for the VM")?;
-        }
+        // make sure DNS record is already set (if applicable — macOS only;
+        // no-op on Linux)
+        registration.wait_committed()?;
         // also check if the port is open
         let addr = (vm_host, port)
             .to_socket_addrs()?
@@ -1561,15 +1554,11 @@ impl super::AppRunner {
             config.vm_hostname =
                 pick_unique_hostname(&config.vm_hostname, &network_env.active_vm_hosts);
 
-            // _dns_conn and vm_dns_rec must remain in scope for the duration
-            // of the mount; dropping the connection unregisters every record
-            // allocated through it. macOS only — on Linux there is no mDNS,
-            // the raw IP is used directly.
-            #[cfg(target_os = "macos")]
-            let (_dns_conn, mut vm_dns_rec, vm_host) =
+            // `registration` must remain in scope for the duration of the
+            // mount: on macOS dropping it would remove the mDNS record, on
+            // Linux it's a no-op marker. See mdns.rs.
+            let (mut registration, vm_host) =
                 crate::mdns::register_vm_record(&config.vm_hostname, vm_ip)?;
-            #[cfg(not(target_os = "macos"))]
-            let vm_host = vm_ip;
 
             let vm_host_b = vm_host.to_string().into_bytes();
 
@@ -1691,12 +1680,8 @@ impl super::AppRunner {
             }
             stdin_forwarder.echo_newline(false);
 
-            #[cfg(target_os = "macos")]
-            let nfs_dns_rec_arg = &mut vm_dns_rec;
-            #[cfg(not(target_os = "macos"))]
-            let nfs_dns_rec_arg = &mut ();
             let nfs_status =
-                wait_for_nfs_server(vm_host.raw_str(), 2049, nfs_dns_rec_arg, nfs_ready_rx)
+                wait_for_nfs_server(vm_host.raw_str(), 2049, &mut registration, nfs_ready_rx)
                     .inspect_err(|e| {
                         host_eprintln!("Error waiting for NFS server: {:#}", e);
                     })

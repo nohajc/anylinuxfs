@@ -27,7 +27,6 @@ mod cmd_mount;
 mod devinfo;
 mod diskutil;
 mod fsutil;
-#[cfg(target_os = "macos")]
 mod mdns;
 mod netutil;
 mod privilege;
