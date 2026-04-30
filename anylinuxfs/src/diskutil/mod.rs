@@ -2,11 +2,7 @@ use anyhow::Context;
 use common_utils::{PathExt, is_encrypted_fs, safe_print};
 use derive_more::{AddAssign, Deref};
 use indexmap::IndexMap;
-#[cfg(target_os = "macos")]
-use regex::Regex;
 use serde::{Deserialize, Serialize};
-#[cfg(target_os = "macos")]
-use std::process::Command;
 use std::{
     fmt::Display,
     hash::{Hash, Hasher},
@@ -446,10 +442,6 @@ pub fn list_partitions(
     enc_partitions: Option<&[String]>,
     filter: Labels,
 ) -> anyhow::Result<List> {
-    #[cfg(target_os = "macos")]
-    let numbered_pattern = Regex::new(r"^\s+\d+:").unwrap();
-    #[cfg(target_os = "macos")]
-    let part_type_pattern = Regex::new(&format!(r"({})", filter.part_types.join("|"))).unwrap();
     let mut disk_entries = Vec::new();
 
     let mut pv = PvCollector::new(enc_partitions);
@@ -581,103 +573,9 @@ pub fn list_partitions(
                         disk_entries.push(entry);
                     }
                 }
-                continue;
             }
-
             #[cfg(target_os = "macos")]
-            let plist_out = darwin::diskutil_list_from_plist(disk)?;
-            #[cfg(target_os = "macos")]
-            let selected_partitions =
-                darwin::partitions_with_part_type(&plist_out, &filter.part_types);
-            #[cfg(target_os = "macos")]
-            let disks_without_part_table = darwin::disks_without_partition_table(&plist_out);
-
-            #[cfg(target_os = "macos")]
-            let output = Command::new("diskutil")
-                .arg("list")
-                .args(disk)
-                .output()
-                .expect("Failed to execute diskutil");
-
-            #[cfg(target_os = "macos")]
-            if !output.status.success() {
-                anyhow::bail!("diskutil command failed");
-            }
-
-            #[cfg(target_os = "macos")]
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            #[cfg(target_os = "macos")]
-            let mut current_entry = None;
-
-            #[cfg(target_os = "macos")]
-            for line in stdout.lines() {
-                if line.starts_with("/dev/disk") {
-                    disk_entries.push(Entry::new(line));
-                    let last_idx = disk_entries.len() - 1;
-                    current_entry = disk_entries.get_mut(last_idx)
-                } else if line.trim_start().starts_with("#:") {
-                    current_entry.as_mut().map(|entry| {
-                        entry.header_mut().push_str(line);
-                    });
-                } else if numbered_pattern.is_match(line) {
-                    let Some(dev_ident) = line.split_whitespace().last() else {
-                        continue;
-                    };
-                    if let Some(part_type) = part_type_pattern.find(line).map(|m| m.as_str()) {
-                        // check the device identifier against partition list we parsed from plist
-                        // (otherwise regex matching alone might give false positives)
-                        if !selected_partitions.iter().any(|p| p == dev_ident) {
-                            continue;
-                        }
-                        let disk_path = format!("/dev/{dev_ident}");
-                        let dev_info = DevInfo::pv(disk_path.as_str(), false).ok();
-
-                        let line = match dev_info {
-                            Some(dev_info) => {
-                                let fs_type = dev_info.fs_type().unwrap_or(part_type);
-                                pv.try_collect(&dev_info, dev_ident, &disk_path, fs_type);
-
-                                darwin::augment_line(line, part_type, Some(&dev_info), fs_type)
-                            }
-                            None => line.to_owned(),
-                        };
-                        current_entry.as_mut().map(|entry| {
-                            entry.partitions_mut().push(line);
-                        });
-                    } else if line.trim_start().starts_with("0:") {
-                        if disks_without_part_table.iter().any(|d| d == dev_ident) {
-                            // This is a disk without partition table, it might still contain a Linux filesystem
-                            let disk_path = format!("/dev/{dev_ident}");
-                            let dev_info = DevInfo::pv(disk_path.as_str(), false).ok();
-
-                            let fs_type = dev_info
-                                .as_ref()
-                                .map(|di| di.fs_type())
-                                .flatten()
-                                .unwrap_or("Unknown");
-                            // if DevInfo is available, show linux fs types only
-                            if fs_type != "Unknown"
-                                && !filter.fs_types.iter().cloned().any(|t| t == fs_type)
-                            {
-                                continue;
-                            }
-
-                            if let Some(ref dev_info) = dev_info {
-                                pv.try_collect(dev_info, dev_ident, &disk_path, fs_type);
-                            }
-
-                            let line = darwin::augment_line(line, "", dev_info.as_ref(), fs_type);
-                            current_entry.as_mut().map(|entry| {
-                                entry.partitions_mut().push(line);
-                            });
-                        } else {
-                            current_entry.as_mut().map(|entry| {
-                                entry.scheme_mut().push_str(line);
-                            });
-                        }
-                    }
-                }
-            }
+            darwin::process_disk_via_diskutil(disk, &filter, &mut pv, &mut disk_entries)?;
         }
     }
 

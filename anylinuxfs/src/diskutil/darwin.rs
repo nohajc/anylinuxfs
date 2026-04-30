@@ -8,6 +8,7 @@ use objc2_disk_arbitration::{
     DADisk, DARegisterDiskAppearedCallback, DARegisterDiskDisappearedCallback, DASession,
     DAUnregisterCallback,
 };
+use regex::Regex;
 use serde::Deserialize;
 use std::cmp;
 use std::ffi::{CString, c_void};
@@ -18,7 +19,7 @@ use std::ptr::{NonNull, null_mut};
 use std::thread;
 use url::Url;
 
-use super::{DiskInfo, MountPoint, PartTypes, trunc_with_ellipsis};
+use super::{DiskInfo, Entry, Labels, MountPoint, PartTypes, PvCollector, trunc_with_ellipsis};
 use crate::devinfo::DevInfo;
 use crate::fsutil;
 use crate::pubsub::Subscription;
@@ -72,6 +73,107 @@ pub(super) fn partitions_with_part_type(plist: &Plist, part_types: &PartTypes) -
         }
     }
     partitions
+}
+
+/// Run `diskutil list` for `disk` (None means "all disks") and append one
+/// `Entry` per discovered disk to `disk_entries`. Mirrors what
+/// `linux::process_block_device` does on the Linux side, but driven by
+/// macOS's `diskutil` CLI output instead of sysfs.
+pub(super) fn process_disk_via_diskutil(
+    disk: Option<&str>,
+    filter: &Labels,
+    pv: &mut PvCollector,
+    disk_entries: &mut Vec<Entry>,
+) -> anyhow::Result<()> {
+    let numbered_pattern = Regex::new(r"^\s+\d+:").unwrap();
+    let part_type_pattern = Regex::new(&format!(r"({})", filter.part_types.join("|"))).unwrap();
+
+    let plist_out = diskutil_list_from_plist(disk)?;
+    let selected_partitions = partitions_with_part_type(&plist_out, &filter.part_types);
+    let disks_without_part_table = disks_without_partition_table(&plist_out);
+
+    let output = Command::new("diskutil")
+        .arg("list")
+        .args(disk)
+        .output()
+        .expect("Failed to execute diskutil");
+
+    if !output.status.success() {
+        anyhow::bail!("diskutil command failed");
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut current_entry = None;
+
+    for line in stdout.lines() {
+        if line.starts_with("/dev/disk") {
+            disk_entries.push(Entry::new(line));
+            let last_idx = disk_entries.len() - 1;
+            current_entry = disk_entries.get_mut(last_idx)
+        } else if line.trim_start().starts_with("#:") {
+            current_entry.as_mut().map(|entry| {
+                entry.header_mut().push_str(line);
+            });
+        } else if numbered_pattern.is_match(line) {
+            let Some(dev_ident) = line.split_whitespace().last() else {
+                continue;
+            };
+            if let Some(part_type) = part_type_pattern.find(line).map(|m| m.as_str()) {
+                // check the device identifier against partition list we parsed from plist
+                // (otherwise regex matching alone might give false positives)
+                if !selected_partitions.iter().any(|p| p == dev_ident) {
+                    continue;
+                }
+                let disk_path = format!("/dev/{dev_ident}");
+                let dev_info = DevInfo::pv(disk_path.as_str(), false).ok();
+
+                let line = match dev_info {
+                    Some(dev_info) => {
+                        let fs_type = dev_info.fs_type().unwrap_or(part_type);
+                        pv.try_collect(&dev_info, dev_ident, &disk_path, fs_type);
+
+                        augment_line(line, part_type, Some(&dev_info), fs_type)
+                    }
+                    None => line.to_owned(),
+                };
+                current_entry.as_mut().map(|entry| {
+                    entry.partitions_mut().push(line);
+                });
+            } else if line.trim_start().starts_with("0:") {
+                if disks_without_part_table.iter().any(|d| d == dev_ident) {
+                    // This is a disk without partition table, it might still contain a Linux filesystem
+                    let disk_path = format!("/dev/{dev_ident}");
+                    let dev_info = DevInfo::pv(disk_path.as_str(), false).ok();
+
+                    let fs_type = dev_info
+                        .as_ref()
+                        .map(|di| di.fs_type())
+                        .flatten()
+                        .unwrap_or("Unknown");
+                    // if DevInfo is available, show linux fs types only
+                    if fs_type != "Unknown"
+                        && !filter.fs_types.iter().cloned().any(|t| t == fs_type)
+                    {
+                        continue;
+                    }
+
+                    if let Some(ref dev_info) = dev_info {
+                        pv.try_collect(dev_info, dev_ident, &disk_path, fs_type);
+                    }
+
+                    let line = augment_line(line, "", dev_info.as_ref(), fs_type);
+                    current_entry.as_mut().map(|entry| {
+                        entry.partitions_mut().push(line);
+                    });
+                } else {
+                    current_entry.as_mut().map(|entry| {
+                        entry.scheme_mut().push_str(line);
+                    });
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn augment_line(
