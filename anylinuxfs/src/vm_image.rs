@@ -448,7 +448,7 @@ mod freebsd {
         // chown fix-up is needed.
         #[cfg(not(target_os = "macos"))]
         if let (Some(uid), Some(gid)) = (config.sudo_uid, config.sudo_gid) {
-            if let Err(e) = chown_tree_to_invoker(&base_path, uid, gid) {
+            if let Err(e) = crate::privilege::chown_tree_to_invoker(&base_path, uid, gid) {
                 host_eprintln!(
                     "Failed to chown {} to invoker: {:#}",
                     base_path.display(),
@@ -457,24 +457,6 @@ mod freebsd {
             }
         }
 
-        Ok(())
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    fn chown_tree_to_invoker(
-        path: &Path,
-        uid: libc::uid_t,
-        gid: libc::gid_t,
-    ) -> anyhow::Result<()> {
-        use std::os::unix::fs::chown;
-        chown(path, Some(uid), Some(gid)).with_context(|| format!("chown {}", path.display()))?;
-        let meta = fs::symlink_metadata(path)?;
-        if meta.is_dir() {
-            for entry in fs::read_dir(path)? {
-                let entry = entry?;
-                chown_tree_to_invoker(&entry.path(), uid, gid)?;
-            }
-        }
         Ok(())
     }
 

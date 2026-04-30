@@ -30,6 +30,11 @@ use std::{
 
 use crate::devinfo::DevInfo;
 use crate::netutil::Host;
+#[cfg(not(target_os = "macos"))]
+use crate::privilege::ElevateOnDrop;
+use crate::privilege::{
+    EffectiveRootGuard, drop_effective_privileges, drop_privileges, elevate_effective_privileges,
+};
 use crate::rpcbind;
 use crate::settings::{
     Config, CustomActionEnvironment, KernelPage, MountConfig, PassphrasePromptConfig, Preferences,
@@ -40,9 +45,8 @@ use crate::utils::{
 };
 use crate::vm::*;
 use crate::{
-    ConsoleLogGuard, LOCK_FILE, api, cli::*, diskutil, drop_effective_privileges, drop_privileges,
-    elevate_effective_privileges, fsutil, load_mount_config, netutil, parse_vm_tag_value,
-    rand_string, to_exit_code, vm_image, vm_network,
+    ConsoleLogGuard, LOCK_FILE, api, cli::*, diskutil, fsutil, load_mount_config, netutil,
+    parse_vm_tag_value, rand_string, to_exit_code, vm_image, vm_network,
 };
 
 #[cfg(target_os = "macos")]
@@ -858,64 +862,6 @@ fn subscribe_to_vm_events(
             }
         }
     });
-}
-
-/// RAII guard: elevate effective uid/gid to the saved real-uid-root values on
-/// acquire, drop back to invoker on release. Used to open root-only resources
-/// (e.g. the libkrun-created vsock socket) from threads that otherwise run
-/// with dropped effective privileges. No-op on macOS / non-sudo invocations.
-struct EffectiveRootGuard {
-    prev_uid: Option<libc::uid_t>,
-    prev_gid: Option<libc::gid_t>,
-}
-
-impl EffectiveRootGuard {
-    fn acquire() -> Self {
-        let prev_uid = unsafe { libc::geteuid() };
-        let prev_gid = unsafe { libc::getegid() };
-        // Only elevate if our real uid is root (i.e. we were sudo'd). seteuid(0)
-        // fails with EPERM otherwise, and there's nothing to guard.
-        let is_real_root = unsafe { libc::getuid() } == 0;
-        let (set_uid, set_gid) = if is_real_root && prev_uid != 0 {
-            let _ = unsafe { libc::seteuid(0) };
-            let _ = unsafe { libc::setegid(0) };
-            (Some(prev_uid), Some(prev_gid))
-        } else {
-            (None, None)
-        };
-        Self {
-            prev_uid: set_uid,
-            prev_gid: set_gid,
-        }
-    }
-}
-
-impl Drop for EffectiveRootGuard {
-    fn drop(&mut self) {
-        if let Some(gid) = self.prev_gid {
-            unsafe { libc::setegid(gid) };
-        }
-        if let Some(uid) = self.prev_uid {
-            unsafe { libc::seteuid(uid) };
-        }
-    }
-}
-
-/// Marker whose Drop re-elevates effective uid/gid to 0. Used to ensure
-/// deferred cleanups in `run_mount_child` run as root after the long-running
-/// parent has dropped effective privileges to the invoker. Requires
-/// drop_privileges to have used seteuid/setegid (saved uid still 0).
-#[cfg(not(target_os = "macos"))]
-struct ElevateOnDrop;
-
-#[cfg(not(target_os = "macos"))]
-impl Drop for ElevateOnDrop {
-    fn drop(&mut self) {
-        if unsafe { libc::getuid() } == 0 {
-            unsafe { libc::seteuid(0) };
-            unsafe { libc::setegid(0) };
-        }
-    }
 }
 
 /// Set up rpcbind services for NFS when using GvProxy and host rpcbind is running.
