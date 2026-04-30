@@ -12,7 +12,6 @@ use std::fs::{self, File};
 use std::io::{self, Read};
 use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::chown;
 use std::path::{Path, PathBuf};
 use std::ptr::null;
 use std::sync::Once;
@@ -20,6 +19,7 @@ use std::sync::Once;
 use crate::ResultWithCtx;
 use crate::cmd_mount::NetworkEnv;
 use crate::devinfo::DevInfo;
+use crate::privilege;
 use crate::settings::{Config, MountConfig, PassphrasePromptConfig, Preferences};
 use crate::utils::{HasPipeInFd, HasPipeOutFds};
 use crate::vm_image::{self, IsoAdd};
@@ -166,15 +166,7 @@ pub(crate) fn setup_vm(
     // own tests run — they don't escalate). Root is needed for /dev/kvm and
     // /dev/vhost-* access (mode 660, group=kvm) without depending on the
     // invoker being in the kvm group.
-    #[cfg(target_os = "macos")]
-    if let Some(uid) = config.sudo_uid {
-        bindings::krun_setuid(ctx_id, uid).context("Failed to set vmm uid")?;
-    }
-
-    #[cfg(target_os = "macos")]
-    if let Some(gid) = config.sudo_gid {
-        bindings::krun_setgid(ctx_id, gid).context("Failed to set vmm gid")?;
-    }
+    privilege::apply_krun_priv_drop(ctx_id, config)?;
 
     if opts.root_device.is_none() {
         unsafe { bindings::krun_set_root(ctx_id, CString::from_path(&config.root_path).as_ptr()) }
@@ -336,8 +328,7 @@ pub(crate) fn prepare_key_file_for_vm(
             let dst = config.root_path.join(&keyfile_name);
             fs::copy(key_file_host_path, &dst)
                 .with_context(|| format!("Failed to copy key file to rootfs: {}", dst.display()))?;
-            chown(&dst, Some(config.invoker_uid), Some(config.invoker_gid))
-                .with_context(|| format!("Failed to change owner of {}", dst.display()))?;
+            privilege::chown_to_invoker(&dst, config.invoker_uid, config.invoker_gid)?;
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
@@ -590,12 +581,7 @@ pub(crate) fn set_vm_cmdline(
                     krun_config_file.display()
                 )
             })?;
-            chown(
-                &krun_config_file,
-                Some(ctx.invoker_uid),
-                Some(ctx.invoker_gid),
-            )
-            .with_context(|| format!("Failed to change owner of {}", krun_config_file.display()))?;
+            privilege::chown_to_invoker(&krun_config_file, ctx.invoker_uid, ctx.invoker_gid)?;
         }
         OSType::FreeBSD => {
             krun_config_tmp_dir = PathBuf::from("/tmp").join(format!("alfs-{}", rand_string(8)));

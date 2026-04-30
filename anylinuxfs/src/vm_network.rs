@@ -2,13 +2,13 @@ use std::{
     fs::{self, File},
     io::{self, Read, Write},
     net::{Ipv4Addr, TcpStream},
-    os::unix::{fs::chown, net::UnixStream},
+    os::unix::net::UnixStream,
     process::{Child, Command},
     time::Duration,
 };
 
 #[cfg(target_os = "macos")]
-use std::{io::BufReader, os::unix::process::CommandExt, process::Stdio};
+use std::{io::BufReader, process::Stdio};
 
 use crate::settings::{Config, Preferences};
 use anyhow::Context;
@@ -137,17 +137,11 @@ pub fn start_vmnet_helper(config: &Config) -> anyhow::Result<(Child, VmnetConfig
     let vmnet_helper_err = File::create(&config.nethelper_log_path)
         .context("Failed to create vmnet-helper.log file")?;
 
-    chown(
+    crate::privilege::chown_to_invoker(
         &config.nethelper_log_path,
-        Some(config.invoker_uid),
-        Some(config.invoker_gid),
-    )
-    .with_context(|| {
-        format!(
-            "Failed to change owner of {}",
-            config.nethelper_log_path.display()
-        )
-    })?;
+        config.invoker_uid,
+        config.invoker_gid,
+    )?;
 
     vmnet_helper_cmd
         .arg("--socket")
@@ -163,11 +157,9 @@ pub fn start_vmnet_helper(config: &Config) -> anyhow::Result<(Child, VmnetConfig
         .stdout(Stdio::piped())
         .stderr(vmnet_helper_err);
 
-    if let (Some(uid), Some(gid)) = (config.sudo_uid, config.sudo_gid)
-        && rootless
-    {
-        // run vmnet-helper with dropped privileges
-        vmnet_helper_cmd.uid(uid).gid(gid);
+    // run vmnet-helper with dropped privileges (only on macOS Tahoe+ rootless mode)
+    if rootless {
+        crate::privilege::run_as_invoker(&mut vmnet_helper_cmd, config.sudo_uid, config.sudo_gid);
     }
 
     let mut vmnet_helper_process = vmnet_helper_cmd
@@ -213,17 +205,11 @@ pub fn start_gvproxy(config: &Config) -> anyhow::Result<Child> {
     let gvproxy_err =
         File::try_clone(&gvproxy_out).context("Failed to clone nethelper log file handle")?;
 
-    chown(
+    crate::privilege::chown_to_invoker(
         &config.nethelper_log_path,
-        Some(config.invoker_uid),
-        Some(config.invoker_gid),
-    )
-    .with_context(|| {
-        format!(
-            "Failed to change owner of {}",
-            config.nethelper_log_path.display()
-        )
-    })?;
+        config.invoker_uid,
+        config.invoker_gid,
+    )?;
 
     gvproxy_cmd
         .args(&gvproxy_args)
@@ -233,9 +219,7 @@ pub fn start_gvproxy(config: &Config) -> anyhow::Result<Child> {
     // Run gvproxy with dropped privileges on macOS. On Linux, keep root so it
     // can bind privileged ports (rpcbind on 111 is forwarded for NFSv3).
     #[cfg(target_os = "macos")]
-    if let (Some(uid), Some(gid)) = (config.sudo_uid, config.sudo_gid) {
-        gvproxy_cmd.uid(uid).gid(gid);
-    }
+    crate::privilege::run_as_invoker(&mut gvproxy_cmd, config.sudo_uid, config.sudo_gid);
 
     let gvproxy_process = gvproxy_cmd
         .spawn()

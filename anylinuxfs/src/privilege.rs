@@ -1,5 +1,9 @@
 use anyhow::Context;
 use std::io;
+use std::os::unix::fs::chown;
+use std::os::unix::process::CommandExt;
+use std::path::Path;
+use std::process::Command;
 
 // Long-term privilege drop intended for the surviving daemon after mount.
 //
@@ -138,18 +142,66 @@ impl Drop for ElevateOnDrop {
 
 #[cfg(not(target_os = "macos"))]
 pub(crate) fn chown_tree_to_invoker(
-    path: &std::path::Path,
+    path: &Path,
     uid: libc::uid_t,
     gid: libc::gid_t,
 ) -> anyhow::Result<()> {
     use std::fs;
-    use std::os::unix::fs::chown;
     chown(path, Some(uid), Some(gid)).with_context(|| format!("chown {}", path.display()))?;
     let meta = fs::symlink_metadata(path)?;
     if meta.is_dir() {
         for entry in fs::read_dir(path)? {
             let entry = entry?;
             chown_tree_to_invoker(&entry.path(), uid, gid)?;
+        }
+    }
+    Ok(())
+}
+
+/// Chown `path` to the invoker's uid/gid with a uniform error message.
+/// Replaces the recurring `chown(path, Some(uid), Some(gid)).with_context(…)?`
+/// boilerplate at every site that creates a host-side artifact (sockets, log
+/// files, mount points) needing invoker ownership after a sudo'd run.
+pub(crate) fn chown_to_invoker(
+    path: impl AsRef<Path>,
+    uid: libc::uid_t,
+    gid: libc::gid_t,
+) -> anyhow::Result<()> {
+    let path = path.as_ref();
+    chown(path, Some(uid), Some(gid))
+        .with_context(|| format!("Failed to change owner of {}", path.display()))
+}
+
+/// Configure `cmd` to spawn as the invoker (the user behind `sudo`) when
+/// privilege-drop info is available. No-op when `sudo_uid`/`sudo_gid` are
+/// `None` — i.e. the process wasn't sudo'd in the first place.
+pub(crate) fn run_as_invoker(
+    cmd: &mut Command,
+    sudo_uid: Option<libc::uid_t>,
+    sudo_gid: Option<libc::gid_t>,
+) {
+    if let (Some(uid), Some(gid)) = (sudo_uid, sudo_gid) {
+        cmd.uid(uid).gid(gid);
+    }
+}
+
+/// Drop the libkrun guest-VM privileges via krun_setuid/krun_setgid. macOS
+/// only — Linux keeps libkrun running as root because `/dev/kvm` and
+/// `/dev/vhost-*` need it (mode 660, group=kvm) and dropping privileges
+/// inside the VMM has been observed to break startup. Linux call is a
+/// no-op so the cfg gate disappears from the orchestration site.
+pub(crate) fn apply_krun_priv_drop(
+    _ctx_id: u32,
+    _config: &crate::settings::Config,
+) -> anyhow::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        use crate::ResultWithCtx;
+        if let Some(uid) = _config.sudo_uid {
+            krun::krun_setuid(_ctx_id, uid).context("Failed to set vmm uid")?;
+        }
+        if let Some(gid) = _config.sudo_gid {
+            krun::krun_setgid(_ctx_id, gid).context("Failed to set vmm gid")?;
         }
     }
     Ok(())

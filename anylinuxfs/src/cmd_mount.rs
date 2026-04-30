@@ -16,7 +16,6 @@ use std::fs::{self, File};
 use std::net::IpAddr;
 use std::os::fd::FromRawFd;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::chown;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -33,7 +32,8 @@ use crate::netutil::Host;
 #[cfg(not(target_os = "macos"))]
 use crate::privilege::ElevateOnDrop;
 use crate::privilege::{
-    EffectiveRootGuard, drop_effective_privileges, drop_privileges, elevate_effective_privileges,
+    self, EffectiveRootGuard, drop_effective_privileges, drop_privileges,
+    elevate_effective_privileges,
 };
 use crate::rpcbind;
 use crate::settings::{
@@ -1029,12 +1029,11 @@ impl<'a> NfsShareSetup<'a> {
                         mount_path.display()
                     )
                 })?;
-                chown(
+                privilege::chown_to_invoker(
                     &mount_path,
-                    Some(self.config.common.invoker_uid),
-                    Some(self.config.common.invoker_gid),
-                )
-                .with_context(|| format!("Failed to change owner of {}", mount_path.display()))?;
+                    self.config.common.invoker_uid,
+                    self.config.common.invoker_gid,
+                )?;
 
                 mount_path.into()
             }
@@ -1267,15 +1266,11 @@ impl super::AppRunner {
         log::init_log_file(log_file_path).context("Failed to create log file")?;
         // Change owner to invoker_uid and invoker_gid
 
-        chown(
+        privilege::chown_to_invoker(
             log_file_path,
-            Some(config.common.invoker_uid),
-            Some(config.common.invoker_gid),
-        )
-        .context(format!(
-            "Failed to change owner of {}",
-            log_file_path.display(),
-        ))?;
+            config.common.invoker_uid,
+            config.common.invoker_gid,
+        )?;
 
         // remove kernel log from the last run
         _ = fs::remove_file(&config.common.kernel_log_file_path);
