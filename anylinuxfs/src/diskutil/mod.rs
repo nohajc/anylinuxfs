@@ -446,11 +446,6 @@ pub fn list_partitions(
 
     let mut pv = PvCollector::new(enc_partitions);
 
-    // Hold the diskutil-output parser (compiled regexes) for the duration of
-    // the call so they're only built once even when iterating multiple disks.
-    #[cfg(target_os = "macos")]
-    let parser = darwin::DiskUtilParser::new(&filter);
-
     // On Linux, expand `disks=None` (= all) into the actual sysfs-discovered
     // disk paths up front so the per-disk loop below can drive a uniform
     // path. Storage must outlive `device_iter` (which borrows from it).
@@ -580,7 +575,7 @@ pub fn list_partitions(
                 }
             }
             #[cfg(target_os = "macos")]
-            parser.process_disk(disk, &filter, &mut pv, &mut disk_entries)?;
+            darwin::process_disk_via_diskutil(disk, &filter, &mut pv, &mut disk_entries)?;
         }
     }
 
