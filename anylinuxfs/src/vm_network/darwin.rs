@@ -11,7 +11,7 @@ use serde::Deserialize;
 use serde_json::Deserializer;
 use versions::{SemVer, Versioning};
 
-use super::{NetHelperOutcome, vfkit_sock_cleanup};
+use super::{NetHelperService, vfkit_sock_cleanup};
 use crate::netutil::{self, Host};
 use crate::settings::{Config, Preferences};
 
@@ -49,7 +49,7 @@ const MACOS_TAHOE_MIN_VER: Versioning = Versioning::Ideal(SemVer {
     meta: None,
 });
 
-pub fn start_vmnet_helper(config: &Config) -> anyhow::Result<NetHelperOutcome> {
+pub fn start_vmnet_helper(config: &Config) -> anyhow::Result<NetHelperService> {
     vfkit_sock_cleanup(&config.unixgram_sock_path)?;
 
     let rootless = if let OsVersion::MacOS(MacOS { version }) = os_version::detect()? {
@@ -122,10 +122,10 @@ pub fn start_vmnet_helper(config: &Config) -> anyhow::Result<NetHelperOutcome> {
     };
 
     let vm_ip = vmnet_config.vm_ip();
-    Ok(NetHelperOutcome {
+    Ok(NetHelperService {
         proc: vmnet_helper_process,
         name: "vmnet-helper",
-        vm_host: Host::from_ip(IpAddr::V4(vm_ip), None),
+        vm_host_ip: Host::from_ip(IpAddr::V4(vm_ip), None),
         vm_native_cidr: Some(vmnet_config.vmnet_cidr),
         vm_native_ip: Some(vm_ip),
     })

@@ -721,8 +721,8 @@ pub fn setup_vmnet_helper(
 ) -> anyhow::Result<i32> {
     let mut deferred = Deferred::new();
 
-    let outcome = vm_network::start_vmnet_helper(&config)?;
-    let mut vmnet_helper = outcome.proc;
+    let net_helper_svc = vm_network::start_vmnet_helper(&config)?;
+    let mut vmnet_helper = net_helper_svc.proc;
     fsutil::wait_for_file(&config.unixgram_sock_path)?;
 
     _ = deferred.add(|| {
@@ -747,7 +747,7 @@ pub fn setup_vmnet_helper(
         }
     });
 
-    start_vm_fn(outcome.vm_native_cidr)
+    start_vm_fn(net_helper_svc.vm_native_cidr)
 }
 
 pub fn setup_gvproxy(
@@ -756,8 +756,8 @@ pub fn setup_gvproxy(
 ) -> anyhow::Result<i32> {
     let mut deferred = Deferred::new();
 
-    let outcome = vm_network::start_gvproxy(&config)?;
-    let mut gvproxy = outcome.proc;
+    let net_helper_svc = vm_network::start_gvproxy(&config)?;
+    let mut gvproxy = net_helper_svc.proc;
     fsutil::wait_for_file(&config.unixgram_sock_path)?;
 
     _ = deferred.add(|| {
@@ -782,5 +782,5 @@ pub fn setup_gvproxy(
         }
     });
 
-    start_vm_fn(outcome.vm_native_cidr)
+    start_vm_fn(net_helper_svc.vm_native_cidr)
 }

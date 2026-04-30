@@ -1395,11 +1395,11 @@ impl super::AppRunner {
             .bind_addr_override(shared_volume)
             .os_override(os);
 
-        let outcome = match config.common.net_helper {
+        let net_helper_svc = match config.common.net_helper {
             NetHelper::GvProxy => {
-                let outcome = vm_network::start_gvproxy(&config.common)?;
-                network_env.usable_loopback_ip = Some(outcome.vm_host.clone());
-                outcome
+                let svc = vm_network::start_gvproxy(&config.common)?;
+                network_env.usable_loopback_ip = Some(svc.vm_host_ip.clone());
+                svc
             }
             #[cfg(target_os = "macos")]
             NetHelper::VmNet => vm_network::start_vmnet_helper(&config.common)?,
@@ -1407,14 +1407,8 @@ impl super::AppRunner {
             NetHelper::VmNet => anyhow::bail!("vmnet-helper is not supported on Linux"),
         };
 
-        let vm_network::NetHelperOutcome {
-            proc: mut net_helper_proc,
-            name: net_helper_name,
-            vm_host: vm_ip,
-            vm_native_cidr,
-            vm_native_ip: helper_vm_native_ip,
-        } = outcome;
-        vm_native_ip = helper_vm_native_ip;
+        vm_native_ip = net_helper_svc.vm_native_ip;
+        let mut net_helper_proc = net_helper_svc.proc;
 
         let net_helper_pid = net_helper_proc.id() as libc::pid_t;
         fsutil::wait_for_file(&config.common.unixgram_sock_path)?;
@@ -1431,7 +1425,7 @@ impl super::AppRunner {
         if let Some(status) = net_helper_proc.try_wait().ok().flatten() {
             anyhow::bail!(
                 "{} failed with exit code: {}",
-                net_helper_name,
+                net_helper_svc.name,
                 status
                     .code()
                     .map(|c| c.to_string())
@@ -1440,7 +1434,7 @@ impl super::AppRunner {
         }
 
         _ = deferred.add(move || {
-            if let Err(e) = terminate_child(&mut net_helper_proc, net_helper_name) {
+            if let Err(e) = terminate_child(&mut net_helper_proc, net_helper_svc.name) {
                 host_eprintln!("{:#}", e);
             }
         });
@@ -1478,7 +1472,7 @@ impl super::AppRunner {
             )
             .context("Failed to setup microVM")?;
 
-            ctx.set_vm_native_cidr(vm_native_cidr);
+            ctx.set_vm_native_cidr(net_helper_svc.vm_native_cidr);
 
             let to_decrypt: Vec<_> = iter::zip(dev_info.iter(), 'a'..='z')
                 .filter_map(|(di, letter)| {
@@ -1523,7 +1517,7 @@ impl super::AppRunner {
             // mount: on macOS dropping it would remove the mDNS record, on
             // Linux it's a no-op marker. See mdns.rs.
             let (mut registration, vm_host) =
-                crate::mdns::register_vm_record(&config.vm_hostname, vm_ip)?;
+                crate::mdns::register_vm_record(&config.vm_hostname, net_helper_svc.vm_host_ip)?;
 
             let vm_host_b = vm_host.to_string().into_bytes();
 

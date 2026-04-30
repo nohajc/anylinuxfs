@@ -25,11 +25,11 @@ pub use darwin::start_vmnet_helper;
 /// mount. `vm_native_cidr` and `vm_native_ip` are populated only when the
 /// helper gives the VM a real subnet/IP (vmnet on macOS); for tunneled
 /// helpers like gvproxy they are `None` and the orchestrator falls back to
-/// the loopback `vm_host`.
-pub struct NetHelperOutcome {
+/// the loopback `vm_host_ip`.
+pub struct NetHelperService {
     pub proc: Child,
     pub name: &'static str,
-    pub vm_host: Host,
+    pub vm_host_ip: Host,
     pub vm_native_cidr: Option<Ipv4Net>,
     pub vm_native_ip: Option<Ipv4Addr>,
 }
@@ -74,7 +74,7 @@ pub fn vsock_cleanup(vsock_path: &str) -> anyhow::Result<()> {
 /// 2049=NFS, 32765=statd, 32767=mountd.
 const GVPROXY_FORWARDED_PORTS: &[u16] = &[2049, 32765, 32767];
 
-pub fn start_gvproxy(config: &Config) -> anyhow::Result<NetHelperOutcome> {
+pub fn start_gvproxy(config: &Config) -> anyhow::Result<NetHelperService> {
     vfkit_sock_cleanup(&config.unixgram_sock_path)?;
 
     let net_sock_uri = format!("unix://{}", &config.gvproxy_net_sock_path);
@@ -121,10 +121,10 @@ pub fn start_gvproxy(config: &Config) -> anyhow::Result<NetHelperOutcome> {
 
     let loopback_ip = crate::netutil::pick_usable_loopback_ip(GVPROXY_FORWARDED_PORTS)?;
 
-    Ok(NetHelperOutcome {
+    Ok(NetHelperService {
         proc: gvproxy_process,
         name: "gvproxy",
-        vm_host: loopback_ip,
+        vm_host_ip: loopback_ip,
         vm_native_cidr: None,
         vm_native_ip: None,
     })
