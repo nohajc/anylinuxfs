@@ -179,6 +179,30 @@ fn statfs(path: impl AsRef<Path>) -> io::Result<StatfsBuf> {
     ))
 }
 
+/// Best-effort: if /proc/mounts has an entry for `device`, force-umount it.
+/// Used on the failure path to avoid leaving a client-side NFS mount that
+/// points at a VM we're about to tear down. Linux's default `hard` NFS client
+/// would hang indefinitely on server death, freezing any shell that later
+/// stats the mount point. macOS relies on DiskArbitration teardown — no-op.
+#[cfg(not(target_os = "macos"))]
+pub fn cleanup_stale_nfs_client_mount(device: &str) -> anyhow::Result<()> {
+    let mounts = procfs::mounts().context("Failed to read /proc/mounts")?;
+    for entry in mounts {
+        if entry.fs_spec == device {
+            let _ = Command::new("umount")
+                .arg("-f")
+                .arg(&entry.fs_file)
+                .status();
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+pub fn cleanup_stale_nfs_client_mount(_device: &str) -> anyhow::Result<()> {
+    Ok(())
+}
+
 // If `copied` refers to a file which should be synchronized with `orig`,
 // we can detect whether the copied file is too old by comparing mtime.
 // Also, if file sizes differ, we trivially know the files are different.

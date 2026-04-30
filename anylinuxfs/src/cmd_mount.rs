@@ -6,7 +6,7 @@ use common_utils::{
 };
 
 #[cfg(target_os = "macos")]
-use dns_sd::{DNSRecord, DNSService};
+use dns_sd::DNSRecord;
 
 use std::borrow::Cow;
 use std::collections::{BTreeSet, HashSet};
@@ -1117,35 +1117,13 @@ impl<'a> NfsShareSetup<'a> {
         Ok(())
     }
 
-    /// Best-effort: if /proc/mounts has an entry for our NFS export, force-umount
-    /// it. Used on the failure path to avoid leaving a client-side NFS mount that
-    /// points at a VM we're about to tear down. Linux's default `hard` NFS client
-    /// would hang indefinitely on server death, freezing any shell that later
-    /// stats the mount point.
-    #[cfg(not(target_os = "macos"))]
     fn force_umount_if_mounted(&self) -> anyhow::Result<()> {
         let mut device = Vec::with_capacity(self.vm_host_b.len() + 1 + self.share_path.len());
         device.extend_from_slice(self.vm_host_b);
         device.push(b':');
         device.extend_from_slice(self.share_path.as_slice());
         let device_str = String::from_utf8_lossy(&device).into_owned();
-
-        let mounts = procfs::mounts().context("Failed to read /proc/mounts")?;
-        for entry in mounts {
-            if entry.fs_spec == device_str {
-                let _ = Command::new("umount")
-                    .arg("-f")
-                    .arg(&entry.fs_file)
-                    .status();
-            }
-        }
-        Ok(())
-    }
-
-    #[cfg(target_os = "macos")]
-    fn force_umount_if_mounted(&self) -> anyhow::Result<()> {
-        // macOS relies on DiskArbitration teardown; no-op.
-        Ok(())
+        fsutil::cleanup_stale_nfs_client_mount(&device_str)
     }
 
     /// Mount additional NFS subdirectory exports under the main mount point.
@@ -1583,24 +1561,12 @@ impl super::AppRunner {
             config.vm_hostname =
                 pick_unique_hostname(&config.vm_hostname, &network_env.active_vm_hosts);
 
+            // vm_dns_rec must remain in scope for the duration of the mount;
+            // dropping it would remove the mDNS registration. macOS only — on
+            // Linux there is no mDNS, the raw IP is used directly.
             #[cfg(target_os = "macos")]
-            let vm_fqdn = format!("{}.local", &config.vm_hostname);
-            #[cfg(target_os = "macos")]
-            let conn = DNSService::create_connection().unwrap();
-            // vm_dns_rec must remain in scope for the duration of the mount, otherwise the DNS record will be removed
-            #[cfg(target_os = "macos")]
-            let mut vm_dns_rec: Option<DNSRecord> = conn
-                .register_record(&vm_fqdn, vm_ip.with_port(0)?, Some("lo0"))
-                .inspect_err(|e| eprintln!("DNS registration error: {e}"))
-                .ok();
-
-            #[cfg(target_os = "macos")]
-            let vm_host = if vm_dns_rec.is_some() {
-                Host::new(&vm_fqdn)
-            } else {
-                vm_ip
-            };
-            // On non-macOS platforms there is no mDNS registration; use the IP directly.
+            let (mut vm_dns_rec, vm_host) =
+                crate::mdns::register_vm_record(&config.vm_hostname, vm_ip)?;
             #[cfg(not(target_os = "macos"))]
             let vm_host = vm_ip;
 
