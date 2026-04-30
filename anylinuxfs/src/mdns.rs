@@ -9,13 +9,18 @@ use dns_sd::{DNSRecord, DNSService};
 use crate::netutil::Host;
 
 /// Register an A/AAAA record for `<hostname>.local` pointing at `vm_ip` on the
-/// loopback. Returns the record (which must outlive the mount; dropping it
-/// removes the registration) and the `Host` to use for NFS mounts (the FQDN
-/// when registration succeeded, the raw IP as a fallback).
+/// loopback. Returns:
+///   - the `DNSService` connection — must outlive the record; dropping it
+///     unregisters every record allocated through it. Caller binds it (as
+///     `_dns_conn` if unused) to keep the registration alive for the mount's
+///     duration.
+///   - the registered `DNSRecord` (or `None` if registration failed).
+///   - the `Host` to use for NFS mounts (the FQDN when registration succeeded,
+///     the raw IP as a fallback).
 pub fn register_vm_record(
     hostname: &str,
     vm_ip: Host,
-) -> anyhow::Result<(Option<DNSRecord>, Host)> {
+) -> anyhow::Result<(DNSService, Option<DNSRecord>, Host)> {
     let fqdn = format!("{}.local", hostname);
     let conn = DNSService::create_connection().context("DNS service connection failed")?;
     let dns_rec: Option<DNSRecord> = conn
@@ -27,5 +32,5 @@ pub fn register_vm_record(
     } else {
         vm_ip
     };
-    Ok((dns_rec, host))
+    Ok((conn, dns_rec, host))
 }

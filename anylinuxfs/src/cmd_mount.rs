@@ -1561,11 +1561,12 @@ impl super::AppRunner {
             config.vm_hostname =
                 pick_unique_hostname(&config.vm_hostname, &network_env.active_vm_hosts);
 
-            // vm_dns_rec must remain in scope for the duration of the mount;
-            // dropping it would remove the mDNS registration. macOS only — on
-            // Linux there is no mDNS, the raw IP is used directly.
+            // _dns_conn and vm_dns_rec must remain in scope for the duration
+            // of the mount; dropping the connection unregisters every record
+            // allocated through it. macOS only — on Linux there is no mDNS,
+            // the raw IP is used directly.
             #[cfg(target_os = "macos")]
-            let (mut vm_dns_rec, vm_host) =
+            let (_dns_conn, mut vm_dns_rec, vm_host) =
                 crate::mdns::register_vm_record(&config.vm_hostname, vm_ip)?;
             #[cfg(not(target_os = "macos"))]
             let vm_host = vm_ip;
