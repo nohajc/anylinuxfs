@@ -7,28 +7,15 @@ use std::{
     time::Duration,
 };
 
-#[cfg(target_os = "macos")]
-use std::{io::BufReader, process::Stdio};
-
 use crate::settings::{Config, Preferences};
 use anyhow::Context;
 use common_utils::{OSType, VM_CTRL_PORT, VM_IP, host_println};
 use rand::prelude::*;
 
 #[cfg(target_os = "macos")]
-use crate::netutil;
+mod darwin;
 #[cfg(target_os = "macos")]
-use common_utils::VMNET_PREFIX_LEN;
-#[cfg(target_os = "macos")]
-use ipnet::Ipv4Net;
-#[cfg(target_os = "macos")]
-use os_version::{MacOS, OsVersion};
-#[cfg(target_os = "macos")]
-use serde::Deserialize;
-#[cfg(target_os = "macos")]
-use serde_json::Deserializer;
-#[cfg(target_os = "macos")]
-use versions::{SemVer, Versioning};
+pub use darwin::{VmnetConfig, VmnetConfigJson, start_vmnet_helper};
 
 pub fn random_mac_address() -> [u8; 6] {
     let mut rng = rand::rng();
@@ -64,120 +51,6 @@ pub fn vsock_cleanup(vsock_path: &str) -> anyhow::Result<()> {
         Err(e) => return Err(e).context("Failed to remove vsock socket"),
     }
     Ok(())
-}
-
-#[cfg(target_os = "macos")]
-#[allow(unused)]
-#[derive(Debug, Deserialize)]
-pub struct VmnetConfigJson {
-    pub vmnet_write_max_packets: u32,
-    pub vmnet_read_max_packets: u32,
-    pub vmnet_subnet_mask: String,
-    pub vmnet_mtu: u32,
-    pub vmnet_end_address: String,
-    pub vmnet_start_address: String,
-    pub vmnet_interface_id: String,
-    pub vmnet_max_packet_size: u32,
-    pub vmnet_nat66_prefix: String,
-    pub vmnet_mac_address: String,
-}
-
-#[cfg(target_os = "macos")]
-pub struct VmnetConfig {
-    pub _helper_output: VmnetConfigJson,
-    pub vmnet_cidr: Ipv4Net,
-}
-
-#[cfg(target_os = "macos")]
-impl VmnetConfig {
-    pub fn vm_ip(&self) -> Ipv4Addr {
-        self.vmnet_cidr.hosts().nth(1).unwrap()
-    }
-}
-
-#[cfg(target_os = "macos")]
-const MACOS_TAHOE_MIN_VER: Versioning = Versioning::Ideal(SemVer {
-    major: 26,
-    minor: 0,
-    patch: 0,
-    pre_rel: None,
-    meta: None,
-});
-
-#[cfg(target_os = "macos")]
-pub fn start_vmnet_helper(config: &Config) -> anyhow::Result<(Child, VmnetConfig)> {
-    vfkit_sock_cleanup(&config.unixgram_sock_path)?;
-
-    let rootless = if let OsVersion::MacOS(MacOS { version }) = os_version::detect()? {
-        Versioning::new(version).unwrap_or_default() >= MACOS_TAHOE_MIN_VER
-    } else {
-        false
-    };
-    // host_println!("vmnet-helper rootless mode: {}", rootless);
-
-    let need_elevation = !rootless && config.sudo_uid.is_none() && config.invoker_uid != 0;
-    if need_elevation {
-        anyhow::bail!(
-            "anylinuxfs is configured to use vmnet-helper which needs sudo unless you're on macOS Tahoe or later"
-        );
-    }
-
-    let known_networks =
-        netutil::get_interface_networks().context("Failed to get interface networks")?;
-
-    let vmnet_cidr = netutil::pick_available_network_in_pool(
-        VMNET_PREFIX_LEN,
-        &known_networks,
-        config.preferences.vmnet_pool(),
-    )
-    .context("Failed to find available network for vmnet-helper")?;
-
-    let mut vmnet_helper_cmd = Command::new(&config.vmnet_helper_path);
-
-    let vmnet_helper_err = File::create(&config.nethelper_log_path)
-        .context("Failed to create vmnet-helper.log file")?;
-
-    crate::privilege::chown_to_invoker(
-        &config.nethelper_log_path,
-        config.invoker_uid,
-        config.invoker_gid,
-    )?;
-
-    vmnet_helper_cmd
-        .arg("--socket")
-        .arg(&config.unixgram_sock_path)
-        .args([
-            // "--enable-tso",
-            // "--enable-checksum-offload",
-            &format!("--start-address={}", vmnet_cidr.hosts().next().unwrap()),
-            &format!("--end-address={}", vmnet_cidr.hosts().last().unwrap()),
-            &format!("--subnet-mask={}", vmnet_cidr.netmask()),
-            "--operation-mode=shared",
-        ])
-        .stdout(Stdio::piped())
-        .stderr(vmnet_helper_err);
-
-    // run vmnet-helper with dropped privileges (only on macOS Tahoe+ rootless mode)
-    if rootless {
-        crate::privilege::run_as_invoker(&mut vmnet_helper_cmd, config.sudo_uid, config.sudo_gid);
-    }
-
-    let mut vmnet_helper_process = vmnet_helper_cmd
-        .spawn()
-        .context("Failed to start vmnet-helper process")?;
-
-    let child_out = BufReader::new(vmnet_helper_process.stdout.take().unwrap());
-    // host_println!("Waiting for vmnet-helper to output config...");
-    let mut config_de = Deserializer::from_reader(child_out);
-    let _helper_output = VmnetConfigJson::deserialize(&mut config_de)
-        .context("Failed to parse vmnet-helper config")?;
-
-    let vmnet_config = VmnetConfig {
-        _helper_output,
-        vmnet_cidr,
-    };
-
-    Ok((vmnet_helper_process, vmnet_config))
 }
 
 pub fn start_gvproxy(config: &Config) -> anyhow::Result<Child> {
