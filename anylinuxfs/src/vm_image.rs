@@ -429,7 +429,7 @@ mod freebsd {
         write_mtime_files(&base_path, &[&init_src_path, &vmproxy_src_path])
             .context("Failed to write mtime files")?;
 
-        // Linux only: install runs as root (sudo) and the disk image / kernel
+        // Linux: In case image install runs as root, the disk image / kernel
         // files end up root-owned, but a later unprivileged `anylinuxfs shell
         // -i freebsd` invocation needs to open the disk read-write. Alpine
         // gets the same end-state for free because its init-rootfs is
