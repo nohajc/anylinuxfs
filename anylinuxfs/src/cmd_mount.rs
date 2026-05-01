@@ -30,7 +30,6 @@ use crate::privilege::{
     self, EffectiveRootGuard, drop_effective_privileges, drop_privileges,
     elevate_effective_privileges,
 };
-use crate::rpcbind;
 use crate::settings::{
     Config, CustomActionEnvironment, KernelPage, MountConfig, PassphrasePromptConfig, Preferences,
 };
@@ -43,6 +42,7 @@ use crate::{
     ConsoleLogGuard, LOCK_FILE, api, cli::*, diskutil, fsutil, load_mount_config, netutil,
     parse_vm_tag_value, rand_string, to_exit_code, vm_image, vm_network,
 };
+use crate::{mdns, rpcbind};
 
 #[cfg(target_os = "macos")]
 const MOUNT_BASE: &str = "Volumes";
@@ -71,7 +71,7 @@ impl NfsStatus {
 fn wait_for_nfs_server(
     vm_host: &str,
     port: u16,
-    registration: &mut crate::mdns::Registration,
+    registration: &mut mdns::Registration,
     nfs_notify_rx: mpsc::Receiver<NfsStatus>,
 ) -> anyhow::Result<NfsStatus> {
     // this will block until NFS server is ready or the VM exits
@@ -1517,7 +1517,7 @@ impl super::AppRunner {
             // mount: on macOS dropping it would remove the mDNS record, on
             // Linux it's a no-op marker. See mdns.rs.
             let (mut registration, vm_host) =
-                crate::mdns::register_vm_record(&config.vm_hostname, net_helper_svc.vm_host_ip)?;
+                mdns::register_vm_record(&config.vm_hostname, net_helper_svc.vm_host_ip)?;
 
             let vm_host_b = vm_host.to_string().into_bytes();
 
