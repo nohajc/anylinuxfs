@@ -7,7 +7,10 @@ use std::{
     time::Duration,
 };
 
-use crate::settings::{Config, Preferences};
+use crate::{
+    privilege,
+    settings::{Config, Preferences},
+};
 use anyhow::Context;
 use common_utils::{OSType, VM_CTRL_PORT, VM_IP, host_println};
 use ipnet::Ipv4Net;
@@ -99,7 +102,7 @@ pub fn start_gvproxy(config: &Config) -> anyhow::Result<NetHelperService> {
     let gvproxy_err =
         File::try_clone(&gvproxy_out).context("Failed to clone nethelper log file handle")?;
 
-    crate::privilege::chown_to_invoker(
+    privilege::chown_to_invoker(
         &config.nethelper_log_path,
         config.invoker_uid,
         config.invoker_gid,
@@ -113,7 +116,7 @@ pub fn start_gvproxy(config: &Config) -> anyhow::Result<NetHelperService> {
     // Run gvproxy with dropped privileges on macOS. On Linux, keep root so it
     // can bind privileged ports (rpcbind on 111 is forwarded for NFSv3).
     #[cfg(target_os = "macos")]
-    crate::privilege::run_as_invoker(&mut gvproxy_cmd, config.sudo_uid, config.sudo_gid);
+    privilege::run_as_invoker(&mut gvproxy_cmd, config.sudo_uid, config.sudo_gid);
 
     let gvproxy_process = gvproxy_cmd
         .spawn()

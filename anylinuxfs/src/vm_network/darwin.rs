@@ -13,6 +13,7 @@ use versions::{SemVer, Versioning};
 
 use super::{NetHelperService, vfkit_sock_cleanup};
 use crate::netutil::{self, Host};
+use crate::privilege;
 use crate::settings::{Config, Preferences};
 
 #[allow(unused)]
@@ -81,7 +82,7 @@ pub fn start_vmnet_helper(config: &Config) -> anyhow::Result<NetHelperService> {
     let vmnet_helper_err = File::create(&config.nethelper_log_path)
         .context("Failed to create vmnet-helper.log file")?;
 
-    crate::privilege::chown_to_invoker(
+    privilege::chown_to_invoker(
         &config.nethelper_log_path,
         config.invoker_uid,
         config.invoker_gid,
@@ -103,7 +104,7 @@ pub fn start_vmnet_helper(config: &Config) -> anyhow::Result<NetHelperService> {
 
     // run vmnet-helper with dropped privileges (only on macOS Tahoe+ rootless mode)
     if rootless {
-        crate::privilege::run_as_invoker(&mut vmnet_helper_cmd, config.sudo_uid, config.sudo_gid);
+        privilege::run_as_invoker(&mut vmnet_helper_cmd, config.sudo_uid, config.sudo_gid);
     }
 
     let mut vmnet_helper_process = vmnet_helper_cmd

@@ -1,4 +1,4 @@
-use crate::{Config, ImageSource, fsutil, vm_network};
+use crate::{Config, ImageSource, fsutil, privilege, vm_network};
 use anyhow::Context;
 use ipnet::Ipv4Net;
 
@@ -69,7 +69,7 @@ mod alpine {
 
         let mut init_rootfs_cmd = Command::new(&config.init_rootfs_path);
         // run init-rootfs with dropped privileges
-        crate::privilege::run_as_invoker(&mut init_rootfs_cmd, config.sudo_uid, config.sudo_gid);
+        privilege::run_as_invoker(&mut init_rootfs_cmd, config.sudo_uid, config.sudo_gid);
 
         let dns_server = netutil::get_dns_server_with_fallback();
         let docker_ref = src.docker_ref.as_deref().unwrap_or("alpine:latest");
@@ -442,7 +442,7 @@ mod freebsd {
         // chown fix-up is needed.
         #[cfg(target_os = "linux")]
         if let (Some(uid), Some(gid)) = (config.sudo_uid, config.sudo_gid) {
-            if let Err(e) = crate::privilege::chown_tree_to_invoker(&base_path, uid, gid) {
+            if let Err(e) = privilege::chown_tree_to_invoker(&base_path, uid, gid) {
                 host_eprintln!(
                     "Failed to chown {} to invoker: {:#}",
                     base_path.display(),
