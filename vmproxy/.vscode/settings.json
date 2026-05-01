@@ -1,3 +1,2 @@
 {
-    "rust-analyzer.cargo.target": "aarch64-unknown-linux-musl"
 }

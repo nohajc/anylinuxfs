@@ -791,9 +791,10 @@ impl AppRunner {
 
     fn run_upgrade_config(&mut self, cmd: UpgradeConfigCmd) -> anyhow::Result<()> {
         #[cfg(target_os = "macos")]
-        let default_cfg_str = include_str!("../../etc/anylinuxfs.toml");
+        let default_cfg_template = include_str!("../../etc/anylinuxfs.toml");
         #[cfg(target_os = "linux")]
-        let default_cfg_str = include_str!("../../etc/anylinuxfs-linux.toml");
+        let default_cfg_template = include_str!("../../etc/anylinuxfs-linux.toml");
+        let default_cfg_str = settings::resolve_arch_placeholders(default_cfg_template);
         let mut target_cfg = default_cfg_str
             .parse::<DocumentMut>()
             .context("Failed to parse default config")?;
@@ -803,7 +804,7 @@ impl AppRunner {
             let target_path = cmd.output.as_ref().map(Path::new).unwrap_or(input_path);
 
             // just write the default config and exit
-            fs::write(target_path, default_cfg_str)
+            fs::write(target_path, &default_cfg_str)
                 .context("Failed to write default config file")?;
             return Ok(());
         }

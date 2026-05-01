@@ -4,9 +4,10 @@
 PROJECT_NAME = freebsd-bootstrap
 BINARY_NAME = freebsd-bootstrap
 
-# Cross-compilation settings for FreeBSD
+# Cross-compilation settings for FreeBSD. GOARCH defaults to arm64 but is
+# overridable so build-app.sh can pick the host's native arch (amd64 on x86_64).
 GOOS = freebsd
-GOARCH = arm64
+GOARCH ?= arm64
 
 # Static build flags
 CGO_ENABLED = 0

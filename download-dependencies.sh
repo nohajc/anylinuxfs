@@ -5,8 +5,18 @@ set -e
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 
 HOST_OS="$(uname -s)"
+HOST_ARCH="$(uname -m)"
 
-IMAGE_ARCHIVE_NAME="linux-aarch64-Images-v6.12.62-anylinuxfs.tar.gz"
+case "$HOST_ARCH" in
+    aarch64|arm64) RUST_ARCH="aarch64" ;;
+    x86_64|amd64)  RUST_ARCH="x86_64"  ;;
+    *)
+        echo "Unsupported host architecture: $HOST_ARCH" >&2
+        exit 1
+        ;;
+esac
+
+IMAGE_ARCHIVE_NAME="linux-${RUST_ARCH}-Images-v6.12.62-anylinuxfs.tar.gz"
 RELEASE_URL="https://github.com/nohajc/libkrunfw/releases/download/v6.12.62-rev1"
 IMAGE_ARCHIVE_URL="${RELEASE_URL}/${IMAGE_ARCHIVE_NAME}"
 MODULES_ARCHIVE_NAME="modules.squashfs"

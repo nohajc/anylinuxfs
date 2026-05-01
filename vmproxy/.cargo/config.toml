@@ -1,5 +1,7 @@
-[build]
-target = "aarch64-unknown-linux-musl"
+# No [build] target is set; build-app.sh always passes --target explicitly so
+# the guest binary is compiled for the host's architecture (libkrun/KVM runs
+# guests at native arch). Set CARGO_BUILD_TARGET in your shell to make plain
+# `cargo check` / IDE rust-analyzer pick up the cross-compile target.
 
 [target.aarch64-unknown-linux-musl]
 linker = "/opt/homebrew/opt/llvm/bin/clang"
@@ -9,11 +11,29 @@ rustflags = [
     "-Clink-arg=-fuse-ld=lld",
 ]
 
+[target.x86_64-unknown-linux-musl]
+linker = "/opt/homebrew/opt/llvm/bin/clang"
+rustflags = [
+    "-Clinker-plugin-lto",
+    "-Clink-arg=--target=x86_64-unknown-linux-musl",
+    "-Clink-arg=-fuse-ld=lld",
+]
+
 [target.aarch64-unknown-freebsd]
 linker = "/opt/homebrew/opt/llvm/bin/clang"
 rustflags = [
     "-Clinker-plugin-lto",
     "-Clink-arg=--target=aarch64-unknown-freebsd",
+    "-Clink-arg=--sysroot=freebsd-sysroot",
+    "-Clink-arg=-fuse-ld=lld",
+    "-Clink-arg=-stdlib=libc++",
+]
+
+[target.x86_64-unknown-freebsd]
+linker = "/opt/homebrew/opt/llvm/bin/clang"
+rustflags = [
+    "-Clinker-plugin-lto",
+    "-Clink-arg=--target=x86_64-unknown-freebsd",
     "-Clink-arg=--sysroot=freebsd-sysroot",
     "-Clink-arg=-fuse-ld=lld",
     "-Clink-arg=-stdlib=libc++",

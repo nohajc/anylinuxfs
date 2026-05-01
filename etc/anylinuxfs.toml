@@ -1,22 +1,27 @@
+# URL placeholders are resolved at config-load time based on the host's CPU arch:
+#   {arch}              aarch64 / x86_64  (Linux/Rust convention)
+#   {bsd_machine}       arm64   / amd64   (FreeBSD MACHINE)
+#   {bsd_machine_arch}  aarch64 / amd64   (FreeBSD MACHINE_ARCH)
+
 [images.alpine-latest]
 base_dir = "alpine"
 docker_ref = "alpine:latest"
-kernel.image_url = "https://github.com/nohajc/libkrunfw/releases/download/v6.12.62-rev1/linux-aarch64-Images-v6.12.62-anylinuxfs.tar.gz"
+kernel.image_url = "https://github.com/nohajc/libkrunfw/releases/download/v6.12.62-rev1/linux-{arch}-Images-v6.12.62-anylinuxfs.tar.gz"
 kernel.modules_url = "https://github.com/nohajc/libkrunfw/releases/download/v6.12.62-rev1/modules.squashfs"
 os_type = "Linux"
 
 [images.alpine-edge]
 base_dir = "alpine-edge"
 docker_ref = "alpine:edge"
-kernel.image_url = "https://github.com/nohajc/libkrunfw/releases/download/v6.12.62-rev1/linux-aarch64-Images-v6.12.62-anylinuxfs.tar.gz"
+kernel.image_url = "https://github.com/nohajc/libkrunfw/releases/download/v6.12.62-rev1/linux-{arch}-Images-v6.12.62-anylinuxfs.tar.gz"
 kernel.modules_url = "https://github.com/nohajc/libkrunfw/releases/download/v6.12.62-rev1/modules.squashfs"
 os_type = "Linux"
 setup_script = "echo '@testing https://dl-cdn.alpinelinux.org/alpine/edge/testing' >> /etc/apk/repositories"
 
 [images."freebsd-15.0"]
 base_dir = "freebsd-15.0"
-iso_url = "https://download.freebsd.org/releases/ISO-IMAGES/15.0/FreeBSD-15.0-RELEASE-arm64-aarch64-bootonly.iso"
-oci_url = "https://download.freebsd.org/releases/OCI-IMAGES/15.0-RELEASE/aarch64/Latest/FreeBSD-15.0-RELEASE-arm64-aarch64-container-image-runtime.txz"
+iso_url = "https://download.freebsd.org/releases/ISO-IMAGES/15.0/FreeBSD-15.0-RELEASE-{bsd_machine}-{bsd_machine_arch}-bootonly.iso"
+oci_url = "https://download.freebsd.org/releases/OCI-IMAGES/15.0-RELEASE/{bsd_machine_arch}/Latest/FreeBSD-15.0-RELEASE-{bsd_machine}-{bsd_machine_arch}-container-image-runtime.txz"
 kernel.bundle_url = "https://github.com/nohajc/freebsd/releases/download/alfs%2F15.0/kernel.txz"
 os_type = "FreeBSD"
 

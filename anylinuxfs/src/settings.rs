@@ -401,7 +401,8 @@ pub fn load_preferences<'a>(
     for path in paths {
         match fs::read_to_string(path) {
             Ok(config_str) => {
-                let mut config = parse_toml_config(&config_str, path)
+                let resolved = resolve_arch_placeholders(&config_str);
+                let mut config = parse_toml_config(&resolved, path)
                     .context(format!("Failed to parse config file {}", path.display()))?;
                 convert_legacy_config(&mut config);
                 result_config[cfg_idx] = config;
@@ -411,6 +412,25 @@ pub fn load_preferences<'a>(
         cfg_idx += 1;
     }
     Ok(result_config)
+}
+
+/// Replace `{arch}`, `{bsd_machine}`, and `{bsd_machine_arch}` placeholders in
+/// the raw config text with values for the current host architecture. libkrun
+/// runs guests at the host's native arch, so kernel/OCI/ISO URLs in the
+/// shipped defaults are written with placeholders and resolved here.
+pub fn resolve_arch_placeholders(input: &str) -> String {
+    let (arch, bsd_machine, bsd_machine_arch) = match std::env::consts::ARCH {
+        "aarch64" => ("aarch64", "arm64", "aarch64"),
+        "x86_64" => ("x86_64", "amd64", "amd64"),
+        // Unknown host arch — leave placeholders untouched. Downstream code
+        // that actually needs a resolved URL will fail with a clear error;
+        // unrelated config sections remain usable.
+        _ => return input.to_string(),
+    };
+    input
+        .replace("{arch}", arch)
+        .replace("{bsd_machine_arch}", bsd_machine_arch)
+        .replace("{bsd_machine}", bsd_machine)
 }
 
 pub fn parse_toml_config(config_str: &str, path: impl AsRef<Path>) -> anyhow::Result<PrefsObject> {
