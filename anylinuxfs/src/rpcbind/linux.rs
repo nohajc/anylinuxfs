@@ -23,6 +23,7 @@ struct Netconfig {
     _opaque: [u8; 0],
 }
 
+#[link(name = "tirpc")]
 unsafe extern "C" {
     fn rpcb_set(
         program: c_uint,

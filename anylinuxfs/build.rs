@@ -11,16 +11,6 @@ fn main() {
             println!("cargo:rerun-if-env-changed=CC_LINUX");
             println!("cargo:rerun-if-env-changed=PKG_CONFIG_PATH");
         }
-        "linux" => {
-            // libkrun is a Cargo dependency now; krun-sys's build.rs runs
-            // pkg-config and emits its own link directives, so we don't.
-            //
-            // libtirpc provides the SunRPC / rpcbind client API on Linux
-            // (rpcb_set / rpcb_unset / rpcb_getmaps / getnetconfigent).
-            // libtirpc is installed to a standard path, so linker search
-            // dirs don't need tweaking.
-            println!("cargo:rustc-link-lib=tirpc");
-        }
         _ => {}
     }
 }
