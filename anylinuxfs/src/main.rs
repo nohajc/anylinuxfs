@@ -169,10 +169,7 @@ fn load_config(common_args: &CommonArgs, debug_args: &DebugArgs) -> anyhow::Resu
     // When invoked under sudo, `homedir::my_home()` resolves to root's home (/root)
     // because $HOME is reset by sudo. Look up the invoking user's home via SUDO_UID.
     let home_dir = match sudo_uid {
-        Some(uid) => nix::unistd::User::from_uid(nix::unistd::Uid::from_raw(uid))
-            .ok()
-            .flatten()
-            .map(|u| u.dir)
+        Some(uid) => utils::home_dir_from_uid(uid)
             .context("Failed to resolve invoking user's home directory")?,
         None => homedir::my_home()
             .context("Failed to get home directory")?

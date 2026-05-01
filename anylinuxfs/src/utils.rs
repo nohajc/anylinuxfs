@@ -9,7 +9,7 @@ use std::{
         fd::{AsRawFd, FromRawFd},
         unix::fs::PermissionsExt,
     },
-    path::Path,
+    path::{Path, PathBuf},
     process::Child,
     sync::{
         Arc,
@@ -715,6 +715,13 @@ pub fn user_name_from_uid(uid: libc::uid_t) -> Option<String> {
         .ok()
         .flatten()
         .map(|u| u.name)
+}
+
+pub fn home_dir_from_uid(uid: libc::uid_t) -> Option<PathBuf> {
+    User::from_uid(Uid::from_raw(uid))
+        .ok()
+        .flatten()
+        .map(|u| u.dir)
 }
 
 /// A buffered reader that immediately outputs characters as they arrive
