@@ -24,12 +24,11 @@ use std::{
 
 use crate::devinfo::DevInfo;
 use crate::netutil::Host;
-#[cfg(target_os = "linux")]
-use crate::privilege::ElevateOnDrop;
 use crate::privilege::{
-    self, EffectiveRootGuard, drop_effective_privileges, drop_privileges,
-    elevate_effective_privileges,
+    self, drop_effective_privileges, drop_privileges, elevate_effective_privileges,
 };
+#[cfg(target_os = "linux")]
+use crate::privilege::{EffectiveRootGuard, ElevateOnDrop};
 use crate::settings::{
     Config, CustomActionEnvironment, KernelPage, MountConfig, PassphrasePromptConfig, Preferences,
 };
@@ -824,6 +823,7 @@ fn subscribe_to_vm_events(
         // (the invoking user) returns EACCES. Temporarily elevate for the
         // connect itself; once the stream is open, send/recv don't recheck.
         let connect_result = {
+            #[cfg(target_os = "linux")]
             let _guard = EffectiveRootGuard::acquire();
             vm_network::connect_to_vm_ctrl_socket(&config.common, vm_native_ip, None)
         };

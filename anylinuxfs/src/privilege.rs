@@ -81,11 +81,13 @@ pub(crate) fn elevate_effective_privileges() -> anyhow::Result<()> {
 /// acquire, drop back to invoker on release. Used to open root-only resources
 /// (e.g. the libkrun-created vsock socket) from threads that otherwise run
 /// with dropped effective privileges. No-op on macOS / non-sudo invocations.
+#[cfg(target_os = "linux")]
 pub(crate) struct EffectiveRootGuard {
     prev_uid: Option<libc::uid_t>,
     prev_gid: Option<libc::gid_t>,
 }
 
+#[cfg(target_os = "linux")]
 impl EffectiveRootGuard {
     pub(crate) fn acquire() -> Self {
         let prev_uid = unsafe { libc::geteuid() };
@@ -107,6 +109,7 @@ impl EffectiveRootGuard {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl Drop for EffectiveRootGuard {
     fn drop(&mut self) {
         if let Some(gid) = self.prev_gid {
