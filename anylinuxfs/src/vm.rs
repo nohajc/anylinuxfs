@@ -162,10 +162,8 @@ pub(crate) fn setup_vm(
     }
 
     // run vmm as the original user if he used sudo.
-    // Skip on Linux: libkrun stays root inside the VM (mirrors how libkrun's
-    // own tests run — they don't escalate). Root is needed for /dev/kvm and
-    // /dev/vhost-* access (mode 660, group=kvm) without depending on the
-    // invoker being in the kvm group.
+    // Skip on Linux: it doesn't seem to like dropping permissions
+    // if there is a block device attached to the virtual machine.
     privilege::apply_krun_priv_drop(ctx_id, config)?;
 
     if opts.root_device.is_none() {
