@@ -1552,7 +1552,7 @@ impl super::AppRunner {
                         })
                         .collect()
                 } else {
-                    Vec::<rpcbind::Entry>::new()
+                    Vec::new()
                 };
             setup_rpcbind_services(&config, &network_env, &services_to_restore, &mut deferred)?;
 
