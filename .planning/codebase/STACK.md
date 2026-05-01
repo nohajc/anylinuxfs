@@ -50,7 +50,6 @@
 - `url` 2.5.4 — URL parsing for image sources
 - `plist` 1.7.1 — Apple property list parsing (`anylinuxfs/src/diskutil.rs`)
 - `serde_with` 3.16.1 — serde field-level transformations
-- `homedir` 0.3.4 — home directory detection
 - `if-addrs` 0.13.4 — network interface enumeration
 - `getifaddrs` 0.6.0 — IPv4 network interface listing
 - `os_socketaddr` 0.2.5 — OS-level socket address bridging

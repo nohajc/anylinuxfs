@@ -166,16 +166,6 @@ fn load_config(common_args: &CommonArgs, debug_args: &DebugArgs) -> anyhow::Resu
         .and_then(|s| Ok(s.parse::<libc::gid_t>()?))
         .ok();
 
-    // When invoked under sudo, `homedir::my_home()` resolves to root's home (/root)
-    // because $HOME is reset by sudo. Look up the invoking user's home via SUDO_UID.
-    let home_dir = match sudo_uid {
-        Some(uid) => utils::home_dir_from_uid(uid)
-            .context("Failed to resolve invoking user's home directory")?,
-        None => homedir::my_home()
-            .context("Failed to get home directory")?
-            .context("Home directory not found")?,
-    };
-
     let uid = unsafe { libc::getuid() };
     if uid == 0 && (sudo_uid.is_none() || sudo_gid.is_none()) {
         eprintln!("This program must not be run directly by root but you can use sudo");
@@ -192,6 +182,10 @@ fn load_config(common_args: &CommonArgs, debug_args: &DebugArgs) -> anyhow::Resu
         Some(sudo_gid) => sudo_gid,
         None => gid,
     };
+
+    // we want the regular user's home even if running with sudo
+    let home_dir = utils::home_dir_from_uid(invoker_uid)
+        .context("Failed to resolve invoking user's home directory")?;
 
     let exec_path = fs::canonicalize(env::current_exe().context("Failed to get executable path")?)
         .context("Failed to get resolved exec path")?;
