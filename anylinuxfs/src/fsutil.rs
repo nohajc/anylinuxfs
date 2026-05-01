@@ -93,6 +93,15 @@ impl MountTable {
     }
 }
 
+/// NFS option key that disables file locking. macOS spells it `nolocks`,
+/// Linux spells it `nolock` (no trailing `s`). Use this constant whenever
+/// inserting/removing the option so the spelling difference doesn't leak
+/// into call sites.
+#[cfg(target_os = "macos")]
+pub const NOLOCK_KEY: &str = "nolocks";
+#[cfg(target_os = "linux")]
+pub const NOLOCK_KEY: &str = "nolock";
+
 #[derive(Debug, Clone, Deref, DerefMut)]
 pub struct NfsOptions(BTreeMap<BString, BString>);
 
@@ -103,12 +112,8 @@ impl Default for NfsOptions {
         {
             opts.insert("deadtimeout".into(), "45".into()); // this is what Finder uses
             opts.insert("nfc".into(), "".into()); // NFC Unicode normalization (macOS-only)
-            opts.insert("nolocks".into(), "".into());
         }
-        #[cfg(target_os = "linux")]
-        {
-            opts.insert("nolock".into(), "".into()); // Linux spelling (no 's')
-        }
+        opts.insert(NOLOCK_KEY.into(), "".into());
         opts.insert("vers".into(), "3".into());
         opts.insert("port".into(), "2049".into());
         opts.insert("mountport".into(), "32767".into());

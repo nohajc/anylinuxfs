@@ -972,7 +972,7 @@ impl<'a> NfsShareSetup<'a> {
 
         let mut nfs_opts = fsutil::NfsOptions::default();
         if shared_volume {
-            nfs_opts.remove("nolocks".as_bytes());
+            nfs_opts.remove(fsutil::NOLOCK_KEY.as_bytes());
         }
         nfs_opts.extend(config.nfs_options.iter().map(|s| match s.split_once('=') {
             Some((key, value)) => (key.as_bytes().into(), value.as_bytes().into()),
