@@ -1047,7 +1047,7 @@ impl<'a> NfsShareSetup<'a> {
         host_println!("NFS mount command: {}", shell_script.display());
         // try to run mount as regular user first
         // (if that succeeds, umount will work without sudo)
-        let status = Command::new("sh")
+        let mut status = Command::new("sh")
             .arg("-c")
             .arg(shell_script)
             .uid(self.config.common.invoker_uid)
@@ -1057,33 +1057,18 @@ impl<'a> NfsShareSetup<'a> {
             .status()?;
 
         if !status.success() {
-            // otherwise run as root (probably the mount point wasn't accessible).
-            // Capture stderr so the actual failure reason is visible in the bail message
-            // instead of just "exit code 32".
-            let output = Command::new("sh")
-                .arg("-c")
-                .arg(shell_script)
-                .stdout(Stdio::null())
-                .stderr(Stdio::piped())
-                .output()?;
+            // otherwise run as root (probably the mount point wasn't accessible)
+            status = Command::new("sh").arg("-c").arg(shell_script).status()?;
+        }
 
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                let stderr = stderr.trim();
-                anyhow::bail!(
-                    "failed with exit code {}{}",
-                    output
-                        .status
-                        .code()
-                        .map(|c| c.to_string())
-                        .unwrap_or("unknown".to_owned()),
-                    if stderr.is_empty() {
-                        String::new()
-                    } else {
-                        format!(": {}", stderr)
-                    }
-                );
-            }
+        if !status.success() {
+            anyhow::bail!(
+                "failed with exit code {}",
+                status
+                    .code()
+                    .map(|c| c.to_string())
+                    .unwrap_or("unknown".to_owned())
+            );
         }
 
         #[cfg(target_os = "macos")]
