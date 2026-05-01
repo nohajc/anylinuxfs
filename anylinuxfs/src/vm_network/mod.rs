@@ -16,7 +16,7 @@ use common_utils::{OSType, VM_CTRL_PORT, VM_IP, host_println};
 use ipnet::Ipv4Net;
 use rand::prelude::*;
 
-use crate::netutil::Host;
+use crate::netutil;
 
 #[cfg(target_os = "macos")]
 mod darwin;
@@ -32,7 +32,7 @@ pub use darwin::start_vmnet_helper;
 pub struct NetHelperService {
     pub proc: Child,
     pub name: &'static str,
-    pub vm_host_ip: Host,
+    pub vm_host_ip: netutil::Host,
     pub vm_native_cidr: Option<Ipv4Net>,
     pub vm_native_ip: Option<Ipv4Addr>,
 }
@@ -122,7 +122,7 @@ pub fn start_gvproxy(config: &Config) -> anyhow::Result<NetHelperService> {
         .spawn()
         .context("Failed to start gvproxy process")?;
 
-    let loopback_ip = crate::netutil::pick_usable_loopback_ip(GVPROXY_FORWARDED_PORTS)?;
+    let loopback_ip = netutil::pick_usable_loopback_ip(GVPROXY_FORWARDED_PORTS)?;
 
     Ok(NetHelperService {
         proc: gvproxy_process,
