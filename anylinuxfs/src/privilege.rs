@@ -23,27 +23,22 @@ pub(crate) fn drop_privileges(
     sudo_uid: Option<libc::uid_t>,
     sudo_gid: Option<libc::gid_t>,
 ) -> anyhow::Result<()> {
-    if let (Some(sudo_uid), Some(sudo_gid)) = (sudo_uid, sudo_gid) {
-        #[cfg(target_os = "linux")]
-        {
-            if unsafe { libc::setegid(sudo_gid) } < 0 {
-                return Err(io::Error::last_os_error()).context("Failed to setegid");
-            }
-            if unsafe { libc::seteuid(sudo_uid) } < 0 {
-                return Err(io::Error::last_os_error()).context("Failed to seteuid");
-            }
-        }
-        #[cfg(target_os = "macos")]
-        {
-            if unsafe { libc::setgid(sudo_gid) } < 0 {
-                return Err(io::Error::last_os_error()).context("Failed to setgid");
-            }
-            if unsafe { libc::setuid(sudo_uid) } < 0 {
-                return Err(io::Error::last_os_error()).context("Failed to setuid");
+    #[cfg(target_os = "macos")]
+    {
+        if let (Some(sudo_uid), Some(sudo_gid)) = (sudo_uid, sudo_gid) {
+            {
+                if unsafe { libc::setgid(sudo_gid) } < 0 {
+                    return Err(io::Error::last_os_error()).context("Failed to setgid");
+                }
+                if unsafe { libc::setuid(sudo_uid) } < 0 {
+                    return Err(io::Error::last_os_error()).context("Failed to setuid");
+                }
             }
         }
+        Ok(())
     }
-    Ok(())
+    #[cfg(target_os = "linux")]
+    drop_effective_privileges(sudo_uid, sudo_gid)
 }
 
 // Effective-only privilege drop, paired with `elevate_effective_privileges`.
