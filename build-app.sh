@@ -44,11 +44,6 @@ if [[ "$HOST_OS" == "Linux" ]]; then
     VMPROXY_BSD_RUSTFLAGS_ENV=(
         env "RUSTFLAGS=-Clink-arg=--target=aarch64-unknown-freebsd -Clink-arg=--sysroot=freebsd-sysroot -Clink-arg=-fuse-ld=lld -Clink-arg=-stdlib=libc++"
     )
-    # Ensure libkrun.pc is discoverable when installed to /usr/local/lib64
-    # (Debian's default pkg-config search path omits lib64).
-    if [[ -f /usr/local/lib64/pkgconfig/libkrun.pc ]]; then
-        export PKG_CONFIG_PATH="/usr/local/lib64/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
-    fi
 fi
 
 FEATURES="freebsd"
