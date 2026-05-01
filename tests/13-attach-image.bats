@@ -1,16 +1,14 @@
 #!/usr/bin/env bats
-# 13-hdiutil-attach.bats — tests for mounting via hdiutil-attached virtual disks
+# 13-attach-image.bats — tests for mounting via virtual block devices
 #
-# hdiutil attach exposes a raw disk image as a /dev/diskX block device.
-# This lets anylinuxfs address the image as if it were a physical disk,
-# using /dev/diskXsY partition slice notation.
+# Image attachment exposes a raw disk image as a regular block device, letting
+# anylinuxfs address it as if it were a physical disk:
+#   macOS: hdiutil attach   ->  /dev/diskNsM   (slice notation)
+#   Linux: losetup -P       ->  /dev/loopNpM   (partition notation)
 #
 # Tests:
 #   1. Attach raw (no-partition-table) ext4 image, mount whole disk device, unmount, detach
-#   2. Attach GPT-partitioned image, mount specific partition slice (/dev/diskXs1), unmount, detach
-#
-# Cleanup note: hdiutil detach does not require sudo when attach was performed
-# by the same (non-root) user.
+#   2. Attach GPT-partitioned image, mount specific partition, unmount, detach
 
 load 'test_helper/common'
 
@@ -38,21 +36,21 @@ teardown() {
 
 # ---------------------------------------------------------------------------
 
-@test "hdiutil: attach raw image, mount whole-disk device, unmount, detach" {
-  hdiutil_attach "${BATS_FILE_TMPDIR}/hdi-raw.img"
+@test "attach-image: raw image, mount whole-disk device, unmount, detach" {
+  attach_image "${BATS_FILE_TMPDIR}/hdi-raw.img"
 
-  "$ANYLINUXFS" "$HDIUTIL_DEV" -w false
+  do_mount "$ATTACH_DEV"
 
   assert_file_roundtrip "$(get_mount_point "$RAW_LABEL")"
 
   do_unmount
 }
 
-@test "hdiutil: attach GPT image, mount partition slice /dev/diskXs1, unmount, detach" {
-  hdiutil_attach "${BATS_FILE_TMPDIR}/hdi-gpt.img"
-  local part_dev="${HDIUTIL_DEV}s1"
+@test "attach-image: GPT image, mount first partition, unmount, detach" {
+  attach_image "${BATS_FILE_TMPDIR}/hdi-gpt.img"
+  local part_dev="$(partition_dev "$ATTACH_DEV" 1)"
 
-  "$ANYLINUXFS" "$part_dev" -w false
+  do_mount "$part_dev"
 
   assert_file_roundtrip "$(get_mount_point "$GPT_LABEL")"
 

@@ -27,7 +27,7 @@ teardown() {
 
 @test "btrfs: mount raw image, file roundtrip, unmount" {
   local img="${BATS_FILE_TMPDIR}/btrfs.img"
-  "$ANYLINUXFS" "$img" -w false
+  do_mount "$img"
 
   assert_file_roundtrip "$(get_mount_point "$LABEL")"
 
@@ -36,7 +36,7 @@ teardown() {
 
 @test "btrfs: mount with compress=zstd option" {
   local img="${BATS_FILE_TMPDIR}/btrfs.img"
-  "$ANYLINUXFS" "$img" -w false -o compress=zstd
+  do_mount "$img" -o compress=zstd
 
   assert_file_roundtrip "$(get_mount_point "$LABEL")"
 

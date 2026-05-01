@@ -2,7 +2,6 @@ use std::{
     cell::Cell,
     collections::HashSet,
     error::Error,
-    ffi::c_void,
     fs::{File, Permissions},
     io::{self, BufRead, BufReader, Read, Write},
     mem::ManuallyDrop,
@@ -10,9 +9,8 @@ use std::{
         fd::{AsRawFd, FromRawFd},
         unix::fs::PermissionsExt,
     },
-    path::Path,
+    path::{Path, PathBuf},
     process::Child,
-    ptr::null,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -21,6 +19,8 @@ use std::{
     thread::{self, JoinHandle},
     time::Duration,
 };
+#[cfg(target_os = "macos")]
+use std::{ffi::c_void, ptr::null};
 
 use anyhow::Context;
 use bstr::{BStr, BString, ByteSlice, ByteVec};
@@ -34,6 +34,7 @@ use nix::{
     sys::signal::Signal,
     unistd::{Uid, User},
 };
+#[cfg(target_os = "macos")]
 use objc2_core_foundation::{
     CFCopyTypeIDDescription, CFDictionary, CFGetTypeID, CFRetained, CFString, CFType,
 };
@@ -465,7 +466,7 @@ pub fn fork_with_comm_pipe() -> anyhow::Result<ForkOutput<(), (), CommFd>> {
 
 #[allow(unused)]
 pub fn redirect_to_null(fd: libc::c_int) -> anyhow::Result<()> {
-    let dev_null_fd = unsafe { libc::open(b"/dev/null\0".as_ptr() as *const i8, libc::O_RDONLY) };
+    let dev_null_fd = unsafe { libc::open(c"/dev/null".as_ptr(), libc::O_RDONLY) };
     if dev_null_fd < 0 {
         return Err(io::Error::last_os_error()).context("Failed to open /dev/null");
     }
@@ -496,12 +497,29 @@ pub struct LockFile(File);
 
 impl LockFile {
     pub fn new(file_path: impl AsRef<Path>) -> anyhow::Result<Self> {
-        let file_already_existed = file_path.as_ref().exists();
-        let file = File::create(file_path).context("Failed to create lock file")?;
-        if !file_already_existed {
-            file.set_permissions(Permissions::from_mode(0o666))
-                .context("Failed to set file lock permissions")?;
-        }
+        // Try to open an existing lock file first, without O_CREAT/O_TRUNC.
+        // On Linux with fs.protected_regular = 2 (Debian default), opening
+        // a regular file with O_CREAT in /tmp (sticky+world-writable) is
+        // denied unless the file owner matches the directory owner — which
+        // breaks `sudo anylinuxfs` after a non-sudo run created the lock as
+        // the invoker, and vice versa. Plain O_RDWR is exempt from that
+        // check, so we use it for the common case where the file already
+        // exists. There's no content to truncate anyway; the file is used
+        // only for flock().
+        let opened = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&file_path);
+        let file = match opened {
+            Ok(f) => f,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                let f = File::create(&file_path).context("Failed to create lock file")?;
+                f.set_permissions(Permissions::from_mode(0o666))
+                    .context("Failed to set file lock permissions")?;
+                f
+            }
+            Err(e) => return Err(e).context("Failed to open lock file"),
+        };
 
         Ok(Self(file))
     }
@@ -546,6 +564,7 @@ impl AcquireLock for File {
     }
 }
 
+#[cfg(target_os = "macos")]
 pub unsafe fn cfdict_get_value<'a, T>(dict: &'a CFDictionary, key: &str) -> Option<&'a T> {
     let key = CFString::from_str(key);
     let key_ptr: *const CFString = unsafe { CFRetained::as_ptr(&key).as_ref() };
@@ -558,6 +577,7 @@ pub unsafe fn cfdict_get_value<'a, T>(dict: &'a CFDictionary, key: &str) -> Opti
     unsafe { (value_ptr as *const T).as_ref() }
 }
 
+#[cfg(target_os = "macos")]
 #[allow(unused)]
 pub fn inspect_cf_dictionary_values(dict: &CFDictionary) {
     let count = dict.count() as usize;
@@ -695,6 +715,13 @@ pub fn user_name_from_uid(uid: libc::uid_t) -> Option<String> {
         .ok()
         .flatten()
         .map(|u| u.name)
+}
+
+pub fn home_dir_from_uid(uid: libc::uid_t) -> Option<PathBuf> {
+    User::from_uid(Uid::from_raw(uid))
+        .ok()
+        .flatten()
+        .map(|u| u.dir)
 }
 
 /// A buffered reader that immediately outputs characters as they arrive

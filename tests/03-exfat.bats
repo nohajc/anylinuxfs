@@ -23,7 +23,7 @@ teardown() {
 
 @test "exfat: mount raw image, file roundtrip, unmount" {
   local img="${BATS_FILE_TMPDIR}/exfat.img"
-  "$ANYLINUXFS" "$img" -w false
+  do_mount "$img"
 
   assert_file_roundtrip "$(get_mount_point "$LABEL")"
 

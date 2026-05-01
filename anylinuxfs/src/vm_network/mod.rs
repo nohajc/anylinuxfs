@@ -2,25 +2,40 @@ use std::{
     fs::{self, File},
     io::{self, Read, Write},
     net::{Ipv4Addr, TcpStream},
-    os::unix::{fs::chown, net::UnixStream, process::CommandExt},
+    os::unix::net::UnixStream,
     process::{Child, Command},
     time::Duration,
 };
 
-use std::{io::BufReader, process::Stdio};
-
 use crate::{
-    netutil,
+    privilege,
     settings::{Config, Preferences},
 };
 use anyhow::Context;
-use common_utils::{OSType, VM_CTRL_PORT, VM_IP, VMNET_PREFIX_LEN, host_println};
+use common_utils::{OSType, VM_CTRL_PORT, VM_IP, host_println};
 use ipnet::Ipv4Net;
-use os_version::{MacOS, OsVersion};
 use rand::prelude::*;
-use serde::Deserialize;
-use serde_json::Deserializer;
-use versions::{SemVer, Versioning};
+
+use crate::netutil;
+
+#[cfg(target_os = "macos")]
+mod darwin;
+#[cfg(target_os = "macos")]
+pub use darwin::start_vmnet_helper;
+
+/// Output of a network-helper bring-up: the spawned process plus enough
+/// platform-neutral info for the orchestrator to drive the rest of the
+/// mount. `vm_native_cidr` and `vm_native_ip` are populated only when the
+/// helper gives the VM a real subnet/IP (vmnet on macOS); for tunneled
+/// helpers like gvproxy they are `None` and the orchestrator falls back to
+/// the loopback `vm_host_ip`.
+pub struct NetHelperService {
+    pub proc: Child,
+    pub name: &'static str,
+    pub vm_host_ip: netutil::Host,
+    pub vm_native_cidr: Option<Ipv4Net>,
+    pub vm_native_ip: Option<Ipv4Addr>,
+}
 
 pub fn random_mac_address() -> [u8; 6] {
     let mut rng = rand::rng();
@@ -58,124 +73,11 @@ pub fn vsock_cleanup(vsock_path: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[allow(unused)]
-#[derive(Debug, Deserialize)]
-pub struct VmnetConfigJson {
-    pub vmnet_write_max_packets: u32,
-    pub vmnet_read_max_packets: u32,
-    pub vmnet_subnet_mask: String,
-    pub vmnet_mtu: u32,
-    pub vmnet_end_address: String,
-    pub vmnet_start_address: String,
-    pub vmnet_interface_id: String,
-    pub vmnet_max_packet_size: u32,
-    pub vmnet_nat66_prefix: String,
-    pub vmnet_mac_address: String,
-}
+/// Ports gvproxy needs to forward through the loopback IP we select.
+/// 2049=NFS, 32765=statd, 32767=mountd.
+const GVPROXY_FORWARDED_PORTS: &[u16] = &[2049, 32765, 32767];
 
-pub struct VmnetConfig {
-    pub _helper_output: VmnetConfigJson,
-    pub vmnet_cidr: Ipv4Net,
-}
-
-impl VmnetConfig {
-    pub fn vm_ip(&self) -> Ipv4Addr {
-        self.vmnet_cidr.hosts().nth(1).unwrap()
-    }
-}
-
-const MACOS_TAHOE_MIN_VER: Versioning = Versioning::Ideal(SemVer {
-    major: 26,
-    minor: 0,
-    patch: 0,
-    pre_rel: None,
-    meta: None,
-});
-
-pub fn start_vmnet_helper(config: &Config) -> anyhow::Result<(Child, VmnetConfig)> {
-    vfkit_sock_cleanup(&config.unixgram_sock_path)?;
-
-    let rootless = if let OsVersion::MacOS(MacOS { version }) = os_version::detect()? {
-        Versioning::new(version).unwrap_or_default() >= MACOS_TAHOE_MIN_VER
-    } else {
-        false
-    };
-    // host_println!("vmnet-helper rootless mode: {}", rootless);
-
-    let need_elevation = !rootless && config.sudo_uid.is_none() && config.invoker_uid != 0;
-    if need_elevation {
-        anyhow::bail!(
-            "anylinuxfs is configured to use vmnet-helper which needs sudo unless you're on macOS Tahoe or later"
-        );
-    }
-
-    let known_networks =
-        netutil::get_interface_networks().context("Failed to get interface networks")?;
-
-    let vmnet_cidr = netutil::pick_available_network_in_pool(
-        VMNET_PREFIX_LEN,
-        &known_networks,
-        config.preferences.vmnet_pool(),
-    )
-    .context("Failed to find available network for vmnet-helper")?;
-
-    let mut vmnet_helper_cmd = Command::new(&config.vmnet_helper_path);
-
-    let vmnet_helper_err = File::create(&config.nethelper_log_path)
-        .context("Failed to create vmnet-helper.log file")?;
-
-    chown(
-        &config.nethelper_log_path,
-        Some(config.invoker_uid),
-        Some(config.invoker_gid),
-    )
-    .with_context(|| {
-        format!(
-            "Failed to change owner of {}",
-            config.nethelper_log_path.display()
-        )
-    })?;
-
-    vmnet_helper_cmd
-        .arg("--socket")
-        .arg(&config.unixgram_sock_path)
-        .args([
-            // "--enable-tso",
-            // "--enable-checksum-offload",
-            &format!("--start-address={}", vmnet_cidr.hosts().next().unwrap()),
-            &format!("--end-address={}", vmnet_cidr.hosts().last().unwrap()),
-            &format!("--subnet-mask={}", vmnet_cidr.netmask()),
-            "--operation-mode=shared",
-        ])
-        .stdout(Stdio::piped())
-        .stderr(vmnet_helper_err);
-
-    if let (Some(uid), Some(gid)) = (config.sudo_uid, config.sudo_gid)
-        && rootless
-    {
-        // run vmnet-helper with dropped privileges
-        vmnet_helper_cmd.uid(uid).gid(gid);
-    }
-
-    let mut vmnet_helper_process = vmnet_helper_cmd
-        .spawn()
-        .context("Failed to start vmnet-helper process")?;
-
-    let child_out = BufReader::new(vmnet_helper_process.stdout.take().unwrap());
-    // host_println!("Waiting for vmnet-helper to output config...");
-    let mut config_de = Deserializer::from_reader(child_out);
-    let _helper_output = VmnetConfigJson::deserialize(&mut config_de)
-        .context("Failed to parse vmnet-helper config")?;
-
-    let vmnet_config = VmnetConfig {
-        _helper_output,
-        vmnet_cidr,
-    };
-
-    Ok((vmnet_helper_process, vmnet_config))
-}
-
-pub fn start_gvproxy(config: &Config) -> anyhow::Result<Child> {
+pub fn start_gvproxy(config: &Config) -> anyhow::Result<NetHelperService> {
     vfkit_sock_cleanup(&config.unixgram_sock_path)?;
 
     let net_sock_uri = format!("unix://{}", &config.gvproxy_net_sock_path);
@@ -200,33 +102,35 @@ pub fn start_gvproxy(config: &Config) -> anyhow::Result<Child> {
     let gvproxy_err =
         File::try_clone(&gvproxy_out).context("Failed to clone nethelper log file handle")?;
 
-    chown(
+    privilege::chown_to_invoker(
         &config.nethelper_log_path,
-        Some(config.invoker_uid),
-        Some(config.invoker_gid),
-    )
-    .with_context(|| {
-        format!(
-            "Failed to change owner of {}",
-            config.nethelper_log_path.display()
-        )
-    })?;
+        config.invoker_uid,
+        config.invoker_gid,
+    )?;
 
     gvproxy_cmd
         .args(&gvproxy_args)
         .stdout(gvproxy_out)
         .stderr(gvproxy_err);
 
-    if let (Some(uid), Some(gid)) = (config.sudo_uid, config.sudo_gid) {
-        // run gvproxy with dropped privileges
-        gvproxy_cmd.uid(uid).gid(gid);
-    }
+    // Run gvproxy with dropped privileges on macOS. On Linux, keep root so it
+    // can bind privileged ports (rpcbind on 111 is forwarded for NFSv3).
+    #[cfg(target_os = "macos")]
+    privilege::run_as_invoker(&mut gvproxy_cmd, config.sudo_uid, config.sudo_gid);
 
     let gvproxy_process = gvproxy_cmd
         .spawn()
         .context("Failed to start gvproxy process")?;
 
-    Ok(gvproxy_process)
+    let loopback_ip = netutil::pick_usable_loopback_ip(GVPROXY_FORWARDED_PORTS)?;
+
+    Ok(NetHelperService {
+        proc: gvproxy_process,
+        name: "gvproxy",
+        vm_host_ip: loopback_ip,
+        vm_native_cidr: None,
+        vm_native_ip: None,
+    })
 }
 
 trait NetStream: Read + Write {

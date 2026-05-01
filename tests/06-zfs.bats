@@ -44,10 +44,10 @@ teardown() {
 
 @test "zfs: mount with FreeBSD kernel, file roundtrip, unmount" {
   local img="${BATS_FILE_TMPDIR}/zfs.img"
-  hdiutil_attach "$img"
-  local part_dev="${HDIUTIL_DEV}s1"
+  attach_image "$img"
+  local part_dev="$(partition_dev "$ATTACH_DEV" 1)"
 
-  "$ANYLINUXFS" "$part_dev" --zfs-os freebsd -w false
+  do_mount "$part_dev" --zfs-os freebsd
 
   assert_file_roundtrip "$(get_mount_point "zfs_root/$POOL")"
 
@@ -56,10 +56,10 @@ teardown() {
 
 @test "zfs: mount with Linux kernel, file roundtrip, unmount" {
   local img="${BATS_FILE_TMPDIR}/zfs.img"
-  hdiutil_attach "$img"
-  local part_dev="${HDIUTIL_DEV}s1"
+  attach_image "$img"
+  local part_dev="$(partition_dev "$ATTACH_DEV" 1)"
 
-  "$ANYLINUXFS" "$part_dev" --zfs-os linux -w false
+  do_mount "$part_dev" --zfs-os linux
 
   assert_file_roundtrip "$(get_mount_point "zfs_root/$POOL")"
 
@@ -68,10 +68,10 @@ teardown() {
 
 @test "zfs: mount encrypted with FreeBSD kernel using ALFS_PASSPHRASE, file roundtrip, unmount" {
   local img="${BATS_FILE_TMPDIR}/zfs-encrypted.img"
-  hdiutil_attach "$img"
-  local part_dev="${HDIUTIL_DEV}s1"
+  attach_image "$img"
+  local part_dev="$(partition_dev "$ATTACH_DEV" 1)"
 
-  ALFS_PASSPHRASE="alfszfsencryptedpass" "$ANYLINUXFS" "$part_dev" --zfs-os freebsd -w false
+  ALFS_PASSPHRASE="alfszfsencryptedpass" do_mount "$part_dev" --zfs-os freebsd
 
   assert_file_roundtrip "$(get_mount_point "zfs_root/$POOL")"
 
@@ -80,10 +80,10 @@ teardown() {
 
 @test "zfs: mount encrypted with Linux kernel using ALFS_PASSPHRASE, file roundtrip, unmount" {
   local img="${BATS_FILE_TMPDIR}/zfs-encrypted.img"
-  hdiutil_attach "$img"
-  local part_dev="${HDIUTIL_DEV}s1"
+  attach_image "$img"
+  local part_dev="$(partition_dev "$ATTACH_DEV" 1)"
 
-  ALFS_PASSPHRASE="alfszfsencryptedpass" "$ANYLINUXFS" "$part_dev" --zfs-os linux -w false
+  ALFS_PASSPHRASE="alfszfsencryptedpass" do_mount "$part_dev" --zfs-os linux
 
   assert_file_roundtrip "$(get_mount_point "zfs_root/$POOL")"
 

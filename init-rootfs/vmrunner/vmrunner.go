@@ -3,7 +3,8 @@ package vmrunner
 /*
 #include <stdlib.h>
 #include "vmrunner.h"
-#cgo LDFLAGS: ${SRCDIR}/../../vmrunner-sys/target/libvmrunner_sys.a -framework Hypervisor
+#cgo LDFLAGS: ${SRCDIR}/../../vmrunner-sys/target/libvmrunner_sys.a
+#cgo darwin LDFLAGS: -framework Hypervisor
 */
 import "C"
 import (

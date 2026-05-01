@@ -3,11 +3,29 @@
 # Loaded via `load 'test_helper/common'` at the top of each .bats file.
 
 # ---------------------------------------------------------------------------
+# Host OS detection
+# ---------------------------------------------------------------------------
+HOST_OS="$(uname -s)"
+
+# ---------------------------------------------------------------------------
 # Binary resolution
 # ---------------------------------------------------------------------------
 # Override ANYLINUXFS_BIN in the environment to point at an alternate binary.
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ANYLINUXFS="${ANYLINUXFS_BIN:-"${REPO_ROOT}/bin/anylinuxfs"}"
+
+# user_home_dir
+#   Resolves the invoking user's home directory. Under sudo, $HOME points at
+#   /root on Linux, while anylinuxfs reads ~/.anylinuxfs/ for the user named
+#   in SUDO_USER (the original invoker). Tests that touch the config file or
+#   the default mount point need the invoker's home, not root's.
+user_home_dir() {
+  if [[ -n "${SUDO_USER:-}" ]]; then
+    eval echo "~${SUDO_USER}"
+  else
+    echo "$HOME"
+  fi
+}
 
 if [[ ! -x "$ANYLINUXFS" ]]; then
   echo "ERROR: anylinuxfs binary not found at: $ANYLINUXFS" >&2
@@ -48,6 +66,25 @@ create_sparse_image() {
 }
 
 # ---------------------------------------------------------------------------
+# Mount wrapper
+# ---------------------------------------------------------------------------
+# do_mount [...args]
+#   Invokes anylinuxfs to mount a disk. Appends `-w false` on macOS to
+#   suppress the Finder window that would otherwise pop open for each test
+#   mount; that flag belongs to the mount subcommand (gated behind
+#   #[cfg(target_os = "macos")] in cli.rs) and would error out on Linux.
+#   Append rather than prepend so the wrapper works whether the caller uses
+#   the implicit mount form (\`do_mount /tmp/x.img\`) or names the subcommand
+#   explicitly (\`do_mount mount -a action_name\`).
+do_mount() {
+  if [[ "$HOST_OS" == "Darwin" ]]; then
+    "$ANYLINUXFS" "$@" -w false
+  else
+    "$ANYLINUXFS" "$@"
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # VM shell execution
 # ---------------------------------------------------------------------------
 # vm_exec <disk_arg> <shell_command>
@@ -78,12 +115,33 @@ vm_exec_freebsd() {
 }
 
 # get_mount_point <label>
-#   Returns the expected macOS mount path for a volume with the given label.
+#   Returns the expected mount path for a volume with the given label.
+#   macOS: /Volumes/<label> (or ~/Volumes/<label> for non-root invocations)
+#   Linux: /mnt/<label>     (or ~/mnt/<label> for non-root invocations)
 get_mount_point() {
-  if [[ $(id -u) -eq 0 ]]; then
-    echo "/Volumes/${1}"
+  local base
+  if [[ "$HOST_OS" == "Darwin" ]]; then
+    base="Volumes"
   else
-     echo "${HOME}/Volumes/${1}"
+    base="mnt"
+  fi
+  if [[ $(id -u) -eq 0 ]]; then
+    echo "/${base}/${1}"
+  else
+    echo "${HOME}/${base}/${1}"
+  fi
+}
+
+# partition_dev <attach_dev> <part_num>
+#   Compose the partition device node for a virtual disk.
+#   macOS hdiutil:  /dev/disk5  -> /dev/disk5s1
+#   Linux losetup:  /dev/loop0  -> /dev/loop0p1
+partition_dev() {
+  local dev="$1" num="$2"
+  if [[ "$HOST_OS" == "Darwin" ]]; then
+    echo "${dev}s${num}"
+  else
+    echo "${dev}p${num}"
   fi
 }
 
@@ -128,75 +186,99 @@ do_unmount() {
 }
 
 # ---------------------------------------------------------------------------
-# hdiutil helpers (for 13-hdiutil-attach.bats)
+# Virtual-disk attach helpers
 # ---------------------------------------------------------------------------
-# hdiutil_attach <image_path>
-#   Attaches a raw disk image as a virtual /dev/disk* device (no auto-mount).
-#   Prints the /dev/diskX device node to stdout and sets HDIUTIL_DEV.
-hdiutil_attach() {
+# attach_image <image_path>
+#   Attaches a raw disk image as a virtual block device (no auto-mount).
+#   macOS: hdiutil attach -nomount  ->  /dev/diskN
+#   Linux: losetup -P -f --show     ->  /dev/loopN
+#          (-P forces the kernel to scan the partition table and create
+#          /dev/loopNpX nodes for any partitions; harmless on raw images.)
+#   Prints the device node to stdout and sets ATTACH_DEV.
+attach_image() {
   local image_path="$1"
-  local out
-  out="$(hdiutil attach \
-    -imagekey diskimage-class=CRawDiskImage \
-    -nomount \
-    "$image_path" 2>&1)"
-  # hdiutil prints one line per partition: "/dev/disk5   (whole disk)"
-  # The whole-disk device is the first line.
-  local dev
-  dev="$(echo "$out" | awk 'NR==1{print $1}')"
+  local dev out
+  if [[ "$HOST_OS" == "Darwin" ]]; then
+    out="$(hdiutil attach \
+      -imagekey diskimage-class=CRawDiskImage \
+      -nomount \
+      "$image_path" 2>&1)"
+    # hdiutil prints one line per partition; the first is the whole disk.
+    dev="$(echo "$out" | awk 'NR==1{print $1}')"
+  else
+    out="$(losetup -P -f --show "$image_path" 2>&1)"
+    dev="$out"
+    # Wait for udev to finish processing the hotplug events (blkid scan,
+    # lvm2-pvscan, etc.) it triggers on a fresh loop device. Without this,
+    # anylinuxfs can lose a flock race with the kernel-triggered scanners
+    # and fail with "file already locked".
+    udevadm settle 2>/dev/null || true
+  fi
   if [[ -z "$dev" || ! -b "$dev" ]]; then
-    echo "ERROR: hdiutil_attach failed for $image_path" >&2
+    echo "ERROR: attach_image failed for $image_path" >&2
     echo "$out" >&2
     return 1
   fi
-  HDIUTIL_DEV="$dev"
-  export HDIUTIL_DEV
+  ATTACH_DEV="$dev"
+  export ATTACH_DEV
   echo "$dev"
 }
 
-# hdiutil_attach_automount <image_path>
-#   Like hdiutil_attach but WITHOUT -nomount, so macOS's diskarbitrationd can
-#   auto-mount any recognisable volumes (e.g. NTFS read-only).  Used by the
-#   --remount tests that need a disk to already be mounted natively before
-#   anylinuxfs takes over.
-#   Prints the /dev/diskX device node to stdout and sets HDIUTIL_DEV.
-hdiutil_attach_automount() {
+# attach_image_automount <image_path>
+#   Like attach_image but lets the host auto-mount any recognised volumes.
+#   Used by --remount tests that need a disk to already be mounted natively
+#   before anylinuxfs takes over.
+#   macOS: hdiutil attach (no -nomount)  -> diskarbitrationd auto-mounts
+#   Linux: no built-in equivalent — losetup never auto-mounts. Callers that
+#   require an already-mounted volume must mount it manually after attach.
+attach_image_automount() {
   local image_path="$1"
-  local out
-  out="$(hdiutil attach \
-    -imagekey diskimage-class=CRawDiskImage \
-    "$image_path" 2>&1)"
-  local dev
-  dev="$(echo "$out" | awk 'NR==1{print $1}')"
+  local dev out
+  if [[ "$HOST_OS" == "Darwin" ]]; then
+    out="$(hdiutil attach \
+      -imagekey diskimage-class=CRawDiskImage \
+      "$image_path" 2>&1)"
+    dev="$(echo "$out" | awk 'NR==1{print $1}')"
+  else
+    # No auto-mount on Linux — fall back to plain attach. Tests that rely
+    # on auto-mount semantics should skip on non-Darwin hosts.
+    attach_image "$image_path"
+    return $?
+  fi
   if [[ -z "$dev" || ! -b "$dev" ]]; then
-    echo "ERROR: hdiutil_attach_automount failed for $image_path" >&2
+    echo "ERROR: attach_image_automount failed for $image_path" >&2
     echo "$out" >&2
     return 1
   fi
-  HDIUTIL_DEV="$dev"
-  export HDIUTIL_DEV
+  ATTACH_DEV="$dev"
+  export ATTACH_DEV
   echo "$dev"
 }
 
-# hdiutil_detach <dev_node>
-#   Detaches a virtual disk. Note: hdiutil detach does not require sudo when
-#   the attach was performed by the same user.
-hdiutil_detach() {
+# detach_image <dev_node>
+#   Detaches a virtual disk.
+#   macOS: hdiutil detach (does not require sudo when the attacher matches).
+#   Linux: losetup -d
+detach_image() {
   local dev="$1"
-  hdiutil detach "$dev" 2>/dev/null || true
+  if [[ "$HOST_OS" == "Darwin" ]]; then
+    hdiutil detach "$dev" 2>/dev/null || true
+  else
+    losetup -d "$dev" 2>/dev/null || true
+  fi
 }
 
 # ---------------------------------------------------------------------------
 # Generic teardown called from each test's teardown()
 # ---------------------------------------------------------------------------
 # safe_teardown [disk_arg]
-#   Unmounts (best-effort), detaches any hdiutil device, removes TEST_DIR.
+#   Unmounts (best-effort), detaches any attached image, removes TEST_DIR.
 safe_teardown() {
   local disk_arg="${1:-}"
   do_unmount
-  if [[ -n "${HDIUTIL_DEV:-}" ]]; then
-    hdiutil_detach "$HDIUTIL_DEV"
-    HDIUTIL_DEV=""
+  if [[ -n "${ATTACH_DEV:-}" ]]; then
+    detach_image "$ATTACH_DEV"
+    ATTACH_DEV=""
   fi
   # Optionally preserve created test artifacts (images) for manual inspection.
   if [[ "${KEEP_TEST_ARTIFACTS:-}" == "1" ]]; then

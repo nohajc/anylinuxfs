@@ -1,8 +1,6 @@
-use crate::{
-    Config, ImageSource, fsutil,
-    vm_network::{self, VmnetConfig},
-};
+use crate::{Config, ImageSource, fsutil, privilege, vm_network};
 use anyhow::Context;
+use ipnet::Ipv4Net;
 
 use common_utils::{Deferred, NetHelper, host_eprintln};
 use std::{fs, path::Path, process::Command};
@@ -17,7 +15,6 @@ mod alpine {
     use common_utils::{host_eprintln, host_println};
     use std::{
         fs::{self},
-        os::unix::process::CommandExt,
         process::{Command, Stdio},
     };
 
@@ -71,10 +68,8 @@ mod alpine {
         host_println!("Initializing VM root filesystem...");
 
         let mut init_rootfs_cmd = Command::new(&config.init_rootfs_path);
-        if let (Some(uid), Some(gid)) = (config.sudo_uid, config.sudo_gid) {
-            // run init-rootfs with dropped privileges
-            init_rootfs_cmd.uid(uid).gid(gid);
-        }
+        // run init-rootfs with dropped privileges
+        privilege::run_as_invoker(&mut init_rootfs_cmd, config.sudo_uid, config.sudo_gid);
 
         let dns_server = netutil::get_dns_server_with_fallback();
         let docker_ref = src.docker_ref.as_deref().unwrap_or("alpine:latest");
@@ -434,6 +429,28 @@ mod freebsd {
         write_mtime_files(&base_path, &[&init_src_path, &vmproxy_src_path])
             .context("Failed to write mtime files")?;
 
+        // Linux: In case image install runs as root, the disk image / kernel
+        // files end up root-owned, but a later unprivileged `anylinuxfs shell
+        // -i freebsd` invocation needs to open the disk read-write. Alpine
+        // gets the same end-state for free because its init-rootfs is
+        // spawned with the invoker's uid; the FreeBSD bootstrap path can't
+        // do that (libkrun host-side stays root) so we chown after.
+        //
+        // macOS: krun_setuid drops the VM to the invoker before any disk
+        // open, and our install path already runs with effective uid =
+        // invoker, so the disk image is created invoker-owned and no
+        // chown fix-up is needed.
+        #[cfg(target_os = "linux")]
+        if let (Some(uid), Some(gid)) = (config.sudo_uid, config.sudo_gid) {
+            if let Err(e) = privilege::chown_tree_to_invoker(&base_path, uid, gid) {
+                host_eprintln!(
+                    "Failed to chown {} to invoker: {:#}",
+                    base_path.display(),
+                    e
+                );
+            }
+        }
+
         Ok(())
     }
 
@@ -686,22 +703,26 @@ fn rootfs_version_matches(root_ver_file_path: &Path, current_version: &str) -> b
 
 pub fn setup_net_helper(
     config: &Config,
-    start_vm_fn: impl FnOnce(Option<VmnetConfig>) -> anyhow::Result<i32>,
+    start_vm_fn: impl FnOnce(Option<Ipv4Net>) -> anyhow::Result<i32>,
 ) -> anyhow::Result<i32> {
     match config.net_helper.os_override(config.kernel.os) {
         NetHelper::GvProxy => setup_gvproxy(config, start_vm_fn),
+        #[cfg(target_os = "macos")]
         NetHelper::VmNet => setup_vmnet_helper(config, start_vm_fn),
+        #[cfg(target_os = "linux")]
+        NetHelper::VmNet => anyhow::bail!("vmnet-helper is not supported on Linux"),
     }
 }
 
+#[cfg(target_os = "macos")]
 pub fn setup_vmnet_helper(
     config: &Config,
-    start_vm_fn: impl FnOnce(Option<VmnetConfig>) -> anyhow::Result<i32>,
+    start_vm_fn: impl FnOnce(Option<Ipv4Net>) -> anyhow::Result<i32>,
 ) -> anyhow::Result<i32> {
     let mut deferred = Deferred::new();
 
-    let (mut vmnet_helper, vmnet_config) = vm_network::start_vmnet_helper(&config)?;
-    // host_println!("vmnet-helper started with config: {:?}", _vmnet_config);
+    let net_helper_svc = vm_network::start_vmnet_helper(&config)?;
+    let mut vmnet_helper = net_helper_svc.proc;
     fsutil::wait_for_file(&config.unixgram_sock_path)?;
 
     _ = deferred.add(|| {
@@ -726,16 +747,17 @@ pub fn setup_vmnet_helper(
         }
     });
 
-    start_vm_fn(Some(vmnet_config))
+    start_vm_fn(net_helper_svc.vm_native_cidr)
 }
 
 pub fn setup_gvproxy(
     config: &Config,
-    start_vm_fn: impl FnOnce(Option<VmnetConfig>) -> anyhow::Result<i32>,
+    start_vm_fn: impl FnOnce(Option<Ipv4Net>) -> anyhow::Result<i32>,
 ) -> anyhow::Result<i32> {
     let mut deferred = Deferred::new();
 
-    let mut gvproxy = vm_network::start_gvproxy(&config)?;
+    let net_helper_svc = vm_network::start_gvproxy(&config)?;
+    let mut gvproxy = net_helper_svc.proc;
     fsutil::wait_for_file(&config.unixgram_sock_path)?;
 
     _ = deferred.add(|| {
@@ -760,5 +782,5 @@ pub fn setup_gvproxy(
         }
     });
 
-    start_vm_fn(None)
+    start_vm_fn(net_helper_svc.vm_native_cidr)
 }

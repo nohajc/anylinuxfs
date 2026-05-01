@@ -35,7 +35,7 @@ teardown() {
 
 @test "ext4: mount raw image, file roundtrip, unmount" {
   local img="${BATS_FILE_TMPDIR}/ext4.img"
-  "$ANYLINUXFS" "$img" -w false
+  do_mount "$img"
 
   assert_file_roundtrip "$(get_mount_point "$LABEL")"
 
@@ -44,7 +44,7 @@ teardown() {
 
 @test "ext4: mount with noatime option" {
   local img="${BATS_FILE_TMPDIR}/ext4.img"
-  "$ANYLINUXFS" "$img" -w false -o noatime
+  do_mount "$img" -o noatime
 
   assert_file_roundtrip "$(get_mount_point "$LABEL")"
 
@@ -53,7 +53,7 @@ teardown() {
 
 @test "ext4: read-only mount rejects writes" {
   local img="${BATS_FILE_TMPDIR}/ext4.img"
-  "$ANYLINUXFS" "$img" -w false -o ro
+  do_mount "$img" -o ro
 
   local mp
   mp="$(get_mount_point "$LABEL")"
@@ -66,7 +66,7 @@ teardown() {
 
 @test "ext4: --ignore-permissions allows file roundtrip on root-owned filesystem" {
   # The root directory is owned by root:root, which would normally block writes.
-  "$ANYLINUXFS" "${BATS_FILE_TMPDIR}/ext4-rootowned.img" --ignore-permissions -w false
+  do_mount "${BATS_FILE_TMPDIR}/ext4-rootowned.img" --ignore-permissions
 
   assert_file_roundtrip "$(get_mount_point "$LABEL_ROOTOWNED")"
 

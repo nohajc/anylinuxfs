@@ -27,7 +27,9 @@ mod cmd_mount;
 mod devinfo;
 mod diskutil;
 mod fsutil;
+mod mdns;
 mod netutil;
+mod privilege;
 mod pubsub;
 mod rpcbind;
 mod settings;
@@ -164,12 +166,8 @@ fn load_config(common_args: &CommonArgs, debug_args: &DebugArgs) -> anyhow::Resu
         .and_then(|s| Ok(s.parse::<libc::gid_t>()?))
         .ok();
 
-    let home_dir = homedir::my_home()
-        .context("Failed to get home directory")?
-        .context("Home directory not found")?;
-
     let uid = unsafe { libc::getuid() };
-    if uid == 0 && (sudo_uid.is_none() || sudo_gid.is_none() || !home_dir.starts_with("/Users")) {
+    if uid == 0 && (sudo_uid.is_none() || sudo_gid.is_none()) {
         eprintln!("This program must not be run directly by root but you can use sudo");
         std::process::exit(1);
     }
@@ -184,6 +182,10 @@ fn load_config(common_args: &CommonArgs, debug_args: &DebugArgs) -> anyhow::Resu
         Some(sudo_gid) => sudo_gid,
         None => gid,
     };
+
+    // we want the regular user's home even if running with sudo
+    let home_dir = utils::home_dir_from_uid(invoker_uid)
+        .context("Failed to resolve invoking user's home directory")?;
 
     let exec_path = fs::canonicalize(env::current_exe().context("Failed to get executable path")?)
         .context("Failed to get resolved exec path")?;
@@ -201,7 +203,15 @@ fn load_config(common_args: &CommonArgs, debug_args: &DebugArgs) -> anyhow::Resu
 
     let profile_path = home_dir.join(".anylinuxfs");
     let config_file_path = home_dir.join(".anylinuxfs").join("config.toml");
+    #[cfg(target_os = "macos")]
     let log_dir = home_dir.join("Library").join("Logs");
+    #[cfg(target_os = "linux")]
+    let log_dir = {
+        let dir = home_dir.join(".anylinuxfs").join("logs");
+        fs::create_dir_all(&dir)
+            .with_context(|| format!("Failed to create log directory {}", dir.display()))?;
+        dir
+    };
     let log_file_path = log_dir.join(format!("anylinuxfs-{}.log", log_file_id));
     let kernel_log_file_path = log_dir.join(format!("anylinuxfs_kernel-{}.log", log_file_id));
     let nethelper_log_path = log_dir.join(format!("anylinuxfs_nethelper-{}.log", log_file_id));
@@ -222,7 +232,10 @@ fn load_config(common_args: &CommonArgs, debug_args: &DebugArgs) -> anyhow::Resu
     } else {
         prefix_dir.to_owned()
     };
+    #[cfg(target_os = "macos")]
     let global_cfg_path = global_prefix_dir.join("etc").join("anylinuxfs.toml");
+    #[cfg(target_os = "linux")]
+    let global_cfg_path = global_prefix_dir.join("etc").join("anylinuxfs-linux.toml");
     let all_cfg_paths = [global_cfg_path.as_path(), config_file_path.as_path()];
     let preferences = settings::load_preferences(all_cfg_paths.iter().cloned())?;
 
@@ -345,6 +358,7 @@ pub(crate) fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
 
     let fs_driver = cmd.fs_driver;
 
+    #[cfg(target_os = "macos")]
     let open_finder = cmd.window;
     let kernel_page_size = cmd.kernel_page_size;
 
@@ -394,6 +408,7 @@ pub(crate) fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
         assemble_raid,
         bind_addr,
         verbose,
+        #[cfg(target_os = "macos")]
         open_finder,
         kernel_page_size,
         common,
@@ -458,48 +473,6 @@ pub(crate) fn hostname_from_disk_ident(disk_ident: &str) -> anyhow::Result<Strin
     }
 
     Ok(vm_hostname)
-}
-
-pub(crate) fn drop_privileges(
-    sudo_uid: Option<libc::uid_t>,
-    sudo_gid: Option<libc::gid_t>,
-) -> anyhow::Result<()> {
-    if let (Some(sudo_uid), Some(sudo_gid)) = (sudo_uid, sudo_gid) {
-        if unsafe { libc::setgid(sudo_gid) } < 0 {
-            return Err(io::Error::last_os_error()).context("Failed to setgid");
-        }
-        if unsafe { libc::setuid(sudo_uid) } < 0 {
-            return Err(io::Error::last_os_error()).context("Failed to setuid");
-        }
-    }
-    Ok(())
-}
-
-pub(crate) fn drop_effective_privileges(
-    sudo_uid: Option<libc::uid_t>,
-    sudo_gid: Option<libc::gid_t>,
-) -> anyhow::Result<()> {
-    if let (Some(sudo_uid), Some(sudo_gid)) = (sudo_uid, sudo_gid) {
-        if unsafe { libc::setegid(sudo_gid) } < 0 {
-            return Err(io::Error::last_os_error()).context("Failed to setegid");
-        }
-        if unsafe { libc::seteuid(sudo_uid) } < 0 {
-            return Err(io::Error::last_os_error()).context("Failed to seteuid");
-        }
-    }
-    Ok(())
-}
-
-pub(crate) fn elevate_effective_privileges() -> anyhow::Result<()> {
-    let real_uid = unsafe { libc::getuid() };
-    let real_gid = unsafe { libc::getgid() };
-    if unsafe { libc::seteuid(real_uid) } < 0 {
-        return Err(io::Error::last_os_error()).context("Failed to seteuid");
-    }
-    if unsafe { libc::setegid(real_gid) } < 0 {
-        return Err(io::Error::last_os_error()).context("Failed to setegid");
-    }
-    Ok(())
 }
 
 pub(crate) struct AppRunner {
@@ -626,8 +599,8 @@ impl AppRunner {
         if os == OSType::Linux && !cmd.no_tsi {
             start_vm(&ctx, &cmdline, &vm_env).context("Failed to start microVM shell")?;
         } else {
-            vm_image::setup_net_helper(&config.common, |cfg| {
-                if let Some(cidr) = cfg.map(|c| c.vmnet_cidr) {
+            vm_image::setup_net_helper(&config.common, |vm_native_cidr| {
+                if let Some(cidr) = vm_native_cidr {
                     cmdline.extend(["-n".into(), cidr.to_string().into()]);
                 }
                 start_vm_forked(&ctx, &cmdline, &vm_env).context("Failed to start microVM shell")
@@ -639,7 +612,10 @@ impl AppRunner {
 
     fn run_dmesg(&mut self) -> anyhow::Result<()> {
         let config = load_config(&CommonArgs::default(), &DebugArgs::default())?;
+        #[cfg(target_os = "macos")]
         let log_dir = config.home_dir.join("Library").join("Logs");
+        #[cfg(target_os = "linux")]
+        let log_dir = config.home_dir.join(".anylinuxfs").join("logs");
 
         // Find the most recently modified kernel log file (if it exists)
         let Some(kernel_log_path) = find_latest_log(&log_dir, "anylinuxfs_kernel-", ".log") else {
@@ -814,7 +790,10 @@ impl AppRunner {
     }
 
     fn run_upgrade_config(&mut self, cmd: UpgradeConfigCmd) -> anyhow::Result<()> {
+        #[cfg(target_os = "macos")]
         let default_cfg_str = include_str!("../../etc/anylinuxfs.toml");
+        #[cfg(target_os = "linux")]
+        let default_cfg_str = include_str!("../../etc/anylinuxfs-linux.toml");
         let mut target_cfg = default_cfg_str
             .parse::<DocumentMut>()
             .context("Failed to parse default config")?;
@@ -943,7 +922,10 @@ impl AppRunner {
 
     fn run_log(&mut self, cmd: LogCmd) -> anyhow::Result<()> {
         let config = load_config(&CommonArgs::default(), &DebugArgs::default())?;
+        #[cfg(target_os = "macos")]
         let log_dir = config.home_dir.join("Library").join("Logs");
+        #[cfg(target_os = "linux")]
+        let log_dir = config.home_dir.join(".anylinuxfs").join("logs");
 
         // Find the most recently modified log file
         let Some(log_file_path) = find_latest_log(&log_dir, "anylinuxfs-", ".log") else {

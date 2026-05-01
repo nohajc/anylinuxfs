@@ -39,7 +39,7 @@ teardown() {
     "$raid_id" > /dev/null 2>&1
 
   # Now mount it with anylinuxfs — it will assemble the array again.
-  "$ANYLINUXFS" "$raid_id" -w false
+  do_mount "$raid_id"
 
   assert_file_roundtrip "$(get_mount_point "$RAID_LABEL")"
 

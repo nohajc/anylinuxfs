@@ -35,7 +35,7 @@ teardown() {
 
 @test "lvm: mount first logical volume, file roundtrip, unmount" {
   local disk_id="lvm:${VG}:${BATS_FILE_TMPDIR}/lvm.img:${LV1}"
-  "$ANYLINUXFS" "$disk_id" -w false
+  do_mount "$disk_id"
 
   assert_file_roundtrip "$(get_mount_point "$LV1_LABEL")"
 
@@ -44,7 +44,7 @@ teardown() {
 
 @test "lvm: mount second logical volume, file roundtrip, unmount" {
   local disk_id="lvm:${VG}:${BATS_FILE_TMPDIR}/lvm.img:${LV2}"
-  "$ANYLINUXFS" "$disk_id" -w false
+  do_mount "$disk_id"
 
   assert_file_roundtrip "$(get_mount_point "$LV2_LABEL")"
 
@@ -52,9 +52,9 @@ teardown() {
 }
 
 @test "lvm: mount first logical volume via hdiutil-attached device, file roundtrip, unmount" {
-  hdiutil_attach "${BATS_FILE_TMPDIR}/lvm.img"
-  local disk_id="lvm:${VG}:${HDIUTIL_DEV}:${LV1}"
-  "$ANYLINUXFS" "$disk_id" -w false
+  attach_image "${BATS_FILE_TMPDIR}/lvm.img"
+  local disk_id="lvm:${VG}:${ATTACH_DEV}:${LV1}"
+  do_mount "$disk_id"
 
   assert_file_roundtrip "$(get_mount_point "$LV1_LABEL")"
 
@@ -62,9 +62,9 @@ teardown() {
 }
 
 @test "lvm: mount second logical volume via hdiutil-attached device, file roundtrip, unmount" {
-  hdiutil_attach "${BATS_FILE_TMPDIR}/lvm.img"
-  local disk_id="lvm:${VG}:${HDIUTIL_DEV}:${LV2}"
-  "$ANYLINUXFS" "$disk_id" -w false
+  attach_image "${BATS_FILE_TMPDIR}/lvm.img"
+  local disk_id="lvm:${VG}:${ATTACH_DEV}:${LV2}"
+  do_mount "$disk_id"
 
   assert_file_roundtrip "$(get_mount_point "$LV2_LABEL")"
 

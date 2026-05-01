@@ -115,6 +115,7 @@ pub trait Preferences {
     fn zfs_os(&self) -> OSType;
 
     fn network_helper(&self) -> NetHelper;
+    #[cfg(target_os = "macos")]
     fn vmnet_pool(&self) -> Ipv4Net;
 
     fn user<'a>(&'a self) -> &'a PrefsObject;
@@ -256,6 +257,7 @@ impl Preferences for [PrefsObject; 2] {
             .unwrap_or_default()
     }
 
+    #[cfg(target_os = "macos")]
     fn vmnet_pool(&self) -> Ipv4Net {
         self[1]
             .network
@@ -773,6 +775,7 @@ pub struct MountConfig {
     pub assemble_raid: bool,
     pub bind_addr: Option<IpAddr>,
     pub verbose: bool,
+    #[cfg(target_os = "macos")]
     pub open_finder: bool,
     pub kernel_page_size: Option<KernelPage>,
     pub common: Config,

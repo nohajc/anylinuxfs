@@ -39,7 +39,7 @@ teardown() {
 
 @test "ntfs: mount with ntfs3 driver, file roundtrip, unmount" {
   local img="${BATS_FILE_TMPDIR}/ntfs.img"
-  "$ANYLINUXFS" "$img" -t ntfs3 -w false
+  do_mount "$img" -t ntfs3
 
   assert_file_roundtrip "$(get_mount_point "$LABEL")"
 
@@ -48,7 +48,7 @@ teardown() {
 
 @test "ntfs: mount with ntfs-3g driver, file roundtrip, unmount" {
   local img="${BATS_FILE_TMPDIR}/ntfs.img"
-  "$ANYLINUXFS" "$img" -t ntfs-3g -w false
+  do_mount "$img" -t ntfs-3g
 
   assert_file_roundtrip "$(get_mount_point "$LABEL")"
 
@@ -56,13 +56,17 @@ teardown() {
 }
 
 @test "ntfs: --remount takes over macOS read-only native mount for read-write access" {
+  if [[ "$HOST_OS" != "Darwin" ]]; then
+    skip "diskarbitrationd-driven auto-mount has no Linux equivalent"
+  fi
+
   local img="${BATS_FILE_TMPDIR}/ntfs-remount.img"
 
   # Attach without -nomount so macOS's diskarbitrationd auto-mounts the NTFS
   # partition read-only at /Volumes/<REMOUNT_LABEL>.
   local dev
-  dev="$(hdiutil_attach_automount "$img")"
-  local part_dev="${dev}s1"
+  dev="$(attach_image_automount "$img")"
+  local part_dev="$(partition_dev "$dev" 1)"
 
   # Poll until macOS completes the auto-mount (usually instant, but be safe).
   local retries=15
@@ -73,16 +77,16 @@ teardown() {
   [[ -d "/Volumes/${REMOUNT_LABEL}" ]]
 
   # Without -r: anylinuxfs should refuse because the disk is already mounted.
-  run "$ANYLINUXFS" "$part_dev" -w false
+  run do_mount "$part_dev"
   [ "$status" -ne 0 ]
 
   # With -r: anylinuxfs unmounts the macOS read-only mount first, then mounts
   # the volume read-write via the Linux VM.
-  "$ANYLINUXFS" "$part_dev" -r -w false
+  do_mount "$part_dev" -r
 
   assert_file_roundtrip "$(get_mount_point "$REMOUNT_LABEL")"
 
   do_unmount
-  hdiutil_detach "$dev"
-  HDIUTIL_DEV=""
+  detach_image "$dev"
+  ATTACH_DEV=""
 }

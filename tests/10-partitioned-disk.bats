@@ -46,10 +46,10 @@ teardown() {
 
 @test "partitioned: GPT ext4 — hdiutil-attached /dev/diskXs1 mount" {
   local gpt_img="${BATS_FILE_TMPDIR}/gpt.img"
-  hdiutil_attach "$gpt_img"
-  local part_dev="${HDIUTIL_DEV}s1"
+  attach_image "$gpt_img"
+  local part_dev="$(partition_dev "$ATTACH_DEV" 1)"
 
-  "$ANYLINUXFS" "$part_dev" -w false
+  do_mount "$part_dev"
 
   assert_file_roundtrip "$(get_mount_point "$GPT_LABEL")"
 
@@ -58,10 +58,10 @@ teardown() {
 
 @test "partitioned: MBR first partition (ext4)" {
   local mbr_img="${BATS_FILE_TMPDIR}/mbr.img"
-  hdiutil_attach "$mbr_img"
-  local part_dev="${HDIUTIL_DEV}s1"
+  attach_image "$mbr_img"
+  local part_dev="$(partition_dev "$ATTACH_DEV" 1)"
 
-  "$ANYLINUXFS" "$part_dev" -w false
+  do_mount "$part_dev"
 
   assert_file_roundtrip "$(get_mount_point "$MBR1_LABEL")"
 
@@ -70,10 +70,10 @@ teardown() {
 
 @test "partitioned: MBR second partition (btrfs) via direct path" {
   local mbr_img="${BATS_FILE_TMPDIR}/mbr.img"
-  hdiutil_attach "$mbr_img"
-  local part_dev="${HDIUTIL_DEV}s2"
+  attach_image "$mbr_img"
+  local part_dev="$(partition_dev "$ATTACH_DEV" 2)"
 
-  "$ANYLINUXFS" "$part_dev" -w false
+  do_mount "$part_dev"
 
   assert_file_roundtrip "$(get_mount_point "$MBR2_LABEL")"
 

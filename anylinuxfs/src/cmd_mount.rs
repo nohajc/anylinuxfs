@@ -5,15 +5,12 @@ use common_utils::{
     vmctrl,
 };
 
-use dns_sd::{DNSRecord, DNSService};
-
 use std::borrow::Cow;
 use std::collections::{BTreeSet, HashSet};
 use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::os::fd::FromRawFd;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::chown;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -22,11 +19,16 @@ use std::time::{Duration, Instant, SystemTime};
 use std::{env, iter, thread};
 use std::{
     io::{self, BufRead, BufReader, Write},
-    net::{IpAddr, Ipv4Addr, TcpStream, ToSocketAddrs},
+    net::{Ipv4Addr, TcpStream, ToSocketAddrs},
 };
 
 use crate::devinfo::DevInfo;
 use crate::netutil::Host;
+use crate::privilege::{
+    self, drop_effective_privileges, drop_privileges, elevate_effective_privileges,
+};
+#[cfg(target_os = "linux")]
+use crate::privilege::{EffectiveRootGuard, ElevateOnDrop};
 use crate::settings::{
     Config, CustomActionEnvironment, KernelPage, MountConfig, PassphrasePromptConfig, Preferences,
 };
@@ -36,10 +38,15 @@ use crate::utils::{
 };
 use crate::vm::*;
 use crate::{
-    ConsoleLogGuard, LOCK_FILE, api, cli::*, diskutil, drop_effective_privileges, drop_privileges,
-    elevate_effective_privileges, fsutil, load_mount_config, netutil, parse_vm_tag_value,
-    rand_string, rpcbind, to_exit_code, vm_image, vm_network,
+    ConsoleLogGuard, LOCK_FILE, api, cli::*, diskutil, fsutil, load_mount_config, netutil,
+    parse_vm_tag_value, rand_string, to_exit_code, vm_image, vm_network,
 };
+use crate::{mdns, rpcbind};
+
+#[cfg(target_os = "macos")]
+const MOUNT_BASE: &str = "Volumes";
+#[cfg(target_os = "linux")]
+const MOUNT_BASE: &str = "mnt";
 
 pub(crate) enum NfsStatus {
     Ready(NfsReadyState),
@@ -63,18 +70,16 @@ impl NfsStatus {
 fn wait_for_nfs_server(
     vm_host: &str,
     port: u16,
-    vm_dns_rec: &mut Option<DNSRecord>,
+    registration: &mut mdns::Registration,
     nfs_notify_rx: mpsc::Receiver<NfsStatus>,
 ) -> anyhow::Result<NfsStatus> {
     // this will block until NFS server is ready or the VM exits
     let nfs_ready = nfs_notify_rx.recv()?;
 
     if nfs_ready.ok() {
-        // make sure DNS record is already set (if applicable)
-        if let Some(rec) = vm_dns_rec.as_mut() {
-            rec.wait_for_registration()
-                .context("Could not set DNS record for the VM")?;
-        }
+        // make sure DNS record is already set (if applicable — macOS only;
+        // no-op on Linux)
+        registration.wait_committed()?;
         // also check if the port is open
         let addr = (vm_host, port)
             .to_socket_addrs()?
@@ -97,10 +102,13 @@ fn wait_for_nfs_server(
 }
 
 pub(crate) fn unmount_fs(volume_path: &Path) -> anyhow::Result<()> {
+    #[cfg(target_os = "macos")]
     let status = Command::new("diskutil")
         .arg("unmount")
         .arg(volume_path)
         .status()?;
+    #[cfg(target_os = "linux")]
+    let status = Command::new("umount").arg(volume_path).status()?;
 
     if !status.success() {
         anyhow::bail!(
@@ -115,8 +123,15 @@ pub(crate) fn unmount_fs(volume_path: &Path) -> anyhow::Result<()> {
 }
 
 pub(crate) fn send_quit_cmd(config: &Config, vm_native_ip: Option<Ipv4Addr>) -> anyhow::Result<()> {
-    let mut stream =
-        vm_network::connect_to_vm_ctrl_socket(config, vm_native_ip, Some(Duration::from_secs(5)))?;
+    // On Linux this may run after drop_privileges (parent is now euid=invoker)
+    // while the libkrun-created vsock socket is root:root mode 0755 — connect(2)
+    // would return EACCES. Briefly re-elevate just for the connect; once the
+    // stream is open, send/recv don't recheck. No-op on macOS / non-sudo runs.
+    let mut stream = {
+        #[cfg(target_os = "linux")]
+        let _guard = EffectiveRootGuard::acquire();
+        vm_network::connect_to_vm_ctrl_socket(config, vm_native_ip, Some(Duration::from_secs(5)))?
+    };
 
     ipc::Client::write_request(&mut stream, &vmctrl::Request::Quit)?;
     stream.flush()?;
@@ -151,6 +166,7 @@ pub(crate) fn wait_for_proc_exit(pid: libc::pid_t) -> anyhow::Result<()> {
     wait_for_proc_exit_with_timeout(pid, Duration::from_secs(5))
 }
 
+#[cfg(target_os = "macos")]
 fn wait_for_proc_exit_with_timeout(pid: libc::pid_t, timeout: Duration) -> anyhow::Result<()> {
     let start = Instant::now();
     loop {
@@ -176,10 +192,35 @@ fn wait_for_proc_exit_with_timeout(pid: libc::pid_t, timeout: Duration) -> anyho
             }
             return Err(last_error).context("failed to get process info");
         }
-        // println!("pbi_status: {}", info.pbi_status);
         if info.pbi_status == libc::SZOMB {
-            // process became a zombie
             break;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn wait_for_proc_exit_with_timeout(pid: libc::pid_t, timeout: Duration) -> anyhow::Result<()> {
+    let start = Instant::now();
+    let stat_path = format!("/proc/{}/stat", pid);
+    loop {
+        if start.elapsed() > timeout {
+            anyhow::bail!("Timeout waiting for process exit");
+        }
+        match std::fs::read_to_string(&stat_path) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => break,
+            Err(e) => return Err(e).context("failed to read /proc/<pid>/stat"),
+            Ok(contents) => {
+                // /proc/<pid>/stat: "<pid> (<comm>) <state> ..." — comm can contain
+                // spaces and parens, so find the last ')' then read the next token.
+                if let Some(rparen) = contents.rfind(')')
+                    && let Some(state) = contents[rparen + 1..].split_whitespace().next()
+                    && state == "Z"
+                {
+                    break;
+                }
+            }
         }
         thread::sleep(Duration::from_millis(100));
     }
@@ -711,6 +752,15 @@ impl PtyReader {
                 if bytes == 0 {
                     break; // EOF
                 }
+                // libkrun's serial console on Linux prefixes the very first
+                // bytes with a literal "^@" caret-notation marker (printed by
+                // the kernel's serial driver as the boot banner). Tag matches
+                // need to allow that — locate the tag opener and slice from
+                // there. If no tag opener exists, fall back to the raw line.
+                let tagged = match line.find("<anylinuxfs-") {
+                    Some(i) => &line[i..],
+                    None => line.as_str(),
+                };
                 if line.contains("READY AND WAITING FOR NFS CLIENT CONNECTIONS") {
                     self.nfs_ready_tx
                         .send(NfsStatus::Ready(NfsReadyState {
@@ -721,31 +771,31 @@ impl PtyReader {
                         }))
                         .unwrap();
                     nfs_ready = true;
-                } else if line.starts_with("<anylinuxfs-vmproxy-ready>") {
+                } else if tagged.starts_with("<anylinuxfs-vmproxy-ready>") {
                     subscribe_to_vm_events(
                         &self.config,
                         self.vm_native_ip,
                         self.vm_report_tx.clone(),
                     );
-                } else if line.starts_with("<anylinuxfs-exit-code") {
-                    exit_code = parse_vm_tag_value(&line).and_then(|v| v.parse::<i32>().ok());
-                } else if line.starts_with("<anylinuxfs-label") {
-                    fslabel = parse_vm_tag_value(&line).map(str::to_string);
-                } else if line.starts_with("<anylinuxfs-type") {
-                    fstype = parse_vm_tag_value(&line).map(str::to_string);
-                } else if line.starts_with("<anylinuxfs-mount:changed-to-ro>") {
+                } else if tagged.starts_with("<anylinuxfs-exit-code") {
+                    exit_code = parse_vm_tag_value(tagged).and_then(|v| v.parse::<i32>().ok());
+                } else if tagged.starts_with("<anylinuxfs-label") {
+                    fslabel = parse_vm_tag_value(tagged).map(str::to_string);
+                } else if tagged.starts_with("<anylinuxfs-type") {
+                    fstype = parse_vm_tag_value(tagged).map(str::to_string);
+                } else if tagged.starts_with("<anylinuxfs-mount:changed-to-ro>") {
                     changed_to_ro = true;
-                } else if line.starts_with("<anylinuxfs-nfs-export") {
-                    if let Some(export_path) = parse_vm_tag_value(&line) {
+                } else if tagged.starts_with("<anylinuxfs-nfs-export") {
+                    if let Some(export_path) = parse_vm_tag_value(tagged) {
                         exports.insert(export_path.to_string());
                     }
-                } else if line.starts_with("<anylinuxfs-passphrase-prompt:start>") {
+                } else if tagged.starts_with("<anylinuxfs-passphrase-prompt:start>") {
                     self.vm_pwd_prompt_tx.send(true).unwrap();
-                } else if line.starts_with("<anylinuxfs-passphrase-prompt:end>") {
+                } else if tagged.starts_with("<anylinuxfs-passphrase-prompt:end>") {
                     self.vm_pwd_prompt_tx.send(false).unwrap();
-                } else if !self.verbose && line.starts_with("<anylinuxfs-force-output:off>") {
+                } else if !self.verbose && tagged.starts_with("<anylinuxfs-force-output:off>") {
                     log::disable_console_log();
-                } else if !self.verbose && line.starts_with("<anylinuxfs-force-output:on>") {
+                } else if !self.verbose && tagged.starts_with("<anylinuxfs-force-output:on>") {
                     log::enable_console_log();
                 }
 
@@ -768,10 +818,21 @@ fn subscribe_to_vm_events(
 ) {
     let config = config.clone();
     _ = thread::spawn(move || {
-        let Ok(mut stream) =
+        // On Linux the vsock control socket is owned by root with mode 0755,
+        // so `connect(2)` from the parent's dropped-effective-privileges euid
+        // (the invoking user) returns EACCES. Temporarily elevate for the
+        // connect itself; once the stream is open, send/recv don't recheck.
+        let connect_result = {
+            #[cfg(target_os = "linux")]
+            let _guard = EffectiveRootGuard::acquire();
             vm_network::connect_to_vm_ctrl_socket(&config.common, vm_native_ip, None)
-        else {
-            return;
+        };
+        let mut stream = match connect_result {
+            Ok(s) => s,
+            Err(e) => {
+                host_eprintln!("Failed to connect to VM control socket: {:#}", e);
+                return;
+            }
         };
 
         if let Err(e) = ipc::Client::write_request(&mut stream, &vmctrl::Request::SubscribeEvents) {
@@ -848,20 +909,32 @@ fn setup_rpcbind_services<'a>(
     };
     unregister_fn()?;
 
-    // make sure to always run this as regular user
-    // because cleanup code runs after we've dropped privileges
-    // (regular user cannot unregister services registered by root)
-    if let (Some(uid), Some(gid)) = (config.common.sudo_uid, config.common.sudo_gid) {
-        let status = Command::new(&config.common.exec_path)
-            .arg("rpcbind")
-            .arg("register")
-            .uid(uid)
-            .gid(gid)
-            .status()?;
-        if !status.success() {
-            anyhow::bail!("Failed to register NFS server to rpcbind");
+    // On macOS the local rpcbind is owned by a regular user, so we re-exec
+    // ourselves with .uid()/.gid() to make our entries regular-user-owned;
+    // otherwise the deferred unregister (which runs after privilege drop)
+    // can't remove root-owned entries it didn't create.
+    //
+    // On Linux, root can register and root can unregister, and the spawn-self
+    // detour stalls the VM child when it's done concurrently with VM startup.
+    // Just register inline as root.
+    #[cfg(target_os = "macos")]
+    {
+        if let (Some(uid), Some(gid)) = (config.common.sudo_uid, config.common.sudo_gid) {
+            let status = Command::new(&config.common.exec_path)
+                .arg("rpcbind")
+                .arg("register")
+                .uid(uid)
+                .gid(gid)
+                .status()?;
+            if !status.success() {
+                anyhow::bail!("Failed to register NFS server to rpcbind");
+            }
+        } else {
+            rpcbind::services::register().context("Failed to register NFS server to rpcbind")?;
         }
-    } else {
+    }
+    #[cfg(target_os = "linux")]
+    {
         rpcbind::services::register().context("Failed to register NFS server to rpcbind")?;
     }
 
@@ -899,7 +972,7 @@ impl<'a> NfsShareSetup<'a> {
 
         let mut nfs_opts = fsutil::NfsOptions::default();
         if shared_volume {
-            nfs_opts.remove("nolocks".as_bytes());
+            nfs_opts.remove(fsutil::NOLOCK_KEY.as_bytes());
         }
         nfs_opts.extend(config.nfs_options.iter().map(|s| match s.split_once('=') {
             Some((key, value)) => (key.as_bytes().into(), value.as_bytes().into()),
@@ -925,7 +998,7 @@ impl<'a> NfsShareSetup<'a> {
                 } else {
                     self.config.common.home_dir.clone()
                 }
-                .join("Volumes");
+                .join(MOUNT_BASE);
 
                 let mut mount_name = self.share_path.split(|&b| b == b'/').last().unwrap();
                 if mount_name.is_empty() {
@@ -947,12 +1020,11 @@ impl<'a> NfsShareSetup<'a> {
                         mount_path.display()
                     )
                 })?;
-                chown(
+                privilege::chown_to_invoker(
                     &mount_path,
-                    Some(self.config.common.invoker_uid),
-                    Some(self.config.common.invoker_gid),
-                )
-                .with_context(|| format!("Failed to change owner of {}", mount_path.display()))?;
+                    self.config.common.invoker_uid,
+                    self.config.common.invoker_gid,
+                )?;
 
                 mount_path.into()
             }
@@ -999,6 +1071,7 @@ impl<'a> NfsShareSetup<'a> {
             );
         }
 
+        #[cfg(target_os = "macos")]
         if self.config.open_finder {
             let mut shell_script =
             br#"afplay /System/Library/Components/CoreAudio.component/Contents/SharedSupport/SystemSounds/system/Volume\ Mount.aif \
@@ -1018,6 +1091,15 @@ impl<'a> NfsShareSetup<'a> {
         }
 
         Ok(())
+    }
+
+    fn force_umount_if_mounted(&self) -> anyhow::Result<()> {
+        let mut device = Vec::with_capacity(self.vm_host_b.len() + 1 + self.share_path.len());
+        device.extend_from_slice(self.vm_host_b);
+        device.push(b':');
+        device.extend_from_slice(self.share_path.as_slice());
+        let device_str = String::from_utf8_lossy(&device).into_owned();
+        fsutil::cleanup_stale_nfs_client_mount(&device_str)
     }
 
     /// Mount additional NFS subdirectory exports under the main mount point.
@@ -1095,6 +1177,9 @@ impl super::AppRunner {
         let _lock_file = LockFile::new(LOCK_FILE)?.acquire_lock(FlockKind::Shared)?;
         let mut network_env = NetworkEnv::default();
 
+        // If host rpcbind is bound to :111, vmproxy gets the -h flag (skip
+        // forwarding port 111 from the guest) and we register the guest NFS
+        // service with the host rpcbind so mount.nfs's portmap lookups resolve.
         if let Err(e) = netutil::try_port((Ipv4Addr::from([0, 0, 0, 0]), 111))
             && e.kind() == io::ErrorKind::AddrInUse
         {
@@ -1135,15 +1220,11 @@ impl super::AppRunner {
         log::init_log_file(log_file_path).context("Failed to create log file")?;
         // Change owner to invoker_uid and invoker_gid
 
-        chown(
+        privilege::chown_to_invoker(
             log_file_path,
-            Some(config.common.invoker_uid),
-            Some(config.common.invoker_gid),
-        )
-        .context(format!(
-            "Failed to change owner of {}",
-            log_file_path.display(),
-        ))?;
+            config.common.invoker_uid,
+            config.common.invoker_gid,
+        )?;
 
         // remove kernel log from the last run
         _ = fs::remove_file(&config.common.kernel_log_file_path);
@@ -1178,6 +1259,16 @@ impl super::AppRunner {
         let vm_native_ip;
         let api_socket_path: String;
         let mut deferred = Deferred::new();
+
+        // After drop_privileges runs the long-running parent has euid=invoker.
+        // On Linux several deferred cleanups need root: SIGTERM to a root-owned
+        // gvproxy, removal of libkrun's root:root socket files in /tmp (sticky
+        // bit), removal of the auto-created /mnt/<name>. Declare the guard
+        // AFTER `deferred` so it drops FIRST: at scope exit it re-elevates
+        // euid to 0, then `deferred` drops and runs cleanups as root.
+        // No-op on macOS.
+        #[cfg(target_os = "linux")]
+        let _elevate_for_cleanup = ElevateOnDrop;
 
         let verbose = config.verbose;
         if !verbose {
@@ -1289,31 +1380,20 @@ impl super::AppRunner {
             .bind_addr_override(shared_volume)
             .os_override(os);
 
-        let (mut net_helper_proc, net_helper_name, vmnet_config, vm_ip) =
-            match config.common.net_helper {
-                NetHelper::GvProxy => {
-                    let loopback_ip = netutil::pick_usable_loopback_ip(&[2049, 32765, 32767])?;
-                    network_env.usable_loopback_ip = Some(loopback_ip.clone());
-                    (
-                        vm_network::start_gvproxy(&config.common)?,
-                        "gvproxy",
-                        None,
-                        loopback_ip,
-                    )
-                }
-                NetHelper::VmNet => {
-                    let (child, vmnet_cfg) = vm_network::start_vmnet_helper(&config.common)?;
-                    let vm_ip = vmnet_cfg.vm_ip();
-                    (
-                        child,
-                        "vmnet-helper",
-                        Some(vmnet_cfg),
-                        Host::from_ip(IpAddr::V4(vm_ip), None),
-                    )
-                }
-            };
+        let net_helper_svc = match config.common.net_helper {
+            NetHelper::GvProxy => {
+                let svc = vm_network::start_gvproxy(&config.common)?;
+                network_env.usable_loopback_ip = Some(svc.vm_host_ip.clone());
+                svc
+            }
+            #[cfg(target_os = "macos")]
+            NetHelper::VmNet => vm_network::start_vmnet_helper(&config.common)?,
+            #[cfg(target_os = "linux")]
+            NetHelper::VmNet => anyhow::bail!("vmnet-helper is not supported on Linux"),
+        };
 
-        vm_native_ip = vmnet_config.as_ref().map(|cfg| cfg.vm_ip());
+        vm_native_ip = net_helper_svc.vm_native_ip;
+        let mut net_helper_proc = net_helper_svc.proc;
 
         let net_helper_pid = net_helper_proc.id() as libc::pid_t;
         fsutil::wait_for_file(&config.common.unixgram_sock_path)?;
@@ -1330,7 +1410,7 @@ impl super::AppRunner {
         if let Some(status) = net_helper_proc.try_wait().ok().flatten() {
             anyhow::bail!(
                 "{} failed with exit code: {}",
-                net_helper_name,
+                net_helper_svc.name,
                 status
                     .code()
                     .map(|c| c.to_string())
@@ -1339,7 +1419,7 @@ impl super::AppRunner {
         }
 
         _ = deferred.add(move || {
-            if let Err(e) = terminate_child(&mut net_helper_proc, net_helper_name) {
+            if let Err(e) = terminate_child(&mut net_helper_proc, net_helper_svc.name) {
                 host_eprintln!("{:#}", e);
             }
         });
@@ -1377,7 +1457,7 @@ impl super::AppRunner {
             )
             .context("Failed to setup microVM")?;
 
-            ctx.set_vmnet_cidr(vmnet_config.map(|c| c.vmnet_cidr));
+            ctx.set_vm_native_cidr(net_helper_svc.vm_native_cidr);
 
             let to_decrypt: Vec<_> = iter::zip(dev_info.iter(), 'a'..='z')
                 .filter_map(|(di, letter)| {
@@ -1418,19 +1498,11 @@ impl super::AppRunner {
             config.vm_hostname =
                 pick_unique_hostname(&config.vm_hostname, &network_env.active_vm_hosts);
 
-            let vm_fqdn = format!("{}.local", &config.vm_hostname);
-            let conn = DNSService::create_connection().unwrap();
-            // vm_dns_rec must remain in scope for the duration of the mount, otherwise the DNS record will be removed
-            let mut vm_dns_rec: Option<DNSRecord> = conn
-                .register_record(&vm_fqdn, vm_ip.with_port(0)?, Some("lo0"))
-                .inspect_err(|e| eprintln!("DNS registration error: {e}"))
-                .ok();
-
-            let vm_host = if vm_dns_rec.is_some() {
-                Host::new(&vm_fqdn)
-            } else {
-                vm_ip
-            };
+            // `registration` must remain in scope for the duration of the
+            // mount: on macOS dropping it would remove the mDNS record, on
+            // Linux it's a no-op marker. See mdns.rs.
+            let (mut registration, vm_host) =
+                mdns::register_vm_record(&config.vm_hostname, net_helper_svc.vm_host_ip)?;
 
             let vm_host_b = vm_host.to_string().into_bytes();
 
@@ -1553,7 +1625,7 @@ impl super::AppRunner {
             stdin_forwarder.echo_newline(false);
 
             let nfs_status =
-                wait_for_nfs_server(vm_host.raw_str(), 2049, &mut vm_dns_rec, nfs_ready_rx)
+                wait_for_nfs_server(vm_host.raw_str(), 2049, &mut registration, nfs_ready_rx)
                     .inspect_err(|e| {
                         host_eprintln!("Error waiting for NFS server: {:#}", e);
                     })
@@ -1607,6 +1679,11 @@ impl super::AppRunner {
                     Err(e) => {
                         let _log_guard = ConsoleLogGuard::enable_temporarily(verbose);
                         host_eprintln!("Failed to request NFS mount: {:#}", e);
+                        // Best-effort: force-umount in case the mount actually
+                        // landed (e.g. partial success) — otherwise the client-side
+                        // entry becomes a zombie pointing at a VM we are about to
+                        // shut down, and any later access hangs (hard,nolock).
+                        let _ = nfs_share.force_umount_if_mounted();
                     }
                 };
 
@@ -1642,7 +1719,12 @@ impl super::AppRunner {
                     nfs_share.mount_subdirectories(exports, mount_point, verbose);
                 }
 
-                // drop privileges back to the original user if he used sudo
+                // Drop privileges back to the original user if he used sudo.
+                // On Linux this is an effective-only drop (saved uid stays 0)
+                // because the deferred cleanups below — SIGTERM to root-owned
+                // gvproxy, removal of root:root vsock socket in /tmp, removal
+                // of /mnt/<name> — need to re-elevate via the ElevateOnDrop
+                // guard declared right after `Deferred::new()` above.
                 drop_privileges(config.common.sudo_uid, config.common.sudo_gid)?;
 
                 if can_detach {

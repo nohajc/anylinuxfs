@@ -1,9 +1,6 @@
 use std::{
     net::Ipv4Addr,
-    os::unix::{
-        fs::chown,
-        net::{UnixListener, UnixStream},
-    },
+    os::unix::net::{UnixListener, UnixStream},
     path::Path,
     sync::{Arc, Mutex},
     thread,
@@ -16,7 +13,7 @@ use common_utils::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{devinfo::DevInfo, settings::MountConfig};
+use crate::{devinfo::DevInfo, privilege, settings::MountConfig};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RuntimeInfo {
@@ -57,15 +54,11 @@ impl UnixHandler {
 
         {
             let rt_info = runtime_info.lock().unwrap();
-            chown(
+            privilege::chown_to_invoker(
                 socket_path,
-                Some(rt_info.mount_config.common.invoker_uid),
-                Some(rt_info.mount_config.common.invoker_gid),
-            )
-            .context(format!(
-                "Failed to change owner of {}",
-                socket_path.display(),
-            ))?;
+                rt_info.mount_config.common.invoker_uid,
+                rt_info.mount_config.common.invoker_gid,
+            )?;
         }
 
         for stream in listener.incoming() {

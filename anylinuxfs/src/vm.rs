@@ -12,7 +12,6 @@ use std::fs::{self, File};
 use std::io::{self, Read};
 use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::chown;
 use std::path::{Path, PathBuf};
 use std::ptr::null;
 use std::sync::Once;
@@ -20,6 +19,7 @@ use std::sync::Once;
 use crate::ResultWithCtx;
 use crate::cmd_mount::NetworkEnv;
 use crate::devinfo::DevInfo;
+use crate::privilege;
 use crate::settings::{Config, MountConfig, PassphrasePromptConfig, Preferences};
 use crate::utils::{HasPipeInFd, HasPipeOutFds};
 use crate::vm_image::{self, IsoAdd};
@@ -83,12 +83,12 @@ pub(crate) struct VMContext {
     root_path: Option<PathBuf>,
     invoker_uid: libc::uid_t,
     invoker_gid: libc::gid_t,
-    vmnet_cidr: Option<Ipv4Net>,
+    vm_native_cidr: Option<Ipv4Net>,
 }
 
 impl VMContext {
-    pub(crate) fn set_vmnet_cidr(&mut self, cidr: Option<Ipv4Net>) {
-        self.vmnet_cidr = cidr;
+    pub(crate) fn set_vm_native_cidr(&mut self, cidr: Option<Ipv4Net>) {
+        self.vm_native_cidr = cidr;
     }
 }
 
@@ -161,14 +161,10 @@ pub(crate) fn setup_vm(
             .context("Failed to add serial console")?;
     }
 
-    // run vmm as the original user if he used sudo
-    if let Some(uid) = config.sudo_uid {
-        bindings::krun_setuid(ctx_id, uid).context("Failed to set vmm uid")?;
-    }
-
-    if let Some(gid) = config.sudo_gid {
-        bindings::krun_setgid(ctx_id, gid).context("Failed to set vmm gid")?;
-    }
+    // run vmm as the original user if he used sudo.
+    // Skip on Linux: it doesn't seem to like dropping permissions
+    // if there is a block device attached to the virtual machine.
+    privilege::apply_krun_priv_drop(ctx_id, config)?;
 
     if opts.root_device.is_none() {
         unsafe { bindings::krun_set_root(ctx_id, CString::from_path(&config.root_path).as_ptr()) }
@@ -278,7 +274,7 @@ pub(crate) fn setup_vm(
         root_path,
         invoker_uid,
         invoker_gid,
-        vmnet_cidr: None,
+        vm_native_cidr: None,
     })
 }
 
@@ -330,8 +326,7 @@ pub(crate) fn prepare_key_file_for_vm(
             let dst = config.root_path.join(&keyfile_name);
             fs::copy(key_file_host_path, &dst)
                 .with_context(|| format!("Failed to copy key file to rootfs: {}", dst.display()))?;
-            chown(&dst, Some(config.invoker_uid), Some(config.invoker_gid))
-                .with_context(|| format!("Failed to change owner of {}", dst.display()))?;
+            privilege::chown_to_invoker(&dst, config.invoker_uid, config.invoker_gid)?;
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
@@ -457,7 +452,7 @@ pub(crate) fn start_vmproxy(
     .into_iter()
     .chain(custom_mount_point.then_some("-c".into()).into_iter())
     .chain(
-        ctx.vmnet_cidr
+        ctx.vm_native_cidr
             .as_ref()
             .into_iter()
             .flat_map(|cidr| ["-n".into(), cidr.to_string().into()]),
@@ -584,12 +579,7 @@ pub(crate) fn set_vm_cmdline(
                     krun_config_file.display()
                 )
             })?;
-            chown(
-                &krun_config_file,
-                Some(ctx.invoker_uid),
-                Some(ctx.invoker_gid),
-            )
-            .with_context(|| format!("Failed to change owner of {}", krun_config_file.display()))?;
+            privilege::chown_to_invoker(&krun_config_file, ctx.invoker_uid, ctx.invoker_gid)?;
         }
         OSType::FreeBSD => {
             krun_config_tmp_dir = PathBuf::from("/tmp").join(format!("alfs-{}", rand_string(8)));

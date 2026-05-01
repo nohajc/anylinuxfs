@@ -1,148 +1,375 @@
 use std::{
     borrow::Cow,
-    cmp,
     fmt::Display,
     io,
     net::{IpAddr, SocketAddr, ToSocketAddrs},
-    process::Command,
-    ptr::null_mut,
 };
-
-use anyhow::Context;
-use getifaddrs::{InterfaceFilter, InterfaceFlags};
-use ipnet::Ipv4Net;
-use objc2_core_foundation::{CFArray, CFDictionary, CFString};
-use objc2_system_configuration::SCDynamicStore;
-use std::net::Ipv6Addr;
-
-use crate::utils::cfdict_get_value;
 
 const DEFAULT_DNS_SERVER: &str = "1.1.1.1";
 
-pub fn get_configured_dns_server() -> anyhow::Result<String> {
-    let name = CFString::from_str("anylinuxfs");
-    let dyn_store = unsafe { SCDynamicStore::new(None, &name, None, null_mut()) }
-        .context("failed to retrieve SCDynamicStore")?;
+#[cfg(target_os = "macos")]
+mod darwin {
+    use super::*;
+    use anyhow::Context;
+    use getifaddrs::{InterfaceFilter, InterfaceFlags};
+    use ipnet::Ipv4Net;
+    use objc2_core_foundation::{CFArray, CFDictionary, CFString};
+    use objc2_system_configuration::SCDynamicStore;
+    use std::cmp;
+    use std::net::Ipv6Addr;
+    use std::process::Command;
+    use std::ptr::null_mut;
 
-    let global_dns_key = "State:/Network/Global/DNS";
-    let dns_settings = SCDynamicStore::value(Some(&dyn_store), &CFString::from_str(global_dns_key))
-        .context("failed to retrieve DNS settings")?;
+    use crate::utils::cfdict_get_value;
 
-    let dict: &CFDictionary = dns_settings
-        .downcast_ref()
-        .with_context(|| format!("{} is not a CFDictionary", global_dns_key))?;
-    // inspect_cf_dictionary_values(&dict);
+    pub fn get_configured_dns_server() -> anyhow::Result<String> {
+        let name = CFString::from_str("anylinuxfs");
+        let dyn_store = unsafe { SCDynamicStore::new(None, &name, None, null_mut()) }
+            .context("failed to retrieve SCDynamicStore")?;
 
-    let srv_addrs: &CFArray<CFString> = unsafe { cfdict_get_value(dict, "ServerAddresses") }
-        .context("failed to retrieve DNS ServerAddresses")?;
+        let global_dns_key = "State:/Network/Global/DNS";
+        let dns_settings =
+            SCDynamicStore::value(Some(&dyn_store), &CFString::from_str(global_dns_key))
+                .context("failed to retrieve DNS settings")?;
 
-    let (ipv4_addrs, ipv6_addrs): (Vec<_>, Vec<_>) = srv_addrs
-        .iter()
-        .flat_map(|s| s.to_string().parse::<IpAddr>().ok().into_iter())
-        .partition(|ip| ip.is_ipv4());
+        let dict: &CFDictionary = dns_settings
+            .downcast_ref()
+            .with_context(|| format!("{} is not a CFDictionary", global_dns_key))?;
 
-    ipv4_addrs
-        .into_iter()
-        .chain(ipv6_addrs)
-        .map(|ip| ip.to_string())
-        .next()
-        .context("no DNS server addresses found")
+        let srv_addrs: &CFArray<CFString> = unsafe { cfdict_get_value(dict, "ServerAddresses") }
+            .context("failed to retrieve DNS ServerAddresses")?;
+
+        let (ipv4_addrs, ipv6_addrs): (Vec<_>, Vec<_>) = srv_addrs
+            .iter()
+            .flat_map(|s| s.to_string().parse::<IpAddr>().ok().into_iter())
+            .partition(|ip| ip.is_ipv4());
+
+        ipv4_addrs
+            .into_iter()
+            .chain(ipv6_addrs)
+            .map(|ip| ip.to_string())
+            .next()
+            .context("no DNS server addresses found")
+    }
+
+    pub fn get_interface_networks() -> anyhow::Result<Vec<Ipv4Net>> {
+        let mut networks = Vec::new();
+        for iface in InterfaceFilter::new().v4().get()? {
+            if iface.flags.contains(InterfaceFlags::LOOPBACK) {
+                continue;
+            }
+            if let Some(ip) = iface.address.ip_addr() {
+                let IpAddr::V4(ip) = ip else {
+                    anyhow::bail!("unexpected non-IPv4 address: {}", ip);
+                };
+
+                let netmask = iface.address.netmask().unwrap();
+                let IpAddr::V4(netmask) = netmask else {
+                    anyhow::bail!("unexpected non-IPv4 netmask: {}", netmask);
+                };
+
+                let net = Ipv4Net::with_netmask(ip, netmask)?.trunc();
+                networks.push(net);
+            }
+        }
+
+        Ok(networks)
+    }
+
+    pub fn pick_available_network_in_pool(
+        prefix_len: u8,
+        used_networks: &[Ipv4Net],
+        pool: Ipv4Net,
+    ) -> anyhow::Result<Ipv4Net> {
+        let pool_prefix_len = pool.prefix_len();
+        if prefix_len <= pool_prefix_len {
+            anyhow::bail!(
+                "invalid prefix length: {}, must be greater than {}",
+                prefix_len,
+                pool_prefix_len
+            );
+        }
+
+        let candidate_base = Ipv4Net::new(pool.addr(), prefix_len)?;
+
+        let mut search_prefix_len = prefix_len - 1;
+        let mut candidate = candidate_base;
+
+        loop {
+            let mut conflicting = Vec::new();
+            for net in used_networks {
+                if candidate.contains(net) || net.contains(&candidate) {
+                    conflicting.push(*net);
+                }
+            }
+            if conflicting.is_empty() {
+                break;
+            }
+
+            conflicting.push(candidate);
+            let aggregated = Ipv4Net::aggregate(&conflicting)[0];
+
+            search_prefix_len = cmp::min(search_prefix_len, aggregated.prefix_len() - 1);
+            let mut supernet = Ipv4Net::new(aggregated.network(), search_prefix_len)?;
+            // println!("current supernet: {}", supernet);
+            loop {
+                let siblings = supernet.subnets(aggregated.prefix_len()).unwrap();
+                if let Some(next_candidate) = siblings
+                    .skip_while(|it| it <= &candidate)
+                    .next()
+                    .or(siblings.take_while(|it| it < &candidate).next())
+                {
+                    candidate = Ipv4Net::new(next_candidate.network(), prefix_len)?;
+                    // println!("next candidate: {}", candidate);
+                    if candidate == candidate_base {
+                        if supernet.prefix_len() > 12 {
+                            // broaden the search space
+                            supernet = supernet.supernet().unwrap();
+                            search_prefix_len = supernet.prefix_len();
+                            // println!("broadened search space to: {}", supernet);
+                        } else {
+                            anyhow::bail!("exhausted candidate IP ranges for VMs");
+                        }
+                    } else {
+                        break;
+                    }
+                } else {
+                    anyhow::bail!("failed to autoconfigure IP range for VMs");
+                }
+            }
+        }
+
+        Ok(candidate)
+    }
+
+    fn make_new_loopback() -> anyhow::Result<Host> {
+        let addr = Ipv6Addr::new(
+            0xFE80,
+            0,
+            0,
+            0,
+            rand::random(),
+            rand::random(),
+            rand::random(),
+            rand::random(),
+        );
+        let success = Command::new("/sbin/ifconfig")
+            .arg("lo0")
+            .arg("inet6")
+            .arg(addr.to_string())
+            .arg("add")
+            .status()?
+            .success();
+        if success {
+            Ok(Host::from_ip(IpAddr::V6(addr), Some(1)))
+        } else {
+            anyhow::bail!("unable to create loopback alias, please retry with sudo");
+        }
+    }
+
+    pub fn pick_usable_loopback_ip(required_ports: &[u16]) -> anyhow::Result<Host> {
+        for itf in InterfaceFilter::new().name("lo0").get()? {
+            let Some(addr) = itf.address.ip_addr() else {
+                continue;
+            };
+            let mut ip_candidate = None;
+            let ipv6_scope = if addr.is_ipv6() { itf.index } else { None };
+            for port in required_ports.iter().cloned() {
+                if let Some(mut sock) = (addr, port).to_socket_addrs()?.next() {
+                    if let SocketAddr::V6(sock6) = &mut sock
+                        && let Some(scope) = ipv6_scope
+                    {
+                        sock6.set_scope_id(scope);
+                    }
+                    match try_port(sock) {
+                        Ok(()) => {
+                            ip_candidate = Some(sock.ip());
+                        }
+                        Err(e) if e.kind() == io::ErrorKind::AddrInUse => {
+                            ip_candidate = None;
+                            break;
+                        }
+                        Err(e) => {
+                            anyhow::bail!("unexpected error checking port {}: {}", port, e);
+                        }
+                    }
+                }
+            }
+            if let Some(ip) = ip_candidate {
+                if let Some(scope_id) = ipv6_scope {
+                    return Ok(Host::from_ip(ip, Some(scope_id)));
+                } else {
+                    return Ok(Host::from_ip(ip, None));
+                }
+            }
+        }
+        make_new_loopback()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::settings::DEFAULT_VMNET_POOL;
+
+        pub fn pick_available_network(
+            prefix_len: u8,
+            used_networks: &[Ipv4Net],
+        ) -> anyhow::Result<Ipv4Net> {
+            pick_available_network_in_pool(prefix_len, used_networks, DEFAULT_VMNET_POOL)
+        }
+
+        #[test]
+        fn test_aggregation() {
+            let nets = vec![
+                "172.27.1.0/26".parse::<Ipv4Net>().unwrap(),
+                "172.27.1.64/26".parse().unwrap(),
+                "172.27.1.128/26".parse().unwrap(),
+                "172.27.1.0/24".parse().unwrap(),
+            ];
+
+            assert_eq!(
+                Ipv4Net::aggregate(&nets),
+                vec!["172.27.1.0/24".parse::<Ipv4Net>().unwrap(),]
+            );
+        }
+
+        #[test]
+        fn test_pick_available_network_no_conflicts() {
+            let result = pick_available_network(24, &[]).unwrap();
+            assert_eq!(result, "172.27.1.0/24".parse::<Ipv4Net>().unwrap());
+        }
+
+        #[test]
+        fn test_pick_available_network_avoids_exact_conflict() {
+            let used = vec!["172.27.1.0/24".parse::<Ipv4Net>().unwrap()];
+            let result = pick_available_network(24, &used).unwrap();
+            assert_eq!(result, "172.27.0.0/24".parse::<Ipv4Net>().unwrap());
+        }
+
+        #[test]
+        fn test_pick_available_network_avoids_multiple_conflicts() {
+            let used = vec![
+                "172.27.0.0/24".parse::<Ipv4Net>().unwrap(),
+                "172.27.1.0/24".parse().unwrap(),
+            ];
+            let result = pick_available_network(24, &used).unwrap();
+            assert_eq!(result, "172.27.2.0/24".parse::<Ipv4Net>().unwrap());
+        }
+
+        #[test]
+        fn test_pick_available_network_avoids_multiple_conflicts_extended() {
+            let used = vec![
+                "172.27.0.0/24".parse::<Ipv4Net>().unwrap(),
+                "172.27.1.0/24".parse().unwrap(),
+                "172.27.2.0/24".parse().unwrap(),
+                "172.27.3.0/24".parse().unwrap(),
+            ];
+            let result = pick_available_network(24, &used).unwrap();
+            assert_eq!(result, "172.27.4.0/24".parse::<Ipv4Net>().unwrap());
+        }
+
+        #[test]
+        fn test_pick_available_network_avoids_supernet_conflict() {
+            // A broader network that covers the default candidate
+            let used = vec![
+                "172.27.0.0/16".parse::<Ipv4Net>().unwrap(),
+                "172.26.0.0/24".parse().unwrap(),
+            ];
+            let result = pick_available_network(24, &used).unwrap();
+            assert_eq!(result, "172.26.1.0/24".parse::<Ipv4Net>().unwrap());
+        }
+
+        #[test]
+        fn test_pick_available_network_avoids_subnet_conflict() {
+            // A smaller subnet within the default candidate range
+            let used = vec!["172.27.1.128/26".parse::<Ipv4Net>().unwrap()];
+            let result = pick_available_network(24, &used).unwrap();
+            assert_eq!(result, "172.27.0.0/24".parse::<Ipv4Net>().unwrap());
+        }
+
+        #[test]
+        fn test_pick_available_network_different_prefix_len() {
+            let result = pick_available_network(26, &[]).unwrap();
+            assert_eq!(result, "172.27.1.0/26".parse::<Ipv4Net>().unwrap());
+        }
+
+        #[test]
+        fn test_pick_available_network_short_prefix_len() {
+            let used = vec!["172.27.1.128/26".parse::<Ipv4Net>().unwrap()];
+            let result = pick_available_network(16, &used).unwrap();
+            assert_eq!(result, "172.26.0.0/16".parse::<Ipv4Net>().unwrap());
+        }
+
+        #[test]
+        fn test_pick_available_network_long_prefix_len() {
+            let used = vec![
+                "172.27.1.0/30".parse::<Ipv4Net>().unwrap(),
+                "172.27.1.4/30".parse().unwrap(),
+                "172.27.1.8/30".parse().unwrap(),
+                "172.27.1.12/30".parse().unwrap(),
+                "172.27.1.16/30".parse().unwrap(),
+            ];
+            let result = pick_available_network(30, &used).unwrap();
+            assert_eq!(result, "172.27.1.20/30".parse::<Ipv4Net>().unwrap());
+        }
+    }
 }
+
+#[cfg(target_os = "macos")]
+pub use darwin::{
+    get_configured_dns_server, get_interface_networks, pick_available_network_in_pool,
+    pick_usable_loopback_ip,
+};
+
+#[cfg(target_os = "linux")]
+mod linux {
+    use super::*;
+    use anyhow::Context;
+    use std::net::Ipv4Addr;
+
+    pub fn get_configured_dns_server() -> anyhow::Result<String> {
+        use std::io::BufRead;
+        let file =
+            std::fs::File::open("/etc/resolv.conf").context("failed to open /etc/resolv.conf")?;
+        for line in std::io::BufReader::new(file).lines() {
+            let line = line.context("failed to read /etc/resolv.conf")?;
+            let line = line.trim();
+            if let Some(addr) = line.strip_prefix("nameserver").map(str::trim) {
+                if let Ok(ip) = addr.parse::<IpAddr>() {
+                    return Ok(ip.to_string());
+                }
+            }
+        }
+        anyhow::bail!("no nameserver found in /etc/resolv.conf")
+    }
+
+    /// On Linux 127.0.0.0/8 is fully routable on `lo` without aliasing — scan
+    /// for the first 127.0.0.x with all required ports free.
+    pub fn pick_usable_loopback_ip(required_ports: &[u16]) -> anyhow::Result<Host> {
+        for last_octet in 1u8..=254 {
+            let ip = Ipv4Addr::new(127, 0, 0, last_octet);
+            let mut all_free = true;
+            for &port in required_ports {
+                if try_port(SocketAddr::from((ip, port))).is_err() {
+                    all_free = false;
+                    break;
+                }
+            }
+            if all_free {
+                return Ok(Host::from_ip(IpAddr::V4(ip), None));
+            }
+        }
+        anyhow::bail!("no usable loopback IP in 127.0.0.0/24 for required ports")
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub use linux::{get_configured_dns_server, pick_usable_loopback_ip};
 
 pub fn get_dns_server_with_fallback<'a>() -> Cow<'a, str> {
     get_configured_dns_server()
         .map(Cow::from)
         .unwrap_or_else(|_| DEFAULT_DNS_SERVER.into())
-}
-
-pub fn get_interface_networks() -> anyhow::Result<Vec<Ipv4Net>> {
-    let mut networks = Vec::new();
-    for iface in InterfaceFilter::new().v4().get()? {
-        if iface.flags.contains(InterfaceFlags::LOOPBACK) {
-            continue;
-        }
-        if let Some(ip) = iface.address.ip_addr() {
-            let IpAddr::V4(ip) = ip else {
-                anyhow::bail!("unexpected non-IPv4 address: {}", ip);
-            };
-
-            let netmask = iface.address.netmask().unwrap();
-            let IpAddr::V4(netmask) = netmask else {
-                anyhow::bail!("unexpected non-IPv4 netmask: {}", netmask);
-            };
-
-            let net = Ipv4Net::with_netmask(ip, netmask)?.trunc();
-            networks.push(net);
-        }
-    }
-
-    Ok(networks)
-}
-
-pub fn pick_available_network_in_pool(
-    prefix_len: u8,
-    used_networks: &[Ipv4Net],
-    pool: Ipv4Net,
-) -> anyhow::Result<Ipv4Net> {
-    let pool_prefix_len = pool.prefix_len();
-    if prefix_len <= pool_prefix_len {
-        anyhow::bail!(
-            "invalid prefix length: {}, must be greater than {}",
-            prefix_len,
-            pool_prefix_len
-        );
-    }
-
-    let candidate_base = Ipv4Net::new(pool.addr(), prefix_len)?;
-
-    let mut search_prefix_len = prefix_len - 1;
-    let mut candidate = candidate_base;
-
-    loop {
-        let mut conflicting = Vec::new();
-        for net in used_networks {
-            if candidate.contains(net) || net.contains(&candidate) {
-                conflicting.push(*net);
-            }
-        }
-        if conflicting.is_empty() {
-            break;
-        }
-
-        conflicting.push(candidate);
-        let aggregated = Ipv4Net::aggregate(&conflicting)[0];
-
-        search_prefix_len = cmp::min(search_prefix_len, aggregated.prefix_len() - 1);
-        let mut supernet = Ipv4Net::new(aggregated.network(), search_prefix_len)?;
-        // println!("current supernet: {}", supernet);
-        loop {
-            let siblings = supernet.subnets(aggregated.prefix_len()).unwrap();
-            if let Some(next_candidate) = siblings
-                .skip_while(|it| it <= &candidate)
-                .next()
-                .or(siblings.take_while(|it| it < &candidate).next())
-            {
-                candidate = Ipv4Net::new(next_candidate.network(), prefix_len)?;
-                // println!("next candidate: {}", candidate);
-                if candidate == candidate_base {
-                    if supernet.prefix_len() > 12 {
-                        // broaden the search space
-                        supernet = supernet.supernet().unwrap();
-                        search_prefix_len = supernet.prefix_len();
-                        // println!("broadened search space to: {}", supernet);
-                    } else {
-                        anyhow::bail!("exhausted candidate IP ranges for VMs");
-                    }
-                } else {
-                    break;
-                }
-            } else {
-                anyhow::bail!("failed to autoconfigure IP range for VMs");
-            }
-        }
-    }
-
-    Ok(candidate)
 }
 
 pub fn try_port(addr: impl ToSocketAddrs) -> io::Result<()> {
@@ -153,10 +380,12 @@ pub fn try_port(addr: impl ToSocketAddrs) -> io::Result<()> {
 pub enum Host {
     IPv4(String),
     IPv6(String),
+    #[cfg_attr(target_os = "linux", allow(dead_code))]
     Hostname(String),
 }
 
 impl Host {
+    #[cfg(target_os = "macos")]
     pub fn new(hostname: &str) -> Self {
         Host::Hostname(hostname.into())
     }
@@ -184,6 +413,7 @@ impl Host {
         }
     }
 
+    #[cfg(target_os = "macos")]
     pub fn with_port(&self, port: u16) -> io::Result<SocketAddr> {
         let host = match self {
             Host::IPv4(addr) => addr,
@@ -209,70 +439,6 @@ impl Display for Host {
     }
 }
 
-fn make_new_loopback() -> anyhow::Result<Host> {
-    let addr = Ipv6Addr::new(
-        0xFE80,
-        0,
-        0,
-        0,
-        rand::random(),
-        rand::random(),
-        rand::random(),
-        rand::random(),
-    );
-    let success = Command::new("/sbin/ifconfig")
-        .arg("lo0")
-        .arg("inet6")
-        .arg(addr.to_string())
-        .arg("add")
-        .status()?
-        .success();
-    if success {
-        Ok(Host::from_ip(IpAddr::V6(addr), Some(1)))
-    } else {
-        anyhow::bail!("unable to create loopback alias, please retry with sudo");
-    }
-}
-
-pub fn pick_usable_loopback_ip(required_ports: &[u16]) -> anyhow::Result<Host> {
-    for itf in InterfaceFilter::new().name("lo0").get()? {
-        let Some(addr) = itf.address.ip_addr() else {
-            continue;
-        };
-        let mut ip_candidate = None;
-        let ipv6_scope = if addr.is_ipv6() { itf.index } else { None };
-        for port in required_ports.iter().cloned() {
-            if let Some(mut sock) = (addr, port).to_socket_addrs()?.next() {
-                if let SocketAddr::V6(sock6) = &mut sock
-                    && let Some(scope) = ipv6_scope
-                {
-                    sock6.set_scope_id(scope);
-                }
-                match try_port(sock) {
-                    Ok(()) => {
-                        ip_candidate = Some(sock.ip());
-                    }
-                    Err(e) if e.kind() == io::ErrorKind::AddrInUse => {
-                        ip_candidate = None;
-                        break;
-                    }
-                    Err(e) => {
-                        anyhow::bail!("unexpected error checking port {}: {}", port, e);
-                    }
-                }
-            }
-        }
-        if let Some(ip) = ip_candidate {
-            if let Some(scope_id) = ipv6_scope {
-                return Ok(Host::from_ip(ip, Some(scope_id)));
-            } else {
-                return Ok(Host::from_ip(ip, None));
-            }
-        }
-    }
-    make_new_loopback()
-}
-
 #[allow(unused)]
 pub fn check_port_availability(ip: impl Into<IpAddr>, port: u16) -> anyhow::Result<()> {
     try_port((ip.into(), port)).map_err(|e| {
@@ -282,112 +448,4 @@ pub fn check_port_availability(ip: impl Into<IpAddr>, port: u16) -> anyhow::Resu
             anyhow::anyhow!("unexpected error checking port {port}: {e}")
         }
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::settings::DEFAULT_VMNET_POOL;
-
-    pub fn pick_available_network(
-        prefix_len: u8,
-        used_networks: &[Ipv4Net],
-    ) -> anyhow::Result<Ipv4Net> {
-        pick_available_network_in_pool(prefix_len, used_networks, DEFAULT_VMNET_POOL)
-    }
-
-    #[test]
-    fn test_aggregation() {
-        let nets = vec![
-            "172.27.1.0/26".parse::<Ipv4Net>().unwrap(),
-            "172.27.1.64/26".parse().unwrap(),
-            "172.27.1.128/26".parse().unwrap(),
-            "172.27.1.0/24".parse().unwrap(),
-        ];
-
-        assert_eq!(
-            Ipv4Net::aggregate(&nets),
-            vec!["172.27.1.0/24".parse::<Ipv4Net>().unwrap(),]
-        );
-    }
-
-    #[test]
-    fn test_pick_available_network_no_conflicts() {
-        let result = pick_available_network(24, &[]).unwrap();
-        assert_eq!(result, "172.27.1.0/24".parse::<Ipv4Net>().unwrap());
-    }
-
-    #[test]
-    fn test_pick_available_network_avoids_exact_conflict() {
-        let used = vec!["172.27.1.0/24".parse::<Ipv4Net>().unwrap()];
-        let result = pick_available_network(24, &used).unwrap();
-        assert_eq!(result, "172.27.0.0/24".parse::<Ipv4Net>().unwrap());
-    }
-
-    #[test]
-    fn test_pick_available_network_avoids_multiple_conflicts() {
-        let used = vec![
-            "172.27.0.0/24".parse::<Ipv4Net>().unwrap(),
-            "172.27.1.0/24".parse().unwrap(),
-        ];
-        let result = pick_available_network(24, &used).unwrap();
-        assert_eq!(result, "172.27.2.0/24".parse::<Ipv4Net>().unwrap());
-    }
-
-    #[test]
-    fn test_pick_available_network_avoids_multiple_conflicts_extended() {
-        let used = vec![
-            "172.27.0.0/24".parse::<Ipv4Net>().unwrap(),
-            "172.27.1.0/24".parse().unwrap(),
-            "172.27.2.0/24".parse().unwrap(),
-            "172.27.3.0/24".parse().unwrap(),
-        ];
-        let result = pick_available_network(24, &used).unwrap();
-        assert_eq!(result, "172.27.4.0/24".parse::<Ipv4Net>().unwrap());
-    }
-
-    #[test]
-    fn test_pick_available_network_avoids_supernet_conflict() {
-        // A broader network that covers the default candidate
-        let used = vec![
-            "172.27.0.0/16".parse::<Ipv4Net>().unwrap(),
-            "172.26.0.0/24".parse().unwrap(),
-        ];
-        let result = pick_available_network(24, &used).unwrap();
-        assert_eq!(result, "172.26.1.0/24".parse::<Ipv4Net>().unwrap());
-    }
-
-    #[test]
-    fn test_pick_available_network_avoids_subnet_conflict() {
-        // A smaller subnet within the default candidate range
-        let used = vec!["172.27.1.128/26".parse::<Ipv4Net>().unwrap()];
-        let result = pick_available_network(24, &used).unwrap();
-        assert_eq!(result, "172.27.0.0/24".parse::<Ipv4Net>().unwrap());
-    }
-
-    #[test]
-    fn test_pick_available_network_different_prefix_len() {
-        let result = pick_available_network(26, &[]).unwrap();
-        assert_eq!(result, "172.27.1.0/26".parse::<Ipv4Net>().unwrap());
-    }
-
-    #[test]
-    fn test_pick_available_network_short_prefix_len() {
-        let used = vec!["172.27.1.128/26".parse::<Ipv4Net>().unwrap()];
-        let result = pick_available_network(16, &used).unwrap();
-        assert_eq!(result, "172.26.0.0/16".parse::<Ipv4Net>().unwrap());
-    }
-
-    #[test]
-    fn test_pick_available_network_long_prefix_len() {
-        let used = vec![
-            "172.27.1.0/30".parse::<Ipv4Net>().unwrap(),
-            "172.27.1.4/30".parse().unwrap(),
-            "172.27.1.8/30".parse().unwrap(),
-            "172.27.1.12/30".parse().unwrap(),
-            "172.27.1.16/30".parse().unwrap(),
-        ];
-        let result = pick_available_network(30, &used).unwrap();
-        assert_eq!(result, "172.27.1.20/30".parse::<Ipv4Net>().unwrap());
-    }
 }

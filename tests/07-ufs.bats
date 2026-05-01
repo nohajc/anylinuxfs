@@ -23,7 +23,7 @@ teardown() {
 
 @test "ufs: mount raw image, file roundtrip, unmount" {
   local img="${BATS_FILE_TMPDIR}/ufs.img"
-  "$ANYLINUXFS" "$img" -w false
+  do_mount "$img"
 
   assert_file_roundtrip "$(get_mount_point "$LABEL")"
 
@@ -32,7 +32,7 @@ teardown() {
 
 @test "ufs: mount with --zfs-os linux still picks FreeBSD, file roundtrip, unmount" {
   local img="${BATS_FILE_TMPDIR}/ufs.img"
-  "$ANYLINUXFS" "$img" --zfs-os linux -w false
+  do_mount "$img" --zfs-os linux
 
   assert_file_roundtrip "$(get_mount_point "$LABEL")"
 

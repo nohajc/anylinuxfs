@@ -25,7 +25,7 @@ teardown() {
 
 @test "f2fs: mount raw image, file roundtrip, unmount" {
   local img="${BATS_FILE_TMPDIR}/f2fs.img"
-  "$ANYLINUXFS" "$img" -w false
+  do_mount "$img"
 
   assert_file_roundtrip "$(get_mount_point "$LABEL")"
 
