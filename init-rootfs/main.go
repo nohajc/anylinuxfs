@@ -472,7 +472,20 @@ func initRootfs(cfg *Config, nameserver string, setupScript string) error {
 		return err
 	}
 
-	return copyVmproxyBinary(cfg.PrefixDir, cfg.RootfsPath)
+	if err := copyVmproxyBinary(cfg.PrefixDir, cfg.RootfsPath); err != nil {
+		return err
+	}
+
+	// Stamp libkrun's user.containers.override_stat xattr on every entry so
+	// the macOS virtiofs driver presents the rootfs to the guest as owned by
+	// root:root. No-op on non-macOS hosts (build-tag stub). Run last so it
+	// also catches everything earlier steps wrote to the rootfs.
+	if err := stampOverrideStat(cfg.RootfsPath); err != nil {
+		fmt.Printf("Error stamping override_stat xattrs: %v\n", err)
+		return err
+	}
+
+	return nil
 }
 
 func resolveExecDir() (string, error) {

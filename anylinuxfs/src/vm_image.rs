@@ -59,6 +59,7 @@ mod alpine {
                         config.vmproxy_host_path.display(),
                         vmproxy_guest_path.display()
                     ))?;
+                    crate::xattr_util::set_override_stat_file(&vmproxy_guest_path, 0, 0, 0o755)?;
                     host_println!("Updated VM root filesystem");
                 }
                 return Ok(());

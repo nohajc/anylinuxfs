@@ -333,6 +333,7 @@ pub(crate) fn prepare_key_file_for_vm(
                 fs::set_permissions(&dst, fs::Permissions::from_mode(0o600))
                     .context("Failed to set permissions on key file in rootfs")?;
             }
+            crate::xattr_util::set_override_stat_file(&dst, 0, 0, 0o600)?;
             // Register cleanup in the parent's Deferred — runs after the child exits.
 
             deferred.add(move || {
@@ -580,6 +581,7 @@ pub(crate) fn set_vm_cmdline(
                 )
             })?;
             privilege::chown_to_invoker(&krun_config_file, ctx.invoker_uid, ctx.invoker_gid)?;
+            crate::xattr_util::set_override_stat_file(&krun_config_file, 0, 0, 0o644)?;
         }
         OSType::FreeBSD => {
             krun_config_tmp_dir = PathBuf::from("/tmp").join(format!("alfs-{}", rand_string(8)));
