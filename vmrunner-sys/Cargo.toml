@@ -7,7 +7,7 @@ edition = "2024"
 crate-type = ["staticlib"]
 
 [dependencies]
-libkrun = { git = "https://github.com/containers/libkrun", tag = "v1.18.0" }
+libkrun = { git = "https://github.com/containers/libkrun", rev = "4380b32b57001bda78f51ccbf1f81fc4e27eed48" }
 libc = "0.2"
 
 [features]
