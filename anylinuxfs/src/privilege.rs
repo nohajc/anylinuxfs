@@ -204,3 +204,98 @@ pub(crate) fn apply_krun_priv_drop(
     }
     Ok(())
 }
+
+/// The resolved invoking user's uid and gid. When running as root via sudo
+/// (or a process-tree fallback), these hold the non-root user behind the
+/// elevation. When not running as root, they equal the current process uid/gid.
+pub(crate) struct InvokerIdentity {
+    pub uid: libc::uid_t,
+    pub gid: libc::gid_t,
+}
+
+struct ProcInfo {
+    uid: libc::uid_t,
+    gid: libc::gid_t,
+    ppid: libc::pid_t,
+}
+
+#[cfg(target_os = "linux")]
+fn get_proc_info(pid: libc::pid_t) -> Option<ProcInfo> {
+    let status = procfs::process::Process::new(pid).ok()?.status().ok()?;
+    Some(ProcInfo {
+        uid: status.ruid,
+        gid: status.rgid,
+        ppid: status.ppid as libc::pid_t,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn get_proc_info(pid: libc::pid_t) -> Option<ProcInfo> {
+    use std::mem;
+    let mut info = unsafe { mem::zeroed::<libc::proc_bsdinfo>() };
+    let ret = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            &mut info as *mut _ as *mut libc::c_void,
+            mem::size_of::<libc::proc_bsdinfo>() as libc::c_int,
+        )
+    };
+    if ret <= 0 {
+        return None;
+    }
+    Some(ProcInfo {
+        uid: info.pbi_ruid,
+        gid: info.pbi_rgid,
+        ppid: info.pbi_ppid as libc::pid_t,
+    })
+}
+
+fn walk_to_invoker() -> anyhow::Result<InvokerIdentity> {
+    std::iter::successors(get_proc_info(unsafe { libc::getpid() }), |info| {
+        get_proc_info(info.ppid)
+    })
+    .skip(1)
+    .take(5)
+    .find_map(|info| {
+        (info.uid != 0).then_some(InvokerIdentity {
+            uid: info.uid,
+            gid: info.gid,
+        })
+    })
+    .ok_or_else(|| {
+        anyhow::anyhow!("This program must not be run directly by root; use sudo instead")
+    })
+}
+
+/// Resolve the identity of the invoking user.
+///
+/// Resolution order (when running as root):
+/// 1. `SUDO_UID` + `SUDO_GID` environment variables (standard sudo)
+/// 2. Process-tree walk: ascend up to 5 ancestors via [`get_proc_info`],
+///    returning the first non-root real uid/gid found.
+///
+/// Returns immediately with the current process uid/gid when not running as root.
+pub(crate) fn resolve_invoker_identity() -> anyhow::Result<InvokerIdentity> {
+    let uid = unsafe { libc::getuid() };
+    if uid != 0 {
+        return Ok(InvokerIdentity {
+            uid,
+            gid: unsafe { libc::getgid() },
+        });
+    }
+
+    let sudo_uid = std::env::var("SUDO_UID")
+        .ok()
+        .and_then(|s| s.parse::<libc::uid_t>().ok());
+    let sudo_gid = std::env::var("SUDO_GID")
+        .ok()
+        .and_then(|s| s.parse::<libc::gid_t>().ok());
+
+    if let (Some(uid), Some(gid)) = (sudo_uid, sudo_gid) {
+        return Ok(InvokerIdentity { uid, gid });
+    }
+
+    walk_to_invoker()
+}

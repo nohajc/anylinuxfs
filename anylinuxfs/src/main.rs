@@ -156,31 +156,14 @@ pub(crate) fn default_linux_image_source(prefs: &impl Preferences) -> ImageSourc
 }
 
 fn load_config(common_args: &CommonArgs, debug_args: &DebugArgs) -> anyhow::Result<Config> {
-    let sudo_uid = env::var("SUDO_UID")
-        .map_err(anyhow::Error::from)
-        .and_then(|s| Ok(s.parse::<libc::uid_t>()?))
-        .ok();
-
-    let sudo_gid = env::var("SUDO_GID")
-        .map_err(anyhow::Error::from)
-        .and_then(|s| Ok(s.parse::<libc::gid_t>()?))
-        .ok();
-
-    let uid = unsafe { libc::getuid() };
-    if uid == 0 && (sudo_uid.is_none() || sudo_gid.is_none()) {
-        eprintln!("This program must not be run directly by root but you can use sudo");
-        std::process::exit(1);
-    }
-    let gid = unsafe { libc::getgid() };
-
-    let invoker_uid = match sudo_uid {
-        Some(sudo_uid) => sudo_uid,
-        None => uid,
-    };
-
-    let invoker_gid = match sudo_gid {
-        Some(sudo_gid) => sudo_gid,
-        None => gid,
+    let identity =
+        privilege::resolve_invoker_identity().context("Could not determine invoking user")?;
+    let invoker_uid = identity.uid;
+    let invoker_gid = identity.gid;
+    let (sudo_uid, sudo_gid) = if unsafe { libc::getuid() } == 0 {
+        (Some(identity.uid), Some(identity.gid))
+    } else {
+        (None, None)
     };
 
     // we want the regular user's home even if running with sudo
