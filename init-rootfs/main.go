@@ -14,6 +14,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"anylinuxfs/init-rootfs/vmrunner"
@@ -489,6 +490,11 @@ func resolveExecDir() (string, error) {
 }
 
 func main() {
+	// Don't let the invoker's umask leak into the rootfs perms; with e.g.
+	// umask 037 the rootfs root would be drwxr----- and any privilege-dropping
+	// daemon in the guest (rpcbind drops to user `rpc`) would lose traversal.
+	syscall.Umask(0o022)
+
 	var nameserver string
 	var dockerRef string
 	var baseDir string
