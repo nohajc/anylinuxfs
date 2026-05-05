@@ -19,8 +19,8 @@ brew install anylinuxfs
 > This is a CLI utility. If you prefer GUI, see [anylinuxfs-gui](https://github.com/fenio/anylinuxfs-gui).
 
 ## Features
-- **full read-write support** for every mounted filesystem — whatever Linux natively supports, `anylinuxfs` supports too
 - mounts any filesystem supported by Linux (**ext4**, **btrfs**, **xfs**, ... but also **NTFS** and **exFAT**)
+- **full read-write support** — whatever Linux natively supports, `anylinuxfs` supports too
 - mount any number of drives at the same time
 - supports **LUKS**-encrypted drives
 - supports **BitLocker**-encrypted drives – **NTFS** or **FAT32** (using your recovery key as passphrase)
@@ -56,7 +56,7 @@ https://github.com/user-attachments/assets/6ec6ce46-ce08-45b9-9fa4-e3d6d078d811
 ## Introduction
 
 Mounting 3rd-party filesystems on macOS has always been tricky. There's official support for reading NTFS but otherwise we've mainly used solutions based on macFUSE.
-We've got NTFS-3g which is a pretty mature driver but for Linux filesystems there's only a couple of experimental solutions like [fuse-ext2](https://github.com/alperakcan/fuse-ext2) or [ext4fuse](https://github.com/gerard/ext4fuse) — and both are effectively read-only in practice (fuse-ext2 requires unsafe write flags; ext4fuse has no write support at all).
+We've got NTFS-3g which is a pretty mature driver but for Linux filesystems there's only a couple of experimental solutions like [fuse-ext2](https://github.com/alperakcan/fuse-ext2) or [ext4fuse](https://github.com/gerard/ext4fuse).
 
 If you want a reliable solution with full write access, you need to run a Linux virtual machine with physical disk access and take care of exposing the mounted filesystem to the host.
 This is exactly what `anylinuxfs` does and it streamlines it so that it's as easy as running one command in terminal.
