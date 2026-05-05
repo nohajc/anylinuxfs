@@ -651,7 +651,7 @@ pub(crate) fn start_vm_forked(
     }
 }
 
-const RLIMIT: libc::rlim_t = 16384;
+const RLIMIT: libc::rlim_t = 1048575;
 
 /// Raise the soft RLIMIT_NOFILE so that libkrun has enough file descriptors
 /// to set up virtiofs, virtio-net, serial console pipes, etc.
