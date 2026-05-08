@@ -581,7 +581,7 @@ pub(crate) fn set_vm_cmdline(
                 )
             })?;
             privilege::chown_to_invoker(&krun_config_file, ctx.invoker_uid, ctx.invoker_gid)?;
-            xattr_util::set_override_stat_file(&krun_config_file, 0, 0, 0o644)?;
+            xattr_util::set_override_stat_file(&krun_config_file, 0, 0, 0o600)?;
         }
         OSType::FreeBSD => {
             krun_config_tmp_dir = PathBuf::from("/tmp").join(format!("alfs-{}", rand_string(8)));
