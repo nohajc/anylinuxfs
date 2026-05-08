@@ -23,7 +23,7 @@ func stampOverrideStat(rootfsPath string) error {
 		if walkErr != nil {
 			return walkErr
 		}
-		info, err := os.Lstat(path)
+		info, err := d.Info()
 		if err != nil {
 			return fmt.Errorf("lstat %s: %w", path, err)
 		}

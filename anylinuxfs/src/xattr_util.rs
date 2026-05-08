@@ -16,7 +16,7 @@ mod imp {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 mod imp {
     use anyhow::Result;
     use std::path::Path;
