@@ -1,3 +1,4 @@
+use crate::utils::FlockGuard;
 use crate::{Config, ImageSource, fsutil, privilege, vm_network};
 use anyhow::Context;
 use ipnet::Ipv4Net;
@@ -20,7 +21,12 @@ mod alpine {
 
     pub const ROOTFS_CURRENT_VERSION: &str = include_str!("../../share/alpine/rootfs.ver");
 
-    pub fn init_rootfs(config: &Config, force: bool, src: &ImageSource) -> anyhow::Result<()> {
+    pub fn init_rootfs(
+        config: &Config,
+        force: bool,
+        src: &ImageSource,
+        guard: &mut FlockGuard<'_>,
+    ) -> anyhow::Result<()> {
         let root_path = &config.root_path;
         let root_ver_file_path = &config.root_ver_file_path;
 
@@ -54,6 +60,7 @@ mod alpine {
                 // host_println!("VM root filesystem is initialized");
                 // rootfs is initialized but check if we need to update vmproxy executable
                 if fsutil::files_likely_differ(&config.vmproxy_host_path, &vmproxy_guest_path)? {
+                    let _inner = guard.upgrade()?;
                     fs::copy(&config.vmproxy_host_path, &vmproxy_guest_path).context(format!(
                         "Failed to copy {} to {}",
                         config.vmproxy_host_path.display(),
@@ -68,6 +75,7 @@ mod alpine {
 
         host_println!("Initializing VM root filesystem...");
 
+        let _inner = guard.upgrade()?;
         let mut init_rootfs_cmd = Command::new(&config.init_rootfs_path);
         // run init-rootfs with dropped privileges
         privilege::run_as_invoker(&mut init_rootfs_cmd, config.sudo_uid, config.sudo_gid);
@@ -149,7 +157,12 @@ mod freebsd {
 
     pub const VM_DISK_IMAGE: &str = "freebsd-microvm-disk.img";
 
-    pub fn init_rootfs(config: &Config, force: bool, src: &ImageSource) -> anyhow::Result<()> {
+    pub fn init_rootfs(
+        config: &Config,
+        force: bool,
+        src: &ImageSource,
+        guard: &mut FlockGuard<'_>,
+    ) -> anyhow::Result<()> {
         if src.base_dir.is_empty() {
             anyhow::bail!("FreeBSD base directory not specified");
         }
@@ -190,6 +203,7 @@ mod freebsd {
                 }
 
                 if !to_upgrade.is_empty() {
+                    let _inner = guard.upgrade()?;
                     // prepare iso and run the upgrade script inside the VM
                     fs::create_dir_all(&tmp_path)?;
                     deferred.add(|| {
@@ -240,6 +254,8 @@ mod freebsd {
         let Some(kernel_bundle_url) = src.kernel.bundle_url.as_deref() else {
             anyhow::bail!("FreeBSD kernel bundle URL not provided");
         };
+
+        let _inner = guard.upgrade()?;
 
         if iso_image_url.is_empty() {
             anyhow::bail!("FreeBSD ISO URL is empty");
@@ -669,18 +685,28 @@ pub fn create_iso(
     Ok(())
 }
 
-pub fn init(config: &Config, force: bool, src: &ImageSource) -> anyhow::Result<()> {
+pub fn init(
+    config: &Config,
+    force: bool,
+    src: &ImageSource,
+    guard: &mut FlockGuard<'_>,
+) -> anyhow::Result<()> {
     match src.os_type {
-        crate::OSType::Linux => alpine::init_rootfs(config, force, src),
+        crate::OSType::Linux => alpine::init_rootfs(config, force, src, guard),
         #[cfg(feature = "freebsd")]
-        crate::OSType::FreeBSD => freebsd::init_rootfs(config, force, src),
+        crate::OSType::FreeBSD => freebsd::init_rootfs(config, force, src, guard),
         #[cfg(not(feature = "freebsd"))]
         _ => anyhow::bail!("unsupported OS type"),
     }
 }
 
 #[cfg(feature = "freebsd")]
-pub fn remove(config: &Config, src: &ImageSource) -> anyhow::Result<()> {
+pub fn remove(
+    config: &Config,
+    src: &ImageSource,
+    guard: &mut FlockGuard<'_>,
+) -> anyhow::Result<()> {
+    let _inner = guard.upgrade()?;
     let base_path = config.profile_path.join(&src.effective_base_dir());
     fs::remove_dir_all(&base_path)?;
     Ok(())

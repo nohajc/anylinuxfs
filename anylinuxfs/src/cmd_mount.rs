@@ -1174,7 +1174,6 @@ fn prepare_passphrase_callbacks(
 
 impl super::AppRunner {
     pub(crate) fn run_mount(&mut self, cmd: MountCmd) -> anyhow::Result<()> {
-        let _lock_file = LockFile::new(LOCK_FILE)?.acquire_lock(FlockKind::Shared)?;
         let mut network_env = NetworkEnv::default();
 
         // If host rpcbind is bound to :111, vmproxy gets the -h flag (skip
@@ -1275,6 +1274,10 @@ impl super::AppRunner {
             log::disable_console_log();
         }
 
+        // Acquire SH lock early for fail-fast behavior before expensive claim_devices.
+        let mut lock_file = LockFile::new(LOCK_FILE)?;
+        let mut guard = lock_file.acquire_lock(FlockKind::Shared)?;
+
         #[allow(unused_mut)]
         let (mut dev_info, mut mnt_dev_info, _disks) = claim_devices(&mut config)?;
 
@@ -1331,7 +1334,7 @@ impl super::AppRunner {
 
         {
             let _log_guard = ConsoleLogGuard::enable_temporarily(verbose);
-            vm_image::init(&config.common, false, &img_src)?;
+            vm_image::init(&config.common, false, &img_src, &mut guard)?;
         }
 
         let (vm_env, env_has_passphrase) = prepare_vm_environment(&config)?;

@@ -4,6 +4,7 @@ use std::{
     error::Error,
     fs::{File, Permissions},
     io::{self, BufRead, BufReader, Read, Write},
+    marker::PhantomData,
     mem::ManuallyDrop,
     os::{
         fd::{AsRawFd, FromRawFd},
@@ -488,9 +489,19 @@ pub unsafe fn write_to_pipe(pipe_fd: libc::c_int, data: &[u8]) -> anyhow::Result
     Ok(())
 }
 
+#[derive(Copy, Clone, PartialEq)]
 pub enum FlockKind {
     Shared,
     Exclusive,
+}
+
+impl FlockKind {
+    fn flag(self) -> libc::c_int {
+        match self {
+            FlockKind::Shared => libc::LOCK_SH,
+            FlockKind::Exclusive => libc::LOCK_EX,
+        }
+    }
 }
 
 pub struct LockFile(File);
@@ -523,6 +534,24 @@ impl LockFile {
 
         Ok(Self(file))
     }
+
+    /// Acquire a flock on this file, returning a [`FlockGuard`] that reverts to
+    /// the unlocked state when dropped.  Takes `&mut self` so the borrow
+    /// checker prevents a second guard from being created while the first is
+    /// alive, enforcing LIFO nesting without any runtime bookkeeping.
+    pub fn acquire_lock(&mut self, kind: FlockKind) -> anyhow::Result<FlockGuard<'_>> {
+        flock_nb(
+            self.0.as_raw_fd(),
+            kind.flag(),
+            "another instance is already running",
+        )?;
+        Ok(FlockGuard {
+            raw_fd: self.0.as_raw_fd(),
+            current_kind: kind,
+            revert_flag: Some(libc::LOCK_UN), // was unlocked; release entirely on drop
+            _lifetime: PhantomData,
+        })
+    }
 }
 
 impl AsRawFd for LockFile {
@@ -531,14 +560,63 @@ impl AsRawFd for LockFile {
     }
 }
 
-fn acquire_lock(file: &impl AsRawFd, lock_kind: FlockKind, err_msg: &str) -> anyhow::Result<()> {
-    let lock_flag = match lock_kind {
-        FlockKind::Shared => libc::LOCK_SH,
-        FlockKind::Exclusive => libc::LOCK_EX,
-    };
+/// RAII guard returned by [`LockFile::acquire_lock`] and [`FlockGuard::upgrade`].
+///
+/// On drop it reverts the flock to the state that existed before the
+/// acquisition (unlock or downgrade to shared).  The `PhantomData<&'a mut ()>`
+/// ties the guard's lifetime to its lender so the borrow checker enforces LIFO
+/// ordering — an inner guard must be dropped before its outer guard.
+#[must_use]
+pub struct FlockGuard<'a> {
+    raw_fd: libc::c_int,
+    current_kind: FlockKind,
+    /// `Some(flag)` → call `flock(flag)` on drop; `None` → no-op.
+    revert_flag: Option<libc::c_int>,
+    _lifetime: PhantomData<&'a mut ()>,
+}
 
-    // Try to lock the file
-    let res = unsafe { libc::flock(file.as_raw_fd(), lock_flag | libc::LOCK_NB) };
+impl<'a> FlockGuard<'a> {
+    /// Upgrade the held lock to exclusive.
+    ///
+    /// If the lock is already exclusive the returned inner guard is a no-op:
+    /// neither the flock call nor the drop performs any syscall.  Otherwise
+    /// the lock is upgraded to `LOCK_EX` and the returned guard reverts it
+    /// back to `LOCK_SH` when dropped.
+    pub fn upgrade(&mut self) -> anyhow::Result<FlockGuard<'_>> {
+        if self.current_kind == FlockKind::Exclusive {
+            // Already EX — no-op inner guard.
+            return Ok(FlockGuard {
+                raw_fd: self.raw_fd,
+                current_kind: FlockKind::Exclusive,
+                revert_flag: None,
+                _lifetime: PhantomData,
+            });
+        }
+        // Upgrade SH → EX.
+        flock_nb(
+            self.raw_fd,
+            FlockKind::Exclusive.flag(),
+            "another instance is already running",
+        )?;
+        Ok(FlockGuard {
+            raw_fd: self.raw_fd,
+            current_kind: FlockKind::Exclusive,
+            revert_flag: Some(libc::LOCK_SH | libc::LOCK_NB), // revert to SH on drop
+            _lifetime: PhantomData,
+        })
+    }
+}
+
+impl Drop for FlockGuard<'_> {
+    fn drop(&mut self) {
+        if let Some(flag) = self.revert_flag {
+            unsafe { libc::flock(self.raw_fd, flag) };
+        }
+    }
+}
+
+fn flock_nb(raw_fd: libc::c_int, flag: libc::c_int, err_msg: &str) -> anyhow::Result<()> {
+    let res = unsafe { libc::flock(raw_fd, flag | libc::LOCK_NB) };
     if res != 0 {
         Err(io::Error::new(io::ErrorKind::AlreadyExists, err_msg).into())
     } else {
@@ -546,15 +624,12 @@ fn acquire_lock(file: &impl AsRawFd, lock_kind: FlockKind, err_msg: &str) -> any
     }
 }
 
-pub trait AcquireLock: Sized {
-    fn acquire_lock(self, lock_kind: FlockKind) -> anyhow::Result<Self>;
+fn acquire_lock(file: &impl AsRawFd, lock_kind: FlockKind, err_msg: &str) -> anyhow::Result<()> {
+    flock_nb(file.as_raw_fd(), lock_kind.flag(), err_msg)
 }
 
-impl AcquireLock for LockFile {
-    fn acquire_lock(self, lock_kind: FlockKind) -> anyhow::Result<LockFile> {
-        acquire_lock(&self, lock_kind, "another instance is already running")?;
-        Ok(self)
-    }
+pub trait AcquireLock: Sized {
+    fn acquire_lock(self, lock_kind: FlockKind) -> anyhow::Result<Self>;
 }
 
 impl AcquireLock for File {
