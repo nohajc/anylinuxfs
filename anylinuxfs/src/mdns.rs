@@ -21,6 +21,7 @@ use crate::netutil::Host;
 /// a mount. On macOS this is the `DNSService` connection plus the registered
 /// `DNSRecord`; dropping the connection unregisters every record allocated
 /// through it. On Linux this is an empty marker — see the module docs.
+#[must_use]
 pub struct Registration {
     #[cfg(target_os = "macos")]
     _conn: DNSService,

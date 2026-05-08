@@ -477,13 +477,14 @@ impl Default for AppRunner {
 
 impl AppRunner {
     fn run_shell(&mut self, cmd: ShellCmd) -> anyhow::Result<()> {
-        let mut lock_file = LockFile::new(LOCK_FILE)?;
-        let mut guard = lock_file.acquire_lock(FlockKind::Shared)?;
         let config = load_mount_config(cmd.clone().into())?;
-        if config.common.rw_rootfs {
+        let lock_kind = match config.common.rw_rootfs {
             // Upgrade to exclusive lock for mutable operations on rootfs
-            guard.upgrade()?;
-        }
+            true => FlockKind::Exclusive,
+            false => FlockKind::Shared,
+        };
+        let mut lock_file = LockFile::new(LOCK_FILE)?;
+        let mut guard = lock_file.acquire_lock(lock_kind)?;
 
         #[cfg(feature = "freebsd")]
         let (mut config, src, root_disk_path) = match cmd.image {
@@ -697,7 +698,7 @@ impl AppRunner {
             }
         };
 
-        guard.upgrade()?;
+        let _inner = guard.upgrade()?;
         let vm_command = format!("{vm_prelude} && {apk_command}");
         let cmdline: Vec<BString> = vec!["/bin/bash".into(), "-c".into(), vm_command.into()];
 

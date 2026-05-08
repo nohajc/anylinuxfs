@@ -566,6 +566,7 @@ impl AsRawFd for LockFile {
 /// acquisition (unlock or downgrade to shared).  The `PhantomData<&'a mut ()>`
 /// ties the guard's lifetime to its lender so the borrow checker enforces LIFO
 /// ordering — an inner guard must be dropped before its outer guard.
+#[must_use]
 pub struct FlockGuard<'a> {
     raw_fd: libc::c_int,
     current_kind: FlockKind,
