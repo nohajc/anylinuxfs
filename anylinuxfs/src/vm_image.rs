@@ -10,7 +10,7 @@ pub const KERNEL_IMAGE: &str = "kernel/kernel.bin";
 
 mod alpine {
     use super::*;
-    use crate::{Config, fsutil, netutil, utils};
+    use crate::{Config, fsutil, netutil, utils, xattr_util};
     use anyhow::Context;
     use common_utils::{host_eprintln, host_println};
     use std::{
@@ -59,6 +59,7 @@ mod alpine {
                         config.vmproxy_host_path.display(),
                         vmproxy_guest_path.display()
                     ))?;
+                    xattr_util::set_override_stat_file(&vmproxy_guest_path, 0, 0, 0o755)?;
                     host_println!("Updated VM root filesystem");
                 }
                 return Ok(());

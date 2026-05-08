@@ -37,6 +37,7 @@ mod utils;
 mod vm;
 mod vm_image;
 mod vm_network;
+mod xattr_util;
 
 use cmd_mount::*;
 use vm::*;
