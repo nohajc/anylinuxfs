@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 
 use notify::{RecursiveMode, Watcher};
 use std::sync::mpsc;
-use utils::{AcquireLock, FlockKind, LockFile, StatusError, write_to_pipe};
+use utils::{FlockKind, LockFile, StatusError, write_to_pipe};
 
 use crate::settings::{Config, ImageSource, KernelConfig, MountConfig, Preferences};
 
@@ -477,9 +477,14 @@ impl Default for AppRunner {
 
 impl AppRunner {
     fn run_shell(&mut self, cmd: ShellCmd) -> anyhow::Result<()> {
-        let _lock_file = LockFile::new(LOCK_FILE)?.acquire_lock(FlockKind::Shared)?;
-
+        let mut lock_file = LockFile::new(LOCK_FILE)?;
+        let mut guard = lock_file.acquire_lock(FlockKind::Shared)?;
         let config = load_mount_config(cmd.clone().into())?;
+        if config.common.rw_rootfs {
+            // Upgrade to exclusive lock for mutable operations on rootfs
+            guard.upgrade()?;
+        }
+
         #[cfg(feature = "freebsd")]
         let (mut config, src, root_disk_path) = match cmd.image {
             Some(image_name) => {
@@ -525,7 +530,7 @@ impl AppRunner {
         let src = default_linux_image_source(&config.common.preferences);
 
         if !cmd.skip_init {
-            vm_image::init(&config.common, false, &src)?;
+            vm_image::init(&config.common, false, &src, &mut guard)?;
         }
 
         let (vm_env, _) = prepare_vm_environment(&config)?;
@@ -630,9 +635,12 @@ impl AppRunner {
     }
 
     fn run_apk(&mut self, cmd: ApkCmd) -> anyhow::Result<()> {
-        let _lock_file = LockFile::new(LOCK_FILE)?.acquire_lock(FlockKind::Exclusive)?;
+        let mut lock_file = LockFile::new(LOCK_FILE)?;
+        let mut guard = lock_file.acquire_lock(FlockKind::Shared)?;
 
         let mut config = load_config(&CommonArgs::default(), &DebugArgs::default())?;
+        let src = default_linux_image_source(&config.preferences);
+        vm_image::init(&config, false, &src, &mut guard)?;
         let config_file_path = &config.config_file_path;
 
         let alpine_packages = config.preferences.alpine_custom_packages();
@@ -688,6 +696,8 @@ impl AppRunner {
                 format!("apk del {}", packages.join(" "))
             }
         };
+
+        guard.upgrade()?;
         let vm_command = format!("{vm_prelude} && {apk_command}");
         let cmdline: Vec<BString> = vec!["/bin/bash".into(), "-c".into(), vm_command.into()];
 
@@ -730,10 +740,10 @@ impl AppRunner {
             }
             ImageCmd::Install { name } => match images.get(name.as_str()) {
                 Some(&src) => {
-                    let _lock_file =
-                        LockFile::new(LOCK_FILE)?.acquire_lock(FlockKind::Exclusive)?;
+                    let mut lock_file = LockFile::new(LOCK_FILE)?;
+                    let mut guard = lock_file.acquire_lock(FlockKind::Exclusive)?;
                     let config = config.with_image_source(src);
-                    vm_image::init(&config, true, src)
+                    vm_image::init(&config, true, src, &mut guard)
                         .context(format!("Failed to install image {}", name))?;
                     safe_println!("Image {} installed successfully", name)?;
                 }
@@ -743,10 +753,10 @@ impl AppRunner {
             },
             ImageCmd::Uninstall { name } => match images.get(name.as_str()) {
                 Some(&src) => {
-                    let _lock_file =
-                        LockFile::new(LOCK_FILE)?.acquire_lock(FlockKind::Exclusive)?;
+                    let mut lock_file = LockFile::new(LOCK_FILE)?;
+                    let mut guard = lock_file.acquire_lock(FlockKind::Exclusive)?;
                     let config = config.with_image_source(src);
-                    vm_image::remove(&config, src)
+                    vm_image::remove(&config, src, &mut guard)
                         .context(format!("Failed to uninstall image {}", name))?;
                     safe_println!("Image {} uninstalled successfully", name)?;
                 }
@@ -817,10 +827,11 @@ impl AppRunner {
     }
 
     fn run_init(&mut self) -> anyhow::Result<()> {
-        let _lock_file = LockFile::new(LOCK_FILE)?.acquire_lock(FlockKind::Exclusive)?;
+        let mut lock_file = LockFile::new(LOCK_FILE)?;
+        let mut guard = lock_file.acquire_lock(FlockKind::Exclusive)?;
         let config = load_config(&CommonArgs::default(), &DebugArgs::default())?;
         let src = default_linux_image_source(&config.preferences);
-        vm_image::init(&config, true, &src)?;
+        vm_image::init(&config, true, &src, &mut guard)?;
 
         Ok(())
     }
@@ -872,11 +883,11 @@ impl AppRunner {
     }
 
     fn run_list(&mut self, cmd: ListCmd) -> anyhow::Result<()> {
-        let _lock_file = LockFile::new(LOCK_FILE)?.acquire_lock(FlockKind::Shared)?;
-
+        let mut lock_file = LockFile::new(LOCK_FILE)?;
+        let mut guard = lock_file.acquire_lock(FlockKind::Shared)?;
         let mut config = load_config(&cmd.common, &cmd.debug)?;
         let linux_src = default_linux_image_source(&config.preferences);
-        vm_image::init(&config, false, &linux_src)?;
+        vm_image::init(&config, false, &linux_src, &mut guard)?;
 
         if cmd.decrypt.is_some() && !cmd.microsoft {
             ensure_enough_ram_for_luks(&mut config);
