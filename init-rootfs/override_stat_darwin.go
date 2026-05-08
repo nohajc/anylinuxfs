@@ -63,13 +63,13 @@ func lsetxattrWithWriteAccess(path string, m os.FileMode, value string) error {
 	if m&os.ModeSymlink != 0 || m.Perm()&0o200 != 0 {
 		return err
 	}
-	relaxed := m.Perm() | 0o200
+	relaxed := m | 0o200
 	if chmodErr := os.Chmod(path, relaxed); chmodErr != nil {
 		return err // surface the original setxattr error
 	}
 	xattrErr := unix.Lsetxattr(path, overrideStatXattr, []byte(value), 0)
 	// Restore original mode regardless of xattr outcome.
-	if restoreErr := os.Chmod(path, m.Perm()); restoreErr != nil && xattrErr == nil {
+	if restoreErr := os.Chmod(path, m); restoreErr != nil && xattrErr == nil {
 		return restoreErr
 	}
 	return xattrErr
