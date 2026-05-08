@@ -50,14 +50,38 @@ const MACOS_TAHOE_MIN_VER: Versioning = Versioning::Ideal(SemVer {
     meta: None,
 });
 
+const MACOS_OFFLOAD_MIN_VER: Versioning = Versioning::Ideal(SemVer {
+    major: 26,
+    minor: 2,
+    patch: 0,
+    pre_rel: None,
+    meta: None,
+});
+
+fn macos_version_at_least(min: Versioning) -> bool {
+    if let Ok(OsVersion::MacOS(MacOS { version })) = os_version::detect() {
+        Versioning::new(version).unwrap_or_default() >= min
+    } else {
+        false
+    }
+}
+
+/// Returns true on macOS Tahoe (26.0) or later, where vmnet-helper can run
+/// without root.
+pub fn macos_rootless_vmnet() -> bool {
+    macos_version_at_least(MACOS_TAHOE_MIN_VER)
+}
+
+/// Returns true on macOS 26.2 or later, where vmnet TSO/checksum offloading is
+/// supported. Both vmnet-helper and libkrun must agree on this.
+pub fn macos_vmnet_offloading_supported() -> bool {
+    macos_version_at_least(MACOS_OFFLOAD_MIN_VER)
+}
+
 pub fn start_vmnet_helper(config: &Config) -> anyhow::Result<NetHelperService> {
     vfkit_sock_cleanup(&config.unixgram_sock_path)?;
 
-    let rootless = if let OsVersion::MacOS(MacOS { version }) = os_version::detect()? {
-        Versioning::new(version).unwrap_or_default() >= MACOS_TAHOE_MIN_VER
-    } else {
-        false
-    };
+    let rootless = macos_rootless_vmnet();
     // host_println!("vmnet-helper rootless mode: {}", rootless);
 
     let need_elevation = !rootless && config.sudo_uid.is_none() && config.invoker_uid != 0;
@@ -90,10 +114,12 @@ pub fn start_vmnet_helper(config: &Config) -> anyhow::Result<NetHelperService> {
 
     vmnet_helper_cmd
         .arg("--socket")
-        .arg(&config.unixgram_sock_path)
+        .arg(&config.unixgram_sock_path);
+    if config.vmnet_offloading {
+        vmnet_helper_cmd.args(["--enable-tso", "--enable-checksum-offload"]);
+    }
+    vmnet_helper_cmd
         .args([
-            // "--enable-tso",
-            // "--enable-checksum-offload",
             &format!("--start-address={}", vmnet_cidr.hosts().next().unwrap()),
             &format!("--end-address={}", vmnet_cidr.hosts().last().unwrap()),
             &format!("--subnet-mask={}", vmnet_cidr.netmask()),

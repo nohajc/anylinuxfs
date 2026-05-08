@@ -276,6 +276,8 @@ fn load_config(common_args: &CommonArgs, debug_args: &DebugArgs) -> anyhow::Resu
         #[cfg(feature = "freebsd")]
         zfs_os,
         net_helper,
+        #[cfg(target_os = "macos")]
+        vmnet_offloading: vm_network::macos_vmnet_offloading_supported(),
         preferences,
     })
 }

@@ -118,22 +118,22 @@ impl NetworkMode {
 }
 
 /// Taken from https://github.com/containers/libkrun/blob/7116644749c7b1028a970c9e8bd2d0163745a225/include/libkrun.h#L269
-// const NET_FEATURE_CSUM: u32 = 1 << 0;
-// const NET_FEATURE_GUEST_CSUM: u32 = 1 << 1;
-// const NET_FEATURE_GUEST_TSO4: u32 = 1 << 7;
+const NET_FEATURE_CSUM: u32 = 1 << 0;
+const NET_FEATURE_GUEST_CSUM: u32 = 1 << 1;
+const NET_FEATURE_GUEST_TSO4: u32 = 1 << 7;
 // const NET_FEATURE_GUEST_TSO6: u32 = 1 << 8;
-// const NET_FEATURE_GUEST_UFO: u32 = 1 << 10;
-// const NET_FEATURE_HOST_TSO4: u32 = 1 << 11;
+const NET_FEATURE_GUEST_UFO: u32 = 1 << 10;
+const NET_FEATURE_HOST_TSO4: u32 = 1 << 11;
 // const NET_FEATURE_HOST_TSO6: u32 = 1 << 12;
-// const NET_FEATURE_HOST_UFO: u32 = 1 << 14;
+const NET_FEATURE_HOST_UFO: u32 = 1 << 14;
 
 /// These are the features enabled by krun_set_passt_fd and krun_set_gvproxy_path.
-// const COMPAT_NET_FEATURES: u32 = NET_FEATURE_CSUM
-//     | NET_FEATURE_GUEST_CSUM
-//     | NET_FEATURE_GUEST_TSO4
-//     | NET_FEATURE_GUEST_UFO
-//     | NET_FEATURE_HOST_TSO4
-//     | NET_FEATURE_HOST_UFO;
+const COMPAT_NET_FEATURES: u32 = NET_FEATURE_CSUM
+    | NET_FEATURE_GUEST_CSUM
+    | NET_FEATURE_GUEST_TSO4
+    | NET_FEATURE_GUEST_UFO
+    | NET_FEATURE_HOST_TSO4
+    | NET_FEATURE_HOST_UFO;
 
 pub(crate) fn setup_vm(
     config: &Config,
@@ -196,13 +196,21 @@ pub(crate) fn setup_vm(
             .context("Failed to set gvproxy path")?;
         }
         NetworkMode::VmNet => {
+            #[cfg(target_os = "macos")]
+            let net_features = if config.vmnet_offloading {
+                COMPAT_NET_FEATURES
+            } else {
+                0
+            };
+            #[cfg(not(target_os = "macos"))]
+            let net_features = 0u32;
             unsafe {
                 bindings::krun_add_net_unixgram(
                     ctx_id,
                     CString::from_path(&config.unixgram_sock_path).as_ptr(),
                     -1,
                     vm_network::random_mac_address().as_ptr(),
-                    0, // COMPAT_NET_FEATURES,
+                    net_features,
                     0,
                 )
             }

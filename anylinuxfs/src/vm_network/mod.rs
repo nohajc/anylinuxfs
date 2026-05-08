@@ -21,7 +21,7 @@ use crate::netutil;
 #[cfg(target_os = "macos")]
 mod darwin;
 #[cfg(target_os = "macos")]
-pub use darwin::start_vmnet_helper;
+pub use darwin::{macos_vmnet_offloading_supported, start_vmnet_helper};
 
 /// Output of a network-helper bring-up: the spawned process plus enough
 /// platform-neutral info for the orchestrator to drive the rest of the

@@ -59,6 +59,8 @@ pub struct Config {
     #[cfg(feature = "freebsd")]
     pub zfs_os: OSType,
     pub net_helper: NetHelper,
+    #[cfg(target_os = "macos")]
+    pub vmnet_offloading: bool,
     pub preferences: [PrefsObject; 2],
 }
 
