@@ -176,7 +176,7 @@ The following Linux/FreeBSD tools are invoked inside the microVM by `vmproxy/src
 **No auth providers.** Auth model:
 - System-level: `sudo` for `/dev/disk*` access on macOS
 - Privilege dropping: `krun_setuid`/`krun_setgid` in `anylinuxfs/src/bindings.rs`; vmnet-helper runs with dropped privileges
-- Passphrases: `ALFS_PASSPHRASE` env var or TTY prompt via `rpassword` 7.4.0 — never logged
+- Passphrases: `ALFS_PASSPHRASE` env var or TTY prompt via `rpassword` — never logged
 
 ## Monitoring & Observability
 

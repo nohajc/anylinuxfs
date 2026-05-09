@@ -29,7 +29,7 @@ derive_more = { version = "2.0.1", features = [
     "deref",
     "deref_mut",
 ] }
-rpassword = "7.4.0"
+rpassword = "7.5.2"
 if-addrs = "0.13.4"
 crossterm = "0.29.0"
 rayon = "1.11.0"

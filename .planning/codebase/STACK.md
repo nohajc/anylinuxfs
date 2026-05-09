@@ -39,7 +39,7 @@
 - `notify` 8.0.0 — filesystem event watching (log file following)
 - `signal-hook` 0.3.17 — signal handling with iterator interface
 - `crossterm` 0.29.0 — raw terminal input for interactive VM shell (`anylinuxfs/src/utils.rs`)
-- `rpassword` 7.4.0 — secure TTY passphrase input
+- `rpassword` 7.5.2 — secure TTY passphrase input
 - `bstr` 1.12.0 — byte strings for paths/env vars with non-UTF-8 content
 - `ipnet` 2.11.0 — IP network address types and CIDR arithmetic
 - `rand` 0.9.2 — random values (MAC address generation, socket name randomness)
