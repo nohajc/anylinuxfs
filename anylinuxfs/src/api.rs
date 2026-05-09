@@ -56,8 +56,8 @@ impl UnixHandler {
             let rt_info = runtime_info.lock().unwrap();
             privilege::chown_to_invoker(
                 socket_path,
-                rt_info.mount_config.common.invoker_uid,
-                rt_info.mount_config.common.invoker_gid,
+                rt_info.mount_config.common.privilege.invoker_uid,
+                rt_info.mount_config.common.privilege.invoker_gid,
             )?;
         }
 

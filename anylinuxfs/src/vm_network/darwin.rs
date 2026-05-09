@@ -79,12 +79,13 @@ pub fn macos_vmnet_offloading_supported() -> bool {
 }
 
 pub fn start_vmnet_helper(config: &Config) -> anyhow::Result<NetHelperService> {
-    vfkit_sock_cleanup(&config.unixgram_sock_path)?;
+    vfkit_sock_cleanup(&config.network.unixgram_sock_path)?;
 
     let rootless = macos_rootless_vmnet();
     // host_println!("vmnet-helper rootless mode: {}", rootless);
 
-    let need_elevation = !rootless && config.sudo_uid.is_none() && config.invoker_uid != 0;
+    let need_elevation =
+        !rootless && config.privilege.sudo_uid.is_none() && config.privilege.invoker_uid != 0;
     if need_elevation {
         anyhow::bail!(
             "anylinuxfs is configured to use vmnet-helper which needs sudo unless you're on macOS Tahoe or later"
@@ -101,21 +102,21 @@ pub fn start_vmnet_helper(config: &Config) -> anyhow::Result<NetHelperService> {
     )
     .context("Failed to find available network for vmnet-helper")?;
 
-    let mut vmnet_helper_cmd = Command::new(&config.vmnet_helper_path);
+    let mut vmnet_helper_cmd = Command::new(&config.paths.vmnet_helper_path);
 
-    let vmnet_helper_err = File::create(&config.nethelper_log_path)
+    let vmnet_helper_err = File::create(&config.logs.nethelper_log_path)
         .context("Failed to create vmnet-helper.log file")?;
 
     privilege::chown_to_invoker(
-        &config.nethelper_log_path,
-        config.invoker_uid,
-        config.invoker_gid,
+        &config.logs.nethelper_log_path,
+        config.privilege.invoker_uid,
+        config.privilege.invoker_gid,
     )?;
 
     vmnet_helper_cmd
         .arg("--socket")
-        .arg(&config.unixgram_sock_path);
-    if config.vmnet_offloading {
+        .arg(&config.network.unixgram_sock_path);
+    if config.network.vmnet_offloading {
         vmnet_helper_cmd.args(["--enable-tso", "--enable-checksum-offload"]);
     }
     vmnet_helper_cmd
@@ -130,7 +131,11 @@ pub fn start_vmnet_helper(config: &Config) -> anyhow::Result<NetHelperService> {
 
     // run vmnet-helper with dropped privileges (only on macOS Tahoe+ rootless mode)
     if rootless {
-        privilege::run_as_invoker(&mut vmnet_helper_cmd, config.sudo_uid, config.sudo_gid);
+        privilege::run_as_invoker(
+            &mut vmnet_helper_cmd,
+            config.privilege.sudo_uid,
+            config.privilege.sudo_gid,
+        );
     }
 
     let mut vmnet_helper_process = vmnet_helper_cmd

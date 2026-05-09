@@ -30,37 +30,61 @@ pub struct KernelConfig {
     pub path: PathBuf,
 }
 
+/// Stable binary and rootfs paths derived from the install prefix and user profile.
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct Config {
+pub struct ConfigPaths {
     pub home_dir: PathBuf,
     pub profile_path: PathBuf,
     pub exec_path: PathBuf,
-    pub root_path: PathBuf,
-    pub root_ver_file_path: PathBuf,
     pub config_file_path: PathBuf,
-    pub log_file_path: PathBuf,
-    pub kernel_log_file_path: PathBuf,
     pub libexec_path: PathBuf,
     pub init_rootfs_path: PathBuf,
-    pub kernel: KernelConfig,
-    pub gvproxy_net_sock_path: String,
-    pub gvproxy_path: PathBuf,
-    pub nethelper_log_path: PathBuf,
-    pub vmnet_helper_path: PathBuf,
     pub vmproxy_host_path: PathBuf,
+    pub gvproxy_path: PathBuf,
+    pub vmnet_helper_path: PathBuf,
+    pub root_path: PathBuf,
+    pub root_ver_file_path: PathBuf,
+}
+
+/// Ephemeral per-run log file paths (include a random ID in the filename).
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct LogPaths {
+    pub log_file_path: PathBuf,
+    pub kernel_log_file_path: PathBuf,
+    pub nethelper_log_path: PathBuf,
+}
+
+/// Network helper configuration and per-run socket paths.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct NetworkConfig {
+    pub gvproxy_net_sock_path: String,
     pub vsock_path: String,
     pub unixgram_sock_path: String,
+    pub net_helper: NetHelper,
+    #[cfg(target_os = "macos")]
+    pub vmnet_offloading: bool,
+}
+
+/// Identity of the user who invoked the process (possibly via sudo).
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct PrivilegeConfig {
     pub invoker_uid: libc::uid_t,
     pub invoker_gid: libc::gid_t,
     pub sudo_uid: Option<libc::uid_t>,
     pub sudo_gid: Option<libc::gid_t>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Config {
+    pub paths: ConfigPaths,
+    pub logs: LogPaths,
+    pub network: NetworkConfig,
+    pub privilege: PrivilegeConfig,
+    pub kernel: KernelConfig,
     pub passphrase_config: PassphrasePromptConfig,
     pub rw_rootfs: bool,
     #[cfg(feature = "freebsd")]
     pub zfs_os: OSType,
-    pub net_helper: NetHelper,
-    #[cfg(target_os = "macos")]
-    pub vmnet_offloading: bool,
     pub preferences: [PrefsObject; 2],
 }
 
@@ -85,15 +109,19 @@ impl Config {
         if src.os_type == OSType::Linux {
             let effective_dir = src.effective_base_dir();
             if !effective_dir.is_empty() {
-                let base_path = self.profile_path.join(&effective_dir);
-                new_config.root_path = base_path.join("rootfs");
-                new_config.root_ver_file_path = base_path.join("rootfs.ver");
+                let base_path = self.paths.profile_path.join(&effective_dir);
+                new_config.paths.root_path = base_path.join("rootfs");
+                new_config.paths.root_ver_file_path = base_path.join("rootfs.ver");
             }
         }
 
         #[cfg(feature = "freebsd")]
         if src.os_type != OSType::Linux {
-            let kernel_path = self.profile_path.join(&src.base_dir).join(KERNEL_IMAGE);
+            let kernel_path = self
+                .paths
+                .profile_path
+                .join(&src.base_dir)
+                .join(KERNEL_IMAGE);
             new_config.kernel.path = kernel_path;
         }
 
@@ -143,7 +171,7 @@ pub struct PrefsObject {
     #[serde(default)]
     pub misc: MiscConfig,
     #[serde(default)]
-    pub network: NetworkConfig,
+    pub network: NetworkPrefs,
     #[serde(default)]
     pub linux: OSConfig,
     #[serde(default)]
@@ -385,7 +413,7 @@ impl From<PrefsObjectOld> for PrefsObject {
             gvproxy: value.gvproxy,
             krun: value.krun,
             misc: value.misc,
-            network: NetworkConfig::default(),
+            network: NetworkPrefs::default(),
             linux: OSConfig::default(),
             freebsd: OSConfig::default(),
             log_level_numeric: value.log_level_numeric,
@@ -715,22 +743,22 @@ impl Display for MiscConfig {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
-pub struct NetworkConfig {
+pub struct NetworkPrefs {
     pub helper: Option<NetHelper>,
     #[serde(default)]
     pub vmnet_pool: Option<Ipv4Net>,
 }
 
-impl NetworkConfig {
-    fn merge_with(&self, other: &NetworkConfig) -> NetworkConfig {
-        NetworkConfig {
+impl NetworkPrefs {
+    fn merge_with(&self, other: &NetworkPrefs) -> NetworkPrefs {
+        NetworkPrefs {
             helper: other.helper.or(self.helper),
             vmnet_pool: other.vmnet_pool.clone().or(self.vmnet_pool.clone()),
         }
     }
 }
 
-impl Display for NetworkConfig {
+impl Display for NetworkPrefs {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,

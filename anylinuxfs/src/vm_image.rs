@@ -27,8 +27,8 @@ mod alpine {
         src: &ImageSource,
         guard: &mut FlockGuard<'_>,
     ) -> anyhow::Result<()> {
-        let root_path = &config.root_path;
-        let root_ver_file_path = &config.root_ver_file_path;
+        let root_path = &config.paths.root_path;
+        let root_ver_file_path = &config.paths.root_ver_file_path;
 
         if !force {
             let bash_path = root_path.join("bin/bash");
@@ -59,13 +59,18 @@ mod alpine {
             {
                 // host_println!("VM root filesystem is initialized");
                 // rootfs is initialized but check if we need to update vmproxy executable
-                if fsutil::files_likely_differ(&config.vmproxy_host_path, &vmproxy_guest_path)? {
+                if fsutil::files_likely_differ(
+                    &config.paths.vmproxy_host_path,
+                    &vmproxy_guest_path,
+                )? {
                     let _inner = guard.upgrade()?;
-                    fs::copy(&config.vmproxy_host_path, &vmproxy_guest_path).context(format!(
-                        "Failed to copy {} to {}",
-                        config.vmproxy_host_path.display(),
-                        vmproxy_guest_path.display()
-                    ))?;
+                    fs::copy(&config.paths.vmproxy_host_path, &vmproxy_guest_path).context(
+                        format!(
+                            "Failed to copy {} to {}",
+                            config.paths.vmproxy_host_path.display(),
+                            vmproxy_guest_path.display()
+                        ),
+                    )?;
                     xattr_util::set_override_stat_file(&vmproxy_guest_path, 0, 0, 0o755)?;
                     host_println!("Updated VM root filesystem");
                 }
@@ -76,9 +81,13 @@ mod alpine {
         host_println!("Initializing VM root filesystem...");
 
         let _inner = guard.upgrade()?;
-        let mut init_rootfs_cmd = Command::new(&config.init_rootfs_path);
+        let mut init_rootfs_cmd = Command::new(&config.paths.init_rootfs_path);
         // run init-rootfs with dropped privileges
-        privilege::run_as_invoker(&mut init_rootfs_cmd, config.sudo_uid, config.sudo_gid);
+        privilege::run_as_invoker(
+            &mut init_rootfs_cmd,
+            config.privilege.sudo_uid,
+            config.privilege.sudo_gid,
+        );
 
         let dns_server = netutil::get_dns_server_with_fallback();
         let docker_ref = src.docker_ref.as_deref().unwrap_or("alpine:latest");
@@ -167,12 +176,12 @@ mod freebsd {
             anyhow::bail!("FreeBSD base directory not specified");
         }
 
-        let base_path = config.profile_path.join(&src.base_dir);
+        let base_path = config.paths.profile_path.join(&src.base_dir);
         let mtimes_path = base_path.join("mtimes");
         let tmp_path = base_path.join("tmp");
 
-        let init_src_path = config.libexec_path.join(INIT_EXEC);
-        let vmproxy_src_path = config.libexec_path.join(VMPROXY_EXEC);
+        let init_src_path = config.paths.libexec_path.join(INIT_EXEC);
+        let vmproxy_src_path = config.paths.libexec_path.join(VMPROXY_EXEC);
         let vm_disk_image_path = base_path.join(VM_DISK_IMAGE);
 
         let mut deferred = Deferred::new();
@@ -216,7 +225,7 @@ mod freebsd {
                     create_iso(
                         upgrade_iso_image,
                         &tmp_path,
-                        &config.libexec_path,
+                        &config.paths.libexec_path,
                         IsoAdd::Files(&to_upgrade),
                         None,
                     )?;
@@ -234,7 +243,7 @@ mod freebsd {
                         &base_path,
                         &to_upgrade
                             .iter()
-                            .map(|f| config.libexec_path.join(f))
+                            .map(|f| config.paths.libexec_path.join(f))
                             .collect::<Vec<_>>(),
                     )
                     .context("Failed to write mtime files")?;
@@ -313,7 +322,7 @@ mod freebsd {
             .context("Failed to create rootfs/tmp directory")?;
 
         copy_file(
-            config.libexec_path.join(BOOTSTRAP_EXEC),
+            config.paths.libexec_path.join(BOOTSTRAP_EXEC),
             bootstrap_rootfs_path.join(BOOTSTRAP_EXEC),
         )?;
         host_println!(
@@ -458,7 +467,7 @@ mod freebsd {
         // invoker, so the disk image is created invoker-owned and no
         // chown fix-up is needed.
         #[cfg(target_os = "linux")]
-        if let (Some(uid), Some(gid)) = (config.sudo_uid, config.sudo_gid) {
+        if let (Some(uid), Some(gid)) = (config.privilege.sudo_uid, config.privilege.sudo_gid) {
             if let Err(e) = privilege::chown_tree_to_invoker(&base_path, uid, gid) {
                 host_eprintln!(
                     "Failed to chown {} to invoker: {:#}",
@@ -707,7 +716,7 @@ pub fn remove(
     guard: &mut FlockGuard<'_>,
 ) -> anyhow::Result<()> {
     let _inner = guard.upgrade()?;
-    let base_path = config.profile_path.join(&src.effective_base_dir());
+    let base_path = config.paths.profile_path.join(&src.effective_base_dir());
     fs::remove_dir_all(&base_path)?;
     Ok(())
 }
@@ -732,7 +741,7 @@ pub fn setup_net_helper(
     config: &Config,
     start_vm_fn: impl FnOnce(Option<Ipv4Net>) -> anyhow::Result<i32>,
 ) -> anyhow::Result<i32> {
-    match config.net_helper.os_override(config.kernel.os) {
+    match config.network.net_helper.os_override(config.kernel.os) {
         NetHelper::GvProxy => setup_gvproxy(config, start_vm_fn),
         #[cfg(target_os = "macos")]
         NetHelper::VmNet => setup_vmnet_helper(config, start_vm_fn),
@@ -750,10 +759,10 @@ pub fn setup_vmnet_helper(
 
     let net_helper_svc = vm_network::start_vmnet_helper(&config)?;
     let mut vmnet_helper = net_helper_svc.proc;
-    fsutil::wait_for_file(&config.unixgram_sock_path)?;
+    fsutil::wait_for_file(&config.network.unixgram_sock_path)?;
 
     _ = deferred.add(|| {
-        if let Err(e) = vm_network::vfkit_sock_cleanup(&config.unixgram_sock_path) {
+        if let Err(e) = vm_network::vfkit_sock_cleanup(&config.network.unixgram_sock_path) {
             host_eprintln!("{:#}", e);
         }
     });
@@ -785,10 +794,10 @@ pub fn setup_gvproxy(
 
     let net_helper_svc = vm_network::start_gvproxy(&config)?;
     let mut gvproxy = net_helper_svc.proc;
-    fsutil::wait_for_file(&config.unixgram_sock_path)?;
+    fsutil::wait_for_file(&config.network.unixgram_sock_path)?;
 
     _ = deferred.add(|| {
-        if let Err(e) = vm_network::vfkit_sock_cleanup(&config.unixgram_sock_path) {
+        if let Err(e) = vm_network::vfkit_sock_cleanup(&config.network.unixgram_sock_path) {
             host_eprintln!("{:#}", e);
         }
     });

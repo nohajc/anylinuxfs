@@ -195,10 +195,10 @@ pub(crate) fn apply_krun_priv_drop(
     #[cfg(target_os = "macos")]
     {
         use crate::ResultWithCtx;
-        if let Some(uid) = _config.sudo_uid {
+        if let Some(uid) = _config.privilege.sudo_uid {
             krun::krun_setuid(_ctx_id, uid).context("Failed to set vmm uid")?;
         }
-        if let Some(gid) = _config.sudo_gid {
+        if let Some(gid) = _config.privilege.sudo_gid {
             krun::krun_setgid(_ctx_id, gid).context("Failed to set vmm gid")?;
         }
     }

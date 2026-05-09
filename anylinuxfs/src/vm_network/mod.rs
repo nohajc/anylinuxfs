@@ -78,10 +78,10 @@ pub fn vsock_cleanup(vsock_path: &str) -> anyhow::Result<()> {
 const GVPROXY_FORWARDED_PORTS: &[u16] = &[2049, 32765, 32767];
 
 pub fn start_gvproxy(config: &Config) -> anyhow::Result<NetHelperService> {
-    vfkit_sock_cleanup(&config.unixgram_sock_path)?;
+    vfkit_sock_cleanup(&config.network.unixgram_sock_path)?;
 
-    let net_sock_uri = format!("unix://{}", &config.gvproxy_net_sock_path);
-    let vfkit_sock_uri = format!("unixgram://{}", &config.unixgram_sock_path);
+    let net_sock_uri = format!("unix://{}", &config.network.gvproxy_net_sock_path);
+    let vfkit_sock_uri = format!("unixgram://{}", &config.network.unixgram_sock_path);
     let mut gvproxy_args = vec![
         "--listen",
         &net_sock_uri,
@@ -95,17 +95,17 @@ pub fn start_gvproxy(config: &Config) -> anyhow::Result<NetHelperService> {
         gvproxy_args.push("--debug");
     }
 
-    let mut gvproxy_cmd = Command::new(&config.gvproxy_path);
+    let mut gvproxy_cmd = Command::new(&config.paths.gvproxy_path);
 
-    let gvproxy_out =
-        File::create(&config.nethelper_log_path).context("Failed to create nethelper log file")?;
+    let gvproxy_out = File::create(&config.logs.nethelper_log_path)
+        .context("Failed to create nethelper log file")?;
     let gvproxy_err =
         File::try_clone(&gvproxy_out).context("Failed to clone nethelper log file handle")?;
 
     privilege::chown_to_invoker(
-        &config.nethelper_log_path,
-        config.invoker_uid,
-        config.invoker_gid,
+        &config.logs.nethelper_log_path,
+        config.privilege.invoker_uid,
+        config.privilege.invoker_gid,
     )?;
 
     gvproxy_cmd
@@ -116,7 +116,11 @@ pub fn start_gvproxy(config: &Config) -> anyhow::Result<NetHelperService> {
     // Run gvproxy with dropped privileges on macOS. On Linux, keep root so it
     // can bind privileged ports (rpcbind on 111 is forwarded for NFSv3).
     #[cfg(target_os = "macos")]
-    privilege::run_as_invoker(&mut gvproxy_cmd, config.sudo_uid, config.sudo_gid);
+    privilege::run_as_invoker(
+        &mut gvproxy_cmd,
+        config.privilege.sudo_uid,
+        config.privilege.sudo_gid,
+    );
 
     let gvproxy_process = gvproxy_cmd
         .spawn()
@@ -175,11 +179,11 @@ pub fn connect_to_vm_ctrl_socket(
         let sock_path = match config.kernel.os {
             OSType::Linux => {
                 host_println!("Using vsock for VM control socket");
-                &config.vsock_path
+                &config.network.vsock_path
             }
             _ => {
                 host_println!("Using gvproxy tunnel for VM control socket");
-                &config.gvproxy_net_sock_path
+                &config.network.gvproxy_net_sock_path
             }
         };
         Box::new(UnixStream::connect(sock_path).context("Failed to connect to VM control socket")?)

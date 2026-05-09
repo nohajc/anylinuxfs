@@ -628,7 +628,7 @@ pub(crate) fn cleanup_old_logs<'a>(
     // Collect active log paths from pre-discovered instances
     let mut active_log_paths = HashSet::new();
     for rt_info in active_instances {
-        active_log_paths.insert(rt_info.mount_config.common.log_file_path.as_path());
+        active_log_paths.insert(rt_info.mount_config.common.logs.log_file_path.as_path());
     }
 
     // Calculate retention count
@@ -863,7 +863,7 @@ fn setup_rpcbind_services<'a>(
     services_to_restore: &'a [rpcbind::Entry],
     deferred: &mut Deferred<'a>,
 ) -> anyhow::Result<()> {
-    if !(config.common.net_helper == NetHelper::GvProxy && network_env.rpcbind_running) {
+    if !(config.common.network.net_helper == NetHelper::GvProxy && network_env.rpcbind_running) {
         return Ok(());
     }
 
@@ -885,8 +885,8 @@ fn setup_rpcbind_services<'a>(
     // but we have to unregister any conflicting system services first
     // (make sure to elevate if we need to unregister any services not owned by us)
     let unregister_fn = || -> anyhow::Result<()> {
-        let uid = config.common.invoker_uid;
-        if config.common.sudo_uid.is_none() && uid != 0 {
+        let uid = config.common.privilege.invoker_uid;
+        if config.common.privilege.sudo_uid.is_none() && uid != 0 {
             let any_root_svcs = services_to_restore
                 .iter()
                 .any(|entry| Some(&entry.owner) != utils::user_name_from_uid(uid).as_ref());
@@ -895,7 +895,7 @@ fn setup_rpcbind_services<'a>(
                 safe_println!("rpcbind already running, need to use sudo for NFS setup")?;
                 Command::new("sudo")
                     .arg("-S")
-                    .arg(&config.common.exec_path)
+                    .arg(&config.common.paths.exec_path)
                     .arg("rpcbind")
                     .arg("unregister")
                     .status()?;
@@ -919,8 +919,11 @@ fn setup_rpcbind_services<'a>(
     // Just register inline as root.
     #[cfg(target_os = "macos")]
     {
-        if let (Some(uid), Some(gid)) = (config.common.sudo_uid, config.common.sudo_gid) {
-            let status = Command::new(&config.common.exec_path)
+        if let (Some(uid), Some(gid)) = (
+            config.common.privilege.sudo_uid,
+            config.common.privilege.sudo_gid,
+        ) {
+            let status = Command::new(&config.common.paths.exec_path)
                 .arg("rpcbind")
                 .arg("register")
                 .uid(uid)
@@ -993,10 +996,10 @@ impl<'a> NfsShareSetup<'a> {
             Some(mount_point) => mount_point.into(),
             None => {
                 // default mount point will be created
-                let volume_base_dir = if self.config.common.sudo_uid.is_some() {
+                let volume_base_dir = if self.config.common.privilege.sudo_uid.is_some() {
                     PathBuf::from("/")
                 } else {
-                    self.config.common.home_dir.clone()
+                    self.config.common.paths.home_dir.clone()
                 }
                 .join(MOUNT_BASE);
 
@@ -1022,8 +1025,8 @@ impl<'a> NfsShareSetup<'a> {
                 })?;
                 privilege::chown_to_invoker(
                     &mount_path,
-                    self.config.common.invoker_uid,
-                    self.config.common.invoker_gid,
+                    self.config.common.privilege.invoker_uid,
+                    self.config.common.privilege.invoker_gid,
                 )?;
 
                 mount_path.into()
@@ -1050,8 +1053,8 @@ impl<'a> NfsShareSetup<'a> {
         let mut status = Command::new("sh")
             .arg("-c")
             .arg(shell_script)
-            .uid(self.config.common.invoker_uid)
-            .gid(self.config.common.invoker_gid)
+            .uid(self.config.common.privilege.invoker_uid)
+            .gid(self.config.common.privilege.invoker_gid)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()?;
@@ -1083,8 +1086,8 @@ impl<'a> NfsShareSetup<'a> {
             let _ = Command::new("sh")
                 .arg("-c")
                 .arg(shell_script)
-                .uid(self.config.common.invoker_uid)
-                .gid(self.config.common.invoker_gid)
+                .uid(self.config.common.privilege.invoker_uid)
+                .gid(self.config.common.privilege.invoker_gid)
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .status();
@@ -1116,7 +1119,8 @@ impl<'a> NfsShareSetup<'a> {
             .peekable();
 
         let _log_guard = ConsoleLogGuard::enable_temporarily(verbose);
-        let elevate = self.config.common.sudo_uid.is_none() && self.config.common.invoker_uid != 0;
+        let elevate = self.config.common.privilege.sudo_uid.is_none()
+            && self.config.common.privilege.invoker_uid != 0;
 
         if elevate && additional_exports.peek().is_some() {
             host_println!("need to use sudo to mount additional NFS exports");
@@ -1198,7 +1202,7 @@ impl super::AppRunner {
             );
         }
 
-        let log_file_path = &config.common.log_file_path;
+        let log_file_path = &config.common.logs.log_file_path;
 
         // Discover active instances once, to avoid redundant socket polling
         let (active_instances, stale_sockets) = collect_active_instances();
@@ -1221,12 +1225,12 @@ impl super::AppRunner {
 
         privilege::chown_to_invoker(
             log_file_path,
-            config.common.invoker_uid,
-            config.common.invoker_gid,
+            config.common.privilege.invoker_uid,
+            config.common.privilege.invoker_gid,
         )?;
 
         // remove kernel log from the last run
-        _ = fs::remove_file(&config.common.kernel_log_file_path);
+        _ = fs::remove_file(&config.common.logs.kernel_log_file_path);
 
         let forked = utils::fork_with_comm_pipe()?;
         if forked.pid == 0 {
@@ -1315,7 +1319,7 @@ impl super::AppRunner {
             mnt_dev_info.set_vm_disk("/dev/vtbd1".to_string());
 
             config = config.with_image_source(&src);
-            let freebsd_base_path = config.common.profile_path.join(&src.base_dir);
+            let freebsd_base_path = config.common.paths.profile_path.join(&src.base_dir);
             let vm_disk_image = "freebsd-microvm-disk.img";
             let root_disk_path = freebsd_base_path.join(vm_disk_image);
             host_println!("root_disk: {}", root_disk_path.display());
@@ -1329,7 +1333,7 @@ impl super::AppRunner {
 
             img_src = src;
         } else {
-            host_println!("root_path: {}", config.common.root_path.display());
+            host_println!("root_path: {}", config.common.paths.root_path.display());
         }
 
         {
@@ -1359,7 +1363,7 @@ impl super::AppRunner {
             }
             opts.push_str(&format!(
                 "uid={},gid={}",
-                config.common.invoker_uid, config.common.invoker_gid
+                config.common.privilege.invoker_uid, config.common.privilege.invoker_gid
             ));
             config.mount_options = Some(opts);
         }
@@ -1377,13 +1381,14 @@ impl super::AppRunner {
         let os = config.common.kernel.os;
         let shared_volume = config.bind_addr.is_some_and(|addr| !addr.is_loopback());
 
-        config.common.net_helper = config
+        config.common.network.net_helper = config
             .common
+            .network
             .net_helper
             .bind_addr_override(shared_volume)
             .os_override(os);
 
-        let net_helper_svc = match config.common.net_helper {
+        let net_helper_svc = match config.common.network.net_helper {
             NetHelper::GvProxy => {
                 let svc = vm_network::start_gvproxy(&config.common)?;
                 network_env.usable_loopback_ip = Some(svc.vm_host_ip.clone());
@@ -1399,10 +1404,10 @@ impl super::AppRunner {
         let mut net_helper_proc = net_helper_svc.proc;
 
         let net_helper_pid = net_helper_proc.id() as libc::pid_t;
-        fsutil::wait_for_file(&config.common.unixgram_sock_path)?;
+        fsutil::wait_for_file(&config.common.network.unixgram_sock_path)?;
 
         _ = deferred.add({
-            let vfkit_sock_path = config.common.unixgram_sock_path.clone();
+            let vfkit_sock_path = config.common.network.unixgram_sock_path.clone();
             move || {
                 if let Err(e) = vm_network::vfkit_sock_cleanup(&vfkit_sock_path) {
                     host_eprintln!("{:#}", e);
@@ -1428,7 +1433,7 @@ impl super::AppRunner {
         });
 
         _ = deferred.add({
-            let vsock_path = config.common.vsock_path.clone();
+            let vsock_path = config.common.network.vsock_path.clone();
             move || {
                 if let Err(e) = vm_network::vsock_cleanup(&vsock_path) {
                     host_eprintln!("{:#}", e);
@@ -1454,7 +1459,7 @@ impl super::AppRunner {
             let mut ctx = setup_vm(
                 &config.common,
                 &dev_info,
-                NetworkMode::default_virtio_net(os, config.common.net_helper),
+                NetworkMode::default_virtio_net(os, config.common.network.net_helper),
                 true,
                 opts,
             )
@@ -1495,7 +1500,10 @@ impl super::AppRunner {
 
             // DNS record must be created by regular user, otherwise
             // dropping permissions after mount won't have any effect
-            drop_effective_privileges(config.common.sudo_uid, config.common.sudo_gid)?;
+            drop_effective_privileges(
+                config.common.privilege.sudo_uid,
+                config.common.privilege.sudo_gid,
+            )?;
 
             // Pick a hostname not already in use by another anylinuxfs instance
             config.vm_hostname =
@@ -1544,26 +1552,27 @@ impl super::AppRunner {
             // if anylinuxfs mount was run with sudo but not
             // for a regular user where this should be a no-op
             elevate_effective_privileges()?;
-            services_to_restore =
-                if config.common.net_helper == NetHelper::GvProxy && network_env.rpcbind_running {
-                    rpcbind::services::list()?
-                        .into_iter()
-                        .filter(|entry| {
-                            entry.prog == rpcbind::RPCPROG_MNT
-                                || entry.prog == rpcbind::RPCPROG_NFS
-                                || entry.prog == rpcbind::RPCPROG_STAT
-                        })
-                        .collect()
-                } else {
-                    Vec::new()
-                };
+            services_to_restore = if config.common.network.net_helper == NetHelper::GvProxy
+                && network_env.rpcbind_running
+            {
+                rpcbind::services::list()?
+                    .into_iter()
+                    .filter(|entry| {
+                        entry.prog == rpcbind::RPCPROG_MNT
+                            || entry.prog == rpcbind::RPCPROG_NFS
+                            || entry.prog == rpcbind::RPCPROG_STAT
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
             setup_rpcbind_services(&config, &network_env, &services_to_restore, &mut deferred)?;
 
             let (nfs_ready_tx, nfs_ready_rx) = mpsc::channel();
             let (vm_pwd_prompt_tx, vm_pwd_prompt_rx) = mpsc::channel();
             let (vm_report_tx, vm_report_rx) = mpsc::channel::<vmctrl::Report>();
 
-            let kernel_log_file_path = config.common.kernel_log_file_path.as_path();
+            let kernel_log_file_path = config.common.logs.kernel_log_file_path.as_path();
             deferred.add(move || {
                 match vm_report_rx.recv_timeout(Duration::from_secs(3)) {
                     Ok(report) => {
@@ -1728,7 +1737,10 @@ impl super::AppRunner {
                 // gvproxy, removal of root:root vsock socket in /tmp, removal
                 // of /mnt/<name> — need to re-elevate via the ElevateOnDrop
                 // guard declared right after `Deferred::new()` above.
-                drop_privileges(config.common.sudo_uid, config.common.sudo_gid)?;
+                drop_privileges(
+                    config.common.privilege.sudo_uid,
+                    config.common.privilege.sudo_gid,
+                )?;
 
                 if can_detach {
                     // tell the parent to detach from console (i.e. exit)
@@ -1753,7 +1765,10 @@ impl super::AppRunner {
                 host_println!("NFS server not ready");
 
                 // drop privileges back to the original user if he used sudo
-                drop_privileges(config.common.sudo_uid, config.common.sudo_gid)?;
+                drop_privileges(
+                    config.common.privilege.sudo_uid,
+                    config.common.privilege.sudo_gid,
+                )?;
 
                 // tell the parent to wait for the child to exit
                 unsafe { write_to_pipe(comm_write_fd, b"join\n") }

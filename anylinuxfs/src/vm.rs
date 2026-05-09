@@ -167,8 +167,10 @@ pub(crate) fn setup_vm(
     privilege::apply_krun_priv_drop(ctx_id, config)?;
 
     if opts.root_device.is_none() {
-        unsafe { bindings::krun_set_root(ctx_id, CString::from_path(&config.root_path).as_ptr()) }
-            .context("Failed to set root")?;
+        unsafe {
+            bindings::krun_set_root(ctx_id, CString::from_path(&config.paths.root_path).as_ptr())
+        }
+        .context("Failed to set root")?;
     }
 
     for (i, di) in dev_info.iter().enumerate() {
@@ -188,7 +190,7 @@ pub(crate) fn setup_vm(
             unsafe {
                 bindings::krun_set_gvproxy_path(
                     ctx_id,
-                    CString::new(config.unixgram_sock_path.as_str())
+                    CString::new(config.network.unixgram_sock_path.as_str())
                         .unwrap()
                         .as_ptr(),
                 )
@@ -197,7 +199,7 @@ pub(crate) fn setup_vm(
         }
         NetworkMode::VmNet => {
             #[cfg(target_os = "macos")]
-            let net_features = if config.vmnet_offloading {
+            let net_features = if config.network.vmnet_offloading {
                 COMPAT_NET_FEATURES
             } else {
                 0
@@ -207,7 +209,7 @@ pub(crate) fn setup_vm(
             unsafe {
                 bindings::krun_add_net_unixgram(
                     ctx_id,
-                    CString::from_path(&config.unixgram_sock_path).as_ptr(),
+                    CString::from_path(&config.network.unixgram_sock_path).as_ptr(),
                     -1,
                     vm_network::random_mac_address().as_ptr(),
                     net_features,
@@ -219,14 +221,16 @@ pub(crate) fn setup_vm(
         NetworkMode::Default => (),
     };
 
-    vm_network::vsock_cleanup(&config.vsock_path)?;
+    vm_network::vsock_cleanup(&config.network.vsock_path)?;
 
     if use_vsock {
         unsafe {
             bindings::krun_add_vsock_port2(
                 ctx_id,
                 12700,
-                CString::new(config.vsock_path.as_str()).unwrap().as_ptr(),
+                CString::new(config.network.vsock_path.as_str())
+                    .unwrap()
+                    .as_ptr(),
                 true,
             )
         }
@@ -269,12 +273,12 @@ pub(crate) fn setup_vm(
     .context("Failed to set kernel")?;
 
     let root_path = match os {
-        OSType::Linux => Some(config.root_path.clone()),
+        OSType::Linux => Some(config.paths.root_path.clone()),
         OSType::FreeBSD => None, // no virtiofs => no root path
     };
 
-    let invoker_uid = config.invoker_uid;
-    let invoker_gid = config.invoker_gid;
+    let invoker_uid = config.privilege.invoker_uid;
+    let invoker_gid = config.privilege.invoker_gid;
 
     Ok(VMContext {
         id: ctx_id,
@@ -331,10 +335,14 @@ pub(crate) fn prepare_key_file_for_vm(
             // Copy the key file into the virtiofs-mapped rootfs directory.
             // The VM sees it as /.alfs_keyfile via virtiofs.
             let keyfile_name = format!(".alfs_keyfile-{}", rand_string(8));
-            let dst = config.root_path.join(&keyfile_name);
+            let dst = config.paths.root_path.join(&keyfile_name);
             fs::copy(key_file_host_path, &dst)
                 .with_context(|| format!("Failed to copy key file to rootfs: {}", dst.display()))?;
-            privilege::chown_to_invoker(&dst, config.invoker_uid, config.invoker_gid)?;
+            privilege::chown_to_invoker(
+                &dst,
+                config.privilege.invoker_uid,
+                config.privilege.invoker_gid,
+            )?;
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;

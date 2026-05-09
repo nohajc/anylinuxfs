@@ -19,7 +19,10 @@ use notify::{RecursiveMode, Watcher};
 use std::sync::mpsc;
 use utils::{FlockKind, LockFile, StatusError, write_to_pipe};
 
-use crate::settings::{Config, ImageSource, KernelConfig, MountConfig, Preferences};
+use crate::settings::{
+    Config, ConfigPaths, ImageSource, KernelConfig, LogPaths, MountConfig, NetworkConfig,
+    Preferences, PrivilegeConfig,
+};
 
 mod api;
 mod cli;
@@ -249,35 +252,43 @@ fn load_config(common_args: &CommonArgs, debug_args: &DebugArgs) -> anyhow::Resu
     let rw_rootfs = debug_args.rw_rootfs;
 
     Ok(Config {
-        home_dir,
-        profile_path,
-        exec_path,
-        root_path,
-        root_ver_file_path,
-        config_file_path,
-        log_file_path,
-        kernel_log_file_path,
-        libexec_path,
-        init_rootfs_path,
+        paths: ConfigPaths {
+            home_dir,
+            profile_path,
+            exec_path,
+            config_file_path,
+            libexec_path,
+            init_rootfs_path,
+            vmproxy_host_path,
+            gvproxy_path,
+            vmnet_helper_path,
+            root_path,
+            root_ver_file_path,
+        },
+        logs: LogPaths {
+            log_file_path,
+            kernel_log_file_path,
+            nethelper_log_path,
+        },
+        network: NetworkConfig {
+            gvproxy_net_sock_path,
+            vsock_path,
+            unixgram_sock_path,
+            net_helper,
+            #[cfg(target_os = "macos")]
+            vmnet_offloading: vm_network::macos_vmnet_offloading_supported(),
+        },
+        privilege: PrivilegeConfig {
+            invoker_uid,
+            invoker_gid,
+            sudo_uid,
+            sudo_gid,
+        },
         kernel,
-        gvproxy_net_sock_path,
-        gvproxy_path,
-        nethelper_log_path,
-        vmnet_helper_path,
-        vmproxy_host_path,
-        vsock_path,
-        unixgram_sock_path,
-        invoker_uid,
-        invoker_gid,
-        sudo_uid,
-        sudo_gid,
         passphrase_config,
         rw_rootfs,
         #[cfg(feature = "freebsd")]
         zfs_os,
-        net_helper,
-        #[cfg(target_os = "macos")]
-        vmnet_offloading: vm_network::macos_vmnet_offloading_supported(),
         preferences,
     })
 }
@@ -504,13 +515,16 @@ impl AppRunner {
                         anyhow::bail!("unknown image: {}", image_name);
                     }
                 };
-                let freebsd_base_path = config.common.profile_path.join(&src.base_dir);
+                let freebsd_base_path = config.common.paths.profile_path.join(&src.base_dir);
                 let vm_disk_image = "freebsd-microvm-disk.img";
                 let disk_path = freebsd_base_path.join(vm_disk_image);
                 match src.os_type {
                     OSType::Linux => {
-                        let linux_base_path =
-                            config.common.profile_path.join(src.effective_base_dir());
+                        let linux_base_path = config
+                            .common
+                            .paths
+                            .profile_path
+                            .join(src.effective_base_dir());
                         let root_path = linux_base_path.join("rootfs");
                         host_println!("root_path: {}", root_path.display());
                     }
@@ -523,7 +537,7 @@ impl AppRunner {
             }
             None => {
                 let default_src = default_linux_image_source(&config.common.preferences);
-                host_println!("root_path: {}", config.common.root_path.display());
+                host_println!("root_path: {}", config.common.paths.root_path.display());
                 (config.with_image_source(&default_src), default_src, None)
             }
         };
@@ -563,7 +577,7 @@ impl AppRunner {
                 .collect();
         }
         let net_mode = match cmd.no_tsi {
-            true => NetworkMode::default_virtio_net(os, config.common.net_helper),
+            true => NetworkMode::default_virtio_net(os, config.common.network.net_helper),
             false => NetworkMode::default_for_os(os),
         };
         // use_vsock must be true in virtio-net mode so the vsock device is present in the
@@ -605,9 +619,9 @@ impl AppRunner {
     fn run_dmesg(&mut self) -> anyhow::Result<()> {
         let config = load_config(&CommonArgs::default(), &DebugArgs::default())?;
         #[cfg(target_os = "macos")]
-        let log_dir = config.home_dir.join("Library").join("Logs");
+        let log_dir = config.paths.home_dir.join("Library").join("Logs");
         #[cfg(target_os = "linux")]
-        let log_dir = config.home_dir.join(".anylinuxfs").join("logs");
+        let log_dir = config.paths.home_dir.join(".anylinuxfs").join("logs");
 
         // Find the most recently modified kernel log file (if it exists)
         let Some(kernel_log_path) = find_latest_log(&log_dir, "anylinuxfs_kernel-", ".log") else {
@@ -642,7 +656,7 @@ impl AppRunner {
         let mut config = load_config(&CommonArgs::default(), &DebugArgs::default())?;
         let src = default_linux_image_source(&config.preferences);
         vm_image::init(&config, false, &src, &mut guard)?;
-        let config_file_path = &config.config_file_path;
+        let config_file_path = &config.paths.config_file_path;
 
         let alpine_packages = config.preferences.alpine_custom_packages();
         let default_packages = get_default_packages();
@@ -725,7 +739,7 @@ impl AppRunner {
         match cmd {
             ImageCmd::List { verbose } => {
                 for (name, src) in images {
-                    let suffix = if src.installed_in(&config.profile_path) {
+                    let suffix = if src.installed_in(&config.paths.profile_path) {
                         " (installed)"
                     } else {
                         ""
@@ -839,7 +853,7 @@ impl AppRunner {
 
     fn run_config(&mut self, cmd: ConfigCmd) -> anyhow::Result<()> {
         let mut config = load_config(&cmd.common, &DebugArgs::default())?;
-        let config_file_path = &config.config_file_path;
+        let config_file_path = &config.paths.config_file_path;
 
         let krun_config = &mut config.preferences.user_mut().krun;
 
@@ -921,9 +935,9 @@ impl AppRunner {
     fn run_log(&mut self, cmd: LogCmd) -> anyhow::Result<()> {
         let config = load_config(&CommonArgs::default(), &DebugArgs::default())?;
         #[cfg(target_os = "macos")]
-        let log_dir = config.home_dir.join("Library").join("Logs");
+        let log_dir = config.paths.home_dir.join("Library").join("Logs");
         #[cfg(target_os = "linux")]
-        let log_dir = config.home_dir.join(".anylinuxfs").join("logs");
+        let log_dir = config.paths.home_dir.join(".anylinuxfs").join("logs");
 
         // Find the most recently modified log file
         let Some(log_file_path) = find_latest_log(&log_dir, "anylinuxfs-", ".log") else {
@@ -1006,8 +1020,9 @@ impl AppRunner {
                 }
             };
 
-            let user_name = utils::user_name_from_uid(rt_info.mount_config.common.invoker_uid)
-                .unwrap_or("<unknown>".into());
+            let user_name =
+                utils::user_name_from_uid(rt_info.mount_config.common.privilege.invoker_uid)
+                    .unwrap_or("<unknown>".into());
             let mounted_by = format!("mounted by {}", &user_name);
 
             let info: Vec<_> = rt_info
@@ -1158,8 +1173,10 @@ impl AppRunner {
                             .context(format!("Failed to send SIGKILL to anylinuxfs"));
                     }
                 }
-                _ = vm_network::vsock_cleanup(&rt_info.mount_config.common.vsock_path);
-                _ = vm_network::vfkit_sock_cleanup(&rt_info.mount_config.common.unixgram_sock_path);
+                _ = vm_network::vsock_cleanup(&rt_info.mount_config.common.network.vsock_path);
+                _ = vm_network::vfkit_sock_cleanup(
+                    &rt_info.mount_config.common.network.unixgram_sock_path,
+                );
                 return Ok(());
             }
         }
