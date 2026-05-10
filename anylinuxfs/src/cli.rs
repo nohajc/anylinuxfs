@@ -71,7 +71,7 @@ Recognized environment variables:
     UpgradeConfig(UpgradeConfigCmd),
 }
 
-#[derive(Args, Default, PartialEq, Eq)]
+#[derive(Args, Default, Clone, PartialEq, Eq)]
 pub(crate) struct CommonArgs {
     /// Passphrase configuration (ask for each drive / use one for all)
     #[arg(short, long)]
@@ -269,6 +269,8 @@ pub(crate) struct ShellCmd {
     #[arg(long)]
     pub no_tsi: bool,
     #[command(flatten)]
+    pub common: CommonArgs,
+    #[command(flatten)]
     pub debug: DebugArgs,
 }
 
@@ -284,7 +286,7 @@ impl From<ShellCmd> for MountCmd {
             remount: shell_cmd.remount,
             action: None,
             fs_driver: None,
-            common: CommonArgs::default(),
+            common: shell_cmd.common,
             #[cfg(target_os = "macos")]
             window: false,
             bind_addr: None,

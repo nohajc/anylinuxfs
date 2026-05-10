@@ -240,9 +240,8 @@ fn load_config(common_args: &CommonArgs, debug_args: &DebugArgs) -> anyhow::Resu
     #[cfg(feature = "freebsd")]
     let zfs_os = common_args.zfs_os.unwrap_or(preferences.zfs_os());
 
-    let net_helper = common_args
-        .net_helper
-        .unwrap_or(preferences.network_helper());
+    let preferred_net_helper = preferences.network_helper();
+    let specified_net_helper = common_args.net_helper;
 
     let kernel = KernelConfig {
         os: OSType::Linux,
@@ -274,7 +273,8 @@ fn load_config(common_args: &CommonArgs, debug_args: &DebugArgs) -> anyhow::Resu
             gvproxy_net_sock_path,
             vsock_path,
             unixgram_sock_path,
-            net_helper,
+            preferred_net_helper,
+            specified_net_helper,
             #[cfg(target_os = "macos")]
             vmnet_offloading: vm_network::macos_vmnet_offloading_supported(),
         },
@@ -576,8 +576,14 @@ impl AppRunner {
                 .cloned()
                 .collect();
         }
+
+        let effective_net_helper = config
+            .common
+            .network
+            .effective_net_helper(|net_helper| net_helper.os_override(config.common.kernel.os));
+
         let net_mode = match cmd.no_tsi {
-            true => NetworkMode::default_virtio_net(os, config.common.network.net_helper),
+            true => NetworkMode::default_virtio_net(os, effective_net_helper),
             false => NetworkMode::default_for_os(os),
         };
         // use_vsock must be true in virtio-net mode so the vsock device is present in the
@@ -605,7 +611,7 @@ impl AppRunner {
         if os == OSType::Linux && !cmd.no_tsi {
             start_vm(&ctx, &cmdline, &vm_env).context("Failed to start microVM shell")?;
         } else {
-            vm_image::setup_net_helper(&config.common, |vm_native_cidr| {
+            vm_image::setup_net_helper(&config.common, effective_net_helper, |vm_native_cidr| {
                 if let Some(cidr) = vm_native_cidr {
                     cmdline.extend(["-n".into(), cidr.to_string().into()]);
                 }

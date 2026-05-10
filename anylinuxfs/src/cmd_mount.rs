@@ -551,6 +551,7 @@ pub(crate) struct NetworkEnv {
     pub(crate) rpcbind_running: bool,
     pub(crate) usable_loopback_ip: Option<Host>,
     pub(crate) active_vm_hosts: HashSet<String>,
+    pub(crate) net_helper: NetHelper,
 }
 
 pub(crate) fn discover_api_sockets() -> anyhow::Result<Vec<PathBuf>> {
@@ -863,7 +864,7 @@ fn setup_rpcbind_services<'a>(
     services_to_restore: &'a [rpcbind::Entry],
     deferred: &mut Deferred<'a>,
 ) -> anyhow::Result<()> {
-    if !(config.common.network.net_helper == NetHelper::GvProxy && network_env.rpcbind_running) {
+    if !(network_env.net_helper == NetHelper::GvProxy && network_env.rpcbind_running) {
         return Ok(());
     }
 
@@ -1381,14 +1382,12 @@ impl super::AppRunner {
         let os = config.common.kernel.os;
         let shared_volume = config.bind_addr.is_some_and(|addr| !addr.is_loopback());
 
-        config.common.network.net_helper = config
-            .common
-            .network
-            .net_helper
-            .bind_addr_override(shared_volume)
-            .os_override(os);
+        let effective_net_helper = config.common.network.effective_net_helper(|net_helper| {
+            net_helper.bind_addr_override(shared_volume).os_override(os)
+        });
+        network_env.net_helper = effective_net_helper;
 
-        let net_helper_svc = match config.common.network.net_helper {
+        let net_helper_svc = match effective_net_helper {
             NetHelper::GvProxy => {
                 let svc = vm_network::start_gvproxy(&config.common)?;
                 network_env.usable_loopback_ip = Some(svc.vm_host_ip.clone());
@@ -1459,7 +1458,7 @@ impl super::AppRunner {
             let mut ctx = setup_vm(
                 &config.common,
                 &dev_info,
-                NetworkMode::default_virtio_net(os, config.common.network.net_helper),
+                NetworkMode::default_virtio_net(os, effective_net_helper),
                 true,
                 opts,
             )
@@ -1552,20 +1551,19 @@ impl super::AppRunner {
             // if anylinuxfs mount was run with sudo but not
             // for a regular user where this should be a no-op
             elevate_effective_privileges()?;
-            services_to_restore = if config.common.network.net_helper == NetHelper::GvProxy
-                && network_env.rpcbind_running
-            {
-                rpcbind::services::list()?
-                    .into_iter()
-                    .filter(|entry| {
-                        entry.prog == rpcbind::RPCPROG_MNT
-                            || entry.prog == rpcbind::RPCPROG_NFS
-                            || entry.prog == rpcbind::RPCPROG_STAT
-                    })
-                    .collect()
-            } else {
-                Vec::new()
-            };
+            services_to_restore =
+                if effective_net_helper == NetHelper::GvProxy && network_env.rpcbind_running {
+                    rpcbind::services::list()?
+                        .into_iter()
+                        .filter(|entry| {
+                            entry.prog == rpcbind::RPCPROG_MNT
+                                || entry.prog == rpcbind::RPCPROG_NFS
+                                || entry.prog == rpcbind::RPCPROG_STAT
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
             setup_rpcbind_services(&config, &network_env, &services_to_restore, &mut deferred)?;
 
             let (nfs_ready_tx, nfs_ready_rx) = mpsc::channel();

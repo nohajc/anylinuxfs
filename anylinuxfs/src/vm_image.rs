@@ -739,9 +739,10 @@ fn rootfs_version_matches(root_ver_file_path: &Path, current_version: &str) -> b
 
 pub fn setup_net_helper(
     config: &Config,
+    net_helper: NetHelper,
     start_vm_fn: impl FnOnce(Option<Ipv4Net>) -> anyhow::Result<i32>,
 ) -> anyhow::Result<i32> {
-    match config.network.net_helper.os_override(config.kernel.os) {
+    match net_helper {
         NetHelper::GvProxy => setup_gvproxy(config, start_vm_fn),
         #[cfg(target_os = "macos")]
         NetHelper::VmNet => setup_vmnet_helper(config, start_vm_fn),

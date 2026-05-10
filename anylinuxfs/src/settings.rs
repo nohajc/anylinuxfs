@@ -60,9 +60,20 @@ pub struct NetworkConfig {
     pub gvproxy_net_sock_path: String,
     pub vsock_path: String,
     pub unixgram_sock_path: String,
-    pub net_helper: NetHelper,
+    pub preferred_net_helper: NetHelper,
+    pub specified_net_helper: Option<NetHelper>,
     #[cfg(target_os = "macos")]
     pub vmnet_offloading: bool,
+}
+
+impl NetworkConfig {
+    pub fn effective_net_helper(
+        &self,
+        pref_override: impl FnOnce(NetHelper) -> NetHelper,
+    ) -> NetHelper {
+        let net_helper = pref_override(self.preferred_net_helper);
+        self.specified_net_helper.unwrap_or(net_helper)
+    }
 }
 
 /// Identity of the user who invoked the process (possibly via sudo).
@@ -934,5 +945,135 @@ impl TableExt for toml_edit::Table {
         new_table.extend(self);
 
         new_table
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use common_utils::{NetHelper, OSType};
+
+    fn make_network_config(preferred: NetHelper, specified: Option<NetHelper>) -> NetworkConfig {
+        NetworkConfig {
+            preferred_net_helper: preferred,
+            specified_net_helper: specified,
+            ..Default::default()
+        }
+    }
+
+    // --- identity closure (no override) ---
+
+    #[test]
+    fn no_specified_identity_returns_preferred_gvproxy() {
+        let cfg = make_network_config(NetHelper::GvProxy, None);
+        assert_eq!(cfg.effective_net_helper(|h| h), NetHelper::GvProxy);
+    }
+
+    #[test]
+    fn no_specified_identity_returns_preferred_vmnet() {
+        let cfg = make_network_config(NetHelper::VmNet, None);
+        assert_eq!(cfg.effective_net_helper(|h| h), NetHelper::VmNet);
+    }
+
+    // --- specified_net_helper always wins ---
+
+    #[test]
+    fn specified_wins_over_preferred_and_override() {
+        // preferred=VmNet, specified=GvProxy: closure flips nothing, but specified wins
+        let cfg = make_network_config(NetHelper::VmNet, Some(NetHelper::GvProxy));
+        assert_eq!(cfg.effective_net_helper(|h| h), NetHelper::GvProxy);
+    }
+
+    #[test]
+    fn specified_wins_even_when_closure_would_change_preferred() {
+        // preferred=VmNet; closure would force GvProxy via os_override(FreeBSD),
+        // but specified=VmNet, so specified takes precedence.
+        let cfg = make_network_config(NetHelper::VmNet, Some(NetHelper::VmNet));
+        let result = cfg.effective_net_helper(|h| h.os_override(OSType::FreeBSD));
+        assert_eq!(result, NetHelper::VmNet);
+    }
+
+    #[test]
+    fn specified_gvproxy_wins_over_vmnet_preferred() {
+        let cfg = make_network_config(NetHelper::VmNet, Some(NetHelper::GvProxy));
+        let result = cfg.effective_net_helper(|h| h.os_override(OSType::Linux));
+        assert_eq!(result, NetHelper::GvProxy);
+    }
+
+    // --- os_override closure (mirrors vm_image.rs call site) ---
+
+    #[test]
+    fn os_override_freebsd_forces_gvproxy_when_preferred_is_vmnet() {
+        // FreeBSD must always use gvproxy regardless of preference.
+        let cfg = make_network_config(NetHelper::VmNet, None);
+        let result = cfg.effective_net_helper(|h| h.os_override(OSType::FreeBSD));
+        assert_eq!(result, NetHelper::GvProxy);
+    }
+
+    #[test]
+    fn os_override_freebsd_keeps_gvproxy_when_preferred_is_gvproxy() {
+        let cfg = make_network_config(NetHelper::GvProxy, None);
+        let result = cfg.effective_net_helper(|h| h.os_override(OSType::FreeBSD));
+        assert_eq!(result, NetHelper::GvProxy);
+    }
+
+    #[test]
+    fn os_override_linux_passes_through_preferred_vmnet() {
+        let cfg = make_network_config(NetHelper::VmNet, None);
+        let result = cfg.effective_net_helper(|h| h.os_override(OSType::Linux));
+        assert_eq!(result, NetHelper::VmNet);
+    }
+
+    #[test]
+    fn os_override_linux_passes_through_preferred_gvproxy() {
+        let cfg = make_network_config(NetHelper::GvProxy, None);
+        let result = cfg.effective_net_helper(|h| h.os_override(OSType::Linux));
+        assert_eq!(result, NetHelper::GvProxy);
+    }
+
+    // --- bind_addr_override + os_override closure (mirrors cmd_mount.rs call site) ---
+
+    #[test]
+    fn non_loopback_bind_addr_forces_gvproxy_for_linux() {
+        // shared_volume=true (non-loopback) must use gvproxy regardless of preference.
+        let cfg = make_network_config(NetHelper::VmNet, None);
+        let result =
+            cfg.effective_net_helper(|h| h.bind_addr_override(true).os_override(OSType::Linux));
+        assert_eq!(result, NetHelper::GvProxy);
+    }
+
+    #[test]
+    fn loopback_bind_addr_passes_through_preferred_for_linux() {
+        let cfg = make_network_config(NetHelper::VmNet, None);
+        let result =
+            cfg.effective_net_helper(|h| h.bind_addr_override(false).os_override(OSType::Linux));
+        assert_eq!(result, NetHelper::VmNet);
+    }
+
+    #[test]
+    fn non_loopback_bind_addr_freebsd_forces_gvproxy() {
+        // Both overrides independently force GvProxy.
+        let cfg = make_network_config(NetHelper::VmNet, None);
+        let result =
+            cfg.effective_net_helper(|h| h.bind_addr_override(true).os_override(OSType::FreeBSD));
+        assert_eq!(result, NetHelper::GvProxy);
+    }
+
+    #[test]
+    fn loopback_bind_addr_freebsd_still_forces_gvproxy_via_os_override() {
+        // bind_addr_override is a no-op (loopback), but os_override forces GvProxy.
+        let cfg = make_network_config(NetHelper::VmNet, None);
+        let result =
+            cfg.effective_net_helper(|h| h.bind_addr_override(false).os_override(OSType::FreeBSD));
+        assert_eq!(result, NetHelper::GvProxy);
+    }
+
+    #[test]
+    fn specified_wins_over_both_bind_addr_and_os_overrides() {
+        // Even if both closures would force GvProxy, specified=VmNet wins.
+        let cfg = make_network_config(NetHelper::GvProxy, Some(NetHelper::VmNet));
+        let result =
+            cfg.effective_net_helper(|h| h.bind_addr_override(true).os_override(OSType::FreeBSD));
+        assert_eq!(result, NetHelper::VmNet);
     }
 }
