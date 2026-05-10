@@ -199,11 +199,12 @@ pub(crate) fn setup_vm(
         }
         NetworkMode::VmNet => {
             #[cfg(target_os = "macos")]
-            let net_features = if config.network.vmnet_offloading {
-                COMPAT_NET_FEATURES
-            } else {
-                0
-            };
+            let net_features =
+                if config.network.vmnet_offloading && config.kernel.os == OSType::Linux {
+                    COMPAT_NET_FEATURES
+                } else {
+                    0
+                };
             #[cfg(not(target_os = "macos"))]
             let net_features = 0u32;
             unsafe {

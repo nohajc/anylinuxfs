@@ -4,7 +4,7 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::process::{Command, Stdio};
 
 use anyhow::Context;
-use common_utils::VMNET_PREFIX_LEN;
+use common_utils::{OSType, VMNET_PREFIX_LEN};
 use ipnet::Ipv4Net;
 use os_version::{MacOS, OsVersion};
 use serde::Deserialize;
@@ -116,7 +116,7 @@ pub fn start_vmnet_helper(config: &Config) -> anyhow::Result<NetHelperService> {
     vmnet_helper_cmd
         .arg("--socket")
         .arg(&config.network.unixgram_sock_path);
-    if config.network.vmnet_offloading {
+    if config.network.vmnet_offloading && config.kernel.os == OSType::Linux {
         vmnet_helper_cmd.args(["--enable-tso", "--enable-checksum-offload"]);
     }
     vmnet_helper_cmd
