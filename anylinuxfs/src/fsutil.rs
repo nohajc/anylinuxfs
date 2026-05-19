@@ -112,6 +112,19 @@ impl Default for NfsOptions {
         {
             opts.insert("deadtimeout".into(), "45".into()); // this is what Finder uses
             opts.insert("nfc".into(), "".into()); // NFC Unicode normalization (macOS-only)
+
+            // Soft mount semantics to bound kernel-level retries when the
+            // underlying microVM becomes unreachable (e.g. user hot-unplugs
+            // a managed USB drive without running `anylinuxfs unmount` first).
+            //
+            // Without this, macOS NFS client (default hard mount) retries
+            // indefinitely against the dead NFS server, holds IOMediaBSDClient
+            // busy, and triggers `panic(busy timeout[1])` once kernel watchdogd
+            // notices a registry entry stuck for 60s.
+            opts.insert("soft".into(), "".into());
+            opts.insert("intr".into(), "".into());
+            opts.insert("timeo".into(), "100".into()); // tenths of a second → 10s per try
+            opts.insert("retrans".into(), "3".into());
         }
         opts.insert(NOLOCK_KEY.into(), "".into());
         opts.insert("vers".into(), "3".into());
@@ -442,4 +455,55 @@ pub fn wait_for_file(file: impl AsRef<Path>) -> anyhow::Result<()> {
         std::thread::sleep(Duration::from_millis(100));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn default_nfs_opts() {
+        let opts = NfsOptions::default();
+        let opts_str = String::from_utf8(opts.to_list())
+            .expect("NfsOptions::to_list() should produce valid UTF-8 for ASCII keys");
+
+        assert!(
+            opts_str.contains("soft"),
+            "missing 'soft' option in default macOS NFS opts: {opts_str}"
+        );
+        assert!(
+            opts_str.contains("intr"),
+            "missing 'intr' option in default macOS NFS opts: {opts_str}"
+        );
+        assert!(
+            opts_str.contains("timeo=100"),
+            "missing 'timeo=100' option (per-retry timeout): {opts_str}"
+        );
+        assert!(
+            opts_str.contains("retrans=3"),
+            "missing 'retrans=3' option (max retransmissions): {opts_str}"
+        );
+
+        assert!(
+            opts_str.contains("deadtimeout=45"),
+            "existing 'deadtimeout=45' removed: {opts_str}"
+        );
+        assert!(
+            opts_str.contains("nfc"),
+            "existing 'nfc' option removed: {opts_str}"
+        );
+        assert!(
+            opts_str.contains("vers=3"),
+            "existing 'vers=3' removed: {opts_str}"
+        );
+        assert!(
+            opts_str.contains("port=2049"),
+            "existing 'port=2049' removed: {opts_str}"
+        );
+        assert!(
+            opts_str.contains("mountport=32767"),
+            "existing 'mountport=32767' removed: {opts_str}"
+        );
+    }
 }
