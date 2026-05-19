@@ -112,6 +112,24 @@ impl Default for NfsOptions {
         {
             opts.insert("deadtimeout".into(), "45".into()); // this is what Finder uses
             opts.insert("nfc".into(), "".into()); // NFC Unicode normalization (macOS-only)
+
+            // Soft mount semantics to bound kernel-level retries when the
+            // underlying microVM becomes unreachable (e.g. user hot-unplugs
+            // a managed USB drive without running `anylinuxfs unmount` first).
+            //
+            // Without this, macOS NFS client (default hard mount) retries
+            // indefinitely against the dead NFS server, holds IOMediaBSDClient
+            // busy, and triggers `panic(busy timeout[1])` once kernel watchdogd
+            // notices a registry entry stuck for 60s.
+            //
+            // `deadtimeout=45` above helps Finder's manual eject path but does
+            // not cover scheduled background I/O (Spotlight, Time Machine,
+            // mds_stores) that hits the dead mount after hot-unplug. The
+            // combination of `soft,timeo=100,retrans=3` returns EIO after
+            // ~30s, which is appropriate when the VM/disk is gone.
+            opts.insert("soft".into(), "".into());
+            opts.insert("timeo".into(), "100".into()); // tenths of a second → 10s per try
+            opts.insert("retrans".into(), "3".into());
         }
         opts.insert(NOLOCK_KEY.into(), "".into());
         opts.insert("vers".into(), "3".into());
@@ -442,4 +460,51 @@ pub fn wait_for_file(file: impl AsRef<Path>) -> anyhow::Result<()> {
         std::thread::sleep(Duration::from_millis(100));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression test: default macOS NFS opts must include soft-mount semantics
+    /// (`soft`, `timeo=100`, `retrans=3`) so the macOS NFS client bounds its
+    /// retries when the underlying microVM becomes unreachable (e.g. user
+    /// hot-unplugs a managed USB drive without running `anylinuxfs unmount`).
+    ///
+    /// Without these options, the kernel NFS client retries indefinitely and
+    /// holds `IOMediaBSDClient` busy until `watchdogd` triggers a kernel panic
+    /// after 60s (`panic(busy timeout[1])`). See discussion in PR adding these
+    /// options for the original incident reports.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn default_nfs_opts_include_soft_mount_semantics() {
+        let opts = NfsOptions::default();
+        let opts_str = String::from_utf8(opts.to_list())
+            .expect("NfsOptions::to_list() should produce valid UTF-8 for ASCII keys");
+
+        assert!(
+            opts_str.contains("soft"),
+            "missing 'soft' option in default macOS NFS opts: {opts_str}"
+        );
+        assert!(
+            opts_str.contains("timeo=100"),
+            "missing 'timeo=100' option (per-retry timeout): {opts_str}"
+        );
+        assert!(
+            opts_str.contains("retrans=3"),
+            "missing 'retrans=3' option (max retransmissions): {opts_str}"
+        );
+
+        // Existing defaults must remain — these support Finder eject path and
+        // mount stability. Soft-mount additions are complementary, not a
+        // replacement.
+        assert!(
+            opts_str.contains("deadtimeout=45"),
+            "existing 'deadtimeout=45' removed: {opts_str}"
+        );
+        assert!(
+            opts_str.contains("vers=3"),
+            "existing 'vers=3' removed: {opts_str}"
+        );
+    }
 }
