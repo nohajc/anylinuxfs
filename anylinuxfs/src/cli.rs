@@ -2,7 +2,7 @@ use clap::{ArgGroup, Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use common_utils::{NetHelper, OSType};
 use ipnet::Ipv4Net;
 
-use crate::settings::{KernelPage, KrunLogLevel, PassphrasePromptConfig};
+use crate::settings::{KernelPage, KrunLogLevel, PassphrasePromptConfig, VmnetOffloading};
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -86,6 +86,10 @@ pub(crate) struct CommonArgs {
     /// IP address pool for vmnet (172.27.1.0/12 by default).
     #[arg(long)]
     pub vmnet_pool: Option<Ipv4Net>,
+    /// vmnet TSO/checksum offloading
+    #[cfg(target_os = "macos")]
+    #[arg(long)]
+    pub vmnet_offloading: Option<VmnetOffloading>,
 }
 
 #[derive(Args, Default, Clone, PartialEq, Eq)]

@@ -21,7 +21,7 @@ use utils::{FlockKind, LockFile, StatusError, write_to_pipe};
 
 use crate::settings::{
     Config, ConfigPaths, ImageSource, KernelConfig, LogPaths, MountConfig, NetworkConfig,
-    Preferences, PrivilegeConfig,
+    Preferences, PrivilegeConfig, VmnetOffloading,
 };
 
 mod api;
@@ -242,6 +242,12 @@ fn load_config(common_args: &CommonArgs, debug_args: &DebugArgs) -> anyhow::Resu
 
     let preferred_net_helper = preferences.network_helper();
     let specified_net_helper = common_args.net_helper;
+    #[cfg(target_os = "macos")]
+    let vmnet_offloading = match preferences.vmnet_offloading() {
+        VmnetOffloading::Auto => vm_network::macos_vmnet_offloading_supported(),
+        VmnetOffloading::Enabled => true,
+        VmnetOffloading::Disabled => false,
+    };
 
     let kernel = KernelConfig {
         os: OSType::Linux,
@@ -276,7 +282,7 @@ fn load_config(common_args: &CommonArgs, debug_args: &DebugArgs) -> anyhow::Resu
             preferred_net_helper,
             specified_net_helper,
             #[cfg(target_os = "macos")]
-            vmnet_offloading: vm_network::macos_vmnet_offloading_supported(),
+            vmnet_offloading,
         },
         privilege: PrivilegeConfig {
             invoker_uid,
@@ -894,6 +900,9 @@ impl AppRunner {
         }
         if let Some(vmnet_pool) = cmd.common.vmnet_pool {
             network_config.vmnet_pool = Some(vmnet_pool);
+        }
+        if let Some(vmnet_offloading) = cmd.common.vmnet_offloading {
+            network_config.vmnet_offloading = Some(vmnet_offloading);
         }
 
         println!("{}", &config.preferences.merged());

@@ -158,6 +158,8 @@ pub trait Preferences {
     fn network_helper(&self) -> NetHelper;
     #[cfg(target_os = "macos")]
     fn vmnet_pool(&self) -> Ipv4Net;
+    #[cfg(target_os = "macos")]
+    fn vmnet_offloading(&self) -> VmnetOffloading;
 
     fn user<'a>(&'a self) -> &'a PrefsObject;
     fn user_mut<'a>(&'a mut self) -> &'a mut PrefsObject;
@@ -305,6 +307,15 @@ impl Preferences for [PrefsObject; 2] {
             .vmnet_pool
             .or(self[0].network.vmnet_pool)
             .unwrap_or(DEFAULT_VMNET_POOL)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn vmnet_offloading(&self) -> VmnetOffloading {
+        self[1]
+            .network
+            .vmnet_offloading
+            .or(self[0].network.vmnet_offloading)
+            .unwrap_or_default()
     }
 
     fn user<'a>(&'a self) -> &'a PrefsObject {
@@ -753,11 +764,36 @@ impl Display for MiscConfig {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq, ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum VmnetOffloading {
+    /// Enable offloading when fully supported by macOS - since 26.2 (default).
+    #[default]
+    Auto,
+    /// Always enable offloading regardless of macOS version.
+    Enabled,
+    /// Always disable offloading regardless of macOS version.
+    Disabled,
+}
+
+impl Display for VmnetOffloading {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let val = match self {
+            VmnetOffloading::Auto => "auto",
+            VmnetOffloading::Enabled => "enabled",
+            VmnetOffloading::Disabled => "disabled",
+        };
+        write!(f, "{}", val)
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct NetworkPrefs {
     pub helper: Option<NetHelper>,
     #[serde(default)]
     pub vmnet_pool: Option<Ipv4Net>,
+    #[serde(default)]
+    pub vmnet_offloading: Option<VmnetOffloading>,
 }
 
 impl NetworkPrefs {
@@ -765,6 +801,7 @@ impl NetworkPrefs {
         NetworkPrefs {
             helper: other.helper.or(self.helper),
             vmnet_pool: other.vmnet_pool.clone().or(self.vmnet_pool.clone()),
+            vmnet_offloading: other.vmnet_offloading.or(self.vmnet_offloading),
         }
     }
 }
@@ -773,9 +810,10 @@ impl Display for NetworkPrefs {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "helper = {}\nvmnet_pool = {}",
+            "helper = {}\nvmnet_pool = {}\nvmnet_offloading = {}",
             self.helper.unwrap_or_default(),
-            self.vmnet_pool.unwrap_or(DEFAULT_VMNET_POOL)
+            self.vmnet_pool.unwrap_or(DEFAULT_VMNET_POOL),
+            self.vmnet_offloading.unwrap_or_default()
         )
     }
 }
