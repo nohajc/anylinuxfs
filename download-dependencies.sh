@@ -19,7 +19,7 @@ if [[ "$HOST_OS" == "Darwin" ]]; then
     GVPROXY_VERSION="0.8.8"
     GVPROXY_URL="https://github.com/containers/gvisor-tap-vsock/releases/download/v${GVPROXY_VERSION}/gvproxy-darwin"
 
-    VMNET_HELPER_VERSION="0.11.0"
+    VMNET_HELPER_VERSION="0.12.0"
     VMNET_HELPER_URL="https://github.com/nirs/vmnet-helper/releases/download/v${VMNET_HELPER_VERSION}/vmnet-helper.tar.gz"
 fi
 
