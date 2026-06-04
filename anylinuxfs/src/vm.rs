@@ -175,10 +175,11 @@ pub(crate) fn setup_vm(
 
     for (i, di) in dev_info.iter().enumerate() {
         unsafe {
-            bindings::krun_add_disk(
+            bindings::krun_add_disk2(
                 ctx_id,
                 CString::new(format!("data{}", i)).unwrap().as_ptr(),
                 CString::from_path(di.rdisk()).as_ptr(),
+                di.disk_format().as_krun_id(),
                 opts.add_disks_ro,
             )
         }

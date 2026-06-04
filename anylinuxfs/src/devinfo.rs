@@ -9,6 +9,31 @@ use serde::{Deserialize, Serialize};
 
 use crate::diskutil;
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub enum DiskFormat {
+    #[default]
+    Raw,
+    Qcow2,
+}
+
+impl DiskFormat {
+    /// Returns the `KRUN_DISK_FORMAT_*` constant expected by `krun_add_disk2`.
+    pub fn as_krun_id(self) -> u32 {
+        match self {
+            DiskFormat::Raw => 0,
+            DiskFormat::Qcow2 => 1,
+        }
+    }
+
+    fn from_path(path: &BStr) -> Self {
+        if path.ends_with(b".qcow2") {
+            DiskFormat::Qcow2
+        } else {
+            DiskFormat::Raw
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct DevInfo {
     path: BString,
@@ -24,6 +49,7 @@ pub struct DevInfo {
     fs_driver: Option<String>,  // will be auto-detected if not set
     da_info: diskutil::DiskInfo,
     size_bytes: Option<u64>, // partition size in bytes (for image probes)
+    disk_format: DiskFormat, // image format passed to krun_add_disk2
 }
 
 const BUF_PREFIX: &[u8] = b"/dev/disk";
@@ -48,6 +74,7 @@ impl DevInfo {
             vm_part_idx: None,
             fs_driver: None,
             da_info: diskutil::DiskInfo::default(),
+            disk_format: DiskFormat::Raw,
             size_bytes: None,
         })
     }
@@ -103,6 +130,7 @@ impl DevInfo {
 
         // also get info from DiskArbitration
         let da_info = diskutil::get_info(&path);
+        let disk_format = DiskFormat::from_path(path.as_bstr());
 
         Ok(DevInfo {
             path,
@@ -118,6 +146,7 @@ impl DevInfo {
             fs_driver: None,
             da_info,
             size_bytes: None,
+            disk_format,
         })
     }
 
@@ -166,6 +195,8 @@ impl DevInfo {
         let uuid = whole_probe.lookup_value("UUID").ok();
         let pt_type = whole_probe.lookup_value("PTTYPE").ok();
 
+        let image_format = DiskFormat::from_path(path);
+
         let mut result = vec![DevInfo {
             path: path.to_owned(),
             rpath: path.to_owned(),
@@ -180,6 +211,7 @@ impl DevInfo {
             fs_driver: None,
             da_info: diskutil::DiskInfo::default(),
             size_bytes: Some(whole_probe.get_size() as u64),
+            disk_format: image_format,
         }];
 
         if let Ok(mut partitions) = whole_probe.get_partitions() {
@@ -237,6 +269,7 @@ impl DevInfo {
                         da_info: diskutil::DiskInfo::default(),
                         size_bytes,
                         vm_part_idx: Some((i + 1) as usize),
+                        disk_format: image_format,
                     });
                 }
             }
@@ -331,5 +364,9 @@ impl DevInfo {
 
     pub fn media_writable(&self) -> bool {
         self.da_info.media_writable
+    }
+
+    pub fn disk_format(&self) -> DiskFormat {
+        self.disk_format
     }
 }
