@@ -4,7 +4,9 @@
 # Tests:
 #   1. Mount raw NTFS image using the ntfs3 in-kernel driver, file I/O, unmount
 #   2. Mount using ntfs-3g FUSE driver
-#   3. --remount takes over a macOS read-only native NTFS mount for read-write access
+#   3. Names written by ntfs3 remain Unicode-correct when read by ntfs-3g
+#   4. User-provided ownership options are preserved
+#   5. --remount takes over a macOS read-only native NTFS mount for read-write access
 
 load 'test_helper/common'
 
@@ -51,6 +53,42 @@ teardown() {
   do_mount "$img" -t ntfs-3g
 
   assert_file_roundtrip "$(get_mount_point "$LABEL")"
+
+  do_unmount
+}
+
+@test "ntfs: ntfs3 filenames remain Unicode-correct under ntfs-3g" {
+  local img="${BATS_FILE_TMPDIR}/ntfs.img"
+  local mount_point="$(get_mount_point "$LABEL")"
+  local dirname="中文目录"
+  local filename="繁體中文-𠀀.txt"
+
+  do_mount "$img" -t ntfs3
+  mkdir "${mount_point}/${dirname}"
+  echo "Unicode filename roundtrip" > "${mount_point}/${dirname}/${filename}"
+  do_unmount
+
+  do_mount "$img" -t ntfs-3g
+  [[ -f "${mount_point}/${dirname}/${filename}" ]]
+  [[ "$(cat "${mount_point}/${dirname}/${filename}")" == "Unicode filename roundtrip" ]]
+  do_unmount
+}
+
+@test "ntfs: preserves user-provided ownership options" {
+  local img="${BATS_FILE_TMPDIR}/ntfs.img"
+  local custom_uid=123
+  local default_uid="${SUDO_UID:-$(id -u)}"
+  local expected_gid="${SUDO_GID:-$(id -g)}"
+
+  do_mount "$img" -t ntfs3 -o "uid=${custom_uid}"
+
+  run "$ANYLINUXFS" status
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"uid=${custom_uid}"* ]]
+  [[ "$output" == *"gid=${expected_gid}"* ]]
+  if [[ "$default_uid" != "$custom_uid" ]]; then
+    [[ "$output" != *"uid=${default_uid}"* ]]
+  fi
 
   do_unmount
 }

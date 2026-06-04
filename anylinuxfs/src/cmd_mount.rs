@@ -1177,6 +1177,28 @@ fn prepare_passphrase_callbacks(
     callbacks
 }
 
+fn append_mount_option(options: &mut Option<String>, option: &str) {
+    let options = options.get_or_insert_default();
+    if !options.is_empty() {
+        options.push(',');
+    }
+    options.push_str(option);
+}
+
+fn has_mount_option(options: Option<&str>, key: &str) -> bool {
+    options
+        .into_iter()
+        .flat_map(|options| options.split(','))
+        .any(|option| option == key || option.starts_with(&format!("{key}=")))
+}
+
+fn append_mount_option_if_missing(options: &mut Option<String>, option: &str) {
+    let key = option.split_once('=').map_or(option, |(key, _)| key);
+    if !has_mount_option(options.as_deref(), key) {
+        append_mount_option(options, option);
+    }
+}
+
 impl super::AppRunner {
     pub(crate) fn run_mount(&mut self, cmd: MountCmd) -> anyhow::Result<()> {
         let mut network_env = NetworkEnv::default();
@@ -1350,6 +1372,13 @@ impl super::AppRunner {
             config.common.preferences.krun_ram_size_mib()
         );
 
+        if mnt_dev_info.fs_driver() == Some("ntfs3") {
+            // Without this, ntfs3 stores UTF-8 filename bytes as Latin-1.
+            // ntfs3 hides the corruption when reading them back, but
+            // Windows and ntfs-3g expose mojibake.
+            append_mount_option_if_missing(&mut config.mount_options, "iocharset=utf8");
+        }
+
         // if this is NTFS or exFAT, we add uid/gid mount options
         if let Some(fs_type) = mnt_dev_info.fs_type()
             && diskutil::WINDOWS_LABELS
@@ -1358,15 +1387,14 @@ impl super::AppRunner {
                 .cloned()
                 .any(|t| t == fs_type)
         {
-            let mut opts = config.mount_options.unwrap_or_default();
-            if !opts.is_empty() {
-                opts.push_str(",");
-            }
-            opts.push_str(&format!(
-                "uid={},gid={}",
-                config.common.privilege.invoker_uid, config.common.privilege.invoker_gid
-            ));
-            config.mount_options = Some(opts);
+            append_mount_option_if_missing(
+                &mut config.mount_options,
+                &format!("uid={}", config.common.privilege.invoker_uid),
+            );
+            append_mount_option_if_missing(
+                &mut config.mount_options,
+                &format!("gid={}", config.common.privilege.invoker_gid),
+            );
         }
 
         let passphrase_callbacks =
