@@ -1,4 +1,5 @@
 use anyhow::Context;
+use bstr::ByteSlice;
 use common_utils::{PathExt, is_encrypted_fs, safe_print};
 use derive_more::{AddAssign, Deref};
 use indexmap::IndexMap;
@@ -13,7 +14,7 @@ use std::{
 };
 
 use crate::{
-    devinfo::DevInfo,
+    devinfo::{DevInfo, DiskFormat},
     settings::{Config, PassphrasePromptConfig},
     utils::is_stdin_tty,
     vm::{NetworkMode, VMOpts},
@@ -436,6 +437,12 @@ impl PvCollector {
     }
 }
 
+struct Qcow2ListImage {
+    dev_info: DevInfo,
+    path: String,
+    image_name: String,
+}
+
 pub fn list_partitions(
     config: Config,
     disks: Option<&[String]>,
@@ -445,6 +452,7 @@ pub fn list_partitions(
     let mut disk_entries = Vec::new();
 
     let mut pv = PvCollector::new(enc_partitions);
+    let mut qcow2_images = Vec::new();
 
     // On Linux, expand `disks=None` (= all) into the actual sysfs-discovered
     // disk paths up front so the per-disk loop below can drive a uniform
@@ -483,18 +491,26 @@ pub fn list_partitions(
             && p.exists()
             && p.is_file()
         {
-            // It's an image file — probe directly with libblkid, bypassing diskutil.
+            let image_name = p
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.to_string());
+
+            if DiskFormat::from_path(p.as_bytes().as_bstr()) == DiskFormat::Qcow2 {
+                qcow2_images.push(Qcow2ListImage {
+                    dev_info: DevInfo::unprobed_image(p.as_bytes().as_bstr(), None)?,
+                    path: path.to_owned(),
+                    image_name,
+                });
+                continue;
+            }
+
+            // It's a raw image file — probe directly with libblkid, bypassing diskutil.
             use bstr::BString;
             let probe_devs = DevInfo::probe_image(BString::from(p.as_bytes()))?;
-
             if !probe_devs.is_empty() {
                 let whole = &probe_devs[0];
                 let is_partitioned = whole.pt_type().is_some();
-
-                let image_name = p
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| path.to_string());
 
                 let mut entry = Entry::new(format!("{} (disk image):", path));
                 entry.header_mut().push_str(
@@ -579,6 +595,31 @@ pub fn list_partitions(
         }
     }
 
+    if !qcow2_images.is_empty() {
+        let qcow2_dev_infos = qcow2_images
+            .iter()
+            .map(|image| image.dev_info.clone())
+            .collect::<Vec<_>>();
+        let qcow2_dev_idents = qcow2_images
+            .iter()
+            .map(|image| image.image_name.clone())
+            .collect::<Vec<_>>();
+
+        match inspect_block_devices_in_guest(&config, &qcow2_dev_infos, None, false) {
+            Ok(lsblk) => {
+                render_qcow2_image_entries(&lsblk, &qcow2_images, &filter, &mut disk_entries);
+
+                if !lsblk.blockdevices.is_empty() {
+                    let vol_map = VolumeMap::from_lsblk(&lsblk, &qcow2_dev_idents);
+                    vol_map.build_entries(&mut disk_entries);
+                }
+            }
+            Err(e) => {
+                eprintln!("Failed to get qcow2 lsblk info: {:#}", e);
+            }
+        }
+    }
+
     if !pv.dev_infos.is_empty() {
         let mut enc_partitions = enc_partitions;
         if pv.decrypt_all {
@@ -598,6 +639,79 @@ pub fn list_partitions(
     }
 
     Ok(List(disk_entries))
+}
+
+fn render_qcow2_image_entries(
+    lsblk: &LsBlk,
+    images: &[Qcow2ListImage],
+    filter: &Labels,
+    disk_entries: &mut Vec<Entry>,
+) {
+    for (image, blkdev) in images.iter().zip(lsblk.blockdevices.iter()) {
+        let mut entry = Entry::new(format!("{} (disk image):", image.path));
+        entry.header_mut().push_str(
+            "   #:                       TYPE NAME                    SIZE       IDENTIFIER",
+        );
+
+        if let Some(children) = blkdev.children.as_deref() {
+            if let Some(pt_type) = blkdev.pttype.as_deref() {
+                let normalized_pt = normalize_pt_type(pt_type);
+                *entry.scheme_mut() = format!(
+                    "   0: {:>26} {:<22} +{:<10} {}",
+                    normalized_pt,
+                    "",
+                    format_lv_size(&blkdev.size),
+                    image.image_name,
+                );
+            }
+
+            for (i, child) in children.iter().enumerate() {
+                let fs_type = child.fstype.as_deref().unwrap_or("");
+
+                // Filter by filesystem type to match the raw image path.
+                if !filter.fs_types.iter().any(|t| t == &fs_type) {
+                    continue;
+                }
+
+                let label = child.label.as_deref().unwrap_or("");
+                let truncated_label = trunc_with_ellipsis(label, 23);
+                let part_num = partition_number(blkdev, child).unwrap_or(i + 1);
+                let ident = format!("{}@s{}", image.image_name, part_num);
+                entry.partitions_mut().push(format!(
+                    "{:>4}: {:>26} {:<23} {:<10} {}",
+                    part_num,
+                    fs_type,
+                    truncated_label,
+                    format_lv_size(&child.size),
+                    ident,
+                ));
+            }
+        } else {
+            let fs_type = blkdev.fstype.as_deref().unwrap_or("");
+
+            // Filter by filesystem type to match the raw image path.
+            if filter.fs_types.iter().any(|t| t == &fs_type) {
+                let label = blkdev.label.as_deref().unwrap_or("");
+                let truncated_label = trunc_with_ellipsis(label, 23);
+                entry.partitions_mut().push(format!(
+                    "   0: {:>26} {:<22} +{:<10} {}",
+                    fs_type,
+                    truncated_label,
+                    format_lv_size(&blkdev.size),
+                    image.image_name,
+                ));
+            }
+        }
+
+        disk_entries.push(entry);
+    }
+}
+
+fn partition_number(parent: &LsBlkDevice, child: &LsBlkDevice) -> Option<usize> {
+    child
+        .name
+        .strip_prefix(&parent.name)
+        .and_then(|suffix| suffix.parse().ok())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -921,6 +1035,15 @@ fn get_lsblk_info(
     enc_partitions: Option<&[String]>,
     assemble_raid: bool,
 ) -> anyhow::Result<LsBlk> {
+    inspect_block_devices_in_guest(config, dev_info, enc_partitions, assemble_raid)
+}
+
+fn inspect_block_devices_in_guest(
+    config: &Config,
+    dev_info: &[DevInfo],
+    enc_partitions: Option<&[String]>,
+    assemble_raid: bool,
+) -> anyhow::Result<LsBlk> {
     let prelude = "mount -t tmpfs tmpfs /tmp && \
         mount -t tmpfs tmpfs /run && ";
     let script = format!(
@@ -1052,6 +1175,7 @@ struct LsBlkDevice {
     size: String,
     fstype: Option<String>,
     fsver: Option<String>,
+    pttype: Option<String>,
     label: Option<String>,
     uuid: Option<String>,
     fsavail: Option<String>,
