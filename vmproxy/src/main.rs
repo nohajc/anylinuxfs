@@ -70,6 +70,8 @@ struct MountArgs {
     decrypt: Option<String>,
     #[arg(long)]
     assemble_raid: bool,
+    #[arg(long)]
+    metadata_probed: bool,
     #[arg(short, long)]
     action: Option<String>,
     /// Path to the key file inside the VM
@@ -627,6 +629,7 @@ struct VmDiskContext {
     mount_options: Option<String>,
     mount_name: String,
     verbose: bool,
+    metadata_probed: bool,
     mapper_ident_prefix: &'static str,
     cryptsetup_op: &'static str,
     assemble_raid: bool,
@@ -654,6 +657,7 @@ impl VmDiskContext {
             mount_options: cli.mount_options.clone(),
             mount_name: cli.mount_name.clone(),
             verbose: cli.verbose,
+            metadata_probed: cli.metadata_probed,
             mapper_ident_prefix,
             cryptsetup_op,
             assemble_raid: cli.assemble_raid,
@@ -837,33 +841,40 @@ impl VmDiskContext {
 
     /// Resolve a filesystem label for the mount point name.
     fn resolve_mount_label(&mut self) -> anyhow::Result<()> {
-        if !self.is_logical() {
-            if self.is_zfs {
-                #[cfg(target_os = "linux")]
-                script("modprobe zfs")
-                    .status()
-                    .context("Failed to load zfs module")?;
-                let label = "zfs_root".to_owned();
-                println!("<anylinuxfs-label:{}>", &label);
-                self.mount_name = label;
-            }
-        } else {
-            let label = Command::new("/sbin/blkid")
-                .arg(&self.disk_path)
-                .arg("-s")
-                .arg("LABEL")
-                .arg("-o")
-                .arg("value")
-                .output()
-                .context("Failed to run blkid command")?
-                .stdout;
+        if self.disk_path.is_empty() {
+            return Ok(());
+        }
 
-            if let Some(label) =
-                path_safe_label_name(&String::from_utf8_lossy(&label).trim().to_owned())
-            {
-                println!("<anylinuxfs-label:{}>", &label);
-                self.mount_name = label;
-            }
+        if self.is_zfs {
+            #[cfg(target_os = "linux")]
+            script("modprobe zfs")
+                .status()
+                .context("Failed to load zfs module")?;
+            let label = "zfs_root".to_owned();
+            println!("<anylinuxfs-label:{}>", &label);
+            self.mount_name = label;
+            return Ok(());
+        }
+
+        if self.metadata_probed && !self.is_logical() {
+            return Ok(());
+        }
+
+        let label = Command::new("/sbin/blkid")
+            .arg(&self.disk_path)
+            .arg("-s")
+            .arg("LABEL")
+            .arg("-o")
+            .arg("value")
+            .output()
+            .context("Failed to run blkid command")?
+            .stdout;
+
+        if let Some(label) =
+            path_safe_label_name(&String::from_utf8_lossy(&label).trim().to_owned())
+        {
+            println!("<anylinuxfs-label:{}>", &label);
+            self.mount_name = label;
         }
         Ok(())
     }
@@ -1181,11 +1192,11 @@ fn run() -> anyhow::Result<()> {
 
     dsk.activate_volume_managers()?;
 
+    dsk.detect_fs_type()?;
+
     if !cli.custom_mount_point {
         dsk.resolve_mount_label()?;
     }
-
-    dsk.detect_fs_type()?;
 
     // scan multidisk volumes
     if cli.multi_device && dsk.fs_type.as_deref() == Some("btrfs") {

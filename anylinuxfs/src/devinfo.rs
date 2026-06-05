@@ -25,7 +25,7 @@ impl DiskFormat {
         }
     }
 
-    fn from_path(path: &BStr) -> Self {
+    pub fn from_path(path: &BStr) -> Self {
         if path.ends_with(b".qcow2") {
             DiskFormat::Qcow2
         } else {
@@ -50,6 +50,8 @@ pub struct DevInfo {
     da_info: diskutil::DiskInfo,
     size_bytes: Option<u64>, // partition size in bytes (for image probes)
     disk_format: DiskFormat, // image format passed to krun_add_disk2
+    #[serde(default)]
+    metadata_probed: bool, // true when fs metadata was probed on the host
 }
 
 const BUF_PREFIX: &[u8] = b"/dev/disk";
@@ -76,6 +78,7 @@ impl DevInfo {
             da_info: diskutil::DiskInfo::default(),
             disk_format: DiskFormat::Raw,
             size_bytes: None,
+            metadata_probed: false,
         })
     }
 
@@ -147,6 +150,40 @@ impl DevInfo {
             da_info,
             size_bytes: None,
             disk_format,
+            metadata_probed: true,
+        })
+    }
+
+    pub fn unprobed_image(
+        path: impl AsRef<BStr>,
+        part_num: Option<usize>,
+    ) -> anyhow::Result<DevInfo> {
+        let path = path.as_ref();
+        if path.is_empty() {
+            anyhow::bail!("Empty image path");
+        }
+        if part_num == Some(0) {
+            anyhow::bail!("Partition number must be greater than zero");
+        }
+
+        Ok(DevInfo {
+            path: path.to_owned(),
+            rpath: path.to_owned(),
+            is_image: true,
+            block_size: None,
+            label: None,
+            fs_type: Some("auto".into()),
+            uuid: None,
+            pt_type: None,
+            vm_path: part_num
+                .map(|n| format!("/dev/vda{}", n))
+                .unwrap_or("/dev/vda".to_owned()),
+            vm_part_idx: part_num,
+            fs_driver: None,
+            da_info: diskutil::DiskInfo::default(),
+            size_bytes: None,
+            disk_format: DiskFormat::from_path(path),
+            metadata_probed: false,
         })
     }
 
@@ -212,6 +249,7 @@ impl DevInfo {
             da_info: diskutil::DiskInfo::default(),
             size_bytes: Some(whole_probe.get_size() as u64),
             disk_format: image_format,
+            metadata_probed: true,
         }];
 
         if let Ok(mut partitions) = whole_probe.get_partitions() {
@@ -270,6 +308,7 @@ impl DevInfo {
                         size_bytes,
                         vm_part_idx: Some((i + 1) as usize),
                         disk_format: image_format,
+                        metadata_probed: true,
                     });
                 }
             }
@@ -350,16 +389,21 @@ impl DevInfo {
             .map(BString::from)
             // .or(self.uuid())
             // .unwrap_or("lvol0")
-            .unwrap_or(
-                self.disk()
+            .unwrap_or_else(|| {
+                let mut name = self
+                    .disk()
                     .as_bytes()
                     .split(|&c| c == b'/')
                     .last()
                     .map(|d| d.split(|&c| c == b':').last())
                     .flatten()
                     .expect("non-empty disk path")
-                    .into(),
-            )
+                    .to_owned();
+                if let Some(idx) = self.vm_part_idx {
+                    name.extend_from_slice(format!("_s{}", idx).as_bytes());
+                }
+                name.into()
+            })
     }
 
     pub fn media_writable(&self) -> bool {
@@ -368,5 +412,9 @@ impl DevInfo {
 
     pub fn disk_format(&self) -> DiskFormat {
         self.disk_format
+    }
+
+    pub fn metadata_probed(&self) -> bool {
+        self.metadata_probed
     }
 }

@@ -483,6 +483,12 @@ pub(crate) fn start_vmproxy(
             .into_iter(),
     )
     .chain(
+        dev_info
+            .metadata_probed()
+            .then_some("--metadata-probed".into())
+            .into_iter(),
+    )
+    .chain(
         config
             .fs_driver
             .as_deref()

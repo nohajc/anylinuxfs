@@ -103,11 +103,11 @@ pub(crate) struct DebugArgs {
 pub(crate) struct DiskIdentArg {
     #[cfg_attr(
         target_os = "macos",
-        doc = "File path(s), LVM identifier or RAID identifier, e.g.:\n/dev/diskXsY[:/dev/diskYsZ:...]\npath/to/disk.img@s1[:path/to/disk2.img@s2:...]\nlvm:<vg-name>:diskXsY[:diskYsZ:...]:<lv-name>\nlvm:<vg-name>:path/to/disk.img@s1[:path/to/disk2.img@s2:...]:<lv-name>\nraid:diskXsY[:diskYsZ:...]\nraid:path/to/disk.img@s1[:path/to/disk2.img@s2:...]\n(see `list` command output for available volumes)"
+        doc = "File path(s), LVM identifier or RAID identifier, e.g.:\n/dev/diskXsY[:/dev/diskYsZ:...]\npath/to/disk.img@s1[:path/to/image.qcow2@s2:...]\nlvm:<vg-name>:diskXsY[:diskYsZ:...]:<lv-name>\nlvm:<vg-name>:path/to/disk.img@s1[:path/to/image.qcow2@s2:...]:<lv-name>\nraid:diskXsY[:diskYsZ:...]\nraid:path/to/disk.img@s1[:path/to/image.qcow2@s2:...]\n(see `list` command output for available volumes)"
     )]
     #[cfg_attr(
         target_os = "linux",
-        doc = "File path(s), LVM identifier or RAID identifier, e.g.:\n/dev/sdXN[:/dev/sdYM:...]\n/dev/nvmeXnYpZ[:/dev/nvmeAnBpC:...]\npath/to/disk.img@s1[:path/to/disk2.img@s2:...]\nlvm:<vg-name>:/dev/sdXN[:/dev/sdYM:...]:<lv-name>\nlvm:<vg-name>:path/to/disk.img@s1[:path/to/disk2.img@s2:...]:<lv-name>\nraid:/dev/sdXN[:/dev/sdYM:...]\nraid:path/to/disk.img@s1[:path/to/disk2.img@s2:...]\n(see `list` command output for available volumes)"
+        doc = "File path(s), LVM identifier or RAID identifier, e.g.:\n/dev/sdXN[:/dev/sdYM:...]\n/dev/nvmeXnYpZ[:/dev/nvmeAnBpC:...]\npath/to/disk.img@s1[:path/to/image.qcow2@s2:...]\nlvm:<vg-name>:/dev/sdXN[:/dev/sdYM:...]:<lv-name>\nlvm:<vg-name>:path/to/disk.img@s1[:path/to/image.qcow2@s2:...]:<lv-name>\nraid:/dev/sdXN[:/dev/sdYM:...]\nraid:path/to/disk.img@s1[:path/to/image.qcow2@s2:...]\n(see `list` command output for available volumes)"
     )]
     #[clap(verbatim_doc_comment)]
     pub disk_ident: Option<String>,

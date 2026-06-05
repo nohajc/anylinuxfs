@@ -84,11 +84,11 @@ Usage: anylinuxfs [mount] [OPTIONS] [DISK_IDENT] [MOUNT_POINT]
 Arguments:
   [DISK_IDENT]   File path(s), LVM identifier or RAID identifier, e.g.:
                  /dev/diskXsY[:/dev/diskYsZ:...]
-                 path/to/disk.img@s1[:path/to/disk2.img@s2:...]
+                 path/to/disk.img@s1[:path/to/image.qcow2@s2:...]
                  lvm:<vg-name>:diskXsY[:diskYsZ:...]:<lv-name>
-                 lvm:<vg-name>:path/to/disk.img@s1[:path/to/disk2.img@s2:...]:<lv-name>
+                 lvm:<vg-name>:path/to/disk.img@s1[:path/to/image.qcow2@s2:...]:<lv-name>
                  raid:diskXsY[:diskYsZ:...]
-                 raid:path/to/disk.img@s1[:path/to/disk2.img@s2:...]
+                 raid:path/to/disk.img@s1[:path/to/image.qcow2@s2:...]
                  (see `list` command output for available volumes)
   [MOUNT_POINT]  Custom mount path to override the default under /Volumes
 ```
@@ -100,7 +100,7 @@ Arguments:
   These can be deduced from `anylinuxfs list` output where any logical volumes will be shown as synthesized disks (similar to how `diskutil` does it for APFS containers)
 * In case of btrfs filesystems spanning multiple disks (like RAID1 or JBOD), these will not be grouped in the `anylinuxfs list` output.
 * In order to mount a filesystem like this, you use the `/dev/diskXsY:/dev/diskYsZ` syntax. Basically, you must specify all partitions that need to be attached to our microVM so that they can be scanned for any multi-disk btrfs filesystems.
-* Besides physical disks, you can also work with disk images, simply by specifying their path and partition index (e.g. `file.img@s1`)
+* Besides physical disks, you can also work with disk images, simply by specifying their path and partition index (e.g. `file.img@s1` or `image.qcow2@s1`). `anylinuxfs list` cannot enumerate qcow2 partitions, so use the partition index directly for qcow2 images.
 
 ## Documentation
 

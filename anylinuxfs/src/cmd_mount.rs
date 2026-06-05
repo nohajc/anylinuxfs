@@ -22,7 +22,7 @@ use std::{
     net::{Ipv4Addr, TcpStream, ToSocketAddrs},
 };
 
-use crate::devinfo::DevInfo;
+use crate::devinfo::{DevInfo, DiskFormat};
 use crate::netutil::Host;
 use crate::privilege::{
     self, drop_effective_privileges, drop_privileges, elevate_effective_privileges,
@@ -316,6 +316,21 @@ fn resolve_disk_token(token: &str, read_only: bool) -> anyhow::Result<(DevInfo, 
         if !Path::new(image_path).exists() {
             anyhow::bail!("Image file not found: {}", image_path);
         }
+        if DiskFormat::from_path(image_path.as_bytes().as_bstr()) == DiskFormat::Qcow2 {
+            let partition_info =
+                DevInfo::unprobed_image(image_path.as_bytes().as_bstr(), Some(part_num))?;
+            let disk = File::open(partition_info.rdisk())
+                .context("Failed to open image file")?
+                .acquire_lock(if read_only {
+                    FlockKind::Shared
+                } else {
+                    FlockKind::Exclusive
+                })
+                .context("Failed to acquire lock on image file")?;
+            print_dev_info(&partition_info, DevType::Direct);
+            return Ok((partition_info, disk));
+        }
+
         let probe_devs = DevInfo::probe_image(BString::from(image_path.as_bytes()))
             .context("Failed to probe image")?;
         if part_num == 0 || part_num >= probe_devs.len() {
@@ -342,7 +357,11 @@ fn resolve_disk_token(token: &str, read_only: bool) -> anyhow::Result<(DevInfo, 
     let token_path = Path::new(token);
     if token_path.is_file() {
         // Whole image file (no partition spec)
-        let dev_info = DevInfo::pv(token, true)?;
+        let dev_info = if DiskFormat::from_path(token.as_bytes().as_bstr()) == DiskFormat::Qcow2 {
+            DevInfo::unprobed_image(token.as_bytes().as_bstr(), None)?
+        } else {
+            DevInfo::pv(token, true)?
+        };
         let disk = File::open(dev_info.rdisk())
             .context("Failed to open image file")?
             .acquire_lock(if read_only {
