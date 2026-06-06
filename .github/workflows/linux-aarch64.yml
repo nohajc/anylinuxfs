@@ -43,6 +43,13 @@ jobs:
       - name: Run Rust unit tests
         run: ./run-rust-tests.sh
 
+      - name: Configure containers registries
+        run: |
+          mkdir -p "$HOME/.config/containers"
+          cat > "$HOME/.config/containers/registries.conf" <<'EOF'
+          unqualified-search-registries = ["docker.io"]
+          EOF
+
       - name: Initialize Linux rootfs
         run: ./bin/anylinuxfs init
 
