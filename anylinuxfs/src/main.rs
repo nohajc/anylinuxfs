@@ -19,9 +19,11 @@ use notify::{RecursiveMode, Watcher};
 use std::sync::mpsc;
 use utils::{FlockKind, LockFile, StatusError, write_to_pipe};
 
+#[cfg(target_os = "macos")]
+use crate::settings::VmnetOffloading;
 use crate::settings::{
     Config, ConfigPaths, ImageSource, KernelConfig, LogPaths, MountConfig, NetworkConfig,
-    Preferences, PrivilegeConfig, VmnetOffloading,
+    Preferences, PrivilegeConfig,
 };
 
 mod api;
@@ -901,6 +903,7 @@ impl AppRunner {
         if let Some(vmnet_pool) = cmd.common.vmnet_pool {
             network_config.vmnet_pool = Some(vmnet_pool);
         }
+        #[cfg(target_os = "macos")]
         if let Some(vmnet_offloading) = cmd.common.vmnet_offloading {
             network_config.vmnet_offloading = Some(vmnet_offloading);
         }

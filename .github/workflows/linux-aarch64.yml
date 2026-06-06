@@ -26,6 +26,7 @@ jobs:
             clang \
             libblkid-dev \
             libclang-dev \
+            libtirpc-dev \
             lld \
             pkg-config
 
