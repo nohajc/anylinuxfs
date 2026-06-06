@@ -118,16 +118,23 @@ impl NetworkMode {
 }
 
 /// Taken from https://github.com/containers/libkrun/blob/7116644749c7b1028a970c9e8bd2d0163745a225/include/libkrun.h#L269
+#[cfg(target_os = "macos")]
 const NET_FEATURE_CSUM: u32 = 1 << 0;
+#[cfg(target_os = "macos")]
 const NET_FEATURE_GUEST_CSUM: u32 = 1 << 1;
+#[cfg(target_os = "macos")]
 const NET_FEATURE_GUEST_TSO4: u32 = 1 << 7;
 // const NET_FEATURE_GUEST_TSO6: u32 = 1 << 8;
+#[cfg(target_os = "macos")]
 const NET_FEATURE_GUEST_UFO: u32 = 1 << 10;
+#[cfg(target_os = "macos")]
 const NET_FEATURE_HOST_TSO4: u32 = 1 << 11;
 // const NET_FEATURE_HOST_TSO6: u32 = 1 << 12;
+#[cfg(target_os = "macos")]
 const NET_FEATURE_HOST_UFO: u32 = 1 << 14;
 
 /// These are the features enabled by krun_set_passt_fd and krun_set_gvproxy_path.
+#[cfg(target_os = "macos")]
 const COMPAT_NET_FEATURES: u32 = NET_FEATURE_CSUM
     | NET_FEATURE_GUEST_CSUM
     | NET_FEATURE_GUEST_TSO4

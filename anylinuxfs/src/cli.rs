@@ -2,7 +2,9 @@ use clap::{ArgGroup, Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use common_utils::{NetHelper, OSType};
 use ipnet::Ipv4Net;
 
-use crate::settings::{KernelPage, KrunLogLevel, PassphrasePromptConfig, VmnetOffloading};
+#[cfg(target_os = "macos")]
+use crate::settings::VmnetOffloading;
+use crate::settings::{KernelPage, KrunLogLevel, PassphrasePromptConfig};
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
