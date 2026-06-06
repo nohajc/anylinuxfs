@@ -37,6 +37,9 @@ jobs:
             pkg-config \
             qemu-utils
 
+      - name: Download runtime dependencies
+        run: ./download-dependencies.sh
+
       - name: Build anylinuxfs for Linux AArch64
         run: ./build-app.sh
 
