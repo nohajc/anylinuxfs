@@ -22,6 +22,9 @@ use crate::{
 
 pub struct Entry(String, String, String, Vec<String>);
 
+pub(super) const LIST_HEADER: &str =
+    "   #:                       TYPE NAME                    SIZE       IDENTIFIER";
+
 impl Entry {
     pub fn new(disk: impl Into<String>) -> Self {
         Entry(
@@ -63,6 +66,62 @@ impl Entry {
     pub fn partitions_mut(&mut self) -> &mut Vec<String> {
         &mut self.3
     }
+}
+
+pub(super) fn entry_with_header(disk: impl Into<String>) -> Entry {
+    let mut entry = Entry::new(disk);
+    entry.header_mut().push_str(LIST_HEADER);
+    entry
+}
+
+pub(super) fn format_list_row(
+    index: usize,
+    type_name: &str,
+    name: &str,
+    size_prefix: Option<char>,
+    size: &str,
+    ident: &str,
+) -> String {
+    match size_prefix {
+        Some(prefix) => format!(
+            "{:>4}: {:>26} {:<22} {}{:<10} {}",
+            index, type_name, name, prefix, size, ident,
+        ),
+        None => format!(
+            "{:>4}: {:>26} {:<23} {:<10} {}",
+            index, type_name, name, size, ident,
+        ),
+    }
+}
+
+pub(super) fn format_prefixed_row(
+    index: usize,
+    type_name: &str,
+    name: &str,
+    size_prefix: char,
+    size: &str,
+    ident: &str,
+) -> String {
+    format_list_row(index, type_name, name, Some(size_prefix), size, ident)
+}
+
+pub(super) fn format_scheme_row(
+    type_name: &str,
+    size_prefix: char,
+    size: &str,
+    ident: &str,
+) -> String {
+    format_prefixed_row(0, type_name, "", size_prefix, size, ident)
+}
+
+pub(super) fn format_partition_row(
+    index: usize,
+    fs_type: &str,
+    label: &str,
+    size: &str,
+    ident: &str,
+) -> String {
+    format_list_row(index, fs_type, label, None, size, ident)
 }
 
 pub struct List(Vec<Entry>);
@@ -512,19 +571,14 @@ pub fn list_partitions(
                 let whole = &probe_devs[0];
                 let is_partitioned = whole.pt_type().is_some();
 
-                let mut entry = Entry::new(format!("{} (disk image):", path));
-                entry.header_mut().push_str(
-                    "   #:                       TYPE NAME                    SIZE       IDENTIFIER",
-                );
+                let mut entry = entry_with_header(format!("{} (disk image):", path));
 
                 if is_partitioned {
                     let pt_type = whole.pt_type().unwrap_or("unknown");
                     let normalized_pt = normalize_pt_type(pt_type);
                     let whole_size = whole.size().map(format_partition_size).unwrap_or_default();
-                    *entry.scheme_mut() = format!(
-                        "   0: {:>26} {:<22} +{:<10} {}",
-                        normalized_pt, "", whole_size, image_name,
-                    );
+                    *entry.scheme_mut() =
+                        format_scheme_row(&normalized_pt, '+', &whole_size, &image_name);
                     for (i, dev_info) in probe_devs[1..].iter().enumerate() {
                         let fs_type = dev_info.fs_type().unwrap_or("");
 
@@ -542,13 +596,12 @@ pub fn list_partitions(
                             .map(format_partition_size)
                             .unwrap_or_default();
                         let ident = format!("{}@s{}", image_name, i + 1);
-                        entry.partitions_mut().push(format!(
-                            "{:>4}: {:>26} {:<23} {:<10} {}",
+                        entry.partitions_mut().push(format_partition_row(
                             i + 1,
                             fs_type,
-                            truncated_label,
-                            size_str,
-                            ident,
+                            &truncated_label,
+                            &size_str,
+                            &ident,
                         ));
                     }
                 } else {
@@ -566,9 +619,13 @@ pub fn list_partitions(
                             .size()
                             .map(format_partition_size)
                             .unwrap_or_default();
-                        entry.partitions_mut().push(format!(
-                            "   0: {:>26} {:<22} +{:<10} {}",
-                            fs_type, truncated_label, size_str, image_name,
+                        entry.partitions_mut().push(format_prefixed_row(
+                            0,
+                            fs_type,
+                            &truncated_label,
+                            '+',
+                            &size_str,
+                            &image_name,
                         ));
                     }
                 }
@@ -648,20 +705,16 @@ fn render_qcow2_image_entries(
     disk_entries: &mut Vec<Entry>,
 ) {
     for (image, blkdev) in images.iter().zip(lsblk.blockdevices.iter()) {
-        let mut entry = Entry::new(format!("{} (disk image):", image.path));
-        entry.header_mut().push_str(
-            "   #:                       TYPE NAME                    SIZE       IDENTIFIER",
-        );
+        let mut entry = entry_with_header(format!("{} (disk image):", image.path));
 
         if let Some(children) = blkdev.children.as_deref() {
             if let Some(pt_type) = blkdev.pttype.as_deref() {
                 let normalized_pt = normalize_pt_type(pt_type);
-                *entry.scheme_mut() = format!(
-                    "   0: {:>26} {:<22} +{:<10} {}",
-                    normalized_pt,
-                    "",
-                    format_lv_size(&blkdev.size),
-                    image.image_name,
+                *entry.scheme_mut() = format_scheme_row(
+                    &normalized_pt,
+                    '+',
+                    &format_lv_size(&blkdev.size),
+                    &image.image_name,
                 );
             }
 
@@ -677,13 +730,12 @@ fn render_qcow2_image_entries(
                 let truncated_label = trunc_with_ellipsis(label, 23);
                 let part_num = partition_number(blkdev, child).unwrap_or(i + 1);
                 let ident = format!("{}@s{}", image.image_name, part_num);
-                entry.partitions_mut().push(format!(
-                    "{:>4}: {:>26} {:<23} {:<10} {}",
+                entry.partitions_mut().push(format_partition_row(
                     part_num,
                     fs_type,
-                    truncated_label,
-                    format_lv_size(&child.size),
-                    ident,
+                    &truncated_label,
+                    &format_lv_size(&child.size),
+                    &ident,
                 ));
             }
         } else {
@@ -693,12 +745,13 @@ fn render_qcow2_image_entries(
             if filter.fs_types.iter().any(|t| t == &fs_type) {
                 let label = blkdev.label.as_deref().unwrap_or("");
                 let truncated_label = trunc_with_ellipsis(label, 23);
-                entry.partitions_mut().push(format!(
-                    "   0: {:>26} {:<22} +{:<10} {}",
+                entry.partitions_mut().push(format_prefixed_row(
+                    0,
                     fs_type,
-                    truncated_label,
-                    format_lv_size(&blkdev.size),
-                    image.image_name,
+                    &truncated_label,
+                    '+',
+                    &format_lv_size(&blkdev.size),
+                    &image.image_name,
                 ));
             }
         }
@@ -847,19 +900,15 @@ impl VolumeMap {
             },
         ) in &self.raid_volumes
         {
-            let mut entry = Entry::new("");
-            entry.header_mut().push_str(
-                "   #:                       TYPE NAME                    SIZE       IDENTIFIER",
-            );
+            let mut entry = entry_with_header("");
 
             let dev_ident = dev_idents.join(":");
-            entry.partitions_mut().push(format!(
-                "{:>4}: {:>26} {:<23} {:<10} {}",
+            entry.partitions_mut().push(format_partition_row(
                 0,
                 logical_vol.fstype.as_deref().unwrap_or(""),
                 logical_vol.label.as_deref().unwrap_or(""),
-                format_lv_size(&logical_vol.size),
-                format!("{}", &dev_ident),
+                &format_lv_size(&logical_vol.size),
+                &dev_ident,
             ));
 
             *entry.disk_mut() = format!("raid:{} (volume):", &dev_ident);
@@ -876,21 +925,17 @@ impl VolumeMap {
             },
         ) in &self.vol_groups
         {
-            let mut entry = Entry::new("");
-            entry.header_mut().push_str(
-                "   #:                       TYPE NAME                    SIZE       IDENTIFIER",
-            );
+            let mut entry = entry_with_header("");
 
             for (j, (child, devs)) in lvs.iter().enumerate() {
                 let lv_ident = child.name.parse::<LvIdent>().unwrap();
                 let dev_ident = devs.join(":");
-                entry.partitions_mut().push(format!(
-                    "{:>4}: {:>26} {:<23} {:<10} {}",
+                entry.partitions_mut().push(format_partition_row(
                     j + 1,
                     child.fstype.as_deref().unwrap_or(""),
                     child.label.as_deref().unwrap_or(""),
-                    format_lv_size(&child.size),
-                    format!("{}:{}:{}", &lv_ident.vg_name, &dev_ident, &lv_ident.lv_name),
+                    &format_lv_size(&child.size),
+                    &format!("{}:{}:{}", &lv_ident.vg_name, &dev_ident, &lv_ident.lv_name),
                 ));
             }
 

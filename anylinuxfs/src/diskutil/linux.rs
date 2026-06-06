@@ -5,7 +5,8 @@ use std::path::Path;
 use std::thread;
 
 use super::{
-    DiskInfo, Entry, Labels, MountPoint, PvCollector, format_partition_size, normalize_pt_type,
+    DiskInfo, Entry, Labels, MountPoint, PvCollector, entry_with_header, format_partition_row,
+    format_partition_size, format_prefixed_row, format_scheme_row, normalize_pt_type,
     trunc_with_ellipsis,
 };
 use crate::devinfo::DevInfo;
@@ -149,10 +150,7 @@ pub(super) fn process_block_device(
         };
         format!("{}, physical", location)
     };
-    let mut entry = Entry::new(format!("{} ({}):", disk_path, header_tag));
-    entry
-        .header_mut()
-        .push_str("   #:                       TYPE NAME                    SIZE       IDENTIFIER");
+    let mut entry = entry_with_header(format!("{} ({}):", disk_path, header_tag));
 
     // Whole-disk size prefix mirrors macOS diskutil: `*` for physical block
     // devices, `+` for disk images (loop / hdiutil-attached).
@@ -178,10 +176,7 @@ pub(super) fn process_block_device(
         // Partitioned disk
         let normalized_pt = normalize_pt_type(pt);
         let size_str = whole_size.map(format_partition_size).unwrap_or_default();
-        *entry.scheme_mut() = format!(
-            "   0: {:>26} {:<22} {}{:<10} {}",
-            normalized_pt, "", size_prefix, size_str, disk_name,
-        );
+        *entry.scheme_mut() = format_scheme_row(&normalized_pt, size_prefix, &size_str, &disk_name);
 
         let part_names = list_partition_names_sysfs(&disk_name);
         for (i, part_name) in part_names.iter().enumerate() {
@@ -204,12 +199,11 @@ pub(super) fn process_block_device(
             let truncated_label = trunc_with_ellipsis(label, 23);
             let part_size = read_part_size(&disk_name, part_name);
             let size_str = part_size.map(format_partition_size).unwrap_or_default();
-            entry.partitions_mut().push(format!(
-                "{:>4}: {:>26} {:<23} {:<10} {}",
+            entry.partitions_mut().push(format_partition_row(
                 i + 1,
                 fs_type,
-                truncated_label,
-                size_str,
+                &truncated_label,
+                &size_str,
                 part_name,
             ));
         }
@@ -224,9 +218,13 @@ pub(super) fn process_block_device(
         let label = whole.and_then(|w| w.label()).unwrap_or("");
         let truncated_label = trunc_with_ellipsis(label, 23);
         let size_str = whole_size.map(format_partition_size).unwrap_or_default();
-        entry.partitions_mut().push(format!(
-            "   0: {:>26} {:<22} {}{:<10} {}",
-            fs_type, truncated_label, size_prefix, size_str, disk_name,
+        entry.partitions_mut().push(format_prefixed_row(
+            0,
+            fs_type,
+            &truncated_label,
+            size_prefix,
+            &size_str,
+            &disk_name,
         ));
     } else {
         // No probe info (unprivileged or unknown content). Show structure
@@ -236,21 +234,13 @@ pub(super) fn process_block_device(
             return None;
         }
         let size_str = whole_size.map(format_partition_size).unwrap_or_default();
-        *entry.scheme_mut() = format!(
-            "   0: {:>26} {:<22} {}{:<10} {}",
-            "", "", size_prefix, size_str, disk_name,
-        );
+        *entry.scheme_mut() = format_scheme_row("", size_prefix, &size_str, &disk_name);
         for (i, part_name) in part_names.iter().enumerate() {
             let part_size = read_part_size(&disk_name, part_name);
             let size_str = part_size.map(format_partition_size).unwrap_or_default();
-            entry.partitions_mut().push(format!(
-                "{:>4}: {:>26} {:<23} {:<10} {}",
-                i + 1,
-                "",
-                "",
-                size_str,
-                part_name,
-            ));
+            entry
+                .partitions_mut()
+                .push(format_partition_row(i + 1, "", "", &size_str, part_name));
         }
     }
 
