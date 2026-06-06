@@ -1,0 +1,34 @@
+name: Linux AArch64
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  anylinuxfs:
+    name: anylinuxfs native Linux AArch64
+    runs-on: ubuntu-24.04-arm
+
+    env:
+      CARGO_TERM_COLOR: always
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang \
+            libblkid-dev \
+            libclang-dev \
+            lld \
+            pkg-config
+
+      - name: Build anylinuxfs for Linux AArch64
+        working-directory: anylinuxfs
+        run: cargo build
