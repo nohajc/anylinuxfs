@@ -19,17 +19,32 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Install Rust targets
+        run: |
+          rustup target add aarch64-unknown-linux-musl
+          rustup toolchain install nightly-2026-01-25 --profile minimal --component rust-src
+
       - name: Install Linux build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
+            bats \
             clang \
             libblkid-dev \
             libclang-dev \
             libtirpc-dev \
             lld \
-            pkg-config
+            pkg-config \
+            qemu-utils
 
       - name: Build anylinuxfs for Linux AArch64
-        working-directory: anylinuxfs
-        run: cargo build
+        run: ./build-app.sh
+
+      - name: Run Rust unit tests
+        run: ./run-rust-tests.sh
+
+      - name: Initialize Linux rootfs
+        run: ./bin/anylinuxfs init
+
+      - name: Run integration tests
+        run: sudo --preserve-env=HOME ./tests/run-tests.sh --tap
