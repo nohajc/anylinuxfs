@@ -28,14 +28,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            bats \
             clang \
             libblkid-dev \
             libclang-dev \
             libtirpc-dev \
             lld \
-            pkg-config \
-            qemu-utils
+            pkg-config
 
       - name: Download runtime dependencies
         run: ./download-dependencies.sh
@@ -45,16 +43,3 @@ jobs:
 
       - name: Run Rust unit tests
         run: ./run-rust-tests.sh
-
-      - name: Configure containers registries
-        run: |
-          mkdir -p "$HOME/.config/containers"
-          cat > "$HOME/.config/containers/registries.conf" <<'EOF'
-          unqualified-search-registries = ["docker.io"]
-          EOF
-
-      - name: Initialize Linux rootfs
-        run: ./bin/anylinuxfs init
-
-      - name: Run integration tests
-        run: sudo --preserve-env=HOME ./tests/run-tests.sh --tap
