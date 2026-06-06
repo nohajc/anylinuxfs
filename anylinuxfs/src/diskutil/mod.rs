@@ -605,7 +605,7 @@ pub fn list_partitions(
             .map(|image| image.image_name.clone())
             .collect::<Vec<_>>();
 
-        match inspect_block_devices_in_guest(&config, &qcow2_dev_infos, None, false) {
+        match get_lsblk_info(&config, &qcow2_dev_infos, None, false) {
             Ok(lsblk) => {
                 render_qcow2_image_entries(&lsblk, &qcow2_images, &filter, &mut disk_entries);
 
@@ -1030,15 +1030,6 @@ fn decrypt_script(dev_info: &[DevInfo], partitions: Option<&[String]>) -> anyhow
 }
 
 fn get_lsblk_info(
-    config: &Config,
-    dev_info: &[DevInfo],
-    enc_partitions: Option<&[String]>,
-    assemble_raid: bool,
-) -> anyhow::Result<LsBlk> {
-    inspect_block_devices_in_guest(config, dev_info, enc_partitions, assemble_raid)
-}
-
-fn inspect_block_devices_in_guest(
     config: &Config,
     dev_info: &[DevInfo],
     enc_partitions: Option<&[String]>,
