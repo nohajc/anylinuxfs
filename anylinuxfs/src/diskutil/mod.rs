@@ -565,6 +565,7 @@ pub fn list_partitions(
                 .unwrap_or_else(|| path.to_string());
 
             if DiskFormat::from_path(p.as_bytes().as_bstr()) == DiskFormat::Qcow2 {
+                // It's a qcow2 image file — will be probed by get_lsblk_info below
                 qcow2_images.push(Qcow2ListImage {
                     dev_info: DevInfo::unprobed_image(p.as_bytes().as_bstr(), None)?,
                     path: path.to_owned(),
@@ -703,6 +704,7 @@ fn render_plain_block_tree(
     let mut entry = entry_with_header(block.title);
 
     if let Some(pt_type) = block.pt_type {
+        // Partition table is present
         let normalized_pt = normalize_pt_type(pt_type);
         *entry.scheme_mut() = format_prefixed_row(
             0,
@@ -738,6 +740,7 @@ fn render_plain_block_tree(
             ));
         }
     } else {
+        // Whole-disk image without partition table
         let fs_type = block.fs_type.unwrap_or("");
 
         if filter.fs_types.iter().any(|t| t == &fs_type) {
