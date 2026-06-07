@@ -16,6 +16,15 @@ jobs:
       CARGO_TERM_COLOR: always
 
     steps:
+      - name: Verify host runner prerequisites
+        run: |
+          command -v bash
+          command -v git
+          command -v node
+          command -v rustup
+          command -v cargo
+          command -v sudo
+
       - name: Check out repository
         uses: actions/checkout@v4
 
@@ -28,12 +37,21 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
+            bats \
+            ca-certificates \
             clang \
+            curl \
+            git \
+            iproute2 \
             libblkid-dev \
             libclang-dev \
             libtirpc-dev \
             lld \
-            pkg-config
+            nfs-common \
+            pkg-config \
+            qemu-utils \
+            util-linux \
+            xz-utils
 
       - name: Download runtime dependencies
         run: ./download-dependencies.sh
@@ -43,3 +61,14 @@ jobs:
 
       - name: Run Rust unit tests
         run: ./run-rust-tests.sh
+
+#      - name: Configure containers registries
+#        run: |
+#          mkdir -p "$HOME/.config/containers"
+#          printf '%s\n' 'unqualified-search-registries = ["docker.io"]' > "$HOME/.config/containers/registries.conf"
+
+      - name: Initialize Linux rootfs
+        run: ./bin/anylinuxfs init
+
+      - name: Run integration tests
+        run: sudo --preserve-env=HOME ./tests/run-tests.sh --tap
