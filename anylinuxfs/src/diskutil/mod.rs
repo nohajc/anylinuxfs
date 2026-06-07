@@ -39,10 +39,6 @@ impl Entry {
         self.0.as_str()
     }
 
-    pub fn disk_mut(&mut self) -> &mut String {
-        &mut self.0
-    }
-
     pub fn header(&self) -> &str {
         self.1.as_str()
     }
@@ -103,15 +99,6 @@ pub(super) fn format_prefixed_row(
     ident: &str,
 ) -> String {
     format_list_row(index, type_name, name, Some(size_prefix), size, ident)
-}
-
-pub(super) fn format_scheme_row(
-    type_name: &str,
-    size_prefix: char,
-    size: &str,
-    ident: &str,
-) -> String {
-    format_prefixed_row(0, type_name, "", size_prefix, size, ident)
 }
 
 pub(super) fn format_partition_row(
@@ -502,6 +489,28 @@ struct Qcow2ListImage {
     image_name: String,
 }
 
+struct PlainBlockDevice<'a> {
+    title: String,
+    ident: &'a str,
+    size_prefix: char,
+    size: String,
+    pt_type: Option<&'a str>,
+    fs_type: Option<&'a str>,
+    label: Option<&'a str>,
+    dev_info: Option<&'a DevInfo>,
+    pv_disk_path: &'a str,
+    partitions: Vec<PlainPartition<'a>>,
+}
+
+struct PlainPartition<'a> {
+    number: usize,
+    fs_type: &'a str,
+    label: &'a str,
+    size: String,
+    dev_info: Option<&'a DevInfo>,
+    pv_disk_path: &'a str,
+}
+
 pub fn list_partitions(
     config: Config,
     disks: Option<&[String]>,
@@ -568,69 +577,13 @@ pub fn list_partitions(
             use bstr::BString;
             let probe_devs = DevInfo::probe_image(BString::from(p.as_bytes()))?;
             if !probe_devs.is_empty() {
-                let whole = &probe_devs[0];
-                let is_partitioned = whole.pt_type().is_some();
-
-                let mut entry = entry_with_header(format!("{} (disk image):", path));
-
-                if is_partitioned {
-                    let pt_type = whole.pt_type().unwrap_or("unknown");
-                    let normalized_pt = normalize_pt_type(pt_type);
-                    let whole_size = whole.size().map(format_partition_size).unwrap_or_default();
-                    *entry.scheme_mut() =
-                        format_scheme_row(&normalized_pt, '+', &whole_size, &image_name);
-                    for (i, dev_info) in probe_devs[1..].iter().enumerate() {
-                        let fs_type = dev_info.fs_type().unwrap_or("");
-
-                        // Filter by filesystem type to match diskutil behavior
-                        if !filter.fs_types.iter().any(|t| t == &fs_type) {
-                            continue;
-                        }
-
-                        pv.try_collect(dev_info, &image_name, path, fs_type);
-
-                        let label = dev_info.label().unwrap_or("");
-                        let truncated_label = trunc_with_ellipsis(label, 23);
-                        let size_str = dev_info
-                            .size()
-                            .map(format_partition_size)
-                            .unwrap_or_default();
-                        let ident = format!("{}@s{}", image_name, i + 1);
-                        entry.partitions_mut().push(format_partition_row(
-                            i + 1,
-                            fs_type,
-                            &truncated_label,
-                            &size_str,
-                            &ident,
-                        ));
-                    }
-                } else {
-                    // Whole-disk image without partition table
-                    let dev_info = whole;
-                    let fs_type = dev_info.fs_type().unwrap_or("");
-
-                    // Filter by filesystem type to match diskutil behavior
-                    if filter.fs_types.iter().any(|t| t == &fs_type) {
-                        pv.try_collect(dev_info, &image_name, path, fs_type);
-
-                        let label = dev_info.label().unwrap_or("");
-                        let truncated_label = trunc_with_ellipsis(label, 23);
-                        let size_str = dev_info
-                            .size()
-                            .map(format_partition_size)
-                            .unwrap_or_default();
-                        entry.partitions_mut().push(format_prefixed_row(
-                            0,
-                            fs_type,
-                            &truncated_label,
-                            '+',
-                            &size_str,
-                            &image_name,
-                        ));
-                    }
-                }
-
-                disk_entries.push(entry);
+                disk_entries.push(render_raw_image_entry(
+                    path,
+                    &image_name,
+                    &probe_devs,
+                    &filter,
+                    &mut pv,
+                ));
             }
         } else {
             #[cfg(target_os = "linux")]
@@ -652,50 +605,160 @@ pub fn list_partitions(
         }
     }
 
-    if !qcow2_images.is_empty() {
-        let qcow2_dev_infos = qcow2_images
+    if !qcow2_images.is_empty() || !pv.dev_infos.is_empty() {
+        let mut guest_dev_infos = qcow2_images
             .iter()
             .map(|image| image.dev_info.clone())
             .collect::<Vec<_>>();
-        let qcow2_dev_idents = qcow2_images
+        guest_dev_infos.extend(pv.dev_infos.iter().cloned());
+
+        let mut guest_dev_idents = qcow2_images
             .iter()
             .map(|image| image.image_name.clone())
             .collect::<Vec<_>>();
+        guest_dev_idents.extend(pv.dev_idents.iter().cloned());
 
-        match get_lsblk_info(&config, &qcow2_dev_infos, None, false) {
+        let mut enc_partitions = enc_partitions;
+        if pv.dev_infos.is_empty() {
+            enc_partitions = None;
+        } else if pv.decrypt_all {
+            enc_partitions = Some(&pv.enc_partitions);
+        }
+
+        match get_lsblk_info(&config, &guest_dev_infos, enc_partitions, pv.assemble_raid) {
             Ok(lsblk) => {
                 render_qcow2_image_entries(&lsblk, &qcow2_images, &filter, &mut disk_entries);
 
-                if !lsblk.blockdevices.is_empty() {
-                    let vol_map = VolumeMap::from_lsblk(&lsblk, &qcow2_dev_idents);
-                    vol_map.build_entries(&mut disk_entries);
-                }
+                let vol_map = VolumeMap::from_lsblk(&lsblk, &guest_dev_idents);
+                vol_map.build_entries(&mut disk_entries);
             }
             Err(e) => {
-                eprintln!("Failed to get qcow2 lsblk info: {:#}", e);
-            }
-        }
-    }
-
-    if !pv.dev_infos.is_empty() {
-        let mut enc_partitions = enc_partitions;
-        if pv.decrypt_all {
-            enc_partitions = Some(&pv.enc_partitions);
-        }
-        match get_lsblk_info(&config, &pv.dev_infos, enc_partitions, pv.assemble_raid) {
-            Ok(lsblk) => {
-                if !lsblk.blockdevices.is_empty() {
-                    let vol_map = VolumeMap::from_lsblk(&lsblk, &pv.dev_idents);
-                    vol_map.build_entries(&mut disk_entries);
+                if qcow2_images.is_empty() {
+                    eprintln!("Failed to get lsblk info: {:#}", e);
+                } else {
+                    eprintln!("Failed to get qcow2 lsblk info: {:#}", e);
                 }
-            }
-            Err(e) => {
-                eprintln!("Failed to get lsblk info: {:#}", e);
             }
         }
     }
 
     Ok(List(disk_entries))
+}
+
+fn render_raw_image_entry(
+    path: &str,
+    image_name: &str,
+    probe_devs: &[DevInfo],
+    filter: &Labels,
+    pv: &mut PvCollector,
+) -> Entry {
+    render_plain_block_tree(
+        raw_image_plain_block(path, image_name, probe_devs),
+        filter,
+        Some(pv),
+    )
+}
+
+fn raw_image_plain_block<'a>(
+    path: &'a str,
+    image_name: &'a str,
+    probe_devs: &'a [DevInfo],
+) -> PlainBlockDevice<'a> {
+    let whole = &probe_devs[0];
+    let partitions = probe_devs[1..]
+        .iter()
+        .enumerate()
+        .map(|(i, dev_info)| PlainPartition {
+            number: i + 1,
+            fs_type: dev_info.fs_type().unwrap_or(""),
+            label: dev_info.label().unwrap_or(""),
+            size: dev_info
+                .size()
+                .map(format_partition_size)
+                .unwrap_or_default(),
+            dev_info: Some(dev_info),
+            pv_disk_path: path,
+        })
+        .collect();
+
+    PlainBlockDevice {
+        title: format!("{} (disk image):", path),
+        ident: image_name,
+        size_prefix: '+',
+        size: whole.size().map(format_partition_size).unwrap_or_default(),
+        pt_type: whole.pt_type(),
+        fs_type: whole.fs_type(),
+        label: whole.label(),
+        dev_info: Some(whole),
+        pv_disk_path: path,
+        partitions,
+    }
+}
+
+fn render_plain_block_tree(
+    block: PlainBlockDevice<'_>,
+    filter: &Labels,
+    mut pv: Option<&mut PvCollector>,
+) -> Entry {
+    let mut entry = entry_with_header(block.title);
+
+    if let Some(pt_type) = block.pt_type {
+        let normalized_pt = normalize_pt_type(pt_type);
+        *entry.scheme_mut() = format_prefixed_row(
+            0,
+            &normalized_pt,
+            "",
+            block.size_prefix,
+            &block.size,
+            block.ident,
+        );
+
+        for partition in block.partitions {
+            if !filter.fs_types.iter().any(|t| t == &partition.fs_type) {
+                continue;
+            }
+
+            if let (Some(pv), Some(dev_info)) = (pv.as_mut(), partition.dev_info) {
+                pv.try_collect(
+                    dev_info,
+                    block.ident,
+                    partition.pv_disk_path,
+                    partition.fs_type,
+                );
+            }
+
+            let truncated_label = trunc_with_ellipsis(partition.label, 23);
+            let ident = format!("{}@s{}", block.ident, partition.number);
+            entry.partitions_mut().push(format_partition_row(
+                partition.number,
+                partition.fs_type,
+                &truncated_label,
+                &partition.size,
+                &ident,
+            ));
+        }
+    } else {
+        let fs_type = block.fs_type.unwrap_or("");
+
+        if filter.fs_types.iter().any(|t| t == &fs_type) {
+            if let (Some(pv), Some(dev_info)) = (pv.as_mut(), block.dev_info) {
+                pv.try_collect(dev_info, block.ident, block.pv_disk_path, fs_type);
+            }
+
+            let label = block.label.unwrap_or("");
+            let truncated_label = trunc_with_ellipsis(label, 23);
+            entry.partitions_mut().push(format_prefixed_row(
+                0,
+                fs_type,
+                &truncated_label,
+                block.size_prefix,
+                &block.size,
+                block.ident,
+            ));
+        }
+    }
+
+    entry
 }
 
 fn render_qcow2_image_entries(
@@ -704,59 +767,60 @@ fn render_qcow2_image_entries(
     filter: &Labels,
     disk_entries: &mut Vec<Entry>,
 ) {
-    for (image, blkdev) in images.iter().zip(lsblk.blockdevices.iter()) {
-        let mut entry = entry_with_header(format!("{} (disk image):", image.path));
+    let qcow2_blockdevices = if lsblk.blockdevices.len() < images.len() {
+        eprintln!(
+            "Failed to render qcow2 list entries: expected at least {} block devices from lsblk, got {}",
+            images.len(),
+            lsblk.blockdevices.len()
+        );
+        lsblk.blockdevices.as_slice()
+    } else {
+        &lsblk.blockdevices[..images.len()]
+    };
 
-        if let Some(children) = blkdev.children.as_deref() {
-            if let Some(pt_type) = blkdev.pttype.as_deref() {
-                let normalized_pt = normalize_pt_type(pt_type);
-                *entry.scheme_mut() = format_scheme_row(
-                    &normalized_pt,
-                    '+',
-                    &format_lv_size(&blkdev.size),
-                    &image.image_name,
-                );
-            }
+    // The inspection VM attaches qcow2 images first, followed by any raw-image PVs
+    // collected for LVM/RAID/encryption. That makes the qcow2 images correspond
+    // to the leading block devices in lsblk output.
+    for (image, blkdev) in images.iter().zip(qcow2_blockdevices.iter()) {
+        disk_entries.push(render_plain_block_tree(
+            qcow2_image_plain_block(image, blkdev),
+            filter,
+            None,
+        ));
+    }
+}
 
-            for (i, child) in children.iter().enumerate() {
-                let fs_type = child.fstype.as_deref().unwrap_or("");
+fn qcow2_image_plain_block<'a>(
+    image: &'a Qcow2ListImage,
+    blkdev: &'a LsBlkDevice,
+) -> PlainBlockDevice<'a> {
+    let partitions = blkdev
+        .children
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .enumerate()
+        .map(|(i, child)| PlainPartition {
+            number: partition_number(blkdev, child).unwrap_or(i + 1),
+            fs_type: child.fstype.as_deref().unwrap_or(""),
+            label: child.label.as_deref().unwrap_or(""),
+            size: format_lv_size(&child.size),
+            dev_info: None,
+            pv_disk_path: "",
+        })
+        .collect();
 
-                // Filter by filesystem type to match the raw image path.
-                if !filter.fs_types.iter().any(|t| t == &fs_type) {
-                    continue;
-                }
-
-                let label = child.label.as_deref().unwrap_or("");
-                let truncated_label = trunc_with_ellipsis(label, 23);
-                let part_num = partition_number(blkdev, child).unwrap_or(i + 1);
-                let ident = format!("{}@s{}", image.image_name, part_num);
-                entry.partitions_mut().push(format_partition_row(
-                    part_num,
-                    fs_type,
-                    &truncated_label,
-                    &format_lv_size(&child.size),
-                    &ident,
-                ));
-            }
-        } else {
-            let fs_type = blkdev.fstype.as_deref().unwrap_or("");
-
-            // Filter by filesystem type to match the raw image path.
-            if filter.fs_types.iter().any(|t| t == &fs_type) {
-                let label = blkdev.label.as_deref().unwrap_or("");
-                let truncated_label = trunc_with_ellipsis(label, 23);
-                entry.partitions_mut().push(format_prefixed_row(
-                    0,
-                    fs_type,
-                    &truncated_label,
-                    '+',
-                    &format_lv_size(&blkdev.size),
-                    &image.image_name,
-                ));
-            }
-        }
-
-        disk_entries.push(entry);
+    PlainBlockDevice {
+        title: format!("{} (disk image):", image.path),
+        ident: &image.image_name,
+        size_prefix: '+',
+        size: format_lv_size(&blkdev.size),
+        pt_type: blkdev.pttype.as_deref(),
+        fs_type: blkdev.fstype.as_deref(),
+        label: blkdev.label.as_deref(),
+        dev_info: None,
+        pv_disk_path: "",
+        partitions,
     }
 }
 
@@ -872,8 +936,7 @@ impl VolumeMap {
             }
         }
 
-        for (i, blkdev) in lsblk.blockdevices.iter().enumerate() {
-            let dev_ident = &pv_dev_idents[i];
+        for (blkdev, dev_ident) in lsblk.blockdevices.iter().zip(pv_dev_idents) {
             let kind = BlkDevKind::from_fstype(blkdev.fstype.as_deref());
             let encrypted = kind == BlkDevKind::LUKS;
 
@@ -900,9 +963,8 @@ impl VolumeMap {
             },
         ) in &self.raid_volumes
         {
-            let mut entry = entry_with_header("");
-
             let dev_ident = dev_idents.join(":");
+            let mut entry = entry_with_header(format!("raid:{} (volume):", &dev_ident));
             entry.partitions_mut().push(format_partition_row(
                 0,
                 logical_vol.fstype.as_deref().unwrap_or(""),
@@ -911,7 +973,6 @@ impl VolumeMap {
                 &dev_ident,
             ));
 
-            *entry.disk_mut() = format!("raid:{} (volume):", &dev_ident);
             disk_entries.push(entry);
         }
 
@@ -925,7 +986,7 @@ impl VolumeMap {
             },
         ) in &self.vol_groups
         {
-            let mut entry = entry_with_header("");
+            let mut entry = entry_with_header(format!("lvm:{} (volume group):", &vg_name));
 
             for (j, (child, devs)) in lvs.iter().enumerate() {
                 let lv_ident = child.name.parse::<LvIdent>().unwrap();
@@ -940,17 +1001,17 @@ impl VolumeMap {
             }
 
             if !entry.partitions().is_empty() {
-                *entry.disk_mut() = format!("lvm:{} (volume group):", &vg_name);
-                *entry.scheme_mut() = format!(
+                let mut scheme = format!(
                     "   0:                LVM2_scheme                        +{:<10} {}",
                     size, &vg_name
                 );
 
                 let mut label = "Physical Store";
                 for dev_ident in dev_idents {
-                    *entry.scheme_mut() += &format!("\n{:<32} {} {}", "", label, dev_ident);
+                    scheme += &format!("\n{:<32} {} {}", "", label, dev_ident);
                     label = "              ";
                 }
+                *entry.scheme_mut() = scheme;
 
                 disk_entries.push(entry);
             }
