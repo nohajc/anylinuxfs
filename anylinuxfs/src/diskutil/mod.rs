@@ -1,5 +1,4 @@
 use anyhow::Context;
-use bstr::ByteSlice;
 use common_utils::{PathExt, is_encrypted_fs, safe_print};
 use derive_more::{AddAssign, Deref};
 use indexmap::IndexMap;
@@ -564,10 +563,10 @@ pub fn list_partitions(
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_else(|| path.to_string());
 
-            if DiskFormat::from_path(p.as_bytes().as_bstr()) == DiskFormat::Qcow2 {
+            if DiskFormat::from_path(p.as_bytes()) == DiskFormat::Qcow2 {
                 // It's a qcow2 image file — will be probed by get_lsblk_info below
                 qcow2_images.push(Qcow2ListImage {
-                    dev_info: DevInfo::unprobed_image(p.as_bytes().as_bstr(), None)?,
+                    dev_info: DevInfo::unprobed_image(p.as_bytes(), None)?,
                     path: path.to_owned(),
                     image_name,
                 });

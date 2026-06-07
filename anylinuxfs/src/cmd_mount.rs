@@ -316,9 +316,8 @@ fn resolve_disk_token(token: &str, read_only: bool) -> anyhow::Result<(DevInfo, 
         if !Path::new(image_path).exists() {
             anyhow::bail!("Image file not found: {}", image_path);
         }
-        if DiskFormat::from_path(image_path.as_bytes().as_bstr()) == DiskFormat::Qcow2 {
-            let partition_info =
-                DevInfo::unprobed_image(image_path.as_bytes().as_bstr(), Some(part_num))?;
+        if DiskFormat::from_path(image_path) == DiskFormat::Qcow2 {
+            let partition_info = DevInfo::unprobed_image(image_path, Some(part_num))?;
             let disk = File::open(partition_info.rdisk())
                 .context("Failed to open image file")?
                 .acquire_lock(if read_only {
@@ -357,8 +356,8 @@ fn resolve_disk_token(token: &str, read_only: bool) -> anyhow::Result<(DevInfo, 
     let token_path = Path::new(token);
     if token_path.is_file() {
         // Whole image file (no partition spec)
-        let dev_info = if DiskFormat::from_path(token.as_bytes().as_bstr()) == DiskFormat::Qcow2 {
-            DevInfo::unprobed_image(token.as_bytes().as_bstr(), None)?
+        let dev_info = if DiskFormat::from_path(token) == DiskFormat::Qcow2 {
+            DevInfo::unprobed_image(token, None)?
         } else {
             DevInfo::pv(token, true)?
         };
@@ -381,7 +380,7 @@ fn resolve_disk_token(token: &str, read_only: bool) -> anyhow::Result<(DevInfo, 
         format!("/dev/{}", token)
     };
 
-    let dev_info = DevInfo::pv(dev_path_str.as_bytes().as_bstr(), false)?;
+    let dev_info = DevInfo::pv(dev_path_str.as_str(), false)?;
     let disk = File::open(dev_info.rdisk())
         .context("Failed to open device")?
         .acquire_lock(if read_only {

@@ -25,8 +25,8 @@ impl DiskFormat {
         }
     }
 
-    pub fn from_path(path: &BStr) -> Self {
-        if path.ends_with(b".qcow2") {
+    pub fn from_path(path: impl AsRef<BStr>) -> Self {
+        if path.as_ref().ends_with(b".qcow2") {
             DiskFormat::Qcow2
         } else {
             DiskFormat::Raw
@@ -133,7 +133,7 @@ impl DevInfo {
 
         // also get info from DiskArbitration
         let da_info = diskutil::get_info(&path);
-        let disk_format = DiskFormat::from_path(path.as_bstr());
+        let disk_format = DiskFormat::from_path(&path);
 
         Ok(DevInfo {
             path,
