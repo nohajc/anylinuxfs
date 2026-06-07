@@ -1,0 +1,45 @@
+name: Linux AArch64
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  anylinuxfs:
+    name: anylinuxfs native Linux AArch64
+    runs-on: debian-linux-arm64
+
+    env:
+      CARGO_TERM_COLOR: always
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust targets
+        run: |
+          rustup target add aarch64-unknown-linux-musl
+          rustup toolchain install nightly-2026-01-25 --profile minimal --component rust-src
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang \
+            libblkid-dev \
+            libclang-dev \
+            libtirpc-dev \
+            lld \
+            pkg-config
+
+      - name: Download runtime dependencies
+        run: ./download-dependencies.sh
+
+      - name: Build anylinuxfs for Linux AArch64
+        run: ./build-app.sh
+
+      - name: Run Rust unit tests
+        run: ./run-rust-tests.sh
