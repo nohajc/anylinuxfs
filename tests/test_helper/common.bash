@@ -172,6 +172,61 @@ assert_file_roundtrip() {
 }
 
 # ---------------------------------------------------------------------------
+# List-output assertions
+# ---------------------------------------------------------------------------
+# normalize_list_output <output>
+#   Replaces volatile paths and size values while preserving the rest of
+#   anylinuxfs list's row text for exact section comparisons. Size fields
+#   are normalized to the formatter's 10-character column width.
+normalize_list_output() {
+  local output="$1"
+  if [[ -n "${BATS_FILE_TMPDIR:-}" ]]; then
+    output="${output//"$BATS_FILE_TMPDIR"/<TMP>}"
+  fi
+  printf '%s\n' "$output" \
+    | sed -E \
+      -e 's/([+*]?)[0-9]+([.][0-9]+)? [KMGTPE]?B/\1<SIZE>/g' \
+      -e 's/([+*]?)<SIZE> +/\1<SIZE>     /g'
+}
+
+# extract_list_section <normalized-output> <heading>
+#   Prints the section that starts at <heading> and ends before the next blank
+#   line. The caller should pass normalized output and a normalized heading.
+extract_list_section() {
+  local output="$1"
+  local heading="$2"
+  awk -v heading="$heading" '
+    found && $0 == "" { exit }
+    $0 == heading { found = 1 }
+    found { print }
+  ' <<< "$output"
+}
+
+# assert_list_section <output> <normalized-heading> <expected-normalized-section>
+assert_list_section() {
+  local output="$1"
+  local heading="$2"
+  local expected="$3"
+  local normalized section
+
+  normalized="$(normalize_list_output "$output")"
+  section="$(extract_list_section "$normalized" "$heading")"
+
+  if [[ -z "$section" ]]; then
+    echo "FAIL: list section not found: $heading" >&2
+    echo "Normalized output:" >&2
+    echo "$normalized" >&2
+    return 1
+  fi
+
+  if [[ "$section" != "$expected" ]]; then
+    echo "FAIL: list section mismatch: $heading" >&2
+    diff -u <(printf '%s\n' "$expected") <(printf '%s\n' "$section") >&2 || true
+    return 1
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Unmount
 # ---------------------------------------------------------------------------
 # do_unmount [disk_arg]

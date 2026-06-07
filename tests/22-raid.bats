@@ -38,6 +38,15 @@ teardown() {
      mkfs.ext4 -E root_owner=$(id -u):$(id -g) -L ${RAID_LABEL} /dev/md/alfsraid" \
     "$raid_id" > /dev/null 2>&1
 
+  run "$ANYLINUXFS" list "${BATS_FILE_TMPDIR}/raid1a.img" "${BATS_FILE_TMPDIR}/raid1b.img"
+  [ "$status" -eq 0 ]
+  assert_list_section "$output" "raid:raid1a.img:raid1b.img (volume):" "$(cat <<'EOF'
+raid:raid1a.img:raid1b.img (volume):
+   #:                       TYPE NAME                    SIZE       IDENTIFIER
+   0:                       ext4 alfsraid1               <SIZE>     raid1a.img:raid1b.img
+EOF
+)"
+
   # Now mount it with anylinuxfs — it will assemble the array again.
   do_mount "$raid_id"
 
@@ -45,5 +54,3 @@ teardown() {
 
   do_unmount
 }
-
-

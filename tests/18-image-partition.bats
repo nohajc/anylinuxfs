@@ -17,6 +17,7 @@ load 'test_helper/common'
 
 PART1_LABEL="imgpart1"
 PART2_LABEL="imgpart2"
+WHOLE_LABEL="imgwhole"
 
 setup_file() {
   # Create a sparse 512 MiB GPT-partitioned image
@@ -28,6 +29,10 @@ setup_file() {
   # This keeps both partitions away from the 64 KiB that mount-mode trims
   vm_exec "${BATS_FILE_TMPDIR}/test-partitioned.img" \
     "parted -s /dev/vda mklabel gpt mkpart primary ext4 1MiB 256MiB mkpart primary ext4 256MiB 511MiB && mkfs.ext4 -E root_owner=$(id -u):$(id -g) -L ${PART1_LABEL} /dev/vda1 && mkfs.ext4 -E root_owner=$(id -u):$(id -g) -L ${PART2_LABEL} /dev/vda2"
+
+  create_sparse_image "${BATS_FILE_TMPDIR}/test-whole.img" 256M
+  vm_exec "${BATS_FILE_TMPDIR}/test-whole.img" \
+    "mkfs.ext4 -E root_owner=$(id -u):$(id -g) -L ${WHOLE_LABEL} /dev/vda \$(( \$(blockdev --getsz /dev/vda) / 8 - 16 ))"
 }
 
 teardown() {
@@ -37,17 +42,29 @@ teardown() {
 # ---------------------------------------------------------------------------
 
 @test "image partition: list shows @s1 and @s2 identifiers" {
-  output=$("$ANYLINUXFS" list "${BATS_FILE_TMPDIR}/test-partitioned.img")
-  
-  # Check that output contains the @s1 and @s2 identifiers
-  echo "$output" | grep -q "@s1" || {
-    echo "Output: $output"
-    exit 1
-  }
-  echo "$output" | grep -q "@s2" || {
-    echo "Output: $output"
-    exit 1
-  }
+  run "$ANYLINUXFS" list "${BATS_FILE_TMPDIR}/test-partitioned.img"
+  [ "$status" -eq 0 ]
+
+  assert_list_section "$output" "<TMP>/test-partitioned.img (disk image):" "$(cat <<'EOF'
+<TMP>/test-partitioned.img (disk image):
+   #:                       TYPE NAME                    SIZE       IDENTIFIER
+   0:      GUID_partition_scheme                        +<SIZE>     test-partitioned.img
+   1:                       ext4 imgpart1                <SIZE>     test-partitioned.img@s1
+   2:                       ext4 imgpart2                <SIZE>     test-partitioned.img@s2
+EOF
+)"
+}
+
+@test "image partition: list shows whole-disk filesystem section" {
+  run "$ANYLINUXFS" list "${BATS_FILE_TMPDIR}/test-whole.img"
+  [ "$status" -eq 0 ]
+
+  assert_list_section "$output" "<TMP>/test-whole.img (disk image):" "$(cat <<'EOF'
+<TMP>/test-whole.img (disk image):
+   #:                       TYPE NAME                    SIZE       IDENTIFIER
+   0:                       ext4 imgwhole               +<SIZE>     test-whole.img
+EOF
+)"
 }
 
 @test "image partition: mount partition 1 (@s1), verify mount, unmount" {
