@@ -634,11 +634,7 @@ pub fn list_partitions(
                 vol_map.build_entries(&mut disk_entries);
             }
             Err(e) => {
-                if qcow2_images.is_empty() {
-                    eprintln!("Failed to get lsblk info: {:#}", e);
-                } else {
-                    eprintln!("Failed to get qcow2 lsblk info: {:#}", e);
-                }
+                eprintln!("Failed to get lsblk info: {:#}", e);
             }
         }
     }
