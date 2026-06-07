@@ -6,8 +6,7 @@ use std::thread;
 
 use super::{
     DiskInfo, Entry, Labels, MountPoint, PvCollector, entry_with_header, format_partition_row,
-    format_partition_size, format_prefixed_row, format_scheme_row, normalize_pt_type,
-    trunc_with_ellipsis,
+    format_partition_size, format_prefixed_row, normalize_pt_type, trunc_with_ellipsis,
 };
 use crate::devinfo::DevInfo;
 use crate::pubsub::Subscription;
@@ -176,7 +175,8 @@ pub(super) fn process_block_device(
         // Partitioned disk
         let normalized_pt = normalize_pt_type(pt);
         let size_str = whole_size.map(format_partition_size).unwrap_or_default();
-        *entry.scheme_mut() = format_scheme_row(&normalized_pt, size_prefix, &size_str, &disk_name);
+        *entry.scheme_mut() =
+            format_prefixed_row(0, &normalized_pt, "", size_prefix, &size_str, &disk_name);
 
         let part_names = list_partition_names_sysfs(&disk_name);
         for (i, part_name) in part_names.iter().enumerate() {
@@ -234,7 +234,7 @@ pub(super) fn process_block_device(
             return None;
         }
         let size_str = whole_size.map(format_partition_size).unwrap_or_default();
-        *entry.scheme_mut() = format_scheme_row("", size_prefix, &size_str, &disk_name);
+        *entry.scheme_mut() = format_prefixed_row(0, "", "", size_prefix, &size_str, &disk_name);
         for (i, part_name) in part_names.iter().enumerate() {
             let part_size = read_part_size(&disk_name, part_name);
             let size_str = part_size.map(format_partition_size).unwrap_or_default();
