@@ -458,11 +458,11 @@ pub fn wait_for_file(file: impl AsRef<Path>) -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
+#[cfg(target_os = "macos")]
 mod tests {
     use super::*;
 
     #[test]
-    #[cfg(target_os = "macos")]
     fn default_nfs_opts() {
         let opts = NfsOptions::default();
         let opts_str = String::from_utf8(opts.to_list())
