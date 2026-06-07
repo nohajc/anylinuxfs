@@ -72,31 +72,40 @@ teardown() {
   run "$ANYLINUXFS" list "${BATS_FILE_TMPDIR}/test-partitioned.qcow2"
 
   [ "$status" -eq 0 ]
-  echo "$output" | grep -F "${BATS_FILE_TMPDIR}/test-partitioned.qcow2 (disk image):"
-  echo "$output" | grep -F "ext4"
-  echo "$output" | grep -F "$QCOW_PART1_LABEL"
-  echo "$output" | grep -F "$QCOW_PART2_LABEL"
-  echo "$output" | grep -F "test-partitioned.qcow2@s1"
-  echo "$output" | grep -F "test-partitioned.qcow2@s2"
+  assert_list_section "$output" "<TMP>/test-partitioned.qcow2 (disk image):" "$(cat <<'EOF'
+<TMP>/test-partitioned.qcow2 (disk image):
+   #:                       TYPE NAME                    SIZE       IDENTIFIER
+   0:      GUID_partition_scheme                        +<SIZE>     test-partitioned.qcow2
+   1:                       ext4 qcowpart1               <SIZE>     test-partitioned.qcow2@s1
+   2:                       ext4 qcowpart2               <SIZE>     test-partitioned.qcow2@s2
+EOF
+)"
 }
 
 @test "qcow2 list: whole-disk filesystem shows as image row" {
   run "$ANYLINUXFS" list "${BATS_FILE_TMPDIR}/test-whole.qcow2"
 
   [ "$status" -eq 0 ]
-  echo "$output" | grep -F "${BATS_FILE_TMPDIR}/test-whole.qcow2 (disk image):"
-  echo "$output" | grep -F "ext4"
-  echo "$output" | grep -F "$QCOW_WHOLE_LABEL"
-  echo "$output" | grep -F "test-whole.qcow2"
+  assert_list_section "$output" "<TMP>/test-whole.qcow2 (disk image):" "$(cat <<'EOF'
+<TMP>/test-whole.qcow2 (disk image):
+   #:                       TYPE NAME                    SIZE       IDENTIFIER
+   0:                       ext4 qcowwhole              +<SIZE>     test-whole.qcow2
+EOF
+)"
 }
 
 @test "qcow2 list: LVM PV produces logical volume entries" {
   run "$ANYLINUXFS" list "${BATS_FILE_TMPDIR}/test-lvm.qcow2"
 
   [ "$status" -eq 0 ]
-  echo "$output" | grep -F "lvm:${QCOW_LVM_VG} (volume group):"
-  echo "$output" | grep -F "$QCOW_LVM_LABEL"
-  echo "$output" | grep -F "${QCOW_LVM_VG}:test-lvm.qcow2:${QCOW_LVM_LV}"
+  assert_list_section "$output" "lvm:${QCOW_LVM_VG} (volume group):" "$(cat <<EOF
+lvm:${QCOW_LVM_VG} (volume group):
+   #:                       TYPE NAME                    SIZE       IDENTIFIER
+   0:                LVM2_scheme                        +<SIZE>     ${QCOW_LVM_VG}
+                                 Physical Store test-lvm.qcow2
+   1:                       ext4 qcowlvm                 <SIZE>     ${QCOW_LVM_VG}:test-lvm.qcow2:${QCOW_LVM_LV}
+EOF
+)"
 }
 
 @test "qcow2 list: inspection failure does not hide unrelated raw image" {
