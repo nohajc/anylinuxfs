@@ -826,6 +826,7 @@ fn partition_number(parent: &LsBlkDevice, child: &LsBlkDevice) -> Option<usize> 
     child
         .name
         .strip_prefix(&parent.name)
+        .map(|suffix| suffix.strip_prefix('p').unwrap_or(suffix))
         .and_then(|suffix| suffix.parse().ok())
 }
 
