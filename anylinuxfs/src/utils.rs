@@ -13,7 +13,7 @@ use std::{
     path::{Path, PathBuf},
     process::Child,
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
@@ -465,9 +465,8 @@ pub fn fork_with_comm_pipe() -> anyhow::Result<ForkOutput<(), (), CommFd>> {
     }
 }
 
-#[allow(unused)]
 pub fn redirect_to_null(fd: libc::c_int) -> anyhow::Result<()> {
-    let dev_null_fd = unsafe { libc::open(c"/dev/null".as_ptr(), libc::O_RDONLY) };
+    let dev_null_fd = unsafe { libc::open(c"/dev/null".as_ptr(), libc::O_RDWR) };
     if dev_null_fd < 0 {
         return Err(io::Error::last_os_error()).context("Failed to open /dev/null");
     }
@@ -475,11 +474,20 @@ pub fn redirect_to_null(fd: libc::c_int) -> anyhow::Result<()> {
     if res < 0 {
         return Err(io::Error::last_os_error()).context("Failed to redirect fd to /dev/null");
     }
-    let res = unsafe { libc::close(dev_null_fd) };
-    if res < 0 {
-        return Err(io::Error::last_os_error()).context("Failed to close /dev/null fd");
+    if dev_null_fd != fd {
+        let res = unsafe { libc::close(dev_null_fd) };
+        if res < 0 {
+            return Err(io::Error::last_os_error()).context("Failed to close /dev/null fd");
+        }
     }
 
+    Ok(())
+}
+
+pub fn redirect_stdio_to_null() -> anyhow::Result<()> {
+    redirect_to_null(libc::STDIN_FILENO).context("Failed to redirect stdin to /dev/null")?;
+    redirect_to_null(libc::STDOUT_FILENO).context("Failed to redirect stdout to /dev/null")?;
+    redirect_to_null(libc::STDERR_FILENO).context("Failed to redirect stderr to /dev/null")?;
     Ok(())
 }
 
@@ -934,8 +942,6 @@ impl<R: Read> PassthroughBufReader<R> {
         }
     }
 }
-
-use std::sync::OnceLock;
 
 static ORIGINAL_TERMIOS: OnceLock<libc::termios> = OnceLock::new();
 static RAW_MODE_ENABLED: AtomicBool = AtomicBool::new(false);

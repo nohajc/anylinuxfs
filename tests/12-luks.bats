@@ -59,22 +59,24 @@ teardown() {
   do_unmount
 }
 
-# TODO: Why does expect fail to match the passphrase prompt?
-# @test "luks: mount with interactive passphrase via expect, file roundtrip, unmount" {
-#   local img="${BATS_FILE_TMPDIR}/luks.img"
-#   expect -c "
-#     set timeout 90
-#     spawn ${ANYLINUXFS} ${img} -w false
-#     expect {
-#       \"Linux: Enter passphrase for /dev/vda:\" { send \"${PASSPHRASE}\r\"; exp_continue }
-#       eof
-#     }
-#   "
+@test "luks: mount with interactive passphrase via expect, file roundtrip, unmount" {
+  local img="${BATS_FILE_TMPDIR}/luks.img"
+  expect -c "
+    set timeout 10
+    set window_args {}
+    if {\"${HOST_OS}\" eq \"Darwin\"} { set window_args [list -w false] }
+    spawn \"${ANYLINUXFS}\" \"${img}\" {*}\$window_args
+    expect {
+      -glob \"*Enter passphrase:*\" { send -- \"${PASSPHRASE}\r\"; exp_continue }
+      timeout { exit 124 }
+      eof
+    }
+  " || return
 
-#   assert_file_roundtrip "$(get_mount_point "$LUKS_LABEL")"
+  assert_file_roundtrip "$(get_mount_point "$LUKS_LABEL")"
 
-#   do_unmount
-# }
+  do_unmount
+}
 
 @test "luks: LVM-on-LUKS mount with env var, file roundtrip, unmount" {
   local disk_id="lvm:${LVM_ON_LUKS_VG}:${BATS_FILE_TMPDIR}/lvm-luks.img:${LVM_ON_LUKS_LV}"

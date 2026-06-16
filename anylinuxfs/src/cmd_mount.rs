@@ -1790,9 +1790,13 @@ impl super::AppRunner {
                     // tell the parent to detach from console (i.e. exit)
                     unsafe { write_to_pipe(comm_write_fd, b"detach\n") }
                         .context("Failed to write to pipe")?;
+                    unsafe {
+                        libc::close(comm_write_fd);
+                    }
 
                     // stop printing to the console
                     log::disable_console_log();
+                    utils::redirect_stdio_to_null().context("Failed to detach from console")?;
                 } else {
                     // tell the parent to wait for the child to exit
                     unsafe { write_to_pipe(comm_write_fd, b"join\n") }
