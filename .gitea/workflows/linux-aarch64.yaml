@@ -71,5 +71,8 @@ jobs:
       - name: Initialize Linux rootfs
         run: ./bin/anylinuxfs init
 
+      - name: Configure test VM RAM
+        run: ./bin/anylinuxfs config -r 2560
+
       - name: Run integration tests
         run: sudo --preserve-env=HOME ./tests/run-tests.sh --tap
