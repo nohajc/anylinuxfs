@@ -7,7 +7,7 @@ edition = "2024"
 crate-type = ["staticlib"]
 
 [dependencies]
-libkrun = { git = "https://github.com/containers/libkrun", rev = "4380b32b57001bda78f51ccbf1f81fc4e27eed48" }
+libkrun = "1.19.0"
 libc = "0.2"
 
 [features]
@@ -19,3 +19,17 @@ panic = "abort"
 
 [profile.release]
 panic = "abort"
+
+[patch.crates-io]
+libkrun = { path = "../../3rd-party/libkrun/target/package/libkrun-1.19.0" }
+krun-arch = { path = "../../3rd-party/libkrun/target/package/krun-arch-0.1.0-1.19.0" }
+krun-arch-gen = { path = "../../3rd-party/libkrun/target/package/krun-arch-gen-0.1.0-1.19.0" }
+krun-cpuid = { path = "../../3rd-party/libkrun/target/package/krun-cpuid-0.1.0-1.19.0" }
+krun-devices = { path = "../../3rd-party/libkrun/target/package/krun-devices-0.1.0-1.19.0" }
+krun-hvf = { path = "../../3rd-party/libkrun/target/package/krun-hvf-0.1.0-1.19.0" }
+krun-init-blob = { path = "../../3rd-party/libkrun/target/package/krun-init-blob-0.1.0-1.19.0" }
+krun-kernel = { path = "../../3rd-party/libkrun/target/package/krun-kernel-0.1.0-1.19.0" }
+krun-polly = { path = "../../3rd-party/libkrun/target/package/krun-polly-0.1.0-1.19.0" }
+krun-smbios = { path = "../../3rd-party/libkrun/target/package/krun-smbios-0.1.0-1.19.0" }
+krun-utils = { path = "../../3rd-party/libkrun/target/package/krun-utils-0.1.0-1.19.0" }
+krun-vmm = { path = "../../3rd-party/libkrun/target/package/krun-vmm-0.1.0-1.19.0" }
