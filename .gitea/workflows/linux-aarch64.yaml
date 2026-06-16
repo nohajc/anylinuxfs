@@ -41,6 +41,7 @@ jobs:
             ca-certificates \
             clang \
             curl \
+            expect \
             git \
             iproute2 \
             libblkid-dev \
