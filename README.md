@@ -12,6 +12,7 @@ Based on the libkrun microVM hypervisor and NFS — no kernel extensions, no low
 ## Installation
 ```
 brew tap nohajc/anylinuxfs
+brew trust nohajc/anylinuxfs
 brew install anylinuxfs
 ```
 
