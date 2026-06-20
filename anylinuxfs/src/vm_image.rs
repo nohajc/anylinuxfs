@@ -153,7 +153,7 @@ mod freebsd {
     };
     use anyhow::Context;
     use bstr::{BStr, BString};
-    use common_utils::{Deferred, OSType, PathExt, host_eprintln, host_println};
+    use common_utils::{Deferred, PathExt, host_eprintln, host_println};
     use serde::Serialize;
 
     pub const ENTRYPOINT_SCRIPT_URL: &str = "https://raw.githubusercontent.com/nohajc/docker-nfs-server/refs/heads/freebsd/entrypoint.sh";
@@ -435,12 +435,7 @@ mod freebsd {
         let setup_status = setup_gvproxy(&config, |_| {
             let devices = &[DevInfo::pv(vm_disk_image_path.as_bytes(), true)?];
             let cmdline = &["/usr/local/bin/vm-setup.sh".into()];
-            start_freebsd_vm(
-                &config,
-                devices,
-                cmdline,
-                NetworkMode::default_for_os(OSType::FreeBSD),
-            )
+            start_freebsd_vm(&config, devices, cmdline, NetworkMode::GvProxy)
         })?;
         if setup_status != 0 {
             anyhow::bail!("FreeBSD VM setup exited with status {}", setup_status);
@@ -579,13 +574,7 @@ mod freebsd {
         let opts = VMOpts::new()
             .root_device("cd9660:/dev/vtbd0")
             .legacy_console(true);
-        let ctx = setup_vm(
-            &config,
-            devices,
-            NetworkMode::default_for_os(OSType::FreeBSD),
-            false,
-            opts,
-        )?;
+        let ctx = setup_vm(&config, devices, NetworkMode::GvProxy, false, opts)?;
         let bstrap_status = start_vm_forked(&ctx, &["/freebsd-bootstrap".into()], &[])
             .context("Failed to start FreeBSD bootstrap VM")?;
 
