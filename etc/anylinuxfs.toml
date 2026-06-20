@@ -41,7 +41,7 @@ required_os = "Linux"
 default_image = "alpine-latest"
 
 [freebsd]
-default_image = "freebsd-15.0"
+default_image = "freebsd-15.1"
 
 [network]
 helper = "vmnet"
