@@ -1505,7 +1505,7 @@ impl super::AppRunner {
             let mut ctx = setup_vm(
                 &config.common,
                 &dev_info,
-                NetworkMode::default_virtio_net(os, effective_net_helper),
+                NetworkMode::default_virtio_net(effective_net_helper),
                 true,
                 opts,
             )
