@@ -13,6 +13,10 @@ HOST_OS="$(uname -s)"
 # Override ANYLINUXFS_BIN in the environment to point at an alternate binary.
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ANYLINUXFS="${ANYLINUXFS_BIN:-"${REPO_ROOT}/bin/anylinuxfs"}"
+# Use an exact name because the "freebsd" prefix becomes ambiguous when
+# multiple FreeBSD releases are configured. Allow CI and local environments
+# to select another configured release explicitly.
+FREEBSD_IMAGE="${FREEBSD_IMAGE:-freebsd-15.1}"
 
 # user_home_dir
 #   Resolves the invoking user's home directory. Under sudo, $HOME points at
@@ -107,11 +111,11 @@ vm_exec() {
 }
 
 # vm_exec_freebsd <disk_arg> <shell_command>
-#   Same as vm_exec but uses the FreeBSD image (for ZFS formatting).
+#   Same as vm_exec but uses the FreeBSD image (for UFS/ZFS formatting).
 vm_exec_freebsd() {
   local disk_arg="$1"
   local cmd="$2"
-  "$ANYLINUXFS" shell -i freebsd -c "$cmd" "$disk_arg"
+  "$ANYLINUXFS" shell -i "$FREEBSD_IMAGE" -c "$cmd" "$disk_arg"
 }
 
 # get_mount_point <label>
