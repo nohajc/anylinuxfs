@@ -101,14 +101,14 @@ pub(crate) enum NetworkMode {
 impl NetworkMode {
     pub(crate) fn default_for_os(os: OSType) -> Self {
         match os {
-            OSType::FreeBSD => NetworkMode::GvProxy,
+            OSType::FreeBSD => NetworkMode::VmNet,
             OSType::Linux => NetworkMode::Default,
         }
     }
 
     pub(crate) fn default_virtio_net(os: OSType, net_helper: NetHelper) -> Self {
         match os {
-            OSType::FreeBSD => NetworkMode::GvProxy,
+            OSType::FreeBSD => NetworkMode::VmNet,
             OSType::Linux => match net_helper {
                 NetHelper::GvProxy => NetworkMode::GvProxy,
                 NetHelper::VmNet => NetworkMode::VmNet,
