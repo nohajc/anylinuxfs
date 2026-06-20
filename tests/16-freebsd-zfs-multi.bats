@@ -1,9 +1,8 @@
 #!/usr/bin/env bats
 # 16-freebsd-zfs-multi.bats — FreeBSD ZFS multi-mount test with loopback alias verification
 #
-# Mounts four drives simultaneously using gvproxy: two ext4 filesystems
-# (explicitly via --net-helper gvproxy) and two FreeBSD ZFS pools (which
-# always force gvproxy regardless of the --net-helper flag). Running four
+# Mounts four drives simultaneously using gvproxy: two ext4 filesystems and
+# two FreeBSD ZFS pools, all explicitly via --net-helper gvproxy. Running four
 # concurrent gvproxy instances exhausts the available loopback NFS ports and
 # triggers creation of at least one new lo0 inet6 alias; this test verifies
 # that and cleans up the alias afterward.
@@ -12,10 +11,9 @@
 # alias cleanup uses ifconfig which requires root).
 #
 # Tests:
-#   1. Mount two ext4 images with --net-helper gvproxy and two FreeBSD ZFS
-#      pools (implicitly gvproxy); verify at least one new lo0 inet6 alias
-#      was created, file I/O works on all four mounts, and all aliases are
-#      removed after the test.
+#   1. Mount two ext4 images and two FreeBSD ZFS pools with --net-helper
+#      gvproxy; verify at least one new lo0 inet6 alias was created, file I/O
+#      works on all four mounts, and all aliases are removed after the test.
 
 load 'test_helper/common'
 
@@ -107,10 +105,9 @@ cleanup_lo0_aliases() {
   ZFS2_DEV="$ATTACH_DEV"
   export ZFS2_DEV
 
-  # Mount two FreeBSD ZFS pools. FreeBSD always uses gvproxy internally
-  # regardless of the --net-helper flag, so these also go through gvproxy.
-  do_mount "$(partition_dev "$ZFS1_DEV" 1)" --zfs-os freebsd
-  do_mount "$(partition_dev "$ZFS2_DEV" 1)" --zfs-os freebsd
+  # Mount two FreeBSD ZFS pools through gvproxy as well.
+  do_mount "$(partition_dev "$ZFS1_DEV" 1)" --zfs-os freebsd --net-helper gvproxy
+  do_mount "$(partition_dev "$ZFS2_DEV" 1)" --zfs-os freebsd --net-helper gvproxy
 
   # Verify that at least one new lo0 inet6 alias was created (macOS only).
   if [[ "$HOST_OS" == "Darwin" ]]; then

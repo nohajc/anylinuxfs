@@ -585,10 +585,7 @@ impl AppRunner {
                 .collect();
         }
 
-        let effective_net_helper = config
-            .common
-            .network
-            .effective_net_helper(|net_helper| net_helper.os_override(config.common.kernel.os));
+        let effective_net_helper = config.common.network.effective_net_helper(|h| h);
 
         let net_mode = match cmd.no_tsi {
             true => NetworkMode::default_virtio_net(os, effective_net_helper),
