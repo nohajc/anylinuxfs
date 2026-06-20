@@ -1428,9 +1428,10 @@ impl super::AppRunner {
         let os = config.common.kernel.os;
         let shared_volume = config.bind_addr.is_some_and(|addr| !addr.is_loopback());
 
-        let effective_net_helper = config.common.network.effective_net_helper(|net_helper| {
-            net_helper.bind_addr_override(shared_volume).os_override(os)
-        });
+        let effective_net_helper = config
+            .common
+            .network
+            .effective_net_helper(|net_helper| net_helper.bind_addr_override(shared_volume));
         network_env.net_helper = effective_net_helper;
 
         let net_helper_svc = match effective_net_helper {

@@ -6,7 +6,7 @@
 
 Five components work together:
 
-- **anylinuxfs** (Rust/macOS): Main CLI. Manages microVM lifecycle, disk arbitration, networking (gvproxy), and NFS mounting on the host.
+- **anylinuxfs** (Rust/macOS): Main CLI. Manages microVM lifecycle, disk arbitration, networking (gvproxy or vmnet-helper), and NFS mounting on the host.
 - **vmproxy** (Rust/Linux/FreeBSD): Guest-side agent running inside the microVM. Mounts filesystems, exports via NFS, and handles the control socket. Compiled for `aarch64-unknown-linux-musl` and `aarch64-unknown-freebsd`.
 - **common-utils** (Rust): Shared library used by both `anylinuxfs` and `vmproxy`. Contains IPC protocol, logging, RAII utilities, and shared constants.
 - **init-rootfs** (Go/Linux): Bootstraps the Alpine Linux rootfs for the microVM (downloads OCI image, unpacks it). This is NOT the VM init process — `libkrun` has its own bundled init.
@@ -21,11 +21,11 @@ macOS host (anylinuxfs)
   ├── Starts network helper (gvproxy or vmnet-helper)
   ├── Launches krun microVM via libkrun FFI
   │     └── vmproxy runs inside VM
-  │           ├── Configures network (192.168.127.2/30)
+  │           ├── Configures network (helper-provided subnet)
   │           ├── Mounts disk (LUKS → RAID → LVM → filesystem)
   │           ├── Writes /etc/exports, starts NFS daemon
   │           └── Listens on control socket
-  └── Mounts NFS share: mount -t nfs 192.168.127.2:/mnt/disk /Volumes/...
+  └── Mounts NFS share: mount -t nfs <guest-host>:/mnt/disk /Volumes/...
 ```
 
 ### Communication Protocols

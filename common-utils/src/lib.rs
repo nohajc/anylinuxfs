@@ -152,13 +152,6 @@ pub enum NetHelper {
 }
 
 impl NetHelper {
-    pub fn os_override(self, os: OSType) -> Self {
-        match os {
-            OSType::FreeBSD => NetHelper::GvProxy,
-            OSType::Linux => self,
-        }
-    }
-
     pub fn bind_addr_override(self, is_non_loopback: bool) -> Self {
         match is_non_loopback {
             true => NetHelper::GvProxy,
