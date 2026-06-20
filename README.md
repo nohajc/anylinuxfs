@@ -101,7 +101,7 @@ Arguments:
   These can be deduced from `anylinuxfs list` output where any logical volumes will be shown as synthesized disks (similar to how `diskutil` does it for APFS containers)
 * In case of btrfs filesystems spanning multiple disks (like RAID1 or JBOD), these will not be grouped in the `anylinuxfs list` output.
 * In order to mount a filesystem like this, you use the `/dev/diskXsY:/dev/diskYsZ` syntax. Basically, you must specify all partitions that need to be attached to our microVM so that they can be scanned for any multi-disk btrfs filesystems.
-* Besides physical disks, you can also work with disk images, simply by specifying their path and partition index (e.g. `file.img@s1` or `image.qcow2@s1`). `anylinuxfs list` cannot enumerate qcow2 partitions, so use the partition index directly for qcow2 images.
+* Besides physical disks, you can also work with disk images, simply by specifying their path and partition index (e.g. `file.img@s1` or `image.qcow2@s1`).
 
 ## Documentation
 
