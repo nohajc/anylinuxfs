@@ -131,7 +131,7 @@ fn init_network(
     bind_addrs: &[String],
     host_rpcbind: bool,
     native_network: Option<Ipv4Net>,
-    #[allow(unused_variables)] dns_server: Option<&str>,
+    dns_server: Option<&str>,
 ) -> anyhow::Result<()> {
     let vm_gateway_ip = native_network
         .map(|net| net.hosts().next())
@@ -142,16 +142,20 @@ fn init_network(
                 .context("Failed to parse VM_GATEWAY_IP")?,
         );
 
-    // resolv.conf is already initialized and always the same on FreeBSD.
     // In TSI mode dns_server is passed from the host; otherwise fall back to
     // the gateway (native_network's first host, or the default VM_GATEWAY_IP).
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     {
+        #[cfg(target_os = "linux")]
+        let resolv_conf = "/tmp/resolv.conf";
+        #[cfg(target_os = "freebsd")]
+        let resolv_conf = "/etc/resolv.conf";
+
         let dns = dns_server
             .map(str::to_owned)
             .unwrap_or_else(|| vm_gateway_ip.to_string());
-        fs::write("/tmp/resolv.conf", format!("nameserver {dns}\n"))
-            .context("Failed to write /tmp/resolv.conf")?;
+        fs::write(resolv_conf, format!("nameserver {dns}\n"))
+            .with_context(|| format!("Failed to write {resolv_conf}"))?;
     }
 
     // In TSI mode there is no virtual NIC to configure; the host kernel
