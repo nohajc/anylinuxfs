@@ -127,6 +127,25 @@ fn expose_port(client: &reqwest::blocking::Client, port_def: &PortDef) -> anyhow
     Ok(())
 }
 
+#[cfg(target_os = "freebsd")]
+fn add_network_hosts(
+    vm_gateway_ip: std::net::Ipv4Addr,
+    vm_ip: std::net::Ipv4Addr,
+) -> anyhow::Result<()> {
+    let mut hosts = fs::OpenOptions::new()
+        .append(true)
+        .open("/etc/hosts")
+        .context("Failed to open /etc/hosts")?;
+
+    writeln!(
+        hosts,
+        "{vm_gateway_ip}\tanylinuxfs-host\n{vm_ip}\tanylinuxfs-guest"
+    )
+    .context("Failed to append anylinuxfs hosts entries")?;
+
+    Ok(())
+}
+
 fn init_network(
     bind_addrs: &[String],
     host_rpcbind: bool,
@@ -170,6 +189,9 @@ fn init_network(
             .map(|net| net.hosts().nth(1))
             .flatten()
             .unwrap_or(VM_IP.parse().context("Failed to parse VM_IP")?);
+
+        #[cfg(target_os = "freebsd")]
+        add_network_hosts(vm_gateway_ip, vm_ip)?;
 
         let net_prefix_len = native_network.map(|net| net.prefix_len()).unwrap_or(24);
 
