@@ -106,13 +106,10 @@ impl NetworkMode {
         }
     }
 
-    pub(crate) fn default_virtio_net(os: OSType, net_helper: NetHelper) -> Self {
-        match os {
-            OSType::FreeBSD => NetworkMode::VmNet,
-            OSType::Linux => match net_helper {
-                NetHelper::GvProxy => NetworkMode::GvProxy,
-                NetHelper::VmNet => NetworkMode::VmNet,
-            },
+    pub(crate) fn default_virtio_net(net_helper: NetHelper) -> Self {
+        match net_helper {
+            NetHelper::GvProxy => NetworkMode::GvProxy,
+            NetHelper::VmNet => NetworkMode::VmNet,
         }
     }
 }
