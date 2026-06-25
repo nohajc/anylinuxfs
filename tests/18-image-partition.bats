@@ -15,9 +15,9 @@
 
 load 'test_helper/common'
 
-PART1_LABEL="imgpart1"
-PART2_LABEL="imgpart2"
-WHOLE_LABEL="imgwhole"
+PART1_LABEL="alfs18part1"
+PART2_LABEL="alfs18part2"
+WHOLE_LABEL="alfs18whole"
 
 setup_file() {
   # Create a sparse 512 MiB GPT-partitioned image
@@ -36,7 +36,10 @@ setup_file() {
 }
 
 teardown() {
-  safe_teardown
+  safe_teardown \
+    "${BATS_FILE_TMPDIR}/test-partitioned.img@s1" \
+    "${BATS_FILE_TMPDIR}/test-partitioned.img@s2" \
+    "${BATS_FILE_TMPDIR}/test-whole.img"
 }
 
 # ---------------------------------------------------------------------------
@@ -49,8 +52,8 @@ teardown() {
 <TMP>/test-partitioned.img (disk image):
    #:                       TYPE NAME                    SIZE       IDENTIFIER
    0:      GUID_partition_scheme                        +<SIZE>     test-partitioned.img
-   1:                       ext4 imgpart1                <SIZE>     test-partitioned.img@s1
-   2:                       ext4 imgpart2                <SIZE>     test-partitioned.img@s2
+   1:                       ext4 alfs18part1             <SIZE>     test-partitioned.img@s1
+   2:                       ext4 alfs18part2             <SIZE>     test-partitioned.img@s2
 EOF
 )"
 }
@@ -62,35 +65,37 @@ EOF
   assert_list_section "$output" "<TMP>/test-whole.img (disk image):" "$(cat <<'EOF'
 <TMP>/test-whole.img (disk image):
    #:                       TYPE NAME                    SIZE       IDENTIFIER
-   0:                       ext4 imgwhole               +<SIZE>     test-whole.img
+   0:                       ext4 alfs18whole            +<SIZE>     test-whole.img
 EOF
 )"
 }
 
 @test "image partition: mount partition 1 (@s1), verify mount, unmount" {
   # Mount the first partition — should succeed
-  do_mount "${BATS_FILE_TMPDIR}/test-partitioned.img@s1"
+  local disk_id="${BATS_FILE_TMPDIR}/test-partitioned.img@s1"
+  do_mount "$disk_id"
   
   # Check that the mount exists
-  mount | grep -qE "(imgpart1|volumes/imgpart1)" || {
+  mount | grep -qE "(alfs18part1|volumes/alfs18part1)" || {
     echo "Mount point not found in mount output"
     mount
     exit 1
   }
   
-  do_unmount
+  do_unmount "$disk_id"
 }
 
 @test "image partition: mount partition 2 (@s2), verify mount, unmount" {
   # Mount the second partition — should succeed
-  do_mount "${BATS_FILE_TMPDIR}/test-partitioned.img@s2"
+  local disk_id="${BATS_FILE_TMPDIR}/test-partitioned.img@s2"
+  do_mount "$disk_id"
   
   # Check that the mount exists
-  mount | grep -qE "(imgpart2|volumes/imgpart2)" || {
+  mount | grep -qE "(alfs18part2|volumes/alfs18part2)" || {
     echo "Mount point not found in mount output"
     mount
     exit 1
   }
   
-  do_unmount
+  do_unmount "$disk_id"
 }

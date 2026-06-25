@@ -12,10 +12,10 @@
 load 'test_helper/common'
 
 PASSPHRASE="alfs-test-pass"
-LUKS_LABEL="alfsluksfs"
-LVM_ON_LUKS_VG="alfsluksvg"
-LVM_ON_LUKS_LV="alfslukslv"
-LVM_ON_LUKS_LABEL="alfslukslvm"
+LUKS_LABEL="alfs12luks"
+LVM_ON_LUKS_VG="alfs12vg"
+LVM_ON_LUKS_LV="alfs12lv"
+LVM_ON_LUKS_LABEL="alfs12lvm"
 
 setup_file() {
   # --- Plain LUKS + ext4 ---
@@ -45,7 +45,9 @@ setup_file() {
 }
 
 teardown() {
-  safe_teardown
+  safe_teardown \
+    "${BATS_FILE_TMPDIR}/luks.img" \
+    "lvm:${LVM_ON_LUKS_VG}:${BATS_FILE_TMPDIR}/lvm-luks.img:${LVM_ON_LUKS_LV}"
 }
 
 # ---------------------------------------------------------------------------
@@ -54,9 +56,9 @@ teardown() {
   local img="${BATS_FILE_TMPDIR}/luks.img"
   ALFS_PASSPHRASE="$PASSPHRASE" do_mount "$img"
 
-  assert_file_roundtrip "$(get_mount_point "$LUKS_LABEL")"
+  assert_file_roundtrip "$(mounted_path_for "$img" "$LUKS_LABEL")"
 
-  do_unmount
+  do_unmount "$img"
 }
 
 @test "luks: mount with interactive passphrase via expect, file roundtrip, unmount" {
@@ -73,16 +75,16 @@ teardown() {
     }
   " || return
 
-  assert_file_roundtrip "$(get_mount_point "$LUKS_LABEL")"
+  assert_file_roundtrip "$(mounted_path_for "$img" "$LUKS_LABEL")"
 
-  do_unmount
+  do_unmount "$img"
 }
 
 @test "luks: LVM-on-LUKS mount with env var, file roundtrip, unmount" {
   local disk_id="lvm:${LVM_ON_LUKS_VG}:${BATS_FILE_TMPDIR}/lvm-luks.img:${LVM_ON_LUKS_LV}"
   ALFS_PASSPHRASE="$PASSPHRASE" do_mount "$disk_id"
 
-  assert_file_roundtrip "$(get_mount_point "$LVM_ON_LUKS_LABEL")"
+  assert_file_roundtrip "$(mounted_path_for "$disk_id" "$LVM_ON_LUKS_LABEL")"
 
-  do_unmount
+  do_unmount "$disk_id"
 }

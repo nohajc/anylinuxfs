@@ -13,7 +13,7 @@
 load 'test_helper/common'
 
 # zpool name is also the volume label as seen by diskutil
-POOL="alfszfspool"
+POOL="alfs06zpool"
 
 setup_file() {
   create_sparse_image "${BATS_FILE_TMPDIR}/zfs.img" 1G
@@ -36,8 +36,11 @@ setup_file() {
 }
 
 teardown() {
-  safe_teardown "${BATS_FILE_TMPDIR}/zfs.img"
-  safe_teardown "${BATS_FILE_TMPDIR}/zfs-encrypted.img"
+  local targets=("${BATS_FILE_TMPDIR}/zfs.img" "${BATS_FILE_TMPDIR}/zfs-encrypted.img")
+  if [[ -n "${ATTACH_DEV:-}" ]]; then
+    targets+=("$(partition_dev "$ATTACH_DEV" 1)")
+  fi
+  safe_teardown "${targets[@]}"
 }
 
 # ---------------------------------------------------------------------------
@@ -49,9 +52,9 @@ teardown() {
 
   do_mount "$part_dev" --zfs-os freebsd
 
-  assert_file_roundtrip "$(get_mount_point "zfs_root/$POOL")"
+  assert_file_roundtrip "$(mounted_path_for "$part_dev" "zfs_root/$POOL")"
 
-  do_unmount
+  do_unmount "$part_dev"
 }
 
 @test "zfs: mount with Linux kernel, file roundtrip, unmount" {
@@ -61,9 +64,9 @@ teardown() {
 
   do_mount "$part_dev" --zfs-os linux
 
-  assert_file_roundtrip "$(get_mount_point "zfs_root/$POOL")"
+  assert_file_roundtrip "$(mounted_path_for "$part_dev" "zfs_root/$POOL")"
 
-  do_unmount
+  do_unmount "$part_dev"
 }
 
 @test "zfs: mount encrypted with FreeBSD kernel using ALFS_PASSPHRASE, file roundtrip, unmount" {
@@ -73,9 +76,9 @@ teardown() {
 
   ALFS_PASSPHRASE="alfszfsencryptedpass" do_mount "$part_dev" --zfs-os freebsd
 
-  assert_file_roundtrip "$(get_mount_point "zfs_root/$POOL")"
+  assert_file_roundtrip "$(mounted_path_for "$part_dev" "zfs_root/$POOL")"
 
-  do_unmount
+  do_unmount "$part_dev"
 }
 
 @test "zfs: mount encrypted with Linux kernel using ALFS_PASSPHRASE, file roundtrip, unmount" {
@@ -85,7 +88,7 @@ teardown() {
 
   ALFS_PASSPHRASE="alfszfsencryptedpass" do_mount "$part_dev" --zfs-os linux
 
-  assert_file_roundtrip "$(get_mount_point "zfs_root/$POOL")"
+  assert_file_roundtrip "$(mounted_path_for "$part_dev" "zfs_root/$POOL")"
 
-  do_unmount
+  do_unmount "$part_dev"
 }

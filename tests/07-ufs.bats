@@ -7,7 +7,7 @@
 
 load 'test_helper/common'
 
-LABEL="alfsufs"
+LABEL="alfs07ufs"
 
 setup_file() {
   create_sparse_image "${BATS_FILE_TMPDIR}/ufs.img" 512M
@@ -25,16 +25,16 @@ teardown() {
   local img="${BATS_FILE_TMPDIR}/ufs.img"
   do_mount "$img"
 
-  assert_file_roundtrip "$(get_mount_point "$LABEL")"
+  assert_file_roundtrip "$(mounted_path_for "$img" "$LABEL")"
 
-  do_unmount
+  do_unmount "$img"
 }
 
 @test "ufs: mount with --zfs-os linux still picks FreeBSD, file roundtrip, unmount" {
   local img="${BATS_FILE_TMPDIR}/ufs.img"
   do_mount "$img" --zfs-os linux
 
-  assert_file_roundtrip "$(get_mount_point "$LABEL")"
+  assert_file_roundtrip "$(mounted_path_for "$img" "$LABEL")"
 
-  do_unmount
+  do_unmount "$img"
 }

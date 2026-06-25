@@ -7,7 +7,7 @@
 
 load 'test_helper/common'
 
-LABEL="alfsbtrfs"
+LABEL="alfs02btrfs"
 
 setup_file() {
   create_sparse_image "${BATS_FILE_TMPDIR}/btrfs.img" 512M
@@ -29,16 +29,16 @@ teardown() {
   local img="${BATS_FILE_TMPDIR}/btrfs.img"
   do_mount "$img"
 
-  assert_file_roundtrip "$(get_mount_point "$LABEL")"
+  assert_file_roundtrip "$(mounted_path_for "$img" "$LABEL")"
 
-  do_unmount
+  do_unmount "$img"
 }
 
 @test "btrfs: mount with compress=zstd option" {
   local img="${BATS_FILE_TMPDIR}/btrfs.img"
   do_mount "$img" -o compress=zstd
 
-  assert_file_roundtrip "$(get_mount_point "$LABEL")"
+  assert_file_roundtrip "$(mounted_path_for "$img" "$LABEL")"
 
-  do_unmount
+  do_unmount "$img"
 }

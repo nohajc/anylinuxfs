@@ -10,11 +10,11 @@
 
 load 'test_helper/common'
 
-VG="alfsvg"
-LV1="alfslv1"
-LV2="alfslv2"
-LV1_LABEL="alfslvm1"
-LV2_LABEL="alfslvm2"
+VG="alfs11vg"
+LV1="alfs11lv1"
+LV2="alfs11lv2"
+LV1_LABEL="alfs11lvm1"
+LV2_LABEL="alfs11lvm2"
 
 setup_file() {
   create_sparse_image "${BATS_FILE_TMPDIR}/lvm.img" 512M
@@ -28,7 +28,14 @@ setup_file() {
 }
 
 teardown() {
-  safe_teardown
+  local targets=(
+    "lvm:${VG}:${BATS_FILE_TMPDIR}/lvm.img:${LV1}" \
+    "lvm:${VG}:${BATS_FILE_TMPDIR}/lvm.img:${LV2}"
+  )
+  if [[ -n "${ATTACH_DEV:-}" ]]; then
+    targets+=("lvm:${VG}:${ATTACH_DEV}:${LV1}" "lvm:${VG}:${ATTACH_DEV}:${LV2}")
+  fi
+  safe_teardown "${targets[@]}"
 }
 
 # ---------------------------------------------------------------------------
@@ -37,18 +44,18 @@ teardown() {
   local disk_id="lvm:${VG}:${BATS_FILE_TMPDIR}/lvm.img:${LV1}"
   do_mount "$disk_id"
 
-  assert_file_roundtrip "$(get_mount_point "$LV1_LABEL")"
+  assert_file_roundtrip "$(mounted_path_for "$disk_id" "$LV1_LABEL")"
 
-  do_unmount
+  do_unmount "$disk_id"
 }
 
 @test "lvm: mount second logical volume, file roundtrip, unmount" {
   local disk_id="lvm:${VG}:${BATS_FILE_TMPDIR}/lvm.img:${LV2}"
   do_mount "$disk_id"
 
-  assert_file_roundtrip "$(get_mount_point "$LV2_LABEL")"
+  assert_file_roundtrip "$(mounted_path_for "$disk_id" "$LV2_LABEL")"
 
-  do_unmount
+  do_unmount "$disk_id"
 }
 
 @test "lvm: mount first logical volume via hdiutil-attached device, file roundtrip, unmount" {
@@ -56,9 +63,9 @@ teardown() {
   local disk_id="lvm:${VG}:${ATTACH_DEV}:${LV1}"
   do_mount "$disk_id"
 
-  assert_file_roundtrip "$(get_mount_point "$LV1_LABEL")"
+  assert_file_roundtrip "$(mounted_path_for "$disk_id" "$LV1_LABEL")"
 
-  do_unmount
+  do_unmount "$disk_id"
 }
 
 @test "lvm: mount second logical volume via hdiutil-attached device, file roundtrip, unmount" {
@@ -66,7 +73,7 @@ teardown() {
   local disk_id="lvm:${VG}:${ATTACH_DEV}:${LV2}"
   do_mount "$disk_id"
 
-  assert_file_roundtrip "$(get_mount_point "$LV2_LABEL")"
+  assert_file_roundtrip "$(mounted_path_for "$disk_id" "$LV2_LABEL")"
 
-  do_unmount
+  do_unmount "$disk_id"
 }
