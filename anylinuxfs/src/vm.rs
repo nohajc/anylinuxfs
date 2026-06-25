@@ -6,6 +6,7 @@ use krun as bindings;
 use serde::Serialize;
 use serde_with::{DisplayFromStr, serde_as};
 
+use std::cell::RefCell;
 use std::collections::HashSet;
 use std::ffi::CString;
 use std::fs::{self, File};
@@ -80,10 +81,8 @@ static KRUN_LOG_LEVEL_INIT: Once = Once::new();
 pub(crate) struct VMContext {
     id: u32,
     os: OSType,
-    root_path: Option<PathBuf>,
-    invoker_uid: libc::uid_t,
-    invoker_gid: libc::gid_t,
     vm_native_cidr: Option<Ipv4Net>,
+    overlay_buffers: RefCell<Vec<Vec<u8>>>,
 }
 
 impl VMContext {
@@ -278,21 +277,11 @@ pub(crate) fn setup_vm(
     }
     .context("Failed to set kernel")?;
 
-    let root_path = match os {
-        OSType::Linux => Some(config.paths.root_path.clone()),
-        OSType::FreeBSD => None, // no virtiofs => no root path
-    };
-
-    let invoker_uid = config.privilege.invoker_uid;
-    let invoker_gid = config.privilege.invoker_gid;
-
     Ok(VMContext {
         id: ctx_id,
         os,
-        root_path,
-        invoker_uid,
-        invoker_gid,
         vm_native_cidr: None,
+        overlay_buffers: RefCell::new(Vec::new()),
     })
 }
 
@@ -592,7 +581,6 @@ pub(crate) fn set_vm_cmdline(
 ) -> anyhow::Result<()> {
     let krun_config_tmp_dir;
     let mut deferred = Deferred::new();
-
     let krun_config = serde_json::to_string(&KrunConfig {
         process: KrunConfigProcess { args, env },
     })
@@ -600,16 +588,21 @@ pub(crate) fn set_vm_cmdline(
 
     match ctx.os {
         OSType::Linux => {
-            let krun_config_file_name = ".krun_config.json";
-            let krun_config_file = ctx.root_path.as_ref().unwrap().join(krun_config_file_name);
-            fs::write(&krun_config_file, krun_config.as_bytes()).with_context(|| {
-                format!(
-                    "Failed to write krun config file {}",
-                    krun_config_file.display()
+            let mut overlay_buffers = ctx.overlay_buffers.borrow_mut();
+            overlay_buffers.push(krun_config.into_bytes());
+            let krun_config = overlay_buffers.last().unwrap();
+            unsafe {
+                bindings::krun_fs_add_overlay_file(
+                    ctx.id,
+                    c"/dev/root".as_ptr(),
+                    c".krun_config.json".as_ptr(),
+                    krun_config.as_ptr(),
+                    krun_config.len(),
+                    0o100600,
+                    false,
                 )
-            })?;
-            privilege::chown_to_invoker(&krun_config_file, ctx.invoker_uid, ctx.invoker_gid)?;
-            xattr_util::set_override_stat_file(&krun_config_file, 0, 0, 0o600)?;
+            }
+            .context("Failed to add krun config overlay file")?;
         }
         OSType::FreeBSD => {
             krun_config_tmp_dir = PathBuf::from("/tmp").join(format!("alfs-{}", rand_string(8)));
