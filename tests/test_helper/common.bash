@@ -238,7 +238,7 @@ assert_list_section() {
 do_unmount() {
   local disk_arg="${1:-}"
   if [[ -n "$disk_arg" ]]; then
-    "$ANYLINUXFS" unmount -w "$disk_arg" || true
+    "$ANYLINUXFS" unmount "$disk_arg" -w || true
   else
     "$ANYLINUXFS" unmount -w
   fi
