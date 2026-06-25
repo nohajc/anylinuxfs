@@ -29,6 +29,7 @@ use crate::{rand_string, to_exit_code, utils};
 
 pub(crate) struct VMOpts {
     add_disks_ro: bool,
+    read_only_disk_prefix_len: usize,
     root_device: Option<String>,
     read_only_root: bool,
     #[cfg(feature = "freebsd")]
@@ -39,6 +40,7 @@ impl VMOpts {
     pub(crate) fn new() -> Self {
         Self {
             add_disks_ro: false,
+            read_only_disk_prefix_len: 0,
             root_device: None,
             read_only_root: true,
             #[cfg(feature = "freebsd")]
@@ -48,6 +50,11 @@ impl VMOpts {
 
     pub(crate) fn read_only_disks(mut self, value: bool) -> Self {
         self.add_disks_ro = value;
+        self
+    }
+
+    pub(crate) fn read_only_disk_prefix_len(mut self, value: usize) -> Self {
+        self.read_only_disk_prefix_len = value;
         self
     }
 
@@ -177,13 +184,14 @@ pub(crate) fn setup_vm(
     }
 
     for (i, di) in dev_info.iter().enumerate() {
+        let read_only = opts.add_disks_ro || i < opts.read_only_disk_prefix_len;
         unsafe {
             bindings::krun_add_disk2(
                 ctx_id,
                 CString::new(format!("data{}", i)).unwrap().as_ptr(),
                 CString::from_path(di.rdisk()).as_ptr(),
                 di.disk_format().as_krun_id(),
-                opts.add_disks_ro,
+                read_only,
             )
         }
         .context("Failed to add disk")?;
