@@ -183,9 +183,9 @@ pub(crate) struct UnmountCmd {
     /// Disk identifier or mount point (unmounts all if not specified)
     #[arg(id = "DISK_IDENT|MOUNT_POINT")]
     pub path: Option<String>,
-    /// Wait for VM to exit after unmounting
-    #[arg(short, long)]
-    pub wait_for_vm: bool,
+    /// Wait for VM to exit after unmounting, optionally for SECONDS
+    #[arg(short, long, value_name = "SECONDS", num_args = 0..=1, default_missing_value = "60")]
+    pub wait_for_vm: Option<u64>,
 }
 
 #[derive(Args)]
@@ -393,5 +393,47 @@ impl Cli {
             }
             _ => Err(err),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_unmount(args: &[&str]) -> UnmountCmd {
+        match Cli::try_parse_from(args).unwrap().commands {
+            Commands::Unmount(cmd) => cmd,
+            _ => panic!("expected unmount command"),
+        }
+    }
+
+    #[test]
+    fn unmount_wait_without_value_uses_default_timeout() {
+        let cmd = parse_unmount(&["anylinuxfs", "unmount", "-w"]);
+
+        assert_eq!(cmd.wait_for_vm, Some(60));
+    }
+
+    #[test]
+    fn unmount_wait_accepts_seconds() {
+        let cmd = parse_unmount(&["anylinuxfs", "unmount", "-w", "10"]);
+
+        assert_eq!(cmd.wait_for_vm, Some(10));
+    }
+
+    #[test]
+    fn unmount_path_can_precede_wait_flag() {
+        let cmd = parse_unmount(&["anylinuxfs", "unmount", "/tmp/mountpoint", "-w"]);
+
+        assert_eq!(cmd.path.as_deref(), Some("/tmp/mountpoint"));
+        assert_eq!(cmd.wait_for_vm, Some(60));
+    }
+
+    #[test]
+    fn unmount_path_can_precede_wait_seconds() {
+        let cmd = parse_unmount(&["anylinuxfs", "unmount", "/tmp/mountpoint", "-w", "10"]);
+
+        assert_eq!(cmd.path.as_deref(), Some("/tmp/mountpoint"));
+        assert_eq!(cmd.wait_for_vm, Some(10));
     }
 }
