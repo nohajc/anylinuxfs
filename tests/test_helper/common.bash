@@ -201,12 +201,6 @@ assert_file_roundtrip() {
   local mount_point="$1"
   local test_file="${mount_point}/alfs_test_$(date +%s%N).txt"
   local content="anylinuxfs-test-$(uname -n)-$$-$(date +%s)"
-  local retries=30
-
-  while [[ ! -d "$mount_point" && $retries -gt 0 ]]; do
-    sleep 1
-    (( retries-- ))
-  done
 
   echo "MOUNT_POINT:"
   ls -ld "$mount_point"
