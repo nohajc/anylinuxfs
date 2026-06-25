@@ -15,8 +15,9 @@ mod darwin {
     use ipnet::Ipv4Net;
     use objc2_core_foundation::{CFArray, CFDictionary, CFString};
     use objc2_system_configuration::SCDynamicStore;
+    use rand::Rng;
     use std::cmp;
-    use std::net::Ipv6Addr;
+    use std::net::{Ipv4Addr, Ipv6Addr};
     use std::process::Command;
     use std::ptr::null_mut;
 
@@ -140,6 +141,56 @@ mod darwin {
         }
 
         Ok(candidate)
+    }
+
+    fn network_overlaps_any(candidate: &Ipv4Net, used_networks: &[Ipv4Net]) -> bool {
+        used_networks
+            .iter()
+            .any(|net| candidate.contains(net) || net.contains(candidate))
+    }
+
+    fn network_in_pool_by_index(
+        prefix_len: u8,
+        pool: Ipv4Net,
+        index: u64,
+    ) -> anyhow::Result<Ipv4Net> {
+        let block_size = 1u64 << (32 - prefix_len);
+        let pool_base = u32::from(pool.network()) as u64;
+        let candidate_addr = Ipv4Addr::from((pool_base + index * block_size) as u32);
+        Ok(Ipv4Net::new(candidate_addr, prefix_len)?)
+    }
+
+    pub fn pick_random_available_network_in_pool(
+        prefix_len: u8,
+        used_networks: &[Ipv4Net],
+        pool: Ipv4Net,
+        max_attempts: usize,
+    ) -> anyhow::Result<Option<Ipv4Net>> {
+        let pool_prefix_len = pool.prefix_len();
+        if prefix_len <= pool_prefix_len {
+            anyhow::bail!(
+                "invalid prefix length: {}, must be greater than {}",
+                prefix_len,
+                pool_prefix_len
+            );
+        }
+
+        if max_attempts == 0 {
+            return Ok(None);
+        }
+
+        let candidate_count = 1u64 << (prefix_len - pool_prefix_len);
+        let mut rng = rand::rng();
+
+        for _ in 0..max_attempts {
+            let index = rng.random_range(0..candidate_count);
+            let candidate = network_in_pool_by_index(prefix_len, pool, index)?;
+            if !network_overlaps_any(&candidate, used_networks) {
+                return Ok(Some(candidate));
+            }
+        }
+
+        Ok(None)
     }
 
     fn make_new_loopback() -> anyhow::Result<Host> {
@@ -312,13 +363,45 @@ mod darwin {
             let result = pick_available_network(30, &used).unwrap();
             assert_eq!(result, "172.27.1.20/30".parse::<Ipv4Net>().unwrap());
         }
+
+        #[test]
+        fn test_pick_random_available_network_has_expected_shape() {
+            let pool = "172.27.1.0/24".parse::<Ipv4Net>().unwrap();
+            let result = pick_random_available_network_in_pool(30, &[], pool, 1)
+                .unwrap()
+                .unwrap();
+
+            assert_eq!(result.prefix_len(), 30);
+            assert!(pool.contains(&result.network()));
+            assert!(pool.contains(&result.broadcast()));
+        }
+
+        #[test]
+        fn test_pick_random_available_network_rejects_conflicts() {
+            let pool = "172.27.1.0/29".parse::<Ipv4Net>().unwrap();
+            let used = vec![
+                "172.27.1.0/30".parse::<Ipv4Net>().unwrap(),
+                "172.27.1.4/30".parse::<Ipv4Net>().unwrap(),
+            ];
+            let result = pick_random_available_network_in_pool(30, &used, pool, 8).unwrap();
+
+            assert!(result.is_none());
+        }
+
+        #[test]
+        fn test_pick_random_available_network_reports_exhausted_attempts() {
+            let pool = "172.27.1.0/24".parse::<Ipv4Net>().unwrap();
+            let result = pick_random_available_network_in_pool(30, &[], pool, 0).unwrap();
+
+            assert!(result.is_none());
+        }
     }
 }
 
 #[cfg(target_os = "macos")]
 pub use darwin::{
     get_configured_dns_server, get_interface_networks, pick_available_network_in_pool,
-    pick_usable_loopback_ip,
+    pick_random_available_network_in_pool, pick_usable_loopback_ip,
 };
 
 #[cfg(target_os = "linux")]

@@ -1,10 +1,11 @@
+use std::env;
 use std::fs::File;
 use std::io::BufReader;
 use std::net::{IpAddr, Ipv4Addr};
 use std::process::{Command, Stdio};
 
 use anyhow::Context;
-use common_utils::{OSType, VMNET_PREFIX_LEN};
+use common_utils::{OSType, VMNET_PREFIX_LEN, host_println};
 use ipnet::Ipv4Net;
 use os_version::{MacOS, OsVersion};
 use serde::Deserialize;
@@ -95,12 +96,34 @@ pub fn start_vmnet_helper(config: &Config) -> anyhow::Result<NetHelperService> {
     let known_networks =
         netutil::get_interface_networks().context("Failed to get interface networks")?;
 
-    let vmnet_cidr = netutil::pick_available_network_in_pool(
-        VMNET_PREFIX_LEN,
-        &known_networks,
-        config.preferences.vmnet_pool(),
-    )
-    .context("Failed to find available network for vmnet-helper")?;
+    let vmnet_pool = config.preferences.vmnet_pool();
+    let random_vmnet_cidr = env::var("ANYLINUXFS_RANDOM_VMNET_CIDR").as_deref() == Ok("1");
+    let vmnet_cidr = if random_vmnet_cidr {
+        host_println!("Random vmnet CIDR selection enabled");
+        match netutil::pick_random_available_network_in_pool(
+            VMNET_PREFIX_LEN,
+            &known_networks,
+            vmnet_pool,
+            1024,
+        )
+        .context("Failed to randomly select vmnet network for vmnet-helper")?
+        {
+            Some(cidr) => cidr,
+            None => {
+                host_println!("Random vmnet CIDR selection exhausted; using deterministic picker");
+                netutil::pick_available_network_in_pool(
+                    VMNET_PREFIX_LEN,
+                    &known_networks,
+                    vmnet_pool,
+                )
+                .context("Failed to find available network for vmnet-helper")?
+            }
+        }
+    } else {
+        netutil::pick_available_network_in_pool(VMNET_PREFIX_LEN, &known_networks, vmnet_pool)
+            .context("Failed to find available network for vmnet-helper")?
+    };
+    host_println!("Selected vmnet CIDR: {}", vmnet_cidr);
 
     let mut vmnet_helper_cmd = Command::new(&config.paths.vmnet_helper_path);
 
