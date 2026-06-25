@@ -166,6 +166,13 @@ mod darwin {
         pool: Ipv4Net,
         max_attempts: usize,
     ) -> anyhow::Result<Option<Ipv4Net>> {
+        if prefix_len > 32 {
+            anyhow::bail!(
+                "invalid prefix length: {}, must be less than or equal to 32",
+                prefix_len
+            );
+        }
+
         let pool_prefix_len = pool.prefix_len();
         if prefix_len <= pool_prefix_len {
             anyhow::bail!(
@@ -394,6 +401,14 @@ mod darwin {
             let result = pick_random_available_network_in_pool(30, &[], pool, 0).unwrap();
 
             assert!(result.is_none());
+        }
+
+        #[test]
+        fn test_pick_random_available_network_rejects_invalid_prefix_len() {
+            let pool = "172.27.1.0/24".parse::<Ipv4Net>().unwrap();
+            let err = pick_random_available_network_in_pool(33, &[], pool, 1).unwrap_err();
+
+            assert!(err.to_string().contains("invalid prefix length: 33"));
         }
     }
 }
