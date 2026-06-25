@@ -10,8 +10,8 @@
 
 load 'test_helper/common'
 
-LABEL="alfsext4"
-LABEL_ROOTOWNED="alfsext4ro"
+LABEL="alfs01ext4"
+LABEL_ROOTOWNED="alfs01ext4ro"
 
 setup_file() {
   create_sparse_image "${BATS_FILE_TMPDIR}/ext4.img" 512M
@@ -28,7 +28,7 @@ setup_file() {
 }
 
 teardown() {
-  safe_teardown "${BATS_FILE_TMPDIR}/ext4.img"
+  safe_teardown "${BATS_FILE_TMPDIR}/ext4.img" "${BATS_FILE_TMPDIR}/ext4-rootowned.img"
 }
 
 # ---------------------------------------------------------------------------
@@ -37,18 +37,18 @@ teardown() {
   local img="${BATS_FILE_TMPDIR}/ext4.img"
   do_mount "$img"
 
-  assert_file_roundtrip "$(get_mount_point "$LABEL")"
+  assert_file_roundtrip "$(mounted_path_for "$img" "$LABEL")"
 
-  do_unmount
+  do_unmount "$img"
 }
 
 @test "ext4: mount with noatime option" {
   local img="${BATS_FILE_TMPDIR}/ext4.img"
   do_mount "$img" -o noatime
 
-  assert_file_roundtrip "$(get_mount_point "$LABEL")"
+  assert_file_roundtrip "$(mounted_path_for "$img" "$LABEL")"
 
-  do_unmount
+  do_unmount "$img"
 }
 
 @test "ext4: read-only mount rejects writes" {
@@ -56,19 +56,20 @@ teardown() {
   do_mount "$img" -o ro
 
   local mp
-  mp="$(get_mount_point "$LABEL")"
+  mp="$(mounted_path_for "$img" "$LABEL")"
   # A write to a read-only mount must fail
   run bash -c "echo test > '${mp}/should_fail.txt'"
   [ "$status" -ne 0 ]
 
-  do_unmount
+  do_unmount "$img"
 }
 
 @test "ext4: --ignore-permissions allows file roundtrip on root-owned filesystem" {
   # The root directory is owned by root:root, which would normally block writes.
-  do_mount "${BATS_FILE_TMPDIR}/ext4-rootowned.img" --ignore-permissions
+  local img="${BATS_FILE_TMPDIR}/ext4-rootowned.img"
+  do_mount "$img" --ignore-permissions
 
-  assert_file_roundtrip "$(get_mount_point "$LABEL_ROOTOWNED")"
+  assert_file_roundtrip "$(mounted_path_for "$img" "$LABEL_ROOTOWNED")"
 
-  do_unmount
+  do_unmount "$img"
 }

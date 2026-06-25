@@ -12,8 +12,8 @@
 
 load 'test_helper/common'
 
-RAW_LABEL="alfshdraw"
-GPT_LABEL="alfshgpt"
+RAW_LABEL="alfs13raw"
+GPT_LABEL="alfs13gpt"
 
 setup_file() {
   # Raw ext4 (no partition table) — subtract 16 blocks to match mount-mode
@@ -31,7 +31,11 @@ setup_file() {
 }
 
 teardown() {
-  safe_teardown
+  local targets=("${BATS_FILE_TMPDIR}/hdi-raw.img" "${BATS_FILE_TMPDIR}/hdi-gpt.img")
+  if [[ -n "${ATTACH_DEV:-}" ]]; then
+    targets+=("$ATTACH_DEV" "$(partition_dev "$ATTACH_DEV" 1)")
+  fi
+  safe_teardown "${targets[@]}"
 }
 
 # ---------------------------------------------------------------------------
@@ -41,9 +45,9 @@ teardown() {
 
   do_mount "$ATTACH_DEV"
 
-  assert_file_roundtrip "$(get_mount_point "$RAW_LABEL")"
+  assert_file_roundtrip "$(mounted_path_for "$ATTACH_DEV" "$RAW_LABEL")"
 
-  do_unmount
+  do_unmount "$ATTACH_DEV"
 }
 
 @test "attach-image: GPT image, mount first partition, unmount, detach" {
@@ -52,7 +56,7 @@ teardown() {
 
   do_mount "$part_dev"
 
-  assert_file_roundtrip "$(get_mount_point "$GPT_LABEL")"
+  assert_file_roundtrip "$(mounted_path_for "$part_dev" "$GPT_LABEL")"
 
-  do_unmount
+  do_unmount "$part_dev"
 }

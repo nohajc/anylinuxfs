@@ -12,7 +12,7 @@
 
 load 'test_helper/common'
 
-RAID_LABEL="alfsraid1"
+RAID_LABEL="alfs22raid1"
 
 setup_file() {
   # Two equal-sized sparse images — will be assembled into RAID1.
@@ -22,7 +22,7 @@ setup_file() {
 }
 
 teardown() {
-  safe_teardown
+  safe_teardown "raid:${BATS_FILE_TMPDIR}/raid1a.img:${BATS_FILE_TMPDIR}/raid1b.img"
 }
 
 # ---------------------------------------------------------------------------
@@ -43,14 +43,14 @@ teardown() {
   assert_list_section "$output" "raid:raid1a.img:raid1b.img (volume):" "$(cat <<'EOF'
 raid:raid1a.img:raid1b.img (volume):
    #:                       TYPE NAME                    SIZE       IDENTIFIER
-   0:                       ext4 alfsraid1               <SIZE>     raid1a.img:raid1b.img
+   0:                       ext4 alfs22raid1             <SIZE>     raid1a.img:raid1b.img
 EOF
 )"
 
   # Now mount it with anylinuxfs — it will assemble the array again.
   do_mount "$raid_id"
 
-  assert_file_roundtrip "$(get_mount_point "$RAID_LABEL")"
+  assert_file_roundtrip "$(mounted_path_for "$raid_id" "$RAID_LABEL")"
 
-  do_unmount
+  do_unmount "$raid_id"
 }

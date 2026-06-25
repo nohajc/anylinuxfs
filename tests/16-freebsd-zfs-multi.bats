@@ -17,10 +17,10 @@
 
 load 'test_helper/common'
 
-EXT_LABEL1="alfs-fbm-ext1"
-EXT_LABEL2="alfs-fbm-ext2"
-ZFS_POOL1="alfsfbmulti1"
-ZFS_POOL2="alfsfbmulti2"
+EXT_LABEL1="alfs16ext1"
+EXT_LABEL2="alfs16ext2"
+ZFS_POOL1="alfs16zfs1"
+ZFS_POOL2="alfs16zfs2"
 
 setup_file() {
   # Two ext4 images
@@ -49,8 +49,16 @@ setup_file() {
 }
 
 teardown() {
-  [[ -n "${ZFS1_DEV:-}" ]] && detach_image "$ZFS1_DEV" && ZFS1_DEV=""
-  [[ -n "${ZFS2_DEV:-}" ]] && detach_image "$ZFS2_DEV" && ZFS2_DEV=""
+  local targets=("${BATS_FILE_TMPDIR}/ext1.img" "${BATS_FILE_TMPDIR}/ext2.img")
+  if [[ -n "${ZFS1_DEV:-}" ]]; then
+    targets+=("$(partition_dev "$ZFS1_DEV" 1)")
+  fi
+  if [[ -n "${ZFS2_DEV:-}" ]]; then
+    targets+=("$(partition_dev "$ZFS2_DEV" 1)")
+  fi
+  safe_teardown "${targets[@]}"
+  ZFS1_DEV=""
+  ZFS2_DEV=""
   cleanup_lo0_aliases
 }
 
@@ -106,8 +114,10 @@ cleanup_lo0_aliases() {
   export ZFS2_DEV
 
   # Mount two FreeBSD ZFS pools through gvproxy as well.
-  do_mount "$(partition_dev "$ZFS1_DEV" 1)" --zfs-os freebsd --net-helper gvproxy
-  do_mount "$(partition_dev "$ZFS2_DEV" 1)" --zfs-os freebsd --net-helper gvproxy
+  local zfs1_part_dev="$(partition_dev "$ZFS1_DEV" 1)"
+  local zfs2_part_dev="$(partition_dev "$ZFS2_DEV" 1)"
+  do_mount "$zfs1_part_dev" --zfs-os freebsd --net-helper gvproxy
+  do_mount "$zfs2_part_dev" --zfs-os freebsd --net-helper gvproxy
 
   # Verify that at least one new lo0 inet6 alias was created (macOS only).
   if [[ "$HOST_OS" == "Darwin" ]]; then
@@ -117,10 +127,10 @@ cleanup_lo0_aliases() {
   fi
 
   # Verify file I/O on all four mounts.
-  assert_file_roundtrip "$(get_mount_point "$EXT_LABEL1")"
-  assert_file_roundtrip "$(get_mount_point "$EXT_LABEL2")"
-  assert_file_roundtrip "$(get_mount_point "zfs_root/$ZFS_POOL1")"
-  assert_file_roundtrip "$(get_mount_point "zfs_root-1/$ZFS_POOL2")"
+  assert_file_roundtrip "$(mounted_path_for "$ext1_img" "$EXT_LABEL1")"
+  assert_file_roundtrip "$(mounted_path_for "$ext2_img" "$EXT_LABEL2")"
+  assert_file_roundtrip "$(mounted_path_for "$zfs1_part_dev" "zfs_root/$ZFS_POOL1")"
+  assert_file_roundtrip "$(mounted_path_for "$zfs2_part_dev" "zfs_root/$ZFS_POOL2")"
 
-  do_unmount
+  do_unmount "$ext1_img" "$ext2_img" "$zfs1_part_dev" "$zfs2_part_dev"
 }

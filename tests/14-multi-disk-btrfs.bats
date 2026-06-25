@@ -11,7 +11,7 @@
 
 load 'test_helper/common'
 
-LABEL="alfsmbtrfs"
+LABEL="alfs14mbtrfs"
 
 setup_file() {
   create_sparse_image "${BATS_FILE_TMPDIR}/btrfs0.img" 512M
@@ -37,9 +37,9 @@ teardown() {
   local disk_id="${BATS_FILE_TMPDIR}/btrfs0.img:${BATS_FILE_TMPDIR}/btrfs1.img"
   do_mount "$disk_id"
 
-  assert_file_roundtrip "$(get_mount_point "$LABEL")"
+  assert_file_roundtrip "$(mounted_path_for "$disk_id" "$LABEL")"
 
-  do_unmount
+  do_unmount "$disk_id"
 }
 
 @test "multi-disk btrfs: RAID1 read-only mount" {
@@ -47,11 +47,11 @@ teardown() {
   do_mount "$disk_id" -o ro
 
   local mp
-  mp="$(get_mount_point "$LABEL")"
+  mp="$(mounted_path_for "$disk_id" "$LABEL")"
 
   # Writes must fail on a read-only mount
   run bash -c "echo test > '${mp}/should_fail.txt'"
   [ "$status" -ne 0 ]
 
-  do_unmount
+  do_unmount "$disk_id"
 }

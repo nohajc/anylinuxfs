@@ -12,9 +12,9 @@
 
 load 'test_helper/common'
 
-GPT_LABEL="alfsgpt"
-MBR1_LABEL="alfsmbrp1"
-MBR2_LABEL="alfsmbrp2"
+GPT_LABEL="alfs10gpt"
+MBR1_LABEL="alfs10mbr1"
+MBR2_LABEL="alfs10mbr2"
 
 setup_file() {
   # --- GPT image ---
@@ -39,7 +39,11 @@ setup_file() {
 }
 
 teardown() {
-  safe_teardown
+  local targets=("${BATS_FILE_TMPDIR}/gpt.img" "${BATS_FILE_TMPDIR}/mbr.img")
+  if [[ -n "${ATTACH_DEV:-}" ]]; then
+    targets+=("$(partition_dev "$ATTACH_DEV" 1)" "$(partition_dev "$ATTACH_DEV" 2)")
+  fi
+  safe_teardown "${targets[@]}"
 }
 
 # ---------------------------------------------------------------------------
@@ -51,9 +55,9 @@ teardown() {
 
   do_mount "$part_dev"
 
-  assert_file_roundtrip "$(get_mount_point "$GPT_LABEL")"
+  assert_file_roundtrip "$(mounted_path_for "$part_dev" "$GPT_LABEL")"
 
-  do_unmount
+  do_unmount "$part_dev"
 }
 
 @test "partitioned: MBR first partition (ext4)" {
@@ -63,9 +67,9 @@ teardown() {
 
   do_mount "$part_dev"
 
-  assert_file_roundtrip "$(get_mount_point "$MBR1_LABEL")"
+  assert_file_roundtrip "$(mounted_path_for "$part_dev" "$MBR1_LABEL")"
 
-  do_unmount
+  do_unmount "$part_dev"
 }
 
 @test "partitioned: MBR second partition (btrfs) via direct path" {
@@ -75,7 +79,7 @@ teardown() {
 
   do_mount "$part_dev"
 
-  assert_file_roundtrip "$(get_mount_point "$MBR2_LABEL")"
+  assert_file_roundtrip "$(mounted_path_for "$part_dev" "$MBR2_LABEL")"
 
-  do_unmount
+  do_unmount "$part_dev"
 }

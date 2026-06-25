@@ -10,8 +10,8 @@
 
 load 'test_helper/common'
 
-LABEL="alfsntfs"
-REMOUNT_LABEL="alfsntfsrm"
+LABEL="alfs05ntfs"
+REMOUNT_LABEL="alfs05ntfsrm"
 
 setup_file() {
   # Raw whole-disk NTFS — used by the driver tests.
@@ -34,7 +34,11 @@ setup_file() {
 }
 
 teardown() {
-  safe_teardown
+  local targets=("${BATS_FILE_TMPDIR}/ntfs.img" "${BATS_FILE_TMPDIR}/ntfs-remount.img")
+  if [[ -n "${ATTACH_DEV:-}" ]]; then
+    targets+=("$(partition_dev "$ATTACH_DEV" 1)")
+  fi
+  safe_teardown "${targets[@]}"
 }
 
 # ---------------------------------------------------------------------------
@@ -43,35 +47,37 @@ teardown() {
   local img="${BATS_FILE_TMPDIR}/ntfs.img"
   do_mount "$img" -t ntfs3
 
-  assert_file_roundtrip "$(get_mount_point "$LABEL")"
+  assert_file_roundtrip "$(mounted_path_for "$img" "$LABEL")"
 
-  do_unmount
+  do_unmount "$img"
 }
 
 @test "ntfs: mount with ntfs-3g driver, file roundtrip, unmount" {
   local img="${BATS_FILE_TMPDIR}/ntfs.img"
   do_mount "$img" -t ntfs-3g
 
-  assert_file_roundtrip "$(get_mount_point "$LABEL")"
+  assert_file_roundtrip "$(mounted_path_for "$img" "$LABEL")"
 
-  do_unmount
+  do_unmount "$img"
 }
 
 @test "ntfs: ntfs3 filenames remain Unicode-correct under ntfs-3g" {
   local img="${BATS_FILE_TMPDIR}/ntfs.img"
-  local mount_point="$(get_mount_point "$LABEL")"
+  local mount_point
   local dirname="中文目录"
   local filename="繁體中文-𠀀.txt"
 
   do_mount "$img" -t ntfs3
+  mount_point="$(mounted_path_for "$img" "$LABEL")"
   mkdir "${mount_point}/${dirname}"
   echo "Unicode filename roundtrip" > "${mount_point}/${dirname}/${filename}"
-  do_unmount
+  do_unmount "$img"
 
   do_mount "$img" -t ntfs-3g
+  mount_point="$(mounted_path_for "$img" "$LABEL")"
   [[ -f "${mount_point}/${dirname}/${filename}" ]]
   [[ "$(cat "${mount_point}/${dirname}/${filename}")" == "Unicode filename roundtrip" ]]
-  do_unmount
+  do_unmount "$img"
 }
 
 @test "ntfs: preserves user-provided ownership options" {
@@ -90,7 +96,7 @@ teardown() {
     [[ "$output" != *"uid=${default_uid}"* ]]
   fi
 
-  do_unmount
+  do_unmount "$img"
 }
 
 @test "ntfs: --remount takes over macOS read-only native mount for read-write access" {
@@ -104,6 +110,9 @@ teardown() {
   # partition read-only at /Volumes/<REMOUNT_LABEL>.
   local dev
   dev="$(attach_image_automount "$img")"
+  ATTACH_DEV="$dev"
+  export ATTACH_DEV
+  record_attached_dev "$dev"
   local part_dev="$(partition_dev "$dev" 1)"
 
   # Poll until macOS completes the auto-mount (usually instant, but be safe).
@@ -122,9 +131,9 @@ teardown() {
   # the volume read-write via the Linux VM.
   do_mount "$part_dev" -r
 
-  assert_file_roundtrip "$(get_mount_point "$REMOUNT_LABEL")"
+  assert_file_roundtrip "$(mounted_path_for "$part_dev" "$REMOUNT_LABEL")"
 
-  do_unmount
+  do_unmount "$part_dev"
   detach_image "$dev"
   ATTACH_DEV=""
 }

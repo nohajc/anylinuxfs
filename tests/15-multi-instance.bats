@@ -12,9 +12,9 @@
 
 load 'test_helper/common'
 
-LABEL1="alfs-multi1"
-LABEL2="alfs-multi2"
-LABEL_DUP="alfs-dup"
+LABEL1="alfs15multi1"
+LABEL2="alfs15multi2"
+LABEL_DUP="alfs15dup"
 
 setup_file() {
   create_sparse_image "${BATS_FILE_TMPDIR}/multi1.img" 512M
@@ -33,10 +33,11 @@ setup_file() {
 }
 
 teardown() {
-  safe_teardown "${BATS_FILE_TMPDIR}/multi1.img"
-  safe_teardown "${BATS_FILE_TMPDIR}/multi2.img"
-  safe_teardown "${BATS_FILE_TMPDIR}/dup1.img"
-  safe_teardown "${BATS_FILE_TMPDIR}/dup2.img"
+  safe_teardown \
+    "${BATS_FILE_TMPDIR}/multi1.img" \
+    "${BATS_FILE_TMPDIR}/multi2.img" \
+    "${BATS_FILE_TMPDIR}/dup1.img" \
+    "${BATS_FILE_TMPDIR}/dup2.img"
 }
 
 # ---------------------------------------------------------------------------
@@ -51,24 +52,26 @@ teardown() {
   # Verify status shows both (image and mount point on the same line)
   run "$ANYLINUXFS" status
   [ "$status" -eq 0 ]
-  echo "$output" | grep -F "$img1" | grep -F "$(get_mount_point "$LABEL1")"
-  echo "$output" | grep -F "$img2" | grep -F "$(get_mount_point "$LABEL2")"
+  local mp1="$(mounted_path_for "$img1" "$LABEL1")"
+  local mp2="$(mounted_path_for "$img2" "$LABEL2")"
+  echo "$output" | grep -F "$img1" | grep -F "$mp1"
+  echo "$output" | grep -F "$img2" | grep -F "$mp2"
 
   # Verify I/O on both
-  assert_file_roundtrip "$(get_mount_point "$LABEL1")"
-  assert_file_roundtrip "$(get_mount_point "$LABEL2")"
+  assert_file_roundtrip "$mp1"
+  assert_file_roundtrip "$mp2"
 
   # Unmount first one specifically
-  "$ANYLINUXFS" unmount "$img1" -w
+  do_unmount "$img1"
 
   # Verify second is still there
   run "$ANYLINUXFS" status
   ! echo "$output" | grep -F "$img1"
-  echo "$output" | grep -F "$img2" | grep -F "$(get_mount_point "$LABEL2")"
-  assert_file_roundtrip "$(get_mount_point "$LABEL2")"
+  echo "$output" | grep -F "$img2" | grep -F "$mp2"
+  assert_file_roundtrip "$mp2"
 
   # Unmount second
-  "$ANYLINUXFS" unmount "$img2" -w
+  do_unmount "$img2"
 }
 
 @test "multi-instance: duplicate labels increment mount points" {
@@ -78,8 +81,8 @@ teardown() {
   do_mount "$img1"
   do_mount "$img2"
 
-  local mp1="$(get_mount_point "$LABEL_DUP")"
-  local mp2="$(get_mount_point "${LABEL_DUP}-1")"
+  local mp1="$(mounted_path_for "$img1" "$LABEL_DUP")"
+  local mp2="$(mounted_path_for "$img2" "$LABEL_DUP")"
 
   [ -d "$mp1" ]
   [ -d "$mp2" ]
@@ -87,5 +90,5 @@ teardown() {
   assert_file_roundtrip "$mp1"
   assert_file_roundtrip "$mp2"
 
-  do_unmount
+  do_unmount "$img1" "$img2"
 }

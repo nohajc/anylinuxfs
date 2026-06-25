@@ -9,8 +9,8 @@
 
 load 'test_helper/common'
 
-LABEL="alfs-list-test"
-LABEL2="alfs-list-test2"
+LABEL="alfs20list1"
+LABEL2="alfs20list2"
 
 setup_file() {
   create_sparse_image "${BATS_FILE_TMPDIR}/list_test.img" 512M
@@ -37,8 +37,9 @@ teardown() {
 # ---------------------------------------------------------------------------
 
 @test "subcommands: status when empty" {
-  # Ensure nothing is mounted
-  do_unmount
+  # This file is serial-only; ensure nothing is mounted before asserting the
+  # global status output is empty.
+  do_unmount_all
 
   run "$ANYLINUXFS" status
   [ "$status" -eq 0 ]
@@ -49,6 +50,9 @@ teardown() {
   local img="${BATS_FILE_TMPDIR}/list_test.img"
   local dev
   dev="$(attach_image "$img")"
+  ATTACH_DEV="$dev"
+  export ATTACH_DEV
+  record_attached_dev "$dev"
 
   # anylinuxfs list depends on diskutil/hdiutil for visibility
   run "$ANYLINUXFS" list
@@ -65,6 +69,9 @@ teardown() {
   local img="${BATS_FILE_TMPDIR}/list_test.img"
   local dev
   dev="$(attach_image "$img")"
+  ATTACH_DEV="$dev"
+  export ATTACH_DEV
+  record_attached_dev "$dev"
 
   run "$ANYLINUXFS" list --linux
   [ "$status" -eq 0 ]
@@ -88,6 +95,9 @@ teardown() {
   dev2="$(attach_image "$img2")"
   ATTACH_DEV="$dev1"
   ATTACH_DEV2="$dev2"
+  export ATTACH_DEV ATTACH_DEV2
+  record_attached_dev "$dev1"
+  record_attached_dev "$dev2"
 
   # list with both disks attached — should show all.
   run "$ANYLINUXFS" list

@@ -11,8 +11,8 @@
 
 load 'test_helper/common'
 
-LUKS_LABEL="alfskeyfilefs"
-ZFS_POOL="alfskeyfilezfs"
+LUKS_LABEL="alfs17luks"
+ZFS_POOL="alfs17zfs"
 
 setup_file() {
   local keyfile="${BATS_FILE_TMPDIR}/test.key"
@@ -42,7 +42,11 @@ setup_file() {
 }
 
 teardown() {
-  safe_teardown
+  local targets=("${BATS_FILE_TMPDIR}/luks-keyfile.img" "${BATS_FILE_TMPDIR}/zfs-keyfile.img")
+  if [[ -n "${ATTACH_DEV:-}" ]]; then
+    targets+=("$(partition_dev "$ATTACH_DEV" 1)")
+  fi
+  safe_teardown "${targets[@]}"
 }
 
 # ---------------------------------------------------------------------------
@@ -53,9 +57,9 @@ teardown() {
 
   do_mount "$img" --key-file "$keyfile"
 
-  assert_file_roundtrip "$(get_mount_point "$LUKS_LABEL")"
+  assert_file_roundtrip "$(mounted_path_for "$img" "$LUKS_LABEL")"
 
-  do_unmount
+  do_unmount "$img"
 }
 
 @test "keyfile: LUKS mount with ALFS_KEY_FILE env var, file roundtrip, unmount" {
@@ -64,9 +68,9 @@ teardown() {
 
   ALFS_KEY_FILE="$keyfile" do_mount "$img"
 
-  assert_file_roundtrip "$(get_mount_point "$LUKS_LABEL")"
+  assert_file_roundtrip "$(mounted_path_for "$img" "$LUKS_LABEL")"
 
-  do_unmount
+  do_unmount "$img"
 }
 
 @test "keyfile: Linux ZFS mount with --key-file option, file roundtrip, unmount" {
@@ -78,9 +82,9 @@ teardown() {
 
   do_mount "$part_dev" --key-file "$keyfile" --zfs-os linux
 
-  assert_file_roundtrip "$(get_mount_point "zfs_root/${ZFS_POOL}")"
+  assert_file_roundtrip "$(mounted_path_for "$part_dev" "zfs_root/${ZFS_POOL}")"
 
-  do_unmount
+  do_unmount "$part_dev"
 }
 
 @test "keyfile: FreeBSD ZFS mount with --key-file option, file roundtrip, unmount" {
@@ -92,7 +96,7 @@ teardown() {
 
   do_mount "$part_dev" --key-file "$keyfile" --zfs-os freebsd
 
-  assert_file_roundtrip "$(get_mount_point "zfs_root/${ZFS_POOL}")"
+  assert_file_roundtrip "$(mounted_path_for "$part_dev" "zfs_root/${ZFS_POOL}")"
 
-  do_unmount
+  do_unmount "$part_dev"
 }

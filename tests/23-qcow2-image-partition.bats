@@ -3,13 +3,13 @@
 
 load 'test_helper/common'
 
-QCOW_PART1_LABEL="qcowpart1"
-QCOW_PART2_LABEL="qcowpart2"
-QCOW_WHOLE_LABEL="qcowwhole"
-QCOW_LVM_VG="qcowvg"
-QCOW_LVM_LV="qcowlv"
-QCOW_LVM_LABEL="qcowlvm"
-RAW_FALLBACK_LABEL="rawfallback"
+QCOW_PART1_LABEL="alfs23qcp1"
+QCOW_PART2_LABEL="alfs23qcp2"
+QCOW_WHOLE_LABEL="alfs23whole"
+QCOW_LVM_VG="alfs23vg"
+QCOW_LVM_LV="alfs23lv"
+QCOW_LVM_LABEL="alfs23lvm"
+RAW_FALLBACK_LABEL="alfs23raw"
 
 setup_file() {
   command -v qemu-img >/dev/null 2>&1 || skip "qemu-img is required for qcow2 tests"
@@ -38,27 +38,34 @@ setup_file() {
 }
 
 teardown() {
-  safe_teardown
+  safe_teardown \
+    "${BATS_FILE_TMPDIR}/test-partitioned.qcow2@s1" \
+    "${BATS_FILE_TMPDIR}/test-partitioned.qcow2@s2" \
+    "lvm:${QCOW_LVM_VG}:${BATS_FILE_TMPDIR}/test-lvm.qcow2:${QCOW_LVM_LV}" \
+    "${BATS_FILE_TMPDIR}/test-whole.qcow2" \
+    "${BATS_FILE_TMPDIR}/fallback.img"
 }
 
 @test "qcow2 image partition: mount partition 1 (@s1), verify file I/O, unmount" {
-  do_mount "${BATS_FILE_TMPDIR}/test-partitioned.qcow2@s1"
+  local disk_id="${BATS_FILE_TMPDIR}/test-partitioned.qcow2@s1"
+  do_mount "$disk_id"
 
   local mount_point
-  mount_point="$(get_mount_point "$QCOW_PART1_LABEL")"
+  mount_point="$(mounted_path_for "$disk_id" "$QCOW_PART1_LABEL")"
   assert_file_roundtrip "$mount_point"
 
-  do_unmount
+  do_unmount "$disk_id"
 }
 
 @test "qcow2 image partition: mount partition 2 (@s2), verify file I/O, unmount" {
-  do_mount "${BATS_FILE_TMPDIR}/test-partitioned.qcow2@s2"
+  local disk_id="${BATS_FILE_TMPDIR}/test-partitioned.qcow2@s2"
+  do_mount "$disk_id"
 
   local mount_point
-  mount_point="$(get_mount_point "$QCOW_PART2_LABEL")"
+  mount_point="$(mounted_path_for "$disk_id" "$QCOW_PART2_LABEL")"
   assert_file_roundtrip "$mount_point"
 
-  do_unmount
+  do_unmount "$disk_id"
 }
 
 @test "qcow2 image partition: missing partition fails inside the VM" {
@@ -76,8 +83,8 @@ teardown() {
 <TMP>/test-partitioned.qcow2 (disk image):
    #:                       TYPE NAME                    SIZE       IDENTIFIER
    0:      GUID_partition_scheme                        +<SIZE>     test-partitioned.qcow2
-   1:                       ext4 qcowpart1               <SIZE>     test-partitioned.qcow2@s1
-   2:                       ext4 qcowpart2               <SIZE>     test-partitioned.qcow2@s2
+   1:                       ext4 alfs23qcp1              <SIZE>     test-partitioned.qcow2@s1
+   2:                       ext4 alfs23qcp2              <SIZE>     test-partitioned.qcow2@s2
 EOF
 )"
 }
@@ -89,7 +96,7 @@ EOF
   assert_list_section "$output" "<TMP>/test-whole.qcow2 (disk image):" "$(cat <<'EOF'
 <TMP>/test-whole.qcow2 (disk image):
    #:                       TYPE NAME                    SIZE       IDENTIFIER
-   0:                       ext4 qcowwhole              +<SIZE>     test-whole.qcow2
+   0:                       ext4 alfs23whole            +<SIZE>     test-whole.qcow2
 EOF
 )"
 }
@@ -103,7 +110,7 @@ lvm:${QCOW_LVM_VG} (volume group):
    #:                       TYPE NAME                    SIZE       IDENTIFIER
    0:                LVM2_scheme                        +<SIZE>     ${QCOW_LVM_VG}
                                  Physical Store test-lvm.qcow2
-   1:                       ext4 qcowlvm                 <SIZE>     ${QCOW_LVM_VG}:test-lvm.qcow2:${QCOW_LVM_LV}
+   1:                       ext4 alfs23lvm               <SIZE>     ${QCOW_LVM_VG}:test-lvm.qcow2:${QCOW_LVM_LV}
 EOF
 )"
 }

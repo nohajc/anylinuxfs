@@ -9,11 +9,11 @@
 
 load 'test_helper/common'
 
-LABEL="alfsmpopts"
+LABEL="alfs21opts"
 
 # Name for the temporary custom action injected into the user config.
 # Prefixed with "alfs_test_" to make its origin obvious and avoid collisions.
-TEST_ACTION_NAME="alfs_test_etc_export"
+TEST_ACTION_NAME="alfs_test_21_etc"
 # anylinuxfs reads its per-user config from the SUDO_USER's home dir, not
 # $HOME (which sudo resets to /root on Linux).
 USER_CONFIG="$(user_home_dir)/.anylinuxfs/config.toml"
@@ -67,7 +67,7 @@ teardown_file() {
 }
 
 teardown() {
-  safe_teardown
+  safe_teardown "${BATS_FILE_TMPDIR}/ext4.img" "$(mounted_path_for "" "etc" 2>/dev/null || get_mount_point "etc")"
 }
 
 # ---------------------------------------------------------------------------
@@ -93,7 +93,7 @@ teardown() {
 
   assert_file_roundtrip "$custom_mp"
 
-  do_unmount
+  do_unmount "$img"
 }
 
 @test "mount-options: diskless custom action mounts VM /etc" {
@@ -103,11 +103,11 @@ teardown() {
 
   # Default mount point is ~/Volumes/etc (last path component of "/etc").
   local mp
-  mp="$(get_mount_point "etc")"
+  mp="$(mounted_path_for "" "etc")"
 
   # Alpine Linux ships /etc/hosts; its presence confirms that the VM's
   # /etc was exported and mounted successfully.
   [[ -f "${mp}/hosts" ]]
 
-  do_unmount
+  do_unmount "$mp"
 }

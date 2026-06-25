@@ -6,7 +6,7 @@
 
 load 'test_helper/common'
 
-LABEL="alfsf2fs"
+LABEL="alfs04f2fs"
 
 setup_file() {
   create_sparse_image "${BATS_FILE_TMPDIR}/f2fs.img" 512M
@@ -27,7 +27,7 @@ teardown() {
   local img="${BATS_FILE_TMPDIR}/f2fs.img"
   do_mount "$img"
 
-  assert_file_roundtrip "$(get_mount_point "$LABEL")"
+  assert_file_roundtrip "$(mounted_path_for "$img" "$LABEL")"
 
-  do_unmount
+  do_unmount "$img"
 }

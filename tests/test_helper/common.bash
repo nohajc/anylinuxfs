@@ -37,6 +37,23 @@ if [[ ! -x "$ANYLINUXFS" ]]; then
   exit 1
 fi
 
+run_anylinuxfs_retry_lock() {
+  local out status attempt
+
+  for attempt in {1..30}; do
+    out="$("$@" 2>&1)" && status=0 || status=$?
+    if [[ "$status" -ne 0 && "$out" == *"another instance is already running"* ]]; then
+      sleep 1
+      continue
+    fi
+    [[ -n "$out" ]] && printf '%s\n' "$out"
+    return "$status"
+  done
+
+  printf '%s\n' "$out"
+  return "$status"
+}
+
 # ---------------------------------------------------------------------------
 # Temp directory management
 # Called from setup_file() / teardown_file() in each .bats file.
@@ -82,9 +99,9 @@ create_sparse_image() {
 #   explicitly (\`do_mount mount -a action_name\`).
 do_mount() {
   if [[ "$HOST_OS" == "Darwin" ]]; then
-    "$ANYLINUXFS" "$@" -w false
+    run_anylinuxfs_retry_lock "$ANYLINUXFS" "$@" -w false
   else
-    "$ANYLINUXFS" "$@"
+    run_anylinuxfs_retry_lock "$ANYLINUXFS" "$@"
   fi
 }
 
@@ -107,7 +124,7 @@ vm_exec() {
   done
 
   echo "Running VM shell command: ${mount_script}$cmd"
-  "$ANYLINUXFS" shell -c "${mount_script}$cmd" "$disk_arg"
+  run_anylinuxfs_retry_lock "$ANYLINUXFS" shell -c "${mount_script}$cmd" "$disk_arg"
 }
 
 # vm_exec_freebsd <disk_arg> <shell_command>
@@ -115,7 +132,8 @@ vm_exec() {
 vm_exec_freebsd() {
   local disk_arg="$1"
   local cmd="$2"
-  "$ANYLINUXFS" shell -i "$FREEBSD_IMAGE" -c "$cmd" "$disk_arg"
+
+  run_anylinuxfs_retry_lock "$ANYLINUXFS" shell -i "$FREEBSD_IMAGE" -c "$cmd" "$disk_arg"
 }
 
 # get_mount_point <label>
@@ -133,6 +151,31 @@ get_mount_point() {
     echo "/${base}/${1}"
   else
     echo "${HOME}/${base}/${1}"
+  fi
+}
+
+# mounted_path_for <disk_arg> <share_path>
+#   Returns the actual host path for a mounted disk target by reading
+#   anylinuxfs status. <share_path> is the expected share-relative path, e.g.
+#   "alfsext4" for a normal filesystem or "zfs_root/pool" for a ZFS dataset.
+#   This avoids assuming the unsuffixed mount point when anylinuxfs had to pick
+#   a collision-free name such as /Volumes/alfsext4-1.
+mounted_path_for() {
+  local disk_arg="$1"
+  local share_path="$2"
+  local mount_root rest
+
+  if ! mount_root="$(mount_root_for_target "$disk_arg")"; then
+    echo "ERROR: mount not found in anylinuxfs status for: ${disk_arg:-<unknown>}" >&2
+    "$ANYLINUXFS" status >&2 || true
+    return 1
+  fi
+
+  if [[ "$share_path" == */* ]]; then
+    rest="${share_path#*/}"
+    printf '%s/%s\n' "$mount_root" "$rest"
+  else
+    printf '%s\n' "$mount_root"
   fi
 }
 
@@ -158,6 +201,12 @@ assert_file_roundtrip() {
   local mount_point="$1"
   local test_file="${mount_point}/alfs_test_$(date +%s%N).txt"
   local content="anylinuxfs-test-$(uname -n)-$$-$(date +%s)"
+  local retries=30
+
+  while [[ ! -d "$mount_point" && $retries -gt 0 ]]; do
+    sleep 1
+    (( retries-- ))
+  done
 
   echo "MOUNT_POINT:"
   ls -ld "$mount_point"
@@ -233,15 +282,67 @@ assert_list_section() {
 # ---------------------------------------------------------------------------
 # Unmount
 # ---------------------------------------------------------------------------
-# do_unmount [disk_arg]
-#   Unmounts via anylinuxfs. If disk_arg is omitted, unmounts all.
-do_unmount() {
-  local disk_arg="${1:-}"
-  if [[ -n "$disk_arg" ]]; then
-    "$ANYLINUXFS" unmount "$disk_arg" -w || true
-  else
-    "$ANYLINUXFS" unmount -w
+# do_unmount <disk_arg> [...]
+#   Unmounts one or more caller-owned mounts via anylinuxfs. Tests that can
+#   run in parallel must pass explicit targets so they do not tear down mounts
+#   owned by another Bats worker.
+mount_root_for_target() {
+  local target="${1:-}"
+  local disk_key status_output line mount_root
+
+  disk_key="$target"
+  if [[ -z "$disk_key" ]]; then
+    disk_key="<unknown>"
   fi
+
+  status_output="$("$ANYLINUXFS" status)"
+  line="$(awk -v disk="$disk_key" 'index($0, disk " on ") == 1 { print; exit }' <<< "$status_output")"
+
+  if [[ -z "$line" && "$target" == /* ]]; then
+    line="$(awk -v mp="$target" 'index($0, " on " mp " (") > 0 { print; exit }' <<< "$status_output")"
+  fi
+
+  if [[ -z "$line" ]]; then
+    return 1
+  fi
+
+  mount_root="${line#* on }"
+  mount_root="${mount_root%% (*}"
+  printf '%s\n' "$mount_root"
+}
+
+do_unmount() {
+  if [[ $# -eq 0 ]]; then
+    echo "ERROR: do_unmount requires an explicit target; use do_unmount_all only in serial tests" >&2
+    return 2
+  fi
+
+  local disk_arg target out status attempt
+  for disk_arg in "$@"; do
+    target="$disk_arg"
+    if out="$(mount_root_for_target "$disk_arg" 2>/dev/null)"; then
+      target="$out"
+    fi
+
+    for attempt in {1..30}; do
+      out="$("$ANYLINUXFS" unmount "$target" -w 2>&1)" && status=0 || status=$?
+      if [[ "$out" == *"not mounted yet, please wait"* ]]; then
+        sleep 1
+        continue
+      fi
+      [[ -n "$out" ]] && printf '%s\n' "$out"
+      if [[ "$status" -ne 0 ]]; then
+        return "$status"
+      fi
+      break
+    done
+  done
+}
+
+# do_unmount_all
+#   Intentional broad cleanup for serial-only tests and manual recovery.
+do_unmount_all() {
+  "$ANYLINUXFS" unmount -w || true
 }
 
 # ---------------------------------------------------------------------------
@@ -253,7 +354,22 @@ do_unmount() {
 #   Linux: losetup -P -f --show     ->  /dev/loopN
 #          (-P forces the kernel to scan the partition table and create
 #          /dev/loopNpX nodes for any partitions; harmless on raw images.)
-#   Prints the device node to stdout and sets ATTACH_DEV.
+#   Prints the device node to stdout, sets ATTACH_DEV, and records the device
+#   for teardown. ATTACHED_DEVS is newline-separated so it survives Bats'
+#   teardown subshell.
+record_attached_dev() {
+  local dev="$1"
+  if [[ -z "$dev" ]]; then
+    return
+  fi
+  if [[ -z "${ATTACHED_DEVS:-}" ]]; then
+    ATTACHED_DEVS="$dev"
+  elif ! grep -Fxq "$dev" <<< "$ATTACHED_DEVS"; then
+    ATTACHED_DEVS="${ATTACHED_DEVS}"$'\n'"$dev"
+  fi
+  export ATTACHED_DEVS
+}
+
 attach_image() {
   local image_path="$1"
   local dev out
@@ -280,6 +396,7 @@ attach_image() {
   fi
   ATTACH_DEV="$dev"
   export ATTACH_DEV
+  record_attached_dev "$dev"
   echo "$dev"
 }
 
@@ -311,6 +428,7 @@ attach_image_automount() {
   fi
   ATTACH_DEV="$dev"
   export ATTACH_DEV
+  record_attached_dev "$dev"
   echo "$dev"
 }
 
@@ -327,18 +445,33 @@ detach_image() {
   fi
 }
 
+detach_all_attached_images() {
+  if [[ -n "${ATTACHED_DEVS:-}" ]]; then
+    while IFS= read -r dev; do
+      [[ -n "$dev" ]] && detach_image "$dev"
+    done <<< "$ATTACHED_DEVS"
+  elif [[ -n "${ATTACH_DEV:-}" ]]; then
+    detach_image "$ATTACH_DEV"
+  fi
+  ATTACHED_DEVS=""
+  ATTACH_DEV=""
+  export ATTACHED_DEVS ATTACH_DEV
+}
+
 # ---------------------------------------------------------------------------
 # Generic teardown called from each test's teardown()
 # ---------------------------------------------------------------------------
-# safe_teardown [disk_arg]
-#   Unmounts (best-effort), detaches any attached image, removes TEST_DIR.
+# safe_teardown <disk_arg> [...]
+#   Unmounts caller-owned targets (best-effort) and detaches attached images.
+#   It deliberately does not perform a global unmount, which would be unsafe
+#   when multiple Bats files run concurrently.
 safe_teardown() {
   local disk_arg="${1:-}"
-  do_unmount
-  if [[ -n "${ATTACH_DEV:-}" ]]; then
-    detach_image "$ATTACH_DEV"
-    ATTACH_DEV=""
+  if [[ $# -gt 0 ]]; then
+    do_unmount "$@" || true
   fi
+  detach_all_attached_images
+
   # Optionally preserve created test artifacts (images) for manual inspection.
   if [[ "${KEEP_TEST_ARTIFACTS:-}" == "1" ]]; then
     local artifacts_root="${ARTIFACTS_DIR:-"${REPO_ROOT}/tests/artifacts"}"
