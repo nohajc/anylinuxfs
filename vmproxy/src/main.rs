@@ -139,7 +139,7 @@ fn add_network_hosts(
 
     writeln!(
         hosts,
-        "{vm_gateway_ip}\tanylinuxfs-host\n{vm_ip}\tanylinuxfs-guest"
+        "\n{vm_gateway_ip}\tanylinuxfs-host\n{vm_ip}\tanylinuxfs-guest"
     )
     .context("Failed to append anylinuxfs hosts entries")?;
 
