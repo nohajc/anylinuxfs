@@ -577,7 +577,10 @@ impl AppRunner {
         if let Some(root_disk_path) = root_disk_path
             && os == OSType::FreeBSD
         {
-            opts = opts.root_device("ufs:/dev/gpt/rootfs").legacy_console(true);
+            opts = opts
+                .root_device("ufs:/dev/gpt/rootfs")
+                .legacy_console(true)
+                .read_only_disk_prefix_len((!config.common.rw_rootfs) as usize);
             dev_info = [DevInfo::pv(root_disk_path.as_bytes(), true)?]
                 .iter()
                 .chain(dev_info.iter())

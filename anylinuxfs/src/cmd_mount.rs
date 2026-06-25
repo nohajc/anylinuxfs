@@ -1365,7 +1365,10 @@ impl super::AppRunner {
             let root_disk_path = freebsd_base_path.join(vm_disk_image);
             host_println!("root_disk: {}", root_disk_path.display());
 
-            opts = opts.root_device("ufs:/dev/gpt/rootfs").legacy_console(true);
+            opts = opts
+                .root_device("ufs:/dev/gpt/rootfs")
+                .legacy_console(true)
+                .read_only_disk_prefix_len((!config.common.rw_rootfs) as usize);
             dev_info = [DevInfo::pv(root_disk_path.as_bytes(), true)?]
                 .iter()
                 .chain(dev_info.iter())
