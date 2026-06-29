@@ -7,7 +7,7 @@ edition = "2024"
 crate-type = ["staticlib"]
 
 [dependencies]
-libkrun = "1.19.2"
+libkrun = "1.19.3"
 libc = "0.2"
 
 [features]
