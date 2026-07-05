@@ -30,7 +30,7 @@ brew install anylinuxfs
 - supports **Linux RAID** (mdadm) and **multi-disk btrfs**
 - supports **ZFS** (including native ZFS encryption)
 - works with both external and internal drives
-- works with disk images
+- works with disk images (currently supported: raw, qcow2)
 - supports disks with **GPT**, **MBR** or no partition table (single filesystem or LVM/LUKS container)
 - NFS share by default only reachable from localhost but can be shared across network too
 - define your own [custom actions](docs/custom-actions.md) (e.g. mount **borg backup** located on a Linux drive)
