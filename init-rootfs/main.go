@@ -25,7 +25,6 @@ import (
 	"github.com/opencontainers/umoci/oci/cas/dir"
 	"github.com/opencontainers/umoci/oci/casext"
 	"github.com/opencontainers/umoci/oci/layer"
-	"github.com/opencontainers/umoci/pkg/idtools"
 	"go.podman.io/image/v5/copy"
 	"go.podman.io/image/v5/docker"
 	"go.podman.io/image/v5/oci/layout"
@@ -165,23 +164,24 @@ func unpackImage(cfg *Config) error {
 	engineExt := casext.NewEngine(engine)
 	defer engine.Close()
 
-	uidMap, err := idtools.ParseMapping(fmt.Sprintf("0:%d:1", os.Geteuid()))
-	if err != nil {
-		fmt.Printf("Error parsing UID mapping: %v\n", err)
-		return err
+	uidMap := specs.LinuxIDMapping{
+		ContainerID: 0,
+		HostID:      uint32(os.Geteuid()),
+		Size:        1,
 	}
-
-	gidMap, err := idtools.ParseMapping(fmt.Sprintf("0:%d:1", os.Getegid()))
-	if err != nil {
-		fmt.Printf("Error parsing GID mapping: %v\n", err)
-		return err
+	gidMap := specs.LinuxIDMapping{
+		ContainerID: 0,
+		HostID:      uint32(os.Getegid()),
+		Size:        1,
 	}
 
 	err = umoci.Unpack(engineExt, cfg.Tag, cfg.ImageBasePath, layer.UnpackOptions{
-		MapOptions: layer.MapOptions{
-			UIDMappings: []specs.LinuxIDMapping{uidMap},
-			GIDMappings: []specs.LinuxIDMapping{gidMap},
-			Rootless:    true,
+		OnDiskFormat: layer.DirRootfs{
+			MapOptions: layer.MapOptions{
+				UIDMappings: []specs.LinuxIDMapping{uidMap},
+				GIDMappings: []specs.LinuxIDMapping{gidMap},
+				Rootless:    true,
+			},
 		},
 	})
 	if err != nil {

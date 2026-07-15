@@ -14,10 +14,12 @@ import (
 )
 
 func Unpack(imagePath, rootfsPath string) error {
-	var unpackOptions layer.UnpackOptions
 	var meta umoci.Meta
 
-	unpackOptions.KeepDirlinks = true
+	unpackOptions := layer.UnpackOptions{
+		OnDiskFormat: layer.DirRootfs{},
+		KeepDirlinks: true,
+	}
 
 	// Get a reference to the CAS.
 	engine, err := dir.Open(imagePath)
