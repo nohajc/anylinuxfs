@@ -7,7 +7,7 @@ require (
 	github.com/kdomanski/iso9660 v0.4.0
 	github.com/opencontainers/image-spec v1.1.1
 	github.com/opencontainers/umoci v0.4.7
-	golang.org/x/sys v0.46.0
+	golang.org/x/sys v0.47.0
 )
 
 require (
@@ -28,7 +28,7 @@ require (
 	github.com/sirupsen/logrus v1.9.4 // indirect
 	github.com/urfave/cli v1.22.17 // indirect
 	github.com/vbatts/go-mtree v0.5.0 // indirect
-	golang.org/x/crypto v0.52.0 // indirect
+	golang.org/x/crypto v0.54.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 )
 
