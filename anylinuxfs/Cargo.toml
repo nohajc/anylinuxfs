@@ -33,7 +33,7 @@ rayon = "1.11.0"
 bstr = { version = "1.12.0", features = ["serde"] }
 ron = "0.12.0"
 toml_edit = "0.23.7"
-serde_with = "3.16.1"
+serde_with = "3.21.0"
 rand = "0.9.4"
 getifaddrs = "0.6.0"
 ipnet = { version = "2.11.0", features = ["serde"] }
