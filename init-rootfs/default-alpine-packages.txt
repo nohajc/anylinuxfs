@@ -1,4 +1,5 @@
 bash
+busybox-extras
 blkid
 btrfs-progs
 cryptsetup

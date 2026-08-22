@@ -38,6 +38,7 @@ mod privilege;
 mod pubsub;
 mod rpcbind;
 mod settings;
+mod telnet;
 mod utils;
 mod vm;
 mod vm_image;
@@ -59,6 +60,17 @@ pub(crate) fn to_exit_code(status: i32) -> i32 {
     }
 }
 
+#[derive(Debug)]
+struct RemoteExit(i32);
+
+impl std::fmt::Display for RemoteExit {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "remote command exited with {}", self.0)
+    }
+}
+
+impl std::error::Error for RemoteExit {}
+
 fn run() -> i32 {
     let mut app = AppRunner::default();
 
@@ -68,6 +80,8 @@ fn run() -> i32 {
                 true => status_error.status,
                 false => to_exit_code(status_error.status),
             }
+        } else if let Some(remote_exit) = e.downcast_ref::<RemoteExit>() {
+            remote_exit.0
         } else if let Some(clap_error) = e.downcast_ref::<clap::Error>() {
             clap_error.exit();
         } else {
@@ -1206,6 +1220,69 @@ impl AppRunner {
         )
     }
 
+    fn run_vm(&mut self, cmd: VmCmd) -> anyhow::Result<()> {
+        let (path, request) = match cmd {
+            VmCmd::Attach(cmd) => (cmd.path, telnet::StartupRequest::shell()),
+            VmCmd::Exec(cmd) => {
+                let argv = cmd
+                    .argv
+                    .into_iter()
+                    .map(|arg| {
+                        arg.into_string()
+                            .map_err(|_| anyhow::anyhow!("vm exec arguments must be valid UTF-8"))
+                    })
+                    .collect::<anyhow::Result<Vec<_>>>()?;
+                (cmd.path, telnet::StartupRequest::exec(argv))
+            }
+        };
+        let (active_instances, _) = collect_active_instances();
+        if path.is_none() && active_instances.len() != 1 {
+            if active_instances.is_empty() {
+                anyhow::bail!("No anylinuxfs instance is currently running");
+            }
+            anyhow::bail!(
+                "Multiple anylinuxfs instances are running; please specify the disk identifier or mount point."
+            );
+        }
+
+        let target_path = path
+            .as_deref()
+            .map(|path| fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path)));
+        let rt_info = active_instances
+            .into_iter()
+            .find(|rt_info| {
+                let Some(target_path) = target_path.as_ref() else {
+                    return true;
+                };
+                target_path == Path::new(&rt_info.mount_config.disk_path)
+                    || rt_info
+                        .mount_point
+                        .as_ref()
+                        .is_some_and(|mount_point| target_path == Path::new(mount_point))
+                    || rt_info
+                        .mount_config
+                        .disk_path
+                        .split(':')
+                        .any(|part| OsStr::new(part) == target_path.as_os_str())
+            })
+            .context(format!(
+                "No anylinuxfs instance found for: {}",
+                path.as_deref().unwrap_or("<unknown>")
+            ))?;
+
+        let port = send_start_telnet_cmd(&rt_info.mount_config.common, rt_info.vm_native_ip)?;
+        let host = rt_info
+            .vm_native_ip
+            .map(|ip| ip.to_string())
+            .unwrap_or_else(|| String::from_utf8_lossy(&rt_info.vm_host).into_owned());
+        let status = telnet::run(&host, port, request)?;
+        if status == 0 {
+            Ok(())
+        } else {
+            Err(RemoteExit(status).into())
+        }
+    }
+
     fn run(&mut self) -> anyhow::Result<()> {
         // host_println!("uid = {}", unsafe { libc::getuid() });
         // host_println!("gid = {}", unsafe { libc::getgid() });
@@ -1222,6 +1299,7 @@ impl AppRunner {
             Commands::Actions => self.run_actions(),
             Commands::Stop(cmd) => self.run_stop(cmd),
             Commands::Shell(cmd) => self.run_shell(cmd),
+            Commands::Vm(cmd) => self.run_vm(cmd),
             Commands::Dmesg => self.run_dmesg(),
             Commands::Apk(cmd) => self.run_apk(cmd),
             #[cfg(feature = "freebsd")]

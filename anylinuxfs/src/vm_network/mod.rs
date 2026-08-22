@@ -167,10 +167,31 @@ pub fn connect_to_vm_ctrl_socket(
     vm_native_ip: Option<Ipv4Addr>,
     resp_timeout: Option<Duration>,
 ) -> anyhow::Result<impl Read + Write> {
+    connect_to_vm_ctrl_socket_impl(config, vm_native_ip, resp_timeout, true)
+}
+
+/// Connect without emitting the informational transport-selection line. This
+/// is used by commands whose terminal output belongs to the remote program.
+pub fn connect_to_vm_ctrl_socket_silent(
+    config: &Config,
+    vm_native_ip: Option<Ipv4Addr>,
+    resp_timeout: Option<Duration>,
+) -> anyhow::Result<impl Read + Write> {
+    connect_to_vm_ctrl_socket_impl(config, vm_native_ip, resp_timeout, false)
+}
+
+fn connect_to_vm_ctrl_socket_impl(
+    config: &Config,
+    vm_native_ip: Option<Ipv4Addr>,
+    resp_timeout: Option<Duration>,
+    print_transport: bool,
+) -> anyhow::Result<impl Read + Write> {
     let mut stream: Box<dyn NetStream> = if let Some(ip) = vm_native_ip
         && config.kernel.os != OSType::Linux
     {
-        host_println!("Using TCP for VM control socket");
+        if print_transport {
+            host_println!("Using TCP for VM control socket");
+        }
         Box::new(
             TcpStream::connect((ip, VM_CTRL_PORT))
                 .context("Failed to connect to VM control socket")?,
@@ -178,11 +199,15 @@ pub fn connect_to_vm_ctrl_socket(
     } else {
         let sock_path = match config.kernel.os {
             OSType::Linux => {
-                host_println!("Using vsock for VM control socket");
+                if print_transport {
+                    host_println!("Using vsock for VM control socket");
+                }
                 &config.network.vsock_path
             }
             _ => {
-                host_println!("Using gvproxy tunnel for VM control socket");
+                if print_transport {
+                    host_println!("Using gvproxy tunnel for VM control socket");
+                }
                 &config.network.gvproxy_net_sock_path
             }
         };

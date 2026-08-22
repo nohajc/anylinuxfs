@@ -36,6 +36,7 @@ use vsock::{VsockAddr, VsockListener};
 use crate::utils::{script, script_output};
 
 mod kernel_cfg;
+mod telnet_session;
 mod utils;
 mod zfs;
 
@@ -322,7 +323,7 @@ struct CtrlSocketServer {
 }
 
 impl CtrlSocketServer {
-    fn new(listener: impl StreamListener) -> Self {
+    fn new(listener: impl StreamListener, native_network: Option<Ipv4Net>) -> Self {
         let (done_tx, done_rx) = mpsc::channel();
         let (quit_tx, quit_rx) = mpsc::channel();
         let (report_tx, report_rx) = mpsc::channel();
@@ -330,6 +331,7 @@ impl CtrlSocketServer {
         _ = thread::spawn(move || {
             let done_tx = Arc::new(Mutex::new(Some(done_tx)));
             let report_rx = Arc::new(Mutex::new(Some(report_rx)));
+            let telnetd = Arc::new(Mutex::new(None));
 
             thread::scope(|s| {
                 let events_subscribed = Arc::new(AtomicBool::new(false));
@@ -346,6 +348,7 @@ impl CtrlSocketServer {
                     let done_tx = Arc::clone(&done_tx);
                     let report_rx = Arc::clone(&report_rx);
                     let events_subscribed = Arc::clone(&events_subscribed);
+                    let telnetd = Arc::clone(&telnetd);
 
                     if let Ok(cmd) = ipc::Handler::read_request(&mut stream) {
                         println!("Received command: '{:?}'", &cmd);
@@ -401,6 +404,19 @@ impl CtrlSocketServer {
                                     }
                                 });
                             }
+                            vmctrl::Request::StartTelnet => {
+                                let response = start_telnetd(native_network, &telnetd)
+                                    .map(|()| vmctrl::Response::TelnetReady { port: 2323 });
+                                match response {
+                                    Ok(response) => {
+                                        _ = ipc::Handler::write_response(&mut stream, &response);
+                                        _ = stream.flush();
+                                    }
+                                    Err(error) => {
+                                        eprintln!("Failed to start Telnet service: {error:#}");
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -427,6 +443,69 @@ impl CtrlSocketServer {
         _ = self.done_rx.recv();
         Ok(())
     }
+}
+
+fn start_telnetd(
+    native_network: Option<Ipv4Net>,
+    telnetd: &Mutex<Option<Child>>,
+) -> anyhow::Result<()> {
+    let mut telnetd = telnetd.lock().unwrap();
+    if let Some(child) = telnetd.as_mut() {
+        if child
+            .try_wait()
+            .context("Check Telnet service status")?
+            .is_none()
+        {
+            return Ok(());
+        }
+    }
+
+    let mut command = telnetd_command();
+    let child = command.spawn().context("Start Telnet service")?;
+
+    if native_network.is_none() {
+        let client = reqwest::blocking::Client::new();
+        let port_def = PortDef {
+            local: ":2323",
+            remote: &format!("{VM_IP}:2323"),
+        };
+        if let Err(error) = expose_port(&client, &port_def) {
+            let mut child = child;
+            _ = child.kill();
+            return Err(error);
+        }
+    }
+
+    *telnetd = Some(child);
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn telnetd_command() -> Command {
+    let mut command = Command::new("/bin/busybox-extras");
+    command.args([
+        "telnetd",
+        "-F",
+        "-p",
+        "2323",
+        "-l",
+        "/telnet-session",
+        "-f",
+        "/dev/null",
+    ]);
+    command
+}
+
+#[cfg(target_os = "freebsd")]
+fn telnetd_command() -> Command {
+    let mut command = Command::new("/usr/local/libexec/telnetd");
+    command.args(["-debug", "-h", "-p", "/telnet-session", "2323"]);
+    command
+}
+
+#[cfg(target_os = "macos")]
+fn telnetd_command() -> Command {
+    unreachable!("vmproxy Telnet service is only supported in guest builds")
 }
 
 fn is_read_only_set<'a>(mut mount_options: impl Iterator<Item = &'a str>) -> bool {
@@ -622,6 +701,20 @@ fn setup_key_file_path(
 }
 
 fn main() -> ExitCode {
+    if env::args_os().next().and_then(|path| {
+        std::path::Path::new(&path)
+            .file_name()
+            .map(|name| name == "telnet-session")
+    }) == Some(true)
+    {
+        return telnet_session::run().map_or_else(
+            |error| {
+                eprintln!("{error:#}");
+                ExitCode::FAILURE
+            },
+            |_| ExitCode::SUCCESS,
+        );
+    }
     if let Err(e) = run() {
         eprintln!("Error: {:#}", e);
         eprintln!("<anylinuxfs-exit-code:1>");
@@ -1152,7 +1245,7 @@ fn run() -> anyhow::Result<()> {
     #[cfg(any(target_os = "freebsd", target_os = "macos"))]
     let listener = TcpListener::bind(&format!("0.0.0.0:{}", VM_CTRL_PORT))?;
 
-    let ctrl_server = CtrlSocketServer::new(listener);
+    let ctrl_server = CtrlSocketServer::new(listener, cli.native_network);
     println!("<anylinuxfs-vmproxy-ready>");
 
     let mut deferred = Deferred::new();

@@ -58,6 +58,9 @@ Recognized environment variables:
     Stop(StopCmd),
     /// microVM shell for debugging (configures the VM according to mount options but only starts a shell)
     Shell(ShellCmd),
+    /// Attach to a running mounted VM
+    #[command(subcommand)]
+    Vm(VmCmd),
     /// Show the latest kernel log (after the VM has stopped)
     Dmesg,
     /// Manage custom alpine packages
@@ -249,6 +252,29 @@ pub(crate) struct StopCmd {
     /// Force stop the VM
     #[arg(short, long)]
     pub force: bool,
+}
+
+#[derive(Subcommand)]
+pub(crate) enum VmCmd {
+    /// Open an interactive Bash session in a running VM
+    Attach(VmAttachCmd),
+    /// Execute a program in a running VM
+    Exec(VmExecCmd),
+}
+
+#[derive(Args)]
+pub(crate) struct VmAttachCmd {
+    /// Disk identifier or mount point; required when multiple VMs are running
+    pub path: Option<String>,
+}
+
+#[derive(Args)]
+pub(crate) struct VmExecCmd {
+    /// Disk identifier or mount point; required when multiple VMs are running
+    pub path: Option<String>,
+    /// Program and arguments to execute in the VM
+    #[arg(required = true, last = true, num_args = 1..)]
+    pub argv: Vec<std::ffi::OsString>,
 }
 
 #[derive(Args, Clone)]

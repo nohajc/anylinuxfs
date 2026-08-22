@@ -5,12 +5,14 @@ use serde::{Deserialize, Serialize};
 pub enum Request {
     Quit,
     SubscribeEvents,
+    StartTelnet,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum Response {
     Ack,
     ReportEvent(Report),
+    TelnetReady { port: u16 },
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

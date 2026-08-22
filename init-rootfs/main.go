@@ -414,6 +414,17 @@ func copyVmproxyBinary(prefixDir, rootfsPath string) error {
 		return err
 	}
 
+	// BusyBox telnetd invokes its login program by argv[0].  This symlink lets
+	// vmproxy dispatch the per-connection session mode before Clap parses its
+	// normal mount command line.
+	telnetSessionPath := filepath.Join(rootfsPath, "telnet-session")
+	if err := os.Remove(telnetSessionPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove old telnet-session link: %w", err)
+	}
+	if err := os.Symlink("vmproxy", telnetSessionPath); err != nil {
+		return fmt.Errorf("create telnet-session link: %w", err)
+	}
+
 	return nil
 }
 

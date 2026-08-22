@@ -443,7 +443,17 @@ func copyVmproxyBinary(targetDir string) error {
 	srcPath := "/vmproxy-bsd"
 	dstPath := filepath.Join(targetDir, "vmproxy-bsd")
 
-	return copyFile(srcPath, dstPath)
+	if err := copyFile(srcPath, dstPath); err != nil {
+		return err
+	}
+	telnetSessionPath := filepath.Join(targetDir, "telnet-session")
+	if err := os.Remove(telnetSessionPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove old telnet-session link: %w", err)
+	}
+	if err := os.Symlink("vmproxy-bsd", telnetSessionPath); err != nil {
+		return fmt.Errorf("create telnet-session link: %w", err)
+	}
+	return nil
 }
 
 func copyNFSLauncher(targetDir string) error {

@@ -35,10 +35,12 @@ mod alpine {
             let nfsd_path = root_path.join("usr/sbin/rpc.nfsd");
             let entry_point_path = root_path.join("usr/local/bin/entrypoint.sh");
             let vmproxy_guest_path = root_path.join("vmproxy");
+            let telnet_session_path = root_path.join("telnet-session");
             let required_files_exist = bash_path.exists()
                 && nfsd_path.exists()
                 && entry_point_path.exists()
-                && vmproxy_guest_path.exists();
+                && vmproxy_guest_path.exists()
+                && telnet_session_path.exists();
 
             let fstab_path = root_path.join("etc/fstab");
 
@@ -371,7 +373,7 @@ mod freebsd {
             bootstrap_rootfs_path.join("config.json"),
             serde_json::to_string(&FreeBSDBootstrapConfig {
                 iso_url: iso_image_url.into(),
-                pkgs: vec!["bash".into(), "pidof".into()],
+                pkgs: vec!["bash".into(), "pidof".into(), "freebsd-telnetd".into()],
             })?,
         )
         .context("Failed to write FreeBSD bootstrap config")?;

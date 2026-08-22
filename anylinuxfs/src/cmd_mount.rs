@@ -142,6 +142,30 @@ pub(crate) fn send_quit_cmd(config: &Config, vm_native_ip: Option<Ipv4Addr>) -> 
     Ok(())
 }
 
+/// Ask a running vmproxy to start (or reuse) its per-VM Telnet daemon.
+pub(crate) fn send_start_telnet_cmd(
+    config: &Config,
+    vm_native_ip: Option<Ipv4Addr>,
+) -> anyhow::Result<u16> {
+    let mut stream = {
+        #[cfg(target_os = "linux")]
+        let _guard = EffectiveRootGuard::acquire();
+        vm_network::connect_to_vm_ctrl_socket_silent(
+            config,
+            vm_native_ip,
+            Some(Duration::from_secs(5)),
+        )?
+    };
+    ipc::Client::write_request(&mut stream, &vmctrl::Request::StartTelnet)?;
+    stream.flush()?;
+    match ipc::Client::read_response(&mut stream)? {
+        vmctrl::Response::TelnetReady { port } => Ok(port),
+        response => {
+            anyhow::bail!("Unexpected response while starting Telnet service: {response:?}")
+        }
+    }
+}
+
 fn terminate_child(child: &mut Child, child_name: &str) -> anyhow::Result<()> {
     common_utils::terminate_child(child, child_name, Some(log::Prefix::Host))
 }
