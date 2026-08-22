@@ -39,10 +39,20 @@ pub fn run() -> Result<()> {
     if pid == 0 {
         unsafe { libc::signal(libc::SIGINT, libc::SIG_DFL) };
         unsafe { libc::signal(libc::SIGTTOU, libc::SIG_DFL) };
-        let err = match request {
-            Request::Shell { .. } => shell_command().exec(),
-            Request::Exec { argv, .. } => Command::new(&argv[0]).args(&argv[1..]).exec(),
+        let mut command = match request {
+            Request::Shell { .. } => {
+                let mut command = shell_command();
+                set_terminal_type(&mut command);
+                command
+            }
+            Request::Exec { argv, .. } => {
+                let mut command = Command::new(&argv[0]);
+                command.args(&argv[1..]);
+                set_terminal_type(&mut command);
+                command
+            }
         };
+        let err = command.exec();
         eprintln!("Failed to start Telnet program: {err}");
         unsafe { libc::_exit(127) };
     }
@@ -74,6 +84,14 @@ fn shell_command() -> Command {
     command.arg("-l");
     command
 }
+
+#[cfg(target_os = "freebsd")]
+fn set_terminal_type(command: &mut Command) {
+    command.env("TERM", "xterm");
+}
+
+#[cfg(not(target_os = "freebsd"))]
+fn set_terminal_type(_: &mut Command) {}
 
 #[cfg(target_os = "freebsd")]
 fn claim_controlling_terminal() -> Result<()> {
