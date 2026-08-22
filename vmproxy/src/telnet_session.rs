@@ -23,50 +23,21 @@ pub fn run() -> Result<()> {
     control("READY")?;
     let request = request()?;
     restore(&saved)?;
-    let mut ready_pipe = [-1; 2];
-    let mut start_pipe = [-1; 2];
-    if unsafe { libc::pipe(ready_pipe.as_mut_ptr()) } < 0 {
-        return Err(io::Error::last_os_error()).context("create Telnet readiness pipe");
-    }
-    if unsafe { libc::pipe(start_pipe.as_mut_ptr()) } < 0 {
-        unsafe {
-            libc::close(ready_pipe[0]);
-            libc::close(ready_pipe[1]);
-        }
-        return Err(io::Error::last_os_error()).context("create Telnet start pipe");
-    }
+
+    // BusyBox has already made this wrapper's process group foreground. Keep
+    // the child in that group so it receives terminal signals, while the
+    // wrapper ignores them and remains alive to report the child's status.
+    let old_sigint = unsafe { libc::signal(libc::SIGINT, libc::SIG_IGN) };
+    let old_sigttou = unsafe { libc::signal(libc::SIGTTOU, libc::SIG_IGN) };
     let pid = unsafe { libc::fork() };
     if pid < 0 {
-        unsafe {
-            libc::close(ready_pipe[0]);
-            libc::close(ready_pipe[1]);
-            libc::close(start_pipe[0]);
-            libc::close(start_pipe[1]);
-        }
+        unsafe { libc::signal(libc::SIGINT, old_sigint) };
+        unsafe { libc::signal(libc::SIGTTOU, old_sigttou) };
         return Err(io::Error::last_os_error()).context("fork Telnet child");
     }
     if pid == 0 {
-        unsafe {
-            libc::close(ready_pipe[0]);
-            libc::close(start_pipe[1]);
-        }
-        if unsafe { libc::setpgid(0, 0) } < 0 {
-            eprintln!(
-                "Failed to create Telnet child process group: {}",
-                io::Error::last_os_error()
-            );
-            unsafe { libc::_exit(127) };
-        }
-        // Do not exec until the parent has made this process group foreground.
-        // A pipe, rather than SIGSTOP, keeps telnetd from mistaking the whole
-        // login program for a suspended terminal session.
-        let _ = unsafe { libc::write(ready_pipe[1], b"R".as_ptr().cast(), 1) };
-        unsafe { libc::close(ready_pipe[1]) };
-        let mut start = 0_u8;
-        if unsafe { libc::read(start_pipe[0], (&mut start as *mut u8).cast(), 1) } != 1 {
-            unsafe { libc::_exit(127) };
-        }
-        unsafe { libc::close(start_pipe[0]) };
+        unsafe { libc::signal(libc::SIGINT, libc::SIG_DFL) };
+        unsafe { libc::signal(libc::SIGTTOU, libc::SIG_DFL) };
         let err = match request {
             Request::Shell { .. } => shell_command().exec(),
             Request::Exec { argv, .. } => Command::new(&argv[0]).args(&argv[1..]).exec(),
@@ -74,33 +45,7 @@ pub fn run() -> Result<()> {
         eprintln!("Failed to start Telnet program: {err}");
         unsafe { libc::_exit(127) };
     }
-    // The parent stays alive to report the child's status, but must not be in
-    // the foreground group: Ctrl-C and friends belong to the remote program.
-    // Do this in the parent, not the child, so the child never calls tcsetpgrp
-    // while it is a background process group (which would raise SIGTTOU).
-    unsafe {
-        libc::close(ready_pipe[1]);
-        libc::close(start_pipe[0]);
-    }
-    let mut ready = 0_u8;
-    let child_ready = unsafe { libc::read(ready_pipe[0], (&mut ready as *mut u8).cast(), 1) } == 1;
-    unsafe { libc::close(ready_pipe[0]) };
-    let parent_pgid = unsafe { libc::getpgrp() };
-    let old_sigttou = if child_ready && unsafe { libc::tcsetpgrp(0, pid) } == 0 {
-        // The parent is now background. Ignore SIGTTOU so it can write the
-        // final control record after the child exits; it does not need to
-        // reclaim the terminal because the Telnet session ends immediately.
-        let old_sigttou = unsafe { libc::signal(libc::SIGTTOU, libc::SIG_IGN) };
-        Some(old_sigttou)
-    } else {
-        None
-    };
-    // Let the child exec only after terminal setup. Closing the pipe on an
-    // error makes it exit with 127, which still produces a protocol status.
-    if child_ready && old_sigttou.is_some() {
-        _ = unsafe { libc::write(start_pipe[1], b"S".as_ptr().cast(), 1) };
-    }
-    unsafe { libc::close(start_pipe[1]) };
+
     let mut status = 0;
     if unsafe { libc::waitpid(pid, &mut status, 0) } < 0 {
         return Err(io::Error::last_os_error()).context("wait for Telnet child");
@@ -112,17 +57,13 @@ pub fn run() -> Result<()> {
     } else {
         1
     };
-    if old_sigttou.is_some() && unsafe { libc::tcsetpgrp(0, parent_pgid) } < 0 {
-        return Err(io::Error::last_os_error()).context("restore Telnet wrapper process group");
-    }
     echo(false)?;
     control(&format!("EXIT {code}"))?;
     // telnetd only knows that bytes reached its PTY, not that they reached the
     // network. Keep its login process alive until the client confirms receipt.
     wait_for_ack();
-    if let Some(old_sigttou) = old_sigttou {
-        unsafe { libc::signal(libc::SIGTTOU, old_sigttou) };
-    }
+    unsafe { libc::signal(libc::SIGINT, old_sigint) };
+    unsafe { libc::signal(libc::SIGTTOU, old_sigttou) };
     Ok(())
 }
 

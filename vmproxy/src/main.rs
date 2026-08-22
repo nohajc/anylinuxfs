@@ -460,6 +460,9 @@ fn start_telnetd(
         }
     }
 
+    #[cfg(target_os = "freebsd")]
+    ensure_telnet_pty()?;
+
     let mut command = telnetd_command();
     let child = command.spawn().context("Start Telnet service")?;
 
@@ -477,6 +480,25 @@ fn start_telnetd(
     }
 
     *telnetd = Some(child);
+    Ok(())
+}
+
+#[cfg(target_os = "freebsd")]
+fn ensure_telnet_pty() -> anyhow::Result<()> {
+    if Path::new("/dev/ptmx").exists() {
+        return Ok(());
+    }
+
+    let status = Command::new("/sbin/kldload")
+        .arg("pty")
+        .status()
+        .context("Load PTY driver for Telnet")?;
+    if !status.success() && !Path::new("/dev/ptmx").exists() {
+        anyhow::bail!("Load PTY driver for Telnet exited with {status}");
+    }
+    if !Path::new("/dev/ptmx").exists() {
+        anyhow::bail!("PTY driver loaded without creating /dev/ptmx required by Telnet");
+    }
     Ok(())
 }
 
