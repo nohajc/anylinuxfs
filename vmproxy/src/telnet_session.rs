@@ -23,6 +23,7 @@ pub fn run() -> Result<()> {
     control("READY")?;
     let request = request()?;
     restore(&saved)?;
+    claim_controlling_terminal()?;
 
     // BusyBox has already made this wrapper's process group foreground. Keep
     // the child in that group so it receives terminal signals, while the
@@ -72,6 +73,27 @@ fn shell_command() -> Command {
     let mut command = Command::new("/bin/bash");
     command.arg("-l");
     command
+}
+
+#[cfg(target_os = "freebsd")]
+fn claim_controlling_terminal() -> Result<()> {
+    // BusyBox telnetd creates this session and opens the PTY slave before
+    // execing us.  Linux assigns that slave as the controlling terminal on
+    // open(2); FreeBSD intentionally does not, so claim it explicitly before
+    // Bash tries to enable job control.
+    if unsafe { libc::ioctl(libc::STDIN_FILENO, libc::TIOCSCTTY, 0) } < 0 {
+        return Err(io::Error::last_os_error()).context("Make Telnet PTY the controlling terminal");
+    }
+    if unsafe { libc::tcsetpgrp(libc::STDIN_FILENO, libc::getpgrp()) } < 0 {
+        return Err(io::Error::last_os_error())
+            .context("Make Telnet session process group foreground");
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "freebsd"))]
+fn claim_controlling_terminal() -> Result<()> {
+    Ok(())
 }
 
 #[cfg(target_os = "freebsd")]
