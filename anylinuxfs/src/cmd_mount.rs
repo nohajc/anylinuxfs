@@ -1260,17 +1260,31 @@ fn should_probe_image_fs_type(config: &MountConfig, dev_info: &DevInfo) -> bool 
 #[cfg(feature = "freebsd")]
 fn select_mount_os(
     os_override: Option<OSType>,
+    required_os: Option<OSType>,
     fs_driver: Option<&str>,
     fs_type: Option<&str>,
     fs_preferred_os: impl FnOnce(&str) -> OSType,
-) -> OSType {
-    match os_override {
-        Some(os) => os,
-        None => fs_driver
-            .or(fs_type)
-            .map(fs_preferred_os)
-            .unwrap_or(OSType::Linux),
+) -> anyhow::Result<OSType> {
+    // An explicit --os is the only hard override.  A custom action must run
+    // on its required guest OS; filesystem preferences (including UFS/ZFS)
+    // apply only when neither has selected one.
+    if let (Some(os), Some(required_os)) = (os_override, required_os)
+        && os != required_os
+    {
+        anyhow::bail!(
+            "custom action requires {required_os:?}, but the selected mount OS is {os:?}"
+        );
     }
+
+    Ok(match os_override {
+        Some(os) => os,
+        None => required_os.unwrap_or_else(|| {
+            fs_driver
+                .or(fs_type)
+                .map(fs_preferred_os)
+                .unwrap_or(OSType::Linux)
+        }),
+    })
 }
 
 #[cfg(all(test, feature = "freebsd"))]
@@ -1280,10 +1294,11 @@ mod tests {
     #[test]
     fn explicit_ufs_driver_selects_freebsd_over_detected_metadata() {
         assert_eq!(
-            select_mount_os(None, Some("ufs"), Some("ext4"), |fs| {
+            select_mount_os(None, None, Some("ufs"), Some("ext4"), |fs| {
                 assert_eq!(fs, "ufs");
                 OSType::FreeBSD
-            }),
+            })
+            .unwrap(),
             OSType::FreeBSD
         );
     }
@@ -1291,18 +1306,62 @@ mod tests {
     #[test]
     fn explicit_zfs_driver_uses_the_zfs_os_preference() {
         assert_eq!(
-            select_mount_os(None, Some("zfs"), Some("ext4"), |fs| {
+            select_mount_os(None, None, Some("zfs"), Some("ext4"), |fs| {
                 assert_eq!(fs, "zfs");
                 OSType::FreeBSD
-            }),
+            })
+            .unwrap(),
             OSType::FreeBSD
         );
         assert_eq!(
-            select_mount_os(None, Some("zfs"), Some("ext4"), |fs| {
+            select_mount_os(None, None, Some("zfs"), Some("ext4"), |fs| {
                 assert_eq!(fs, "zfs");
                 OSType::Linux
-            }),
+            })
+            .unwrap(),
             OSType::Linux
+        );
+    }
+
+    #[test]
+    fn action_requirement_overrides_zfs_preference() {
+        assert_eq!(
+            select_mount_os(
+                None,
+                Some(OSType::Linux),
+                Some("zfs"),
+                Some("zfs_member"),
+                |_| OSType::FreeBSD,
+            )
+            .unwrap(),
+            OSType::Linux
+        );
+    }
+
+    #[test]
+    fn action_requirement_overrides_ufs_driver() {
+        assert_eq!(
+            select_mount_os(None, Some(OSType::Linux), Some("ufs"), Some("ufs"), |_| {
+                OSType::FreeBSD
+            },)
+            .unwrap(),
+            OSType::Linux
+        );
+    }
+
+    #[test]
+    fn explicit_os_override_conflicting_with_action_requirement_fails() {
+        let err = select_mount_os(
+            Some(OSType::FreeBSD),
+            Some(OSType::Linux),
+            Some("zfs"),
+            Some("zfs_member"),
+            |_| OSType::Linux,
+        )
+        .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "custom action requires Linux, but the selected mount OS is FreeBSD"
         );
     }
 }
@@ -1434,56 +1493,49 @@ impl super::AppRunner {
         }
 
         #[cfg(feature = "freebsd")]
-        // A user-supplied driver selects the guest OS when host metadata is
-        // unavailable (notably for unprobed qcow2 images).
-        let mount_os = select_mount_os(
-            config.os,
-            config.fs_driver.as_deref(),
-            mnt_dev_info.fs_type(),
-            |fs| config.common.fs_preferred_os(fs),
-        );
-
-        #[cfg(feature = "freebsd")]
-        if let Some(required_os) = config.get_action().and_then(|action| action.required_os())
-            && required_os != mount_os
         {
-            anyhow::bail!(
-                "custom action requires {required_os:?}, but the selected mount OS is {mount_os:?}"
-            );
-        }
+            // A user-supplied driver selects the guest OS when host metadata is
+            // unavailable (notably for unprobed qcow2 images).
+            let mount_os = select_mount_os(
+                config.os,
+                config.get_action().and_then(|action| action.required_os()),
+                config.fs_driver.as_deref(),
+                mnt_dev_info.fs_type(),
+                |fs| config.common.fs_preferred_os(fs),
+            )?;
 
-        #[cfg(feature = "freebsd")]
-        if mount_os == OSType::FreeBSD {
-            let bsd_image = config.common.preferences.default_image(OSType::FreeBSD);
+            if mount_os == OSType::FreeBSD {
+                let bsd_image = config.common.preferences.default_image(OSType::FreeBSD);
 
-            let src = config
-                .common
-                .preferences
-                .images()
-                .get(bsd_image)
-                .map(|&s| s.to_owned())
-                .with_context(|| format!("FreeBSD image {} not found", bsd_image))?;
-            mnt_dev_info.set_vm_disk("/dev/vtbd1".to_string());
+                let src = config
+                    .common
+                    .preferences
+                    .images()
+                    .get(bsd_image)
+                    .map(|&s| s.to_owned())
+                    .with_context(|| format!("FreeBSD image {} not found", bsd_image))?;
+                mnt_dev_info.set_vm_disk("/dev/vtbd1".to_string());
 
-            config = config.with_image_source(&src);
-            let freebsd_base_path = config.common.paths.profile_path.join(&src.base_dir);
-            let vm_disk_image = "freebsd-microvm-disk.img";
-            let root_disk_path = freebsd_base_path.join(vm_disk_image);
-            host_println!("root_disk: {}", root_disk_path.display());
+                config = config.with_image_source(&src);
+                let freebsd_base_path = config.common.paths.profile_path.join(&src.base_dir);
+                let vm_disk_image = "freebsd-microvm-disk.img";
+                let root_disk_path = freebsd_base_path.join(vm_disk_image);
+                host_println!("root_disk: {}", root_disk_path.display());
 
-            opts = opts
-                .root_device("ufs:/dev/gpt/rootfs")
-                .legacy_console(true)
-                .read_only_disk_prefix_len((!config.common.rw_rootfs) as usize);
-            dev_info = [DevInfo::pv(root_disk_path.as_bytes(), true)?]
-                .iter()
-                .chain(dev_info.iter())
-                .cloned()
-                .collect();
+                opts = opts
+                    .root_device("ufs:/dev/gpt/rootfs")
+                    .legacy_console(true)
+                    .read_only_disk_prefix_len((!config.common.rw_rootfs) as usize);
+                dev_info = [DevInfo::pv(root_disk_path.as_bytes(), true)?]
+                    .iter()
+                    .chain(dev_info.iter())
+                    .cloned()
+                    .collect();
 
-            img_src = src;
-        } else {
-            host_println!("root_path: {}", config.common.paths.root_path.display());
+                img_src = src;
+            } else {
+                host_println!("root_path: {}", config.common.paths.root_path.display());
+            }
         }
 
         {
