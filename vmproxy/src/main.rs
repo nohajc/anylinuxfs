@@ -18,6 +18,7 @@ use std::ffi::CString;
 use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, Read, Write};
+use std::net::IpAddr;
 #[cfg(any(target_os = "freebsd", target_os = "macos"))]
 use std::net::TcpListener;
 use std::os::unix::ffi::OsStrExt;
@@ -323,7 +324,11 @@ struct CtrlSocketServer {
 }
 
 impl CtrlSocketServer {
-    fn new(listener: impl StreamListener, native_network: Option<Ipv4Net>) -> Self {
+    fn new(
+        listener: impl StreamListener,
+        native_network: Option<Ipv4Net>,
+        bind_addrs: Vec<String>,
+    ) -> Self {
         let (done_tx, done_rx) = mpsc::channel();
         let (quit_tx, quit_rx) = mpsc::channel();
         let (report_tx, report_rx) = mpsc::channel();
@@ -405,7 +410,7 @@ impl CtrlSocketServer {
                                 });
                             }
                             vmctrl::Request::StartTelnet => {
-                                let response = start_telnetd(native_network, &telnetd)
+                                let response = start_telnetd(native_network, &bind_addrs, &telnetd)
                                     .map(|()| vmctrl::Response::TelnetReady { port: 2323 });
                                 match response {
                                     Ok(response) => {
@@ -447,6 +452,7 @@ impl CtrlSocketServer {
 
 fn start_telnetd(
     native_network: Option<Ipv4Net>,
+    bind_addrs: &[String],
     telnetd: &Mutex<Option<Child>>,
 ) -> anyhow::Result<()> {
     let mut telnetd = telnetd.lock().unwrap();
@@ -468,19 +474,43 @@ fn start_telnetd(
 
     if native_network.is_none() {
         let client = reqwest::blocking::Client::new();
-        let port_def = PortDef {
-            local: ":2323",
-            remote: &format!("{VM_IP}:2323"),
-        };
-        if let Err(error) = expose_port(&client, &port_def) {
-            let mut child = child;
-            _ = child.kill();
-            return Err(error);
+        for local in telnet_forward_locals(bind_addrs) {
+            let port_def = PortDef {
+                local: &local,
+                remote: &format!("{VM_IP}:2323"),
+            };
+            if let Err(error) = expose_port(&client, &port_def) {
+                let mut child = child;
+                _ = child.kill();
+                return Err(error);
+            }
         }
     }
 
     *telnetd = Some(child);
     Ok(())
+}
+
+fn telnet_forward_locals(bind_addrs: &[String]) -> BTreeSet<String> {
+    bind_addrs
+        .iter()
+        .filter_map(|addr| parse_scoped_ip_addr(addr))
+        .filter(|(_, ip)| ip.is_loopback())
+        .filter_map(|(addr, ip)| match ip {
+            IpAddr::V4(_) if !addr.contains('%') => Some(format!("{addr}:2323")),
+            IpAddr::V4(_) => None,
+            IpAddr::V6(_) => Some(format!("[{addr}]:2323")),
+        })
+        .collect()
+}
+
+fn parse_scoped_ip_addr(addr: &str) -> Option<(&str, IpAddr)> {
+    let addr = addr
+        .strip_prefix('[')
+        .and_then(|addr| addr.strip_suffix(']'))
+        .unwrap_or(addr);
+    let ip = addr.split_once('%').map_or(addr, |(ip, _)| ip);
+    ip.parse().ok().map(|ip| (addr, ip))
 }
 
 #[cfg(target_os = "freebsd")]
@@ -1286,7 +1316,7 @@ fn run() -> anyhow::Result<()> {
     #[cfg(any(target_os = "freebsd", target_os = "macos"))]
     let listener = TcpListener::bind(&format!("0.0.0.0:{}", VM_CTRL_PORT))?;
 
-    let ctrl_server = CtrlSocketServer::new(listener, cli.native_network);
+    let ctrl_server = CtrlSocketServer::new(listener, cli.native_network, cli.bind_addrs.clone());
     println!("<anylinuxfs-vmproxy-ready>");
 
     let mut deferred = Deferred::new();
@@ -1532,6 +1562,28 @@ mod tests {
             .map(|arg| arg.to_str().unwrap())
             .collect();
         assert!(args.windows(2).any(|args| args == ["-b", "0.0.0.0"]));
+    }
+
+    #[test]
+    fn telnet_forwarding_uses_only_loopback_bind_addresses() {
+        let bind_addrs = vec![
+            "127.0.0.1".to_owned(),
+            "127.0.0.2".to_owned(),
+            "[::1%1]".to_owned(),
+            "192.0.2.10".to_owned(),
+            "2001:db8::10".to_owned(),
+            "not-an-address".to_owned(),
+            "127.0.0.1".to_owned(),
+        ];
+
+        assert_eq!(
+            telnet_forward_locals(&bind_addrs),
+            BTreeSet::from([
+                "127.0.0.1:2323".to_owned(),
+                "127.0.0.2:2323".to_owned(),
+                "[::1%1]:2323".to_owned(),
+            ])
+        );
     }
 
     #[test]
