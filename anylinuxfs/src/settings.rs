@@ -108,7 +108,7 @@ impl Config {
     pub fn fs_preferred_os(&self, fs_type: &str) -> OSType {
         match fs_type {
             "ufs" => OSType::FreeBSD,
-            "zfs_member" => self.zfs_os,
+            "zfs" | "zfs_member" => self.zfs_os,
             _ => OSType::Linux,
         }
     }
@@ -851,6 +851,9 @@ pub struct MountConfig {
     pub vm_hostname: String,
     pub custom_mount_point: Option<PathBuf>,
     pub fs_driver: Option<String>,
+    #[cfg(feature = "freebsd")]
+    #[serde(default)]
+    pub os: Option<OSType>,
     pub assemble_raid: bool,
     pub bind_addr: Option<IpAddr>,
     pub verbose: bool,

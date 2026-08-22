@@ -154,6 +154,10 @@ pub(crate) struct MountCmd {
     /// Filesystem driver override (e.g. for using ntfs3 instead of ntfs-3g)
     #[arg(short = 't', long = "type")]
     pub fs_driver: Option<String>,
+    /// Operating system to use for mounting the filesystem
+    #[cfg(feature = "freebsd")]
+    #[arg(long)]
+    pub os: Option<OSType>,
     /// Path to a key file for unlocking encrypted drives (alternative to a passphrase)
     #[arg(short, long, conflicts_with = "passphrase_config")]
     pub key_file: Option<String>,
@@ -318,6 +322,8 @@ impl From<ShellCmd> for MountCmd {
             remount: shell_cmd.remount,
             action: None,
             fs_driver: None,
+            #[cfg(feature = "freebsd")]
+            os: None,
             common: shell_cmd.common,
             #[cfg(target_os = "macos")]
             window: false,
@@ -426,6 +432,13 @@ impl Cli {
 mod tests {
     use super::*;
 
+    fn parse_mount(args: &[&str]) -> MountCmd {
+        match Cli::try_parse_from(args).unwrap().commands {
+            Commands::Mount(cmd) => cmd,
+            _ => panic!("expected mount command"),
+        }
+    }
+
     fn parse_unmount(args: &[&str]) -> UnmountCmd {
         match Cli::try_parse_from(args).unwrap().commands {
             Commands::Unmount(cmd) => cmd,
@@ -461,5 +474,22 @@ mod tests {
 
         assert_eq!(cmd.path.as_deref(), Some("/tmp/mountpoint"));
         assert_eq!(cmd.wait_for_vm, Some(10));
+    }
+
+    #[cfg(feature = "freebsd")]
+    #[test]
+    fn mount_accepts_os_override() {
+        let cmd = parse_mount(&["anylinuxfs", "mount", "disk.qcow2@s3", "--os", "freebsd"]);
+
+        assert_eq!(cmd.os, Some(OSType::FreeBSD));
+        assert_eq!(cmd.disk_ident(), "disk.qcow2@s3");
+    }
+
+    #[test]
+    fn mount_accepts_filesystem_type_override() {
+        let cmd = parse_mount(&["anylinuxfs", "mount", "disk.qcow2@s3", "-t", "ufs"]);
+
+        assert_eq!(cmd.fs_driver.as_deref(), Some("ufs"));
+        assert_eq!(cmd.disk_ident(), "disk.qcow2@s3");
     }
 }

@@ -1,13 +1,11 @@
 use anyhow::Context;
 use bstr::{BString, ByteSlice};
 use clap::Parser;
-#[cfg(target_os = "linux")]
-use common_utils::FromPath;
 #[cfg(any(target_os = "freebsd", target_os = "macos"))]
 use common_utils::VM_CTRL_PORT;
-use common_utils::{
-    CustomActionConfig, Deferred, VM_GATEWAY_IP, VM_IP, ipc, path_safe_label_name, vmctrl,
-};
+use common_utils::{CustomActionConfig, Deferred, VM_GATEWAY_IP, VM_IP, ipc, vmctrl};
+#[cfg(target_os = "linux")]
+use common_utils::{FromPath, path_safe_label_name};
 use ipnet::Ipv4Net;
 #[cfg(target_os = "linux")]
 use libc::VMADDR_CID_ANY;
@@ -927,7 +925,7 @@ impl VmDiskContext {
         Ok(())
     }
 
-    /// Detect filesystem type from the disk using blkid.
+    /// Detect filesystem type from the disk using the native OS utility.
     fn detect_fs_type(&mut self) -> anyhow::Result<()> {
         if self.disk_path.is_empty() {
             return Ok(());
@@ -935,6 +933,7 @@ impl VmDiskContext {
 
         match self.fs_type.as_deref() {
             Some("auto") | None => {
+                #[cfg(target_os = "linux")]
                 let fs = Command::new("/sbin/blkid")
                     .arg(&self.disk_path)
                     .arg("-s")
@@ -943,6 +942,14 @@ impl VmDiskContext {
                     .arg("value")
                     .output()
                     .context("Failed to run blkid command")?
+                    .stdout;
+
+                #[cfg(target_os = "freebsd")]
+                let fs = Command::new("/usr/sbin/fstyp")
+                    .arg("-u")
+                    .arg(&self.disk_path)
+                    .output()
+                    .context("Failed to run fstyp command")?
                     .stdout;
 
                 let fs = String::from_utf8_lossy(&fs).trim().to_owned();
@@ -955,6 +962,7 @@ impl VmDiskContext {
             }
             _ => (),
         }
+        self.is_zfs = matches!(self.fs_type.as_deref(), Some("zfs" | "zfs_member"));
         Ok(())
     }
 
@@ -979,6 +987,7 @@ impl VmDiskContext {
             return Ok(());
         }
 
+        #[cfg(target_os = "linux")]
         let label = Command::new("/sbin/blkid")
             .arg(&self.disk_path)
             .arg("-s")
@@ -989,6 +998,7 @@ impl VmDiskContext {
             .context("Failed to run blkid command")?
             .stdout;
 
+        #[cfg(target_os = "linux")]
         if let Some(label) =
             path_safe_label_name(&String::from_utf8_lossy(&label).trim().to_owned())
         {

@@ -417,4 +417,8 @@ impl DevInfo {
     pub fn metadata_probed(&self) -> bool {
         self.metadata_probed
     }
+
+    pub fn set_metadata_probed(&mut self) {
+        self.metadata_probed = true;
+    }
 }

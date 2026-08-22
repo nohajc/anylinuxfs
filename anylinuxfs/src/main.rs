@@ -376,6 +376,8 @@ pub(crate) fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
     let verbose = cmd.verbose;
 
     let fs_driver = cmd.fs_driver;
+    #[cfg(feature = "freebsd")]
+    let os = cmd.os;
 
     #[cfg(target_os = "macos")]
     let open_finder = cmd.window;
@@ -424,6 +426,8 @@ pub(crate) fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
         vm_hostname,
         custom_mount_point,
         fs_driver,
+        #[cfg(feature = "freebsd")]
+        os,
         assemble_raid,
         bind_addr,
         verbose,

@@ -1241,6 +1241,22 @@ fn append_mount_option_if_missing(options: &mut Option<String>, option: &str) {
     }
 }
 
+fn should_probe_image_fs_type(config: &MountConfig, dev_info: &DevInfo) -> bool {
+    if config.fs_driver.is_some()
+        || dev_info.metadata_probed()
+        || dev_info.disk_format() != DiskFormat::Qcow2
+    {
+        return false;
+    }
+
+    #[cfg(feature = "freebsd")]
+    if config.os.is_some() {
+        return false;
+    }
+
+    true
+}
+
 impl super::AppRunner {
     pub(crate) fn run_mount(&mut self, cmd: MountCmd) -> anyhow::Result<()> {
         let mut network_env = NetworkEnv::default();
@@ -1358,20 +1374,43 @@ impl super::AppRunner {
         #[allow(unused_mut)]
         let mut img_src = crate::default_linux_image_source(&config.common.preferences);
 
-        // Use FreeBSD when the filesystem requires or prefers it, and no
-        // incompatible custom action has been specified.
+        if should_probe_image_fs_type(&config, &mnt_dev_info) {
+            {
+                let _log_guard = ConsoleLogGuard::enable_temporarily(verbose);
+                vm_image::init(&config.common, false, &img_src, &mut guard)?;
+            }
+
+            diskutil::probe_image_metadata(&config.common, &mut mnt_dev_info)?;
+        }
+
         #[cfg(feature = "freebsd")]
-        if mnt_dev_info
-            .fs_type()
-            .map(|fs| config.common.fs_preferred_os(fs) == OSType::FreeBSD)
-            .unwrap_or(false)
-            && config
-                .get_action()
-                .map(|a| a.required_os())
-                .flatten()
-                .unwrap_or(OSType::FreeBSD)
-                == OSType::FreeBSD
+        if config.fs_driver.as_deref() == Some("ufs") {
+            mnt_dev_info.set_fs_type("ufs");
+        }
+
+        #[cfg(feature = "freebsd")]
+        let mount_os = config
+            .os
+            .or_else(|| {
+                config
+                    .fs_driver
+                    .as_deref()
+                    .or_else(|| mnt_dev_info.fs_type())
+                    .map(|fs| config.common.fs_preferred_os(fs))
+            })
+            .unwrap_or(OSType::Linux);
+
+        #[cfg(feature = "freebsd")]
+        if let Some(required_os) = config.get_action().and_then(|action| action.required_os())
+            && required_os != mount_os
         {
+            anyhow::bail!(
+                "custom action requires {required_os:?}, but the selected mount OS is {mount_os:?}"
+            );
+        }
+
+        #[cfg(feature = "freebsd")]
+        if mount_os == OSType::FreeBSD {
             let bsd_image = config.common.preferences.default_image(OSType::FreeBSD);
 
             let src = config

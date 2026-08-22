@@ -1201,6 +1201,43 @@ fn get_lsblk_info(
     Ok(lsblk)
 }
 
+pub(crate) fn probe_image_metadata(config: &Config, dev_info: &mut DevInfo) -> anyhow::Result<()> {
+    let lsblk = get_lsblk_info(config, std::slice::from_ref(dev_info), None, false)?;
+    let vm_path = dev_info.vm_path().to_owned();
+    let target = lsblk
+        .blockdevices
+        .iter()
+        .find_map(|device| find_lsblk_device(device, &vm_path))
+        .with_context(|| {
+            format!(
+                "Inspection VM did not report the selected device {}",
+                vm_path
+            )
+        })?;
+
+    if let Some(fs_type) = target.fstype.as_deref() {
+        dev_info.set_fs_type(fs_type);
+    }
+    if let Some(label) = target.label.as_deref() {
+        dev_info.set_label(label);
+    }
+    dev_info.set_metadata_probed();
+    Ok(())
+}
+
+fn find_lsblk_device<'a>(device: &'a LsBlkDevice, path: &str) -> Option<&'a LsBlkDevice> {
+    if device.path == path {
+        return Some(device);
+    }
+
+    device
+        .children
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .find_map(|child| find_lsblk_device(child, path))
+}
+
 pub struct MountPoint(String);
 
 impl MountPoint {
@@ -1298,6 +1335,27 @@ impl Hash for LsBlkDevice {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finds_selected_partition_in_lsblk_tree() {
+        let partition = LsBlkDevice {
+            name: "vda3".to_owned(),
+            path: "/dev/vda3".to_owned(),
+            fstype: Some("ufs".to_owned()),
+            ..Default::default()
+        };
+        let disk = LsBlkDevice {
+            name: "vda".to_owned(),
+            path: "/dev/vda".to_owned(),
+            children: Some(vec![partition]),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            find_lsblk_device(&disk, "/dev/vda3").and_then(|device| device.fstype.as_deref()),
+            Some("ufs")
+        );
+    }
 
     #[test]
     fn test_lv_ident_from_str() {
