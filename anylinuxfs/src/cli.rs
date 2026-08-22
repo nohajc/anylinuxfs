@@ -58,7 +58,7 @@ Recognized environment variables:
     Stop(StopCmd),
     /// microVM shell for debugging (configures the VM according to mount options but only starts a shell)
     Shell(ShellCmd),
-    /// Attach to a running mounted VM
+    /// Interact with a running microVM
     #[command(subcommand)]
     Vm(VmCmd),
     /// Show the latest kernel log (after the VM has stopped)
@@ -260,9 +260,9 @@ pub(crate) struct StopCmd {
 
 #[derive(Subcommand)]
 pub(crate) enum VmCmd {
-    /// Open an interactive Bash session in a running VM
+    /// Open an interactive shell session in a running VM
     Attach(VmAttachCmd),
-    /// Execute a program in a running VM
+    /// Execute a command in a running VM
     Exec(VmExecCmd),
 }
 
