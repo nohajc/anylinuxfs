@@ -68,6 +68,7 @@ var RequiredFiles = []string{
 	"/usr/bin/tty",
 	"/usr/bin/which",
 	"/usr/lib/pam_xdg.so",
+	"/usr/sbin/fstyp",
 	"/usr/sbin/mountd",
 	"/usr/sbin/nfsd",
 	"/usr/sbin/rpcbind",

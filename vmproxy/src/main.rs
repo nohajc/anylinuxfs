@@ -478,32 +478,25 @@ fn start_telnetd(
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
 fn telnetd_command() -> Command {
+    #[cfg(target_os = "linux")]
     let mut command = Command::new("/bin/busybox-extras");
+    #[cfg(any(target_os = "freebsd", target_os = "macos"))]
+    let mut command = Command::new("/usr/local/bin/busybox");
+
     command.args([
         "telnetd",
         "-F",
         "-p",
         "2323",
+        "-b",
+        "0.0.0.0",
         "-l",
         "/telnet-session",
         "-f",
         "/dev/null",
     ]);
     command
-}
-
-#[cfg(target_os = "freebsd")]
-fn telnetd_command() -> Command {
-    let mut command = Command::new("/usr/local/libexec/telnetd");
-    command.args(["-debug", "-h", "-p", "/telnet-session", "2323"]);
-    command
-}
-
-#[cfg(target_os = "macos")]
-fn telnetd_command() -> Command {
-    unreachable!("vmproxy Telnet service is only supported in guest builds")
 }
 
 fn is_read_only_set<'a>(mut mount_options: impl Iterator<Item = &'a str>) -> bool {
@@ -1476,6 +1469,16 @@ mod tests {
         assert!(!is_read_only_set(["rw"].into_iter()));
         assert!(!is_read_only_set(["noatime"].into_iter()));
         assert!(!is_read_only_set(std::iter::empty()));
+    }
+
+    #[test]
+    fn telnetd_binds_to_ipv4() {
+        let command = telnetd_command();
+        let args: Vec<_> = command
+            .get_args()
+            .map(|arg| arg.to_str().unwrap())
+            .collect();
+        assert!(args.windows(2).any(|args| args == ["-b", "0.0.0.0"]));
     }
 
     #[test]

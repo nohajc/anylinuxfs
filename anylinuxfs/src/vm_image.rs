@@ -373,7 +373,7 @@ mod freebsd {
             bootstrap_rootfs_path.join("config.json"),
             serde_json::to_string(&FreeBSDBootstrapConfig {
                 iso_url: iso_image_url.into(),
-                pkgs: vec!["bash".into(), "pidof".into(), "freebsd-telnetd".into()],
+                pkgs: vec!["bash".into(), "pidof".into(), "busybox".into()],
             })?,
         )
         .context("Failed to write FreeBSD bootstrap config")?;
@@ -714,18 +714,31 @@ pub fn remove(
 
 fn rootfs_version_matches(root_ver_file_path: &Path, current_version: &str) -> bool {
     let version = if root_ver_file_path.exists() {
-        fs::read_to_string(root_ver_file_path)
-            .unwrap_or_default()
-            .trim()
-            .to_string()
+        fs::read_to_string(root_ver_file_path).unwrap_or_default()
     } else {
         "".into()
     };
-    if version != current_version {
+    if !rootfs_version_matches_text(&version, current_version) {
         host_eprintln!("New version detected.");
         return false;
     }
     true
+}
+
+fn rootfs_version_matches_text(version: &str, current_version: &str) -> bool {
+    version.trim() == current_version.trim()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rootfs_version_ignores_trailing_newlines() {
+        assert!(rootfs_version_matches_text("1.0.2\n", "1.0.2"));
+        assert!(rootfs_version_matches_text("1.0.2", "1.0.2\n"));
+        assert!(!rootfs_version_matches_text("1.0.1\n", "1.0.2\n"));
+    }
 }
 
 pub fn setup_net_helper(
