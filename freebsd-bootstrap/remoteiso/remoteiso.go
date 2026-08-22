@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -165,6 +166,36 @@ func FindFiles(root *iso9660.File, paths []string) []*FileEntry {
 	}
 
 	return found
+}
+
+// FindFilesInDirs returns every non-directory entry below the requested
+// directories. This is needed for runtime-loaded resources whose dependencies
+// cannot be discovered from an ELF binary's DT_NEEDED entries.
+func FindFilesInDirs(root *iso9660.File, paths []string) []*FileEntry {
+	var found []*FileEntry
+	for _, targetPath := range paths {
+		dir := findFileByPath(root, targetPath)
+		if dir == nil || !dir.IsDir() {
+			continue
+		}
+		findFilesRecursive(dir, targetPath, &found)
+	}
+	return found
+}
+
+func findFilesRecursive(dir *iso9660.File, dirPath string, found *[]*FileEntry) {
+	entries, err := dir.GetChildren()
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		entryPath := path.Join(dirPath, entry.Name())
+		if entry.IsDir() {
+			findFilesRecursive(entry, entryPath, found)
+			continue
+		}
+		*found = append(*found, &FileEntry{File: entry, Path: entryPath})
+	}
 }
 
 func findFileByPath(root *iso9660.File, targetPath string) *iso9660.File {

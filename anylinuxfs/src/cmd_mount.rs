@@ -1257,6 +1257,56 @@ fn should_probe_image_fs_type(config: &MountConfig, dev_info: &DevInfo) -> bool 
     true
 }
 
+#[cfg(feature = "freebsd")]
+fn select_mount_os(
+    os_override: Option<OSType>,
+    fs_driver: Option<&str>,
+    fs_type: Option<&str>,
+    fs_preferred_os: impl FnOnce(&str) -> OSType,
+) -> OSType {
+    match os_override {
+        Some(os) => os,
+        None => fs_driver
+            .or(fs_type)
+            .map(fs_preferred_os)
+            .unwrap_or(OSType::Linux),
+    }
+}
+
+#[cfg(all(test, feature = "freebsd"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explicit_ufs_driver_selects_freebsd_over_detected_metadata() {
+        assert_eq!(
+            select_mount_os(None, Some("ufs"), Some("ext4"), |fs| {
+                assert_eq!(fs, "ufs");
+                OSType::FreeBSD
+            }),
+            OSType::FreeBSD
+        );
+    }
+
+    #[test]
+    fn explicit_zfs_driver_uses_the_zfs_os_preference() {
+        assert_eq!(
+            select_mount_os(None, Some("zfs"), Some("ext4"), |fs| {
+                assert_eq!(fs, "zfs");
+                OSType::FreeBSD
+            }),
+            OSType::FreeBSD
+        );
+        assert_eq!(
+            select_mount_os(None, Some("zfs"), Some("ext4"), |fs| {
+                assert_eq!(fs, "zfs");
+                OSType::Linux
+            }),
+            OSType::Linux
+        );
+    }
+}
+
 impl super::AppRunner {
     pub(crate) fn run_mount(&mut self, cmd: MountCmd) -> anyhow::Result<()> {
         let mut network_env = NetworkEnv::default();
@@ -1384,21 +1434,14 @@ impl super::AppRunner {
         }
 
         #[cfg(feature = "freebsd")]
-        if config.fs_driver.as_deref() == Some("ufs") {
-            mnt_dev_info.set_fs_type("ufs");
-        }
-
-        #[cfg(feature = "freebsd")]
-        let mount_os = config
-            .os
-            .or_else(|| {
-                config
-                    .fs_driver
-                    .as_deref()
-                    .or_else(|| mnt_dev_info.fs_type())
-                    .map(|fs| config.common.fs_preferred_os(fs))
-            })
-            .unwrap_or(OSType::Linux);
+        // A user-supplied driver selects the guest OS when host metadata is
+        // unavailable (notably for unprobed qcow2 images).
+        let mount_os = select_mount_os(
+            config.os,
+            config.fs_driver.as_deref(),
+            mnt_dev_info.fs_type(),
+            |fs| config.common.fs_preferred_os(fs),
+        );
 
         #[cfg(feature = "freebsd")]
         if let Some(required_os) = config.get_action().and_then(|action| action.required_os())

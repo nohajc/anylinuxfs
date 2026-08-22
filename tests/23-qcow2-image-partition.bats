@@ -68,8 +68,15 @@ teardown() {
   do_unmount "$disk_id"
 }
 
-@test "qcow2 image partition: missing partition fails inside the VM" {
+@test "qcow2 image partition: missing partition fails during VM inspection" {
   run do_mount "${BATS_FILE_TMPDIR}/test-partitioned.qcow2@s99"
+
+  [[ "$output" =~ /dev/vda99 ]]
+  [[ "$output" =~ "Inspection VM did not report the selected device" ]]
+}
+
+@test "qcow2 image partition: explicit filesystem driver skips inspection" {
+  run do_mount "${BATS_FILE_TMPDIR}/test-partitioned.qcow2@s99" -t ext4
 
   [[ "$output" =~ /dev/vda99 ]]
   [[ "$output" =~ failed || "$output" =~ "Can't lookup blockdev" ]]

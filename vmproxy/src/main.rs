@@ -1,11 +1,13 @@
 use anyhow::Context;
 use bstr::{BString, ByteSlice};
 use clap::Parser;
+#[cfg(target_os = "linux")]
+use common_utils::FromPath;
 #[cfg(any(target_os = "freebsd", target_os = "macos"))]
 use common_utils::VM_CTRL_PORT;
+#[cfg(any(target_os = "freebsd", target_os = "linux"))]
+use common_utils::path_safe_label_name;
 use common_utils::{CustomActionConfig, Deferred, VM_GATEWAY_IP, VM_IP, ipc, vmctrl};
-#[cfg(target_os = "linux")]
-use common_utils::{FromPath, path_safe_label_name};
 use ipnet::Ipv4Net;
 #[cfg(target_os = "linux")]
 use libc::VMADDR_CID_ANY;
@@ -149,7 +151,7 @@ fn init_network(
     bind_addrs: &[String],
     host_rpcbind: bool,
     native_network: Option<Ipv4Net>,
-    dns_server: Option<&str>,
+    #[allow(unused)] dns_server: Option<&str>,
 ) -> anyhow::Result<()> {
     let vm_gateway_ip = native_network
         .map(|net| net.hosts().next())
@@ -937,7 +939,7 @@ impl VmDiskContext {
                     .context("Failed to run blkid command")?
                     .stdout;
 
-                #[cfg(target_os = "freebsd")]
+                #[cfg(any(target_os = "freebsd", target_os = "macos"))]
                 let fs = Command::new("/usr/sbin/fstyp")
                     .arg("-u")
                     .arg(&self.disk_path)
@@ -991,10 +993,24 @@ impl VmDiskContext {
             .context("Failed to run blkid command")?
             .stdout;
 
+        #[cfg(target_os = "freebsd")]
+        let label = Command::new("/usr/sbin/fstyp")
+            .arg("-l")
+            .arg(&self.disk_path)
+            .output()
+            .context("Failed to run fstyp command")?
+            .stdout;
+
         #[cfg(target_os = "linux")]
         if let Some(label) =
             path_safe_label_name(&String::from_utf8_lossy(&label).trim().to_owned())
         {
+            println!("<anylinuxfs-label:{}>", &label);
+            self.mount_name = label;
+        }
+
+        #[cfg(target_os = "freebsd")]
+        if let Some(label) = fstyp_label(&label).and_then(|label| path_safe_label_name(&label)) {
             println!("<anylinuxfs-label:{}>", &label);
             self.mount_name = label;
         }
@@ -1445,6 +1461,15 @@ fn run() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Extract the optional label from `fstyp -l`, whose output is
+/// `<filesystem type> <label>` when the filesystem provides one.
+#[cfg(any(target_os = "freebsd", test))]
+fn fstyp_label(output: &[u8]) -> Option<String> {
+    String::from_utf8_lossy(output)
+        .lines()
+        .find_map(|line| line.split_once(' ').map(|(_, label)| label.to_owned()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1469,6 +1494,12 @@ mod tests {
         assert!(!is_read_only_set(["rw"].into_iter()));
         assert!(!is_read_only_set(["noatime"].into_iter()));
         assert!(!is_read_only_set(std::iter::empty()));
+    }
+
+    #[test]
+    fn fstyp_label_parses_labeled_and_unlabeled_output() {
+        assert_eq!(fstyp_label(b"ufs rootfs\n"), Some("rootfs".to_owned()));
+        assert_eq!(fstyp_label(b"ufs\n"), None);
     }
 
     #[test]

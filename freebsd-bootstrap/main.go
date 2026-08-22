@@ -68,6 +68,16 @@ var RequiredFiles = []string{
 	"/usr/bin/tty",
 	"/usr/bin/which",
 	"/usr/lib/pam_xdg.so",
+	"/usr/share/i18n/csmapper/charset.alias",
+	"/usr/share/i18n/csmapper/charset.alias.db",
+	"/usr/share/i18n/csmapper/charset.pivot",
+	"/usr/share/i18n/csmapper/charset.pivot.pvdb",
+	"/usr/share/i18n/csmapper/mapper.dir",
+	"/usr/share/i18n/csmapper/mapper.dir.db",
+	"/usr/share/i18n/esdb/esdb.alias",
+	"/usr/share/i18n/esdb/esdb.alias.db",
+	"/usr/share/i18n/esdb/esdb.dir",
+	"/usr/share/i18n/esdb/esdb.dir.db",
 	"/usr/sbin/fstyp",
 	"/usr/sbin/mountd",
 	"/usr/sbin/nfsd",
@@ -75,6 +85,17 @@ var RequiredFiles = []string{
 	"/usr/sbin/rpc.statd",
 	"/usr/sbin/rpc.lockd",
 }
+
+// FreeBSD's native Citrus iconv implementation loads these at runtime. They
+// are not ELF dependencies. fstyp's exFAT handler converts UCS-2LE labels to
+// the guest's C locale (US-ASCII), so it needs both UTF and ISO646 metadata.
+var RequiredResourceDirs = []string{
+	"/usr/lib/i18n",
+	"/usr/share/i18n/csmapper/ISO646",
+	"/usr/share/i18n/esdb/ISO646",
+	"/usr/share/i18n/esdb/UTF",
+}
+
 var LibraryBaseDirs = []string{"/lib", "/usr/lib"}
 
 func main() {
@@ -253,6 +274,7 @@ func main() {
 	// listDir(root, "")
 
 	foundFiles := remoteiso.FindFiles(root, RequiredFiles)
+	foundFiles = append(foundFiles, remoteiso.FindFilesInDirs(root, RequiredResourceDirs)...)
 	d := newDownloader(workdir, root)
 	d.downloadWithDependencies(foundFiles)
 
