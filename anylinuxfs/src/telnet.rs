@@ -1,18 +1,22 @@
 //! Small Telnet client used by `anylinuxfs vm`.
 
 use anyhow::{Context, Result};
+use base64::{Engine, engine::general_purpose::STANDARD_NO_PAD};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, size};
 use serde::Serialize;
 use std::{
     env,
     io::{self, Read, Write},
     net::TcpStream,
+    path::Path,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     thread,
 };
+
+use crate::api;
 
 const IAC: u8 = 255;
 const DONT: u8 = 254;
@@ -62,7 +66,12 @@ impl Drop for RawMode {
 
 /// Runs an interactive session and returns the exit status reported by the
 /// guest session wrapper.
-pub(crate) fn run(host: &str, port: u16, request: StartupRequest) -> Result<i32> {
+pub(crate) fn run(
+    host: &str,
+    port: u16,
+    request: StartupRequest,
+    api_socket_path: &Path,
+) -> Result<i32> {
     let stream = TcpStream::connect((host, port))
         .with_context(|| format!("Connect to Telnet service at {host}:{port}"))?;
     stream.set_nodelay(true)?;
@@ -80,6 +89,7 @@ pub(crate) fn run(host: &str, port: u16, request: StartupRequest) -> Result<i32>
         terminal_type,
         dimensions,
         request,
+        api_socket_path,
     )
 }
 
@@ -255,6 +265,8 @@ struct ControlRecords {
     ready: bool,
     pending: Vec<u8>,
     exit: Option<i32>,
+    challenge: Option<Vec<u8>>,
+    error: Option<String>,
 }
 
 impl ControlRecords {
@@ -278,8 +290,24 @@ impl ControlRecords {
                     let payload = std::str::from_utf8(payload)?.trim();
                     if payload == "READY" {
                         self.ready = true;
+                    } else if let Some(challenge) = payload.strip_prefix("AUTH-CHALLENGE ") {
+                        let challenge = STANDARD_NO_PAD
+                            .decode(challenge)
+                            .context("Invalid Telnet authentication challenge")?;
+                        if challenge.len() != 32 || self.challenge.replace(challenge).is_some() {
+                            anyhow::bail!("Invalid or duplicate Telnet authentication challenge");
+                        }
                     } else if let Some(code) = payload.strip_prefix("EXIT ") {
                         self.exit = Some(code.parse().context("Invalid Telnet exit status")?);
+                    } else if let Some(error) = payload.strip_prefix("ERROR ") {
+                        if error.is_empty()
+                            || !error
+                                .bytes()
+                                .all(|byte| byte.is_ascii_uppercase() || byte == b'-')
+                        {
+                            anyhow::bail!("Invalid Telnet error record");
+                        }
+                        self.error = Some(error.into());
                     }
                 } else {
                     if self.ready {
@@ -299,6 +327,7 @@ fn receive_loop(
     terminal_type: String,
     dimensions: (u16, u16),
     request: StartupRequest,
+    api_socket_path: &Path,
 ) -> Result<i32> {
     let mut codec = TelnetCodec::default();
     let mut negotiator = Negotiator::new(terminal_type, dimensions);
@@ -306,14 +335,20 @@ fn receive_loop(
         ready: false,
         pending: Vec::new(),
         exit: None,
+        challenge: None,
+        error: None,
     };
     let mut request = Some(request);
+    let mut auth_sent = false;
     let mut input_started = false;
     let mut buffer = [0_u8; 4096];
 
     loop {
         let count = reader.read(&mut buffer).context("Read Telnet data")?;
         if count == 0 {
+            if let Some(error) = controls.error {
+                anyhow::bail!("Telnet authentication failed: {error}");
+            }
             return controls
                 .exit
                 .context("Telnet connection closed without an exit status");
@@ -326,7 +361,26 @@ fn receive_loop(
                     stdout.write_all(&output)?;
                     stdout.flush()?;
                 }
+                if let Some(challenge) = controls.challenge.take() {
+                    if auth_sent {
+                        anyhow::bail!("Duplicate Telnet authentication challenge");
+                    }
+                    let signature =
+                        api::UnixClient::sign_telnet_challenge(api_socket_path, &challenge)?;
+                    if signature.len() != 64 {
+                        anyhow::bail!("Invalid Telnet authentication signature length");
+                    }
+                    let response = format!(
+                        "\x1eALFS-TELNET/1 AUTH {}\r\n",
+                        STANDARD_NO_PAD.encode(signature)
+                    );
+                    send(&writer, &encode_data(response.as_bytes()))?;
+                    auth_sent = true;
+                }
                 if controls.ready && !input_started {
+                    if !auth_sent {
+                        anyhow::bail!("Telnet service became ready without authentication");
+                    }
                     let json = serde_json::to_vec(&request.take().unwrap())?;
                     let mut line = json;
                     line.extend_from_slice(b"\r\n");
@@ -391,6 +445,8 @@ mod tests {
             ready: false,
             pending: Vec::new(),
             exit: None,
+            challenge: None,
+            error: None,
         };
         assert!(records.push(b"\x1eALFS-TEL").unwrap().is_empty());
         assert!(records.push(b"NET/1 READY\r\n").unwrap().is_empty());
@@ -410,6 +466,8 @@ mod tests {
             ready: true,
             pending: Vec::new(),
             exit: None,
+            challenge: None,
+            error: None,
         };
         assert_eq!(records.push(b"hello\r\n").unwrap(), b"hello\r\n");
     }
@@ -420,6 +478,8 @@ mod tests {
             ready: false,
             pending: Vec::new(),
             exit: None,
+            challenge: None,
+            error: None,
         };
         assert!(records.push(b"\r\n").unwrap().is_empty());
         assert!(
@@ -429,6 +489,25 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(records.push(b"Linux\r\n").unwrap(), b"Linux\r\n");
+    }
+
+    #[test]
+    fn authentication_challenge_is_suppressed_and_decoded() {
+        let challenge = [5_u8; 32];
+        let mut records = ControlRecords {
+            ready: false,
+            pending: Vec::new(),
+            exit: None,
+            challenge: None,
+            error: None,
+        };
+        let record = format!(
+            "\x1eALFS-TELNET/1 AUTH-CHALLENGE {}\r\n",
+            STANDARD_NO_PAD.encode(challenge)
+        );
+
+        assert!(records.push(record.as_bytes()).unwrap().is_empty());
+        assert_eq!(records.challenge, Some(challenge.to_vec()));
     }
 
     #[test]

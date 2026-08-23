@@ -1037,8 +1037,9 @@ impl AppRunner {
         }
 
         let mut status_list = Vec::new();
-        for rt_info in active_instances {
-            let mount_point = match validated_mount_point(&rt_info) {
+        for instance in active_instances {
+            let rt_info = &instance.rt_info;
+            let mount_point = match validated_mount_point(rt_info) {
                 MountStatus::Mounted(mount_point) => mount_point,
                 MountStatus::NoLonger => {
                     eprintln!(
@@ -1110,7 +1111,8 @@ impl AppRunner {
             );
         }
 
-        for rt_info in active_instances {
+        for inst in active_instances {
+            let rt_info = &inst.rt_info;
             // If a path was specified, check that this instance matches
             if let Some(target_path_str) = &cmd.path {
                 let target_path = fs::canonicalize(target_path_str)
@@ -1134,7 +1136,7 @@ impl AppRunner {
 
             // Found matching instance, now perform the stop
             if !cmd.force {
-                match validated_mount_point(&rt_info) {
+                match validated_mount_point(rt_info) {
                     MountStatus::Mounted(mount_point) => {
                         // try to trigger normal shutdown
                         println!("Unmounting {}...", mount_point.display());
@@ -1173,7 +1175,7 @@ impl AppRunner {
                     }
                 }
             } else {
-                if let MountStatus::Mounted(mount_point) = validated_mount_point(&rt_info) {
+                if let MountStatus::Mounted(mount_point) = validated_mount_point(rt_info) {
                     print!(
                         "This action will force kill anylinuxfs. You should first unmount {} if possible.\nDo you want to proceed anyway? [y/N] ",
                         mount_point.display()
@@ -1252,9 +1254,10 @@ impl AppRunner {
         let target_path = path
             .as_deref()
             .map(|path| fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path)));
-        let rt_info = active_instances
+        let inst = active_instances
             .into_iter()
-            .find(|rt_info| {
+            .find(|inst| {
+                let rt_info = &inst.rt_info;
                 let Some(target_path) = target_path.as_ref() else {
                     return true;
                 };
@@ -1274,12 +1277,13 @@ impl AppRunner {
                 path.as_deref().unwrap_or("<unknown>")
             ))?;
 
+        let rt_info = &inst.rt_info;
         let port = send_start_telnet_cmd(&rt_info.mount_config.common, rt_info.vm_native_ip)?;
         let host = rt_info
             .vm_native_ip
             .map(|ip| ip.to_string())
             .unwrap_or_else(|| String::from_utf8_lossy(&rt_info.vm_host).into_owned());
-        let status = telnet::run(&host, port, request)?;
+        let status = telnet::run(&host, port, request, &inst.sock_path)?;
         if status == 0 {
             Ok(())
         } else {

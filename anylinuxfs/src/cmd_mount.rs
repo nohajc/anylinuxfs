@@ -1,4 +1,5 @@
 use anyhow::Context;
+use base64::{Engine, engine::general_purpose::STANDARD_NO_PAD};
 use bstr::{BString, ByteSlice, ByteVec};
 use common_utils::{
     Deferred, NetHelper, OSType, PathExt, host_eprintln, host_println, ipc, log, safe_println,
@@ -42,6 +43,8 @@ use crate::{
     parse_vm_tag_value, rand_string, to_exit_code, vm_image, vm_network,
 };
 use crate::{mdns, rpcbind};
+use ed25519_dalek::SigningKey;
+use rand::RngCore;
 
 #[cfg(target_os = "macos")]
 const MOUNT_BASE: &str = "Volumes";
@@ -51,6 +54,12 @@ const MOUNT_BASE: &str = "mnt";
 pub(crate) enum NfsStatus {
     Ready(NfsReadyState),
     Failed(Option<i32>),
+}
+
+fn generate_telnet_signing_key() -> anyhow::Result<SigningKey> {
+    let mut seed = [0_u8; 32];
+    rand::rng().fill_bytes(&mut seed);
+    Ok(SigningKey::from_bytes(&seed))
 }
 
 #[derive(Debug)]
@@ -616,20 +625,28 @@ pub(crate) fn get_runtime_info_from_socket(socket_path: &Path) -> anyhow::Result
     api::UnixClient::make_request(socket_path, api::Request::GetConfig).and_then(
         |resp| match resp {
             api::Response::Config(rt_info) => Ok(rt_info),
+            api::Response::TelnetSignature { .. } => {
+                anyhow::bail!("Unexpected runtime API response while reading configuration")
+            }
         },
     )
 }
 
-pub(crate) fn collect_active_instances() -> (Vec<api::RuntimeInfo>, Vec<PathBuf>) {
+pub(crate) struct ActiveInstance {
+    pub(crate) sock_path: PathBuf,
+    pub(crate) rt_info: api::RuntimeInfo,
+}
+
+pub(crate) fn collect_active_instances() -> (Vec<ActiveInstance>, Vec<PathBuf>) {
     let mut instances = Vec::new();
     let mut stale_sockets = Vec::new();
 
     if let Ok(sockets) = discover_api_sockets() {
-        for socket in sockets {
-            match get_runtime_info_from_socket(&socket) {
-                Ok(rt_info) => instances.push(rt_info),
+        for sock_path in sockets {
+            match get_runtime_info_from_socket(&sock_path) {
+                Ok(rt_info) => instances.push(ActiveInstance { sock_path, rt_info }),
                 Err(_) => {
-                    stale_sockets.push(socket);
+                    stale_sockets.push(sock_path);
                 }
             }
         }
@@ -666,12 +683,19 @@ where
 
 pub(crate) fn cleanup_old_logs<'a>(
     log_dir: &Path,
-    active_instances: impl IntoIterator<Item = &'a api::RuntimeInfo>,
+    active_instances: impl IntoIterator<Item = &'a ActiveInstance>,
 ) -> anyhow::Result<()> {
     // Collect active log paths from pre-discovered instances
     let mut active_log_paths = HashSet::new();
-    for rt_info in active_instances {
-        active_log_paths.insert(rt_info.mount_config.common.logs.log_file_path.as_path());
+    for inst in active_instances {
+        active_log_paths.insert(
+            inst.rt_info
+                .mount_config
+                .common
+                .logs
+                .log_file_path
+                .as_path(),
+        );
     }
 
     // Calculate retention count
@@ -1407,7 +1431,7 @@ impl super::AppRunner {
 
         network_env.active_vm_hosts = active_instances
             .iter()
-            .filter_map(|rt| String::from_utf8(rt.vm_host.clone()).ok())
+            .filter_map(|inst| String::from_utf8(inst.rt_info.vm_host.clone()).ok())
             .collect();
 
         log::init_log_file(log_file_path).context("Failed to create log file")?;
@@ -1658,10 +1682,15 @@ impl super::AppRunner {
         )
         .context("Failed to prepare key file for VM")?;
 
+        let telnet_signing_key = generate_telnet_signing_key()?;
+        let telnet_public_key =
+            STANDARD_NO_PAD.encode(telnet_signing_key.verifying_key().to_bytes());
+
         let mut forked = utils::fork_with_pty_output(OutputAction::RedirectLater)?;
         if forked.pid == 0 {
             // Child process
             deferred.remove_all(); // deferred actions must be only called in the parent process
+            drop(telnet_signing_key);
 
             let mut ctx = setup_vm(
                 &config.common,
@@ -1693,6 +1722,7 @@ impl super::AppRunner {
                 dev_info.len() > 1,
                 to_decrypt,
                 &prepared_key_file,
+                &telnet_public_key,
                 || forked.redirect(),
             )
             .context("Failed to start microVM")?;
@@ -1738,7 +1768,14 @@ impl super::AppRunner {
                 mount_point: None,
             }));
 
-            api::serve_info(rt_info.clone(), api_socket_path.clone());
+            api::serve_info(
+                api::RuntimeApi::new(
+                    rt_info.clone(),
+                    telnet_signing_key,
+                    config.common.privilege.invoker_uid,
+                ),
+                api_socket_path.clone(),
+            );
 
             _ = deferred.add(move || {
                 if let Err(e) = fs::remove_file(&api_socket_path) {
@@ -2039,7 +2076,8 @@ impl super::AppRunner {
     pub(crate) fn run_unmount(&mut self, cmd: UnmountCmd) -> anyhow::Result<()> {
         let (active_instances, _) = collect_active_instances();
 
-        for rt_info in active_instances {
+        for inst in active_instances {
+            let rt_info = &inst.rt_info;
             // If a path was specified, check if this instance matches
             if let Some(ref target_path) = cmd.path {
                 let target_path =
@@ -2061,7 +2099,7 @@ impl super::AppRunner {
                 }
             }
 
-            let mount_point = match validated_mount_point(&rt_info) {
+            let mount_point = match validated_mount_point(rt_info) {
                 MountStatus::Mounted(mount_point) => mount_point,
                 MountStatus::NoLonger => {
                     eprintln!(
