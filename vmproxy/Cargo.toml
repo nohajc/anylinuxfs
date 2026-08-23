@@ -18,6 +18,9 @@ clap = { version = "4.5.35", features = ["derive"] }
 rpassword = "7.5.2"
 bstr = { version = "1.12.0", features = ["serde"] }
 ipnet = "2.11.0"
+base64 = "0.22.1"
+ed25519-dalek = "2.1.1"
+rand = "0.9.4"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 procfs = { version = "0.17.0", features = ["flate2"] }

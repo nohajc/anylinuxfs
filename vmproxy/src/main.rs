@@ -1,4 +1,5 @@
 use anyhow::Context;
+use base64::{Engine, engine::general_purpose::STANDARD_NO_PAD};
 use bstr::{BString, ByteSlice};
 use clap::Parser;
 #[cfg(target_os = "linux")]
@@ -8,6 +9,7 @@ use common_utils::VM_CTRL_PORT;
 #[cfg(any(target_os = "freebsd", target_os = "linux"))]
 use common_utils::path_safe_label_name;
 use common_utils::{CustomActionConfig, Deferred, VM_GATEWAY_IP, VM_IP, ipc, vmctrl};
+use ed25519_dalek::VerifyingKey;
 use ipnet::Ipv4Net;
 #[cfg(target_os = "linux")]
 use libc::VMADDR_CID_ANY;
@@ -95,6 +97,8 @@ struct MountArgs {
     native_network: Option<Ipv4Net>,
     #[arg(short, long)]
     verbose: bool,
+    #[arg(long = "telnet-public-key")]
+    telnet_public_key: Option<String>,
 }
 
 #[derive(clap::Args)]
@@ -328,6 +332,7 @@ impl CtrlSocketServer {
         listener: impl StreamListener,
         native_network: Option<Ipv4Net>,
         bind_addrs: Vec<String>,
+        telnet_public_key: String,
     ) -> Self {
         let (done_tx, done_rx) = mpsc::channel();
         let (quit_tx, quit_rx) = mpsc::channel();
@@ -410,8 +415,13 @@ impl CtrlSocketServer {
                                 });
                             }
                             vmctrl::Request::StartTelnet => {
-                                let response = start_telnetd(native_network, &bind_addrs, &telnetd)
-                                    .map(|()| vmctrl::Response::TelnetReady { port: 2323 });
+                                let response = start_telnetd(
+                                    native_network,
+                                    &bind_addrs,
+                                    &telnet_public_key,
+                                    &telnetd,
+                                )
+                                .map(|()| vmctrl::Response::TelnetReady { port: 2323 });
                                 match response {
                                     Ok(response) => {
                                         _ = ipc::Handler::write_response(&mut stream, &response);
@@ -453,6 +463,7 @@ impl CtrlSocketServer {
 fn start_telnetd(
     native_network: Option<Ipv4Net>,
     bind_addrs: &[String],
+    telnet_public_key: &str,
     telnetd: &Mutex<Option<Child>>,
 ) -> anyhow::Result<()> {
     let mut telnetd = telnetd.lock().unwrap();
@@ -469,7 +480,7 @@ fn start_telnetd(
     #[cfg(target_os = "freebsd")]
     ensure_telnet_pty()?;
 
-    let mut command = telnetd_command();
+    let mut command = telnetd_command(telnet_public_key);
     let child = command.spawn().context("Start Telnet service")?;
 
     if native_network.is_none() {
@@ -504,6 +515,15 @@ fn telnet_forward_locals(bind_addrs: &[String]) -> BTreeSet<String> {
         .collect()
 }
 
+fn validate_telnet_public_key(encoded: &str) -> anyhow::Result<VerifyingKey> {
+    let key: [u8; 32] = STANDARD_NO_PAD
+        .decode(encoded)
+        .context("Decode Telnet public key")?
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("Invalid Telnet public key length"))?;
+    VerifyingKey::from_bytes(&key).context("Invalid Telnet public key")
+}
+
 fn parse_scoped_ip_addr(addr: &str) -> Option<(&str, IpAddr)> {
     let addr = addr
         .strip_prefix('[')
@@ -532,7 +552,7 @@ fn ensure_telnet_pty() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn telnetd_command() -> Command {
+fn telnetd_command(telnet_public_key: &str) -> Command {
     #[cfg(target_os = "linux")]
     let mut command = Command::new("/bin/busybox-extras");
     #[cfg(any(target_os = "freebsd", target_os = "macos"))]
@@ -550,6 +570,7 @@ fn telnetd_command() -> Command {
         "-f",
         "/dev/null",
     ]);
+    command.env("ALFS_TELNET_PUBLIC_KEY", telnet_public_key);
     command
 }
 
@@ -1305,6 +1326,12 @@ fn run() -> anyhow::Result<()> {
         unreachable!()
     };
 
+    let telnet_public_key = cli
+        .telnet_public_key
+        .as_deref()
+        .context("Missing Telnet public key")?;
+    validate_telnet_public_key(telnet_public_key)?;
+
     init_network(&cli.bind_addrs, cli.host_rpcbind, cli.native_network, None)
         .context("Failed to initialize network")?;
 
@@ -1316,7 +1343,12 @@ fn run() -> anyhow::Result<()> {
     #[cfg(any(target_os = "freebsd", target_os = "macos"))]
     let listener = TcpListener::bind(&format!("0.0.0.0:{}", VM_CTRL_PORT))?;
 
-    let ctrl_server = CtrlSocketServer::new(listener, cli.native_network, cli.bind_addrs.clone());
+    let ctrl_server = CtrlSocketServer::new(
+        listener,
+        cli.native_network,
+        cli.bind_addrs.clone(),
+        telnet_public_key.to_owned(),
+    );
     println!("<anylinuxfs-vmproxy-ready>");
 
     let mut deferred = Deferred::new();
@@ -1556,7 +1588,7 @@ mod tests {
 
     #[test]
     fn telnetd_binds_to_ipv4() {
-        let command = telnetd_command();
+        let command = telnetd_command("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
         let args: Vec<_> = command
             .get_args()
             .map(|arg| arg.to_str().unwrap())

@@ -35,6 +35,8 @@ ron = "0.12.0"
 toml_edit = "0.23.7"
 serde_with = "3.21.0"
 rand = "0.9.4"
+base64 = "0.22.1"
+ed25519-dalek = "2.1.1"
 getifaddrs = "0.6.0"
 ipnet = { version = "2.11.0", features = ["serde"] }
 versions = "7.0.0"

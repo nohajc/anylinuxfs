@@ -427,6 +427,7 @@ pub(crate) fn start_vmproxy(
     multi_device: bool,
     to_decrypt: Vec<String>,
     prepared_key_file: &PreparedKeyFile,
+    telnet_public_key: &str,
     before_start: impl FnOnce() -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
     let to_decrypt_arg = if to_decrypt.is_empty() {
@@ -541,6 +542,7 @@ pub(crate) fn start_vmproxy(
             .into_iter(),
     )
     .chain(prepared_key_file.args.iter().cloned())
+    .chain(["--telnet-public-key".into(), telnet_public_key.into()])
     .collect();
 
     // For FreeBSD: attach the key file ISO disk using the fd inherited from the parent.
