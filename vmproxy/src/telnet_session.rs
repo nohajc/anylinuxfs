@@ -16,7 +16,7 @@ const PREFIX: &str = "\x1eALFS-TELNET/1";
 const MAX_REQUEST: usize = 64 * 1024;
 const AUTH_CHALLENGE_LEN: usize = 32;
 const AUTH_SIGNATURE_LEN: usize = 64;
-const AUTH_TIMEOUT: Duration = Duration::from_secs(5);
+const AUTH_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_AUTH_LINE: usize = 256;
 
 fn is_line_terminator(byte: u8) -> bool {
