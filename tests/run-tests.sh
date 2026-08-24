@@ -268,9 +268,12 @@ fi
 # Serial-only files:
 # - 20-subcommands.bats asserts `anylinuxfs status` is empty.
 # - 21-mount-options.bats edits the real user config file.
+# - 24-vm-attach-exec.bats exercises targetless VM selection, which depends
+#   on the complete set of running instances.
 SERIAL_BATS_FILES=(
   "${SCRIPT_DIR}/20-subcommands.bats"
   "${SCRIPT_DIR}/21-mount-options.bats"
+  "${SCRIPT_DIR}/24-vm-attach-exec.bats"
 )
 
 if [[ "$requested_jobs" -eq 1 ]]; then
