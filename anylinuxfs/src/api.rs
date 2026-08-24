@@ -49,6 +49,16 @@ impl RuntimeApi {
             invoker_uid,
         }
     }
+
+    fn is_authorized_peer(&self, peer_uid: libc::uid_t) -> bool {
+        is_authorized_peer(peer_uid, self.invoker_uid)
+    }
+}
+
+/// Root is allowed because it can already access the socket regardless of its
+/// ownership and is needed when the CLI itself is run through sudo.
+fn is_authorized_peer(peer_uid: libc::uid_t, invoker_uid: libc::uid_t) -> bool {
+    peer_uid == 0 || peer_uid == invoker_uid
 }
 
 pub fn serve_info(api: RuntimeApi, socket_path: String) {
@@ -100,8 +110,8 @@ impl UnixHandler {
     }
 
     fn serve_to_client(mut stream: UnixStream, api: &RuntimeApi) -> anyhow::Result<()> {
-        if peer_uid(&stream)? != api.invoker_uid {
-            anyhow::bail!("Unix socket client is not the invoking user");
+        if !api.is_authorized_peer(peer_uid(&stream)?) {
+            anyhow::bail!("Unix socket client is not the invoking user or root");
         }
         stream.set_read_timeout(Some(Duration::from_secs(5)))?;
         stream.set_write_timeout(Some(Duration::from_secs(5)))?;
@@ -215,5 +225,13 @@ mod tests {
     fn telnet_challenge_requires_32_bytes() {
         let signing_key = SigningKey::from_bytes(&[3_u8; 32]);
         assert!(sign_telnet_challenge(&signing_key, &[0_u8; 31]).is_err());
+    }
+
+    #[test]
+    fn socket_access_allows_the_invoker_and_root_only() {
+        let invoker_uid = 501;
+        assert!(is_authorized_peer(invoker_uid, invoker_uid));
+        assert!(is_authorized_peer(0, invoker_uid));
+        assert!(!is_authorized_peer(502, invoker_uid));
     }
 }

@@ -56,11 +56,11 @@ Recognized environment variables:
     Actions,
     /// Stop anylinuxfs (can be used if unresponsive)
     Stop(StopCmd),
-    /// microVM shell for debugging (configures the VM according to mount options but only starts a shell)
-    Shell(ShellCmd),
     /// Interact with a running microVM
     #[command(subcommand)]
     Vm(VmCmd),
+    /// microVM shell for debugging (configures the VM according to mount options but only starts a shell)
+    Shell(ShellCmd),
     /// Show the latest kernel log (after the VM has stopped)
     Dmesg,
     /// Manage custom alpine packages
