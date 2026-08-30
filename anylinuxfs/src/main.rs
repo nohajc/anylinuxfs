@@ -1037,8 +1037,8 @@ impl AppRunner {
         }
 
         let mut status_list = Vec::new();
-        for instance in active_instances {
-            let rt_info = &instance.rt_info;
+        for inst in active_instances {
+            let rt_info = &inst.rt_info;
             let mount_point = match validated_mount_point(rt_info) {
                 MountStatus::Mounted(mount_point) => mount_point,
                 MountStatus::NoLonger => {
