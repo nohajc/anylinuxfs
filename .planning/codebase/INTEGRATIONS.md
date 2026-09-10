@@ -106,7 +106,7 @@
 - Fetched by: `freebsd-bootstrap/main.go`
 
 **FreeBSD sysroot (build-time cross-compilation):**
-- URL: `http://ftp.cz.freebsd.org/pub/FreeBSD/releases/arm64/14.3-RELEASE/base.txz`
+- URL: `http://ftp2.de.freebsd.org/pub/FreeBSD/releases/arm64/14.3-RELEASE/base.txz`
 - Fetched by: `build-app.sh` during vmproxy FreeBSD cross-compilation if `vmproxy/freebsd-sysroot/` is absent
 
 ## Host↔Guest IPC (Control Socket)

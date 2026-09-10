@@ -128,7 +128,7 @@
 - `libexec/vmnet-helper` — macOS vmnet helper (pre-built)
 
 **Cross-compilation notes:**
-- FreeBSD sysroot pulled at build time from `ftp.cz.freebsd.org` (`base.txz`) if not present
+- FreeBSD sysroot pulled at build time from `ftp2.de.freebsd.org` (`base.txz`) if not present
 - vmproxy FreeBSD build requires `cargo +nightly-2026-01-25 build -Z build-std`
 
 ## Configuration
