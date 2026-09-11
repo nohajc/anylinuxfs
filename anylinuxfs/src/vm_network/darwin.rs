@@ -20,8 +20,8 @@ use crate::settings::{Config, Preferences};
 #[allow(unused)]
 #[derive(Debug, Deserialize)]
 struct VmnetConfigJson {
-    vmnet_write_max_packets: u32,
-    vmnet_read_max_packets: u32,
+    vmnet_write_max_packets: Option<u32>,
+    vmnet_read_max_packets: Option<u32>,
     vmnet_subnet_mask: String,
     vmnet_mtu: u32,
     vmnet_end_address: String,
