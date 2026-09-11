@@ -2,10 +2,12 @@ use std::env;
 use std::fs::File;
 use std::io::BufReader;
 use std::net::{IpAddr, Ipv4Addr};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 
 use anyhow::Context;
-use common_utils::{OSType, VMNET_PREFIX_LEN, host_println};
+use common_utils::{
+    Deferred, OSType, VMNET_PREFIX_LEN, host_eprintln, host_println, terminate_child,
+};
 use ipnet::Ipv4Net;
 use os_version::{MacOS, OsVersion};
 use serde::Deserialize;
@@ -165,11 +167,10 @@ pub fn start_vmnet_helper(config: &Config) -> anyhow::Result<NetHelperService> {
         .spawn()
         .context("Failed to start vmnet-helper process")?;
 
-    let child_out = BufReader::new(vmnet_helper_process.stdout.take().unwrap());
-    // host_println!("Waiting for vmnet-helper to output config...");
-    let mut config_de = Deserializer::from_reader(child_out);
-    let _helper_output = VmnetConfigJson::deserialize(&mut config_de)
-        .context("Failed to parse vmnet-helper config")?;
+    let _helper_output = read_vmnet_config(
+        &mut vmnet_helper_process,
+        &config.network.unixgram_sock_path,
+    )?;
 
     let vmnet_config = VmnetConfig {
         _helper_output,
@@ -184,4 +185,53 @@ pub fn start_vmnet_helper(config: &Config) -> anyhow::Result<NetHelperService> {
         vm_native_cidr: Some(vmnet_config.vmnet_cidr),
         vm_native_ip: Some(vm_ip),
     })
+}
+
+fn read_vmnet_config(child: &mut Child, socket_path: &str) -> anyhow::Result<VmnetConfigJson> {
+    let stdout = child.stdout.take();
+    let mut cleanup = Deferred::new();
+    cleanup.add(|| {
+        match child.try_wait() {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                if let Err(e) = terminate_child(child, "vmnet-helper", None) {
+                    host_eprintln!("{:#}", e);
+                }
+            }
+            Err(e) => host_eprintln!("Failed to check vmnet-helper exit status: {}", e),
+        }
+        if let Err(e) = vfkit_sock_cleanup(socket_path) {
+            host_eprintln!("{:#}", e);
+        }
+    });
+
+    let child_out = BufReader::new(stdout.context("Failed to capture vmnet-helper stdout")?);
+    let mut config_de = Deserializer::from_reader(child_out);
+    let output = VmnetConfigJson::deserialize(&mut config_de)
+        .context("Failed to parse vmnet-helper config")?;
+
+    cleanup.remove_all();
+    Ok(output)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failed_config_terminates_helper() {
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "printf '{}\\n'; exec /bin/sleep 30"])
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+
+        let result = read_vmnet_config(&mut child, "");
+        let status = child.try_wait();
+        let _ = child.kill();
+        let _ = child.wait();
+
+        assert!(result.is_err());
+        assert!(status.unwrap().is_some(), "helper was not terminated");
+    }
 }
