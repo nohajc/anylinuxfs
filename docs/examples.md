@@ -136,6 +136,22 @@ sudo anylinuxfs /dev/disk0s6 -b <YOUR_SERVER_IP>
 anylinuxfs status
 ```
 
+**Access a running VM**
+
+Open an interactive shell in the VM used for an existing filesystem mount:
+```
+anylinuxfs vm attach
+```
+
+Or execute a command in it:
+```
+anylinuxfs vm exec -- df -h
+```
+
+`vm exec` also forwards interactive input, so it can be used with commands that prompt for input.
+
+See [accessing a running VM](vm-access.md) for details.
+
 **Try to stop anylinuxfs in case umount or eject didn't completely terminate the VM**
 ```
 anylinuxfs stop

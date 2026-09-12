@@ -75,6 +75,7 @@ Most often, you will probably use the following commands:
 * `anylinuxfs list` - show available filesystems (`-m`/`-l` shows Microsoft/Linux partitions only)
 * `anylinuxfs status` - show what is currently mounted
 * `anylinuxfs log` - show details about the current (or last) run, useful for troubleshooting
+* `anylinuxfs vm` - open a shell or run a command inside the VM used for an active filesystem mount
 
 ### Mounting filesystems
 
@@ -106,6 +107,7 @@ Arguments:
 ## Documentation
 
 - [Examples](docs/examples.md) — command examples for common use cases
+- [Accessing a running VM](docs/vm-access.md) — interactive and scripted access to the VM used for an active filesystem mount
 - [Custom actions](docs/custom-actions.md) — scripting hooks that run inside the VM
 - [Important notes](docs/important-notes.md) — VM initialization, permissions, LUKS memory, NTFS drivers
 - [Troubleshooting](docs/troubleshooting.md) — common issues and fixes
