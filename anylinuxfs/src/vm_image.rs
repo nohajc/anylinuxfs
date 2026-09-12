@@ -141,6 +141,7 @@ mod freebsd {
     use std::{
         fs::{self, Permissions},
         io,
+        os::unix::ffi::OsStrExt,
         os::unix::fs::PermissionsExt,
         path::Path,
         process::Command,
@@ -167,6 +168,46 @@ mod freebsd {
     pub const ROOTFS_CURRENT_VERSION: &str = include_str!("../../share/freebsd/rootfs.ver");
 
     pub const VM_DISK_IMAGE: &str = "freebsd-microvm-disk.img";
+
+    // Keep this in sync with init-rootfs: only explicit proxy settings belong
+    // in the guest environment, not the caller's complete environment.
+    const PROXY_ENVIRONMENT_VARIABLES: &[&str] = &[
+        "http_proxy",
+        "https_proxy",
+        "ftp_proxy",
+        "all_proxy",
+        "no_proxy",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "FTP_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+    ];
+    fn proxy_environment() -> Vec<BString> {
+        let mut names = Vec::new();
+        let mut env = Vec::new();
+        for name in PROXY_ENVIRONMENT_VARIABLES {
+            if let Some(value) = std::env::var_os(name) {
+                if value.is_empty() {
+                    continue;
+                }
+
+                let mut entry = BString::from(*name);
+                entry.push(b'=');
+                entry.extend_from_slice(value.as_os_str().as_bytes());
+                env.push(entry);
+                names.push(*name);
+            }
+        }
+
+        if !names.is_empty() {
+            host_println!(
+                "Forwarding proxy environment variables: {}",
+                names.join(", ")
+            );
+        }
+        env
+    }
 
     pub fn init_rootfs(
         config: &Config,
@@ -238,7 +279,7 @@ mod freebsd {
                         DevInfo::pv(upgrade_iso_image_path.as_bytes(), true)?,
                     ];
                     let cmdline = &["/upgrade-binaries.sh".into()];
-                    start_freebsd_vm(&config, devices, cmdline, NetworkMode::Default)
+                    start_freebsd_vm(&config, devices, cmdline, NetworkMode::Default, &[])
                         .context("Failed to start FreeBSD VM for upgrade")?;
 
                     write_mtime_files(
@@ -267,6 +308,7 @@ mod freebsd {
         };
 
         let _inner = guard.upgrade()?;
+        let proxy_env = proxy_environment();
 
         if iso_image_url.is_empty() {
             anyhow::bail!("FreeBSD ISO URL is empty");
@@ -427,6 +469,7 @@ mod freebsd {
                 bootstrap_image_path.as_bytes(),
                 oci_iso_image_path.as_bytes(),
                 vm_disk_image_path.as_bytes(),
+                &proxy_env,
             )
         })?;
         if bstrap_status != 0 {
@@ -437,7 +480,7 @@ mod freebsd {
         let setup_status = setup_gvproxy(&config, |_| {
             let devices = &[DevInfo::pv(vm_disk_image_path.as_bytes(), true)?];
             let cmdline = &["/usr/local/bin/vm-setup.sh".into()];
-            start_freebsd_vm(&config, devices, cmdline, NetworkMode::GvProxy)
+            start_freebsd_vm(&config, devices, cmdline, NetworkMode::GvProxy, &proxy_env)
         })?;
         if setup_status != 0 {
             anyhow::bail!("FreeBSD VM setup exited with status {}", setup_status);
@@ -566,6 +609,7 @@ mod freebsd {
         bootstrap_image_path: impl AsRef<BStr>,
         oci_iso_image_path: impl AsRef<BStr>,
         vm_disk_image_path: impl AsRef<BStr>,
+        env: &[BString],
     ) -> anyhow::Result<i32> {
         let devices = &[
             DevInfo::pv(bootstrap_image_path, true)?,
@@ -577,7 +621,7 @@ mod freebsd {
             .root_device("cd9660:/dev/vtbd0")
             .legacy_console(true);
         let ctx = setup_vm(&config, devices, NetworkMode::GvProxy, false, opts)?;
-        let bstrap_status = start_vm_forked(&ctx, &["/freebsd-bootstrap".into()], &[])
+        let bstrap_status = start_vm_forked(&ctx, &["/freebsd-bootstrap".into()], env)
             .context("Failed to start FreeBSD bootstrap VM")?;
 
         if bstrap_status != 0 {
@@ -591,13 +635,14 @@ mod freebsd {
         devices: &[DevInfo],
         cmdline: &[BString],
         net_mode: NetworkMode,
+        env: &[BString],
     ) -> anyhow::Result<i32> {
         let opts = VMOpts::new()
             .root_device("ufs:/dev/gpt/rootfs")
             .legacy_console(true);
         let ctx = setup_vm(&config, devices, net_mode, false, opts)?;
         let setup_status =
-            start_vm_forked(&ctx, cmdline, &[]).context("Failed to start FreeBSD VM setup")?;
+            start_vm_forked(&ctx, cmdline, env).context("Failed to start FreeBSD VM setup")?;
 
         if setup_status != 0 {
             anyhow::bail!("FreeBSD VM setup exited with status {}", setup_status);

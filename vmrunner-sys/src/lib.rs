@@ -14,7 +14,11 @@ pub struct Error {
 }
 
 fn success() -> Error {
-    Error { code: 0, prefix: ptr::null(), msg: ptr::null() }
+    Error {
+        code: 0,
+        prefix: ptr::null(),
+        msg: ptr::null(),
+    }
 }
 
 fn krun_error(err: i32, prefix: &'static std::ffi::CStr) -> Error {
@@ -30,6 +34,7 @@ pub unsafe extern "C" fn setup_and_start_vm(
     kernel_path: *const c_char,
     root_path: *const c_char,
     script_path: *const c_char,
+    envp: *const *const c_char,
 ) -> Error {
     let ctx = krun_create_ctx();
     if ctx < 0 {
@@ -52,9 +57,8 @@ pub unsafe extern "C" fn setup_and_start_vm(
         return krun_error(res, c"set workdir error");
     }
 
-    let envp: [*const c_char; 1] = [ptr::null()];
     let argv: [*const c_char; 3] = [c"sh".as_ptr(), script_path, ptr::null()];
-    let res = unsafe { krun_set_exec(ctx, c"/bin/busybox".as_ptr(), argv.as_ptr(), envp.as_ptr()) };
+    let res = unsafe { krun_set_exec(ctx, c"/bin/busybox".as_ptr(), argv.as_ptr(), envp) };
     if res < 0 {
         return krun_error(res, c"set exec error");
     }

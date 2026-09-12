@@ -12,7 +12,7 @@ import (
 	"unsafe"
 )
 
-func Run(kernelPath, rootPath, scriptPath string) error {
+func Run(kernelPath, rootPath, scriptPath string, env []string) error {
 	cKernelPath := C.CString(kernelPath)
 	defer C.free(unsafe.Pointer(cKernelPath))
 
@@ -22,7 +22,15 @@ func Run(kernelPath, rootPath, scriptPath string) error {
 	cScriptPath := C.CString(scriptPath)
 	defer C.free(unsafe.Pointer(cScriptPath))
 
-	cerr := C.setup_and_start_vm(cKernelPath, cRootPath, cScriptPath)
+	cEnv := make([]*C.char, 0, len(env)+1)
+	for _, entry := range env {
+		cEntry := C.CString(entry)
+		defer C.free(unsafe.Pointer(cEntry))
+		cEnv = append(cEnv, cEntry)
+	}
+	cEnv = append(cEnv, nil)
+
+	cerr := C.setup_and_start_vm(cKernelPath, cRootPath, cScriptPath, &cEnv[0])
 	if cerr.code != 0 {
 		return fmt.Errorf(
 			"%s: %s (errno %d)",

@@ -35,6 +35,36 @@ import (
 
 const DEFAULT_DNS_SERVER = "1.1.1.1"
 
+// proxyEnvironmentVariableNames is deliberately an allowlist: the setup VM
+// should inherit proxy configuration, but not the caller's complete environment.
+var proxyEnvironmentVariableNames = [...]string{
+	"http_proxy",
+	"https_proxy",
+	"ftp_proxy",
+	"all_proxy",
+	"no_proxy",
+	"HTTP_PROXY",
+	"HTTPS_PROXY",
+	"FTP_PROXY",
+	"ALL_PROXY",
+	"NO_PROXY",
+}
+
+func proxyEnvironment() []string {
+	env := make([]string, 0, len(proxyEnvironmentVariableNames))
+	names := make([]string, 0, len(proxyEnvironmentVariableNames))
+	for _, name := range proxyEnvironmentVariableNames {
+		if value := os.Getenv(name); value != "" {
+			env = append(env, name+"="+value)
+			names = append(names, name)
+		}
+	}
+	if len(names) > 0 {
+		fmt.Printf("Forwarding proxy environment variables: %s\n", strings.Join(names, ", "))
+	}
+	return env
+}
+
 type Config struct {
 	ImageName         string
 	ImageBasePath     string
@@ -551,7 +581,7 @@ func main() {
 	}
 
 	kernelPath := filepath.Join(cfg.PrefixDir, "libexec", "Image")
-	err = vmrunner.Run(kernelPath, cfg.RootfsPath, cfg.VmSetupScriptPath)
+	err = vmrunner.Run(kernelPath, cfg.RootfsPath, cfg.VmSetupScriptPath, proxyEnvironment())
 	if err != nil {
 		fmt.Printf("Failed to run VM: %v\n", err)
 		os.Exit(1)
