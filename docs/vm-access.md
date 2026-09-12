@@ -25,7 +25,7 @@ anylinuxfs vm exec -- uname -a
 
 As with `vm attach`, specify the disk identifier or mount point when more than one VM is running:
 ```
-anylinuxfs vm exec /Volumes/MyDrive -- sh -c 'find / -maxdepth 1'
+anylinuxfs vm exec /Volumes/MyDrive -- find / -maxdepth 1
 ```
 
 The `--` separates the anylinuxfs arguments from the program and its arguments. Command input and output are connected to your terminal, so `vm exec` also works with commands that prompt for input. The exit status of `anylinuxfs vm exec` is the exit status of the command in the VM.
