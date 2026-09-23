@@ -219,7 +219,7 @@ checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 
 [[package]]
 name = "common_utils"
-version = "0.20.0"
+version = "0.20.1"
 dependencies = [
  "anyhow",
  "bstr",
@@ -1440,7 +1440,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vmproxy"
-version = "0.20.0"
+version = "0.20.1"
 dependencies = [
  "anyhow",
  "base64",
