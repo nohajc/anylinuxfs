@@ -77,7 +77,7 @@ SYSROOT=freebsd-sysroot
 (cd "vmproxy" \
     && test -d $SYSROOT \
     || (mkdir $SYSROOT && cd $SYSROOT \
-        && curl -LO http://ftp2.de.freebsd.org/pub/FreeBSD/releases/arm64/14.3-RELEASE/base.txz \
+        && curl -LO http://ftp2.de.freebsd.org/pub/FreeBSD/releases/arm64/14.5-RELEASE/base.txz \
         && tar xJf base.txz 2>/dev/null || true && rm base.txz) \
     && "${VMPROXY_BSD_RUSTFLAGS_ENV[@]}" cargo +nightly-2026-01-25 build "${VMPROXY_BSD_LINKER_CFG[@]}" -Z build-std --target aarch64-unknown-freebsd $BUILD_ARGS)
 cp "vmproxy/target/aarch64-unknown-freebsd/$BUILD_DIR/vmproxy" libexec/vmproxy-bsd
