@@ -93,14 +93,15 @@ impl MountTable {
     }
 }
 
-/// NFS option key that disables file locking. macOS spells it `nolocks`,
-/// Linux spells it `nolock` (no trailing `s`). Use this constant whenever
-/// inserting/removing the option so the spelling difference doesn't leak
-/// into call sites.
 #[cfg(target_os = "macos")]
-pub const NOLOCK_KEY: &str = "nolocks";
+pub const LOCAL_LOCK_KEY: &str = "locallocks";
 #[cfg(target_os = "linux")]
-pub const NOLOCK_KEY: &str = "nolock";
+pub const LOCAL_LOCK_KEY: &str = "local_lock";
+
+#[cfg(target_os = "macos")]
+pub const LOCAL_LOCK_VALUE: &str = "";
+#[cfg(target_os = "linux")]
+pub const LOCAL_LOCK_VALUE: &str = "all";
 
 #[derive(Debug, Clone, Deref, DerefMut)]
 pub struct NfsOptions(BTreeMap<BString, BString>);
@@ -126,7 +127,7 @@ impl Default for NfsOptions {
             opts.insert("timeo".into(), "100".into()); // tenths of a second → 10s per try
             opts.insert("retrans".into(), "3".into());
         }
-        opts.insert(NOLOCK_KEY.into(), "".into());
+        opts.insert(LOCAL_LOCK_KEY.into(), LOCAL_LOCK_VALUE.into());
         opts.insert("vers".into(), "3".into());
         opts.insert("port".into(), "2049".into());
         opts.insert("mountport".into(), "32767".into());

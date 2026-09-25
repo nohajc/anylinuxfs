@@ -145,7 +145,7 @@
 - VM NFS IP: `192.168.127.2` (constant `VM_IP` in `common-utils/src/lib.rs`)
 - Ports: 2049 (nfsd), 32767 (mountd), 32765 (statd) — forwarded from VM to host via gvproxy
 - Host mount: `mount -t nfs <opts> 192.168.127.2:/mnt/disk /Volumes/<label>`
-- Default NFS options (from `fsutil::NfsOptions`): `deadtimeout=45,nfc,vers=3,nolocks,port=2049,mountport=32767`
+- Default NFS options (from `fsutil::NfsOptions`): `deadtimeout=45,nfc,vers=3,locallocks,port=2049,mountport=32767`
 
 **gvproxy HTTP API (vmproxy → gvproxy, internal):**
 - Used by vmproxy to register port forwarding rules at startup
