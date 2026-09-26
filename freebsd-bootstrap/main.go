@@ -6,12 +6,15 @@ import (
 	"anylinuxfs/freebsd-bootstrap/mount"
 	"anylinuxfs/freebsd-bootstrap/oci"
 	"anylinuxfs/freebsd-bootstrap/remoteiso"
+	"context"
 	"debug/elf"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -221,6 +224,7 @@ func main() {
 		return
 	}
 	fmt.Println("created resolv.conf")
+	logNetworkDiagnostics(networkConfig, freebsdISO)
 
 	err = createFstab("/")
 	if err != nil {
@@ -531,6 +535,53 @@ func initNetwork(config guestnet.Config) error {
 	}
 
 	return nil
+}
+
+func logNetworkDiagnostics(config guestnet.Config, isoURL string) {
+	fmt.Printf(
+		"Network configuration: interface=%s gateway=%s\n",
+		config.InterfaceAddress(),
+		config.GatewayIP,
+	)
+	commands := []struct {
+		name string
+		args []string
+	}{
+		{"/sbin/ifconfig", []string{"vtnet0"}},
+		{"/sbin/ifconfig", []string{"lo0"}},
+		{"/sbin/route", []string{"-n", "get", "default"}},
+	}
+	for _, command := range commands {
+		if err := run(command.name, command.args...); err != nil {
+			fmt.Printf("Network diagnostic %s failed: %v\n", command.name, err)
+		}
+	}
+
+	resolvConf, err := os.ReadFile("/etc/resolv.conf")
+	if err != nil {
+		fmt.Printf("DNS diagnostic could not read /etc/resolv.conf: %v\n", err)
+	} else {
+		fmt.Printf("DNS configuration (/etc/resolv.conf):\n%s", resolvConf)
+	}
+
+	parsedURL, err := url.Parse(isoURL)
+	if err != nil {
+		fmt.Printf("DNS diagnostic could not parse ISO URL %q: %v\n", isoURL, err)
+		return
+	}
+	hostname := parsedURL.Hostname()
+	if hostname == "" {
+		fmt.Printf("DNS diagnostic found no hostname in ISO URL %q\n", isoURL)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	addresses, err := net.DefaultResolver.LookupHost(ctx, hostname)
+	if err != nil {
+		fmt.Printf("DNS lookup for %s failed: %v\n", hostname, err)
+		return
+	}
+	fmt.Printf("DNS lookup for %s returned: %s\n", hostname, strings.Join(addresses, ", "))
 }
 
 func createResolvConf(targetDir string, config guestnet.Config) error {
