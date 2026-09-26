@@ -9,7 +9,7 @@ You can also run `anylinuxfs init` to download a fresh copy of `alpine:latest` a
 - `anylinuxfs init` or `anylinuxfs image install` forward these proxy environment variables to their Linux and FreeBSD initialization VMs: `http_proxy`, `https_proxy`, `ftp_proxy`, `all_proxy`, `no_proxy`, and their uppercase forms. This lets guest package installation use the same explicitly configured proxy as the host.
 - For FreeBSD initialization, set both `HTTP_PROXY` and `HTTPS_PROXY` to the proxy URL. The bootstrap download honors `HTTPS_PROXY`, but FreeBSD `pkg` uses `HTTP_PROXY` even when fetching HTTPS URLs.
 - Proxy servers configured in macOS System Settings are not supported at this time.
-- Linux TSI networking can reach host-local proxy endpoints. FreeBSD uses gvproxy instead, so its proxy endpoint must be reachable from the guest: `localhost` and `127.0.0.1` refer to the FreeBSD guest and are not rewritten to the macOS host.
+- Linux TSI networking can reach host-local proxy endpoints. FreeBSD uses the configured virtio network helper instead, so its proxy endpoint must be reachable from the guest: `localhost` and `127.0.0.1` refer to the FreeBSD guest and are not rewritten to the host.
 
 ## Custom CA certificates
 - If you need to add custom CA certificates for the alpine VM to download packages, you can do so by adding them to a file in your user profile (`~/.anylinuxfs/ca-certificates.crt`). The CA certificates must be in newline-separated PEM blocks. These will be appended to the alpine image defaults during the first run of `anylinuxfs`, or when calling `anylinuxfs init`.

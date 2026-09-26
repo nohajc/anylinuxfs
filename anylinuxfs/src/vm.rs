@@ -98,6 +98,7 @@ impl VMContext {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
 pub(crate) enum NetworkMode {
     Default,
     GvProxy,

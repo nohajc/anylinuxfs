@@ -2,6 +2,7 @@ package main
 
 import (
 	"anylinuxfs/freebsd-bootstrap/chroot"
+	"anylinuxfs/freebsd-bootstrap/guestnet"
 	"anylinuxfs/freebsd-bootstrap/mount"
 	"anylinuxfs/freebsd-bootstrap/oci"
 	"anylinuxfs/freebsd-bootstrap/remoteiso"
@@ -108,6 +109,11 @@ func main() {
 		fmt.Printf("Warning: could not load config.json (%v).\n", err)
 		return
 	}
+	networkConfig, err := guestnet.FromEnvironment()
+	if err != nil {
+		fmt.Printf("Invalid VM network configuration: %v\n", err)
+		return
+	}
 
 	workdir := "tmp"
 	if _, err := os.Stat(workdir); os.IsNotExist(err) {
@@ -202,14 +208,14 @@ func main() {
 	}
 	fmt.Println("unpacked OCI image")
 
-	err = initNetwork()
+	err = initNetwork(networkConfig)
 	if err != nil {
 		fmt.Printf("Error initializing network: %v\n", err)
 		return
 	}
 	fmt.Println("network initialized")
 
-	err = createResolvConf("/")
+	err = createResolvConf("/", networkConfig)
 	if err != nil {
 		fmt.Printf("Error creating resolv.conf: %v\n", err)
 		return
@@ -508,13 +514,13 @@ func copyKernelModules(targetDir string) error {
 	return nil
 }
 
-func initNetwork() error {
-	err := run("/sbin/ifconfig", "vtnet0", "inet", "192.168.127.2/24")
+func initNetwork(config guestnet.Config) error {
+	err := run("/sbin/ifconfig", "vtnet0", "inet", config.InterfaceAddress())
 	if err != nil {
 		return fmt.Errorf("failed to configure network interface: %w", err)
 	}
 
-	err = run("/sbin/route", "add", "default", "192.168.127.1")
+	err = run("/sbin/route", "add", "default", config.GatewayIP.String())
 	if err != nil {
 		return fmt.Errorf("failed to add default route: %w", err)
 	}
@@ -522,15 +528,14 @@ func initNetwork() error {
 	return nil
 }
 
-func createResolvConf(targetDir string) error {
+func createResolvConf(targetDir string, config guestnet.Config) error {
 	resolvPath := filepath.Join(targetDir, "etc", "resolv.conf")
 	err := os.MkdirAll(filepath.Dir(resolvPath), 0755)
 	if err != nil {
 		return fmt.Errorf("failed to create etc directory: %w", err)
 	}
 
-	content := "nameserver 192.168.127.1\n"
-	err = os.WriteFile(resolvPath, []byte(content), 0644)
+	err = os.WriteFile(resolvPath, []byte(config.ResolvConf()), 0644)
 	if err != nil {
 		return fmt.Errorf("failed to write resolv.conf: %w", err)
 	}
@@ -570,12 +575,6 @@ func editGettytab(baseDir string) error {
 	return nil
 }
 
-const InitNetworkScript = `#!/bin/sh
-
-ifconfig vtnet0 inet 192.168.127.2/24
-route add default 192.168.127.1
-`
-
 // const StartShellScript = `#!/bin/sh
 
 // trap "mount -fr /" EXIT; mount -u / && TERM=vt100 /usr/libexec/getty al.3wire
@@ -602,7 +601,7 @@ umount $MOUNT_POINT
 `
 
 var AllScripts = map[string]string{
-	"init-network.sh":     InitNetworkScript,
+	"init-network.sh":     guestnet.InitNetworkScript,
 	"start-shell.sh":      StartShellScript,
 	"upgrade-binaries.sh": UpgradeBinariesScript,
 }

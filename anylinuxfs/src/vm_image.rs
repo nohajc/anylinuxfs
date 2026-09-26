@@ -156,7 +156,7 @@ mod freebsd {
     };
     use anyhow::Context;
     use bstr::{BStr, BString};
-    use common_utils::{Deferred, PathExt, host_eprintln, host_println};
+    use common_utils::{Deferred, PathExt, VM_GATEWAY_IP, VM_IP, host_eprintln, host_println};
     use serde::Serialize;
 
     pub const ENTRYPOINT_SCRIPT_URL: &str = "https://raw.githubusercontent.com/nohajc/docker-nfs-server/refs/heads/freebsd/entrypoint.sh";
@@ -462,14 +462,19 @@ mod freebsd {
             vm_disk_image_path.display()
         );
 
+        let net_helper = config.network.effective_net_helper(|helper| helper);
+        let net_mode = NetworkMode::default_virtio_net(net_helper);
+
         // 1. boot the VM to run the bootstrap process and populate our disk image
-        let bstrap_status = setup_gvproxy(&config, |_| {
+        let bstrap_status = setup_net_helper(&config, net_helper, |vm_native_cidr| {
+            let env = bootstrap_environment(&proxy_env, vm_native_cidr)?;
             start_freebsd_bootstrap_vm(
                 &config,
                 bootstrap_image_path.as_bytes(),
                 oci_iso_image_path.as_bytes(),
                 vm_disk_image_path.as_bytes(),
-                &proxy_env,
+                net_mode,
+                &env,
             )
         })?;
         if bstrap_status != 0 {
@@ -477,10 +482,11 @@ mod freebsd {
         }
 
         // 2. boot it again to install third-party packages
-        let setup_status = setup_gvproxy(&config, |_| {
+        let setup_status = setup_net_helper(&config, net_helper, |vm_native_cidr| {
             let devices = &[DevInfo::pv(vm_disk_image_path.as_bytes(), true)?];
             let cmdline = &["/usr/local/bin/vm-setup.sh".into()];
-            start_freebsd_vm(&config, devices, cmdline, NetworkMode::GvProxy, &proxy_env)
+            let env = bootstrap_environment(&proxy_env, vm_native_cidr)?;
+            start_freebsd_vm(&config, devices, cmdline, net_mode, &env)
         })?;
         if setup_status != 0 {
             anyhow::bail!("FreeBSD VM setup exited with status {}", setup_status);
@@ -604,11 +610,42 @@ mod freebsd {
         pkgs: Vec<String>,
     }
 
+    const VM_GATEWAY_IP_ENV: &str = "ALFS_VM_GATEWAY_IP";
+    const VM_IP_ENV: &str = "ALFS_VM_IP";
+    const VM_PREFIX_LEN_ENV: &str = "ALFS_VM_PREFIX_LEN";
+
+    fn bootstrap_environment(
+        base: &[BString],
+        vm_native_cidr: Option<Ipv4Net>,
+    ) -> anyhow::Result<Vec<BString>> {
+        let (gateway_ip, vm_ip, prefix_len) = if let Some(cidr) = vm_native_cidr {
+            let mut hosts = cidr.hosts();
+            let gateway_ip = hosts
+                .next()
+                .context("vmnet network does not contain a gateway address")?;
+            let vm_ip = hosts
+                .next()
+                .context("vmnet network does not contain a guest address")?;
+            (gateway_ip.to_string(), vm_ip.to_string(), cidr.prefix_len())
+        } else {
+            (VM_GATEWAY_IP.to_owned(), VM_IP.to_owned(), 24)
+        };
+
+        let mut env = base.to_vec();
+        env.extend([
+            format!("{VM_GATEWAY_IP_ENV}={gateway_ip}").into(),
+            format!("{VM_IP_ENV}={vm_ip}").into(),
+            format!("{VM_PREFIX_LEN_ENV}={prefix_len}").into(),
+        ]);
+        Ok(env)
+    }
+
     fn start_freebsd_bootstrap_vm(
         config: &Config,
         bootstrap_image_path: impl AsRef<BStr>,
         oci_iso_image_path: impl AsRef<BStr>,
         vm_disk_image_path: impl AsRef<BStr>,
+        net_mode: NetworkMode,
         env: &[BString],
     ) -> anyhow::Result<i32> {
         let devices = &[
@@ -620,7 +657,7 @@ mod freebsd {
         let opts = VMOpts::new()
             .root_device("cd9660:/dev/vtbd0")
             .legacy_console(true);
-        let ctx = setup_vm(&config, devices, NetworkMode::GvProxy, false, opts)?;
+        let ctx = setup_vm(&config, devices, net_mode, false, opts)?;
         let bstrap_status = start_vm_forked(&ctx, &["/freebsd-bootstrap".into()], env)
             .context("Failed to start FreeBSD bootstrap VM")?;
 
@@ -680,6 +717,37 @@ mod freebsd {
                 .context("Failed to write mtime file")?;
         }
         Ok(())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn env_value<'a>(env: &'a [BString], name: &str) -> &'a [u8] {
+            let prefix = format!("{name}=");
+            env.iter()
+                .find_map(|entry| entry.strip_prefix(prefix.as_bytes()))
+                .unwrap()
+        }
+
+        #[test]
+        fn bootstrap_environment_uses_vmnet_cidr() {
+            let cidr = "10.20.30.0/30".parse().unwrap();
+            let env = bootstrap_environment(&[], Some(cidr)).unwrap();
+
+            assert_eq!(env_value(&env, VM_GATEWAY_IP_ENV), b"10.20.30.1");
+            assert_eq!(env_value(&env, VM_IP_ENV), b"10.20.30.2");
+            assert_eq!(env_value(&env, VM_PREFIX_LEN_ENV), b"30");
+        }
+
+        #[test]
+        fn bootstrap_environment_uses_gvproxy_defaults() {
+            let env = bootstrap_environment(&[], None).unwrap();
+
+            assert_eq!(env_value(&env, VM_GATEWAY_IP_ENV), VM_GATEWAY_IP.as_bytes());
+            assert_eq!(env_value(&env, VM_IP_ENV), VM_IP.as_bytes());
+            assert_eq!(env_value(&env, VM_PREFIX_LEN_ENV), b"24");
+        }
     }
 }
 
