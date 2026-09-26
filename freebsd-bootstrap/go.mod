@@ -7,6 +7,7 @@ require (
 	github.com/kdomanski/iso9660 v0.4.0
 	github.com/opencontainers/image-spec v1.1.1
 	github.com/opencontainers/umoci v0.4.7
+	golang.org/x/net v0.56.0
 	golang.org/x/sys v0.47.0
 )
 

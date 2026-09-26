@@ -11,15 +11,18 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/kdomanski/iso9660"
+	"golang.org/x/net/route"
 )
 
 type Config struct {
@@ -250,7 +253,10 @@ func main() {
 	}
 
 	httpClient := &http.Client{Timeout: 5 * time.Second}
-	if err := remoteiso.WaitForReady(httpClient, freebsdISO); err != nil {
+	logGatewayARP(networkConfig, "before")
+	readyErr := remoteiso.WaitForReady(httpClient, freebsdISO)
+	logGatewayARP(networkConfig, "after")
+	if readyErr != nil {
 		return
 	}
 
@@ -534,6 +540,46 @@ func initNetwork(config guestnet.Config) error {
 	}
 
 	return nil
+}
+
+func logGatewayARP(config guestnet.Config, phase string) {
+	state, err := gatewayARPState(config)
+	if err != nil {
+		fmt.Printf("Gateway ARP entry %s network readiness: diagnostic failed: %v\n", phase, err)
+		return
+	}
+	fmt.Printf("Gateway ARP entry %s network readiness: %s\n", phase, state)
+}
+
+func gatewayARPState(config guestnet.Config) (string, error) {
+	rib, err := route.FetchRIB(syscall.AF_INET, route.RIBTypeRoute, 0)
+	if err != nil {
+		return "", fmt.Errorf("fetch routing table: %w", err)
+	}
+	messages, err := route.ParseRIB(route.RIBTypeRoute, rib)
+	if err != nil {
+		return "", fmt.Errorf("parse routing table: %w", err)
+	}
+
+	gateway := config.GatewayIP.As4()
+	for _, message := range messages {
+		routeMessage, ok := message.(*route.RouteMessage)
+		if !ok || routeMessage.Flags&syscall.RTF_HOST == 0 ||
+			len(routeMessage.Addrs) <= syscall.RTAX_GATEWAY {
+			continue
+		}
+		destination, ok := routeMessage.Addrs[syscall.RTAX_DST].(*route.Inet4Addr)
+		if !ok || destination.IP != gateway {
+			continue
+		}
+		linkAddress, ok := routeMessage.Addrs[syscall.RTAX_GATEWAY].(*route.LinkAddr)
+		if !ok || len(linkAddress.Addr) == 0 {
+			return "incomplete", nil
+		}
+		return fmt.Sprintf("resolved (%s)", net.HardwareAddr(linkAddress.Addr)), nil
+	}
+
+	return "missing", nil
 }
 
 func createResolvConf(targetDir string, config guestnet.Config) error {

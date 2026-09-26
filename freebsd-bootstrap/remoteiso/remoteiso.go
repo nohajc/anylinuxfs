@@ -93,13 +93,19 @@ const (
 // request. vmnet-helper starts forwarding only after receiving traffic from
 // its client, so the first packet exchange can race with data-plane startup.
 func WaitForReady(client *http.Client, url string) error {
+	started := time.Now()
 	var lastErr error
 	for attempt := 1; attempt <= readinessProbeAttempts; attempt++ {
 		ctx, cancel := context.WithTimeout(context.Background(), readinessProbeTimeout)
 		req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
 		if err != nil {
 			cancel()
-			fmt.Printf("Network readiness probe failed after %d attempt: %v\n", attempt, err)
+			fmt.Printf(
+				"Network readiness probe failed after %d attempt in %s: %v\n",
+				attempt,
+				time.Since(started).Round(time.Millisecond),
+				err,
+			)
 			return err
 		}
 
@@ -107,13 +113,22 @@ func WaitForReady(client *http.Client, url string) error {
 		if err == nil {
 			resp.Body.Close()
 			cancel()
-			fmt.Printf("Network readiness probe succeeded after %d attempt(s)\n", attempt)
+			fmt.Printf(
+				"Network readiness probe succeeded after %d attempt(s) in %s\n",
+				attempt,
+				time.Since(started).Round(time.Millisecond),
+			)
 			return nil
 		}
 		cancel()
 		lastErr = err
 		if !isRetryableRequestError(err) {
-			fmt.Printf("Network readiness probe failed after %d attempt(s): %v\n", attempt, err)
+			fmt.Printf(
+				"Network readiness probe failed after %d attempt(s) in %s: %v\n",
+				attempt,
+				time.Since(started).Round(time.Millisecond),
+				err,
+			)
 			return err
 		}
 		if attempt < readinessProbeAttempts {
@@ -121,8 +136,9 @@ func WaitForReady(client *http.Client, url string) error {
 		}
 	}
 	fmt.Printf(
-		"Network readiness probe failed after %d attempts: %v\n",
+		"Network readiness probe failed after %d attempts in %s: %v\n",
 		readinessProbeAttempts,
+		time.Since(started).Round(time.Millisecond),
 		lastErr,
 	)
 	return lastErr
