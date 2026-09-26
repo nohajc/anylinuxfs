@@ -255,7 +255,7 @@ func main() {
 	}
 
 	httpClient := &http.Client{Timeout: 5 * time.Second}
-	logNetworkDiagnostics(networkConfig, freebsdISO)
+	// logNetworkDiagnostics(networkConfig, freebsdISO)
 	logGatewayARP(networkConfig, "before")
 	readyErr := remoteiso.WaitForReady(httpClient, freebsdISO)
 	logGatewayARP(networkConfig, "after")
