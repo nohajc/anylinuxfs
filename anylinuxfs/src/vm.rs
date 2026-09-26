@@ -121,6 +121,13 @@ impl NetworkMode {
     }
 }
 
+/// Send the VFKT registration datagram after connecting to the Unix datagram
+/// socket. vmnet-helper's socket mode consumes this datagram while learning the
+/// client's address; without it, the guest's first short frame (usually ARP)
+/// would be consumed instead.
+#[cfg(target_os = "macos")]
+const NET_FLAG_VFKIT: u32 = 1 << 0;
+
 /// Taken from https://github.com/containers/libkrun/blob/7116644749c7b1028a970c9e8bd2d0163745a225/include/libkrun.h#L269
 #[cfg(target_os = "macos")]
 const NET_FEATURE_CSUM: u32 = 1 << 0;
@@ -227,7 +234,7 @@ pub(crate) fn setup_vm(
                     -1,
                     vm_network::random_mac_address().as_ptr(),
                     net_features,
-                    0,
+                    NET_FLAG_VFKIT,
                 )
             }
             .context("Failed to add vmnet socket")?;
