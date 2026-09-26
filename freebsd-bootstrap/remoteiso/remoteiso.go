@@ -84,9 +84,9 @@ type HTTPReaderAt struct {
 const maxRequestAttempts = 3
 
 const (
-	readinessProbeAttempts = 5
-	readinessProbeTimeout  = time.Second
-	readinessProbeDelay    = 100 * time.Millisecond
+	readinessProbeAttempts = 20
+	readinessProbeTimeout  = 200 * time.Millisecond
+	readinessProbeDelay    = 50 * time.Millisecond
 )
 
 // WaitForReady warms up the DNS, TCP, and TLS path before the first range
