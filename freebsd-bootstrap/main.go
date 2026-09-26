@@ -6,6 +6,7 @@ import (
 	"anylinuxfs/freebsd-bootstrap/mount"
 	"anylinuxfs/freebsd-bootstrap/oci"
 	"anylinuxfs/freebsd-bootstrap/remoteiso"
+	"context"
 	"debug/elf"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"maps"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -253,6 +255,7 @@ func main() {
 	}
 
 	httpClient := &http.Client{Timeout: 5 * time.Second}
+	logNetworkDiagnostics(networkConfig, freebsdISO)
 	logGatewayARP(networkConfig, "before")
 	readyErr := remoteiso.WaitForReady(httpClient, freebsdISO)
 	logGatewayARP(networkConfig, "after")
@@ -552,20 +555,20 @@ func logGatewayARP(config guestnet.Config, phase string) {
 }
 
 func gatewayARPState(config guestnet.Config) (string, error) {
-	rib, err := route.FetchRIB(syscall.AF_INET, route.RIBTypeRoute, 0)
+	const ribTypeFlags = route.RIBType(syscall.NET_RT_FLAGS)
+	rib, err := route.FetchRIB(syscall.AF_INET, ribTypeFlags, syscall.RTF_LLINFO)
 	if err != nil {
-		return "", fmt.Errorf("fetch routing table: %w", err)
+		return "", fmt.Errorf("fetch ARP table: %w", err)
 	}
-	messages, err := route.ParseRIB(route.RIBTypeRoute, rib)
+	messages, err := route.ParseRIB(ribTypeFlags, rib)
 	if err != nil {
-		return "", fmt.Errorf("parse routing table: %w", err)
+		return "", fmt.Errorf("parse ARP table: %w", err)
 	}
 
 	gateway := config.GatewayIP.As4()
 	for _, message := range messages {
 		routeMessage, ok := message.(*route.RouteMessage)
-		if !ok || routeMessage.Flags&syscall.RTF_HOST == 0 ||
-			len(routeMessage.Addrs) <= syscall.RTAX_GATEWAY {
+		if !ok || len(routeMessage.Addrs) <= syscall.RTAX_GATEWAY {
 			continue
 		}
 		destination, ok := routeMessage.Addrs[syscall.RTAX_DST].(*route.Inet4Addr)
@@ -580,6 +583,53 @@ func gatewayARPState(config guestnet.Config) (string, error) {
 	}
 
 	return "missing", nil
+}
+
+func logNetworkDiagnostics(config guestnet.Config, isoURL string) {
+	fmt.Printf(
+		"Network configuration: interface=%s gateway=%s\n",
+		config.InterfaceAddress(),
+		config.GatewayIP,
+	)
+	commands := []struct {
+		name string
+		args []string
+	}{
+		{"/sbin/ifconfig", []string{"vtnet0"}},
+		{"/sbin/ifconfig", []string{"lo0"}},
+		{"/sbin/route", []string{"-n", "get", "default"}},
+	}
+	for _, command := range commands {
+		if err := run(command.name, command.args...); err != nil {
+			fmt.Printf("Network diagnostic %s failed: %v\n", command.name, err)
+		}
+	}
+
+	resolvConf, err := os.ReadFile("/etc/resolv.conf")
+	if err != nil {
+		fmt.Printf("DNS diagnostic could not read /etc/resolv.conf: %v\n", err)
+	} else {
+		fmt.Printf("DNS configuration (/etc/resolv.conf):\n%s", resolvConf)
+	}
+
+	parsedURL, err := url.Parse(isoURL)
+	if err != nil {
+		fmt.Printf("DNS diagnostic could not parse ISO URL %q: %v\n", isoURL, err)
+		return
+	}
+	hostname := parsedURL.Hostname()
+	if hostname == "" {
+		fmt.Printf("DNS diagnostic found no hostname in ISO URL %q\n", isoURL)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	addresses, err := net.DefaultResolver.LookupHost(ctx, hostname)
+	if err != nil {
+		fmt.Printf("DNS lookup for %s failed: %v\n", hostname, err)
+		return
+	}
+	fmt.Printf("DNS lookup for %s returned: %s\n", hostname, strings.Join(addresses, ", "))
 }
 
 func createResolvConf(targetDir string, config guestnet.Config) error {

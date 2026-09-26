@@ -141,7 +141,13 @@ pub fn start_vmnet_helper(config: &Config) -> anyhow::Result<NetHelperService> {
     vmnet_helper_cmd
         .arg("--socket")
         .arg(&config.network.unixgram_sock_path);
-    if config.network.vmnet_offloading && config.kernel.os == OSType::Linux {
+    let offloading = config.network.vmnet_offloading && config.kernel.os == OSType::Linux;
+    host_println!(
+        "Starting vmnet-helper: guest_os={:?}, offloading={}",
+        config.kernel.os,
+        offloading
+    );
+    if offloading {
         vmnet_helper_cmd.args(["--enable-tso", "--enable-checksum-offload"]);
     }
     vmnet_helper_cmd
