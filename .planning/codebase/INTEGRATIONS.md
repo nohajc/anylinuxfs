@@ -83,8 +83,8 @@
 ## GitHub Releases (Kernel & Guest Image Downloads)
 
 **libkrunfw kernel images:**
-- URL pattern: `https://github.com/nohajc/libkrunfw/releases/download/v6.12.62-rev1/linux-aarch64-Images-v6.12.62-anylinuxfs.tar.gz`
-- URL pattern: `https://github.com/nohajc/libkrunfw/releases/download/v6.12.62-rev1/modules.squashfs`
+- URL pattern: `https://github.com/nohajc/libkrunfw/releases/download/v6.12.62-rev2/linux-aarch64-Images-v6.12.62-anylinuxfs.tar.gz`
+- URL pattern: `https://github.com/nohajc/libkrunfw/releases/download/v6.12.62-rev2/modules.squashfs`
 - Configured in `etc/anylinuxfs.toml` under `[images.alpine-latest]`
 - Fetched by: `anylinuxfs/src/vm_image.rs` (`fetch` function)
 
