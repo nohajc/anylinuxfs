@@ -636,7 +636,19 @@ func createSetupScript(config Config, targetDir string) error {
 	content := fmt.Sprintf(`#!/bin/sh
 mount -u /
 /init-network.sh
-pkg install -y %s
+
+attempt=1
+until pkg install -y %s; do
+	if [ "$attempt" -ge 3 ]; then
+		echo "pkg install failed after $attempt attempts" >&2
+		exit 1
+	fi
+
+	echo "pkg install attempt $attempt failed; retrying in ${attempt}s" >&2
+	sleep "$attempt"
+	attempt=$((attempt + 1))
+done
+
 mount -fr /
 `, strings.Join(config.Pkgs, " "))
 	err = os.WriteFile(scriptPath, []byte(content), 0755)

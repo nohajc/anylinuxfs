@@ -1,13 +1,16 @@
 package remoteiso
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/kdomanski/iso9660"
 )
@@ -72,9 +75,12 @@ func (entry FileEntry) Download(baseDir string) (string, error) {
 
 // HTTPReaderAt implements io.ReaderAt backed by HTTP Range requests.
 type HTTPReaderAt struct {
-	URL    string
-	Client *http.Client
+	URL        string
+	Client     *http.Client
+	RetryDelay time.Duration
 }
+
+const maxRequestAttempts = 3
 
 var TotalBytesRead int64 = 0
 
@@ -84,15 +90,35 @@ func (r *HTTPReaderAt) ReadAt(p []byte, off int64) (int, error) {
 	TotalBytesRead += int64(len(p))
 
 	end := off + int64(len(p)) - 1
-	req, err := http.NewRequest("GET", r.URL, nil)
-	if err != nil {
-		return 0, err
-	}
-	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", off, end))
+	var resp *http.Response
+	for attempt := 1; attempt <= maxRequestAttempts; attempt++ {
+		req, err := http.NewRequest("GET", r.URL, nil)
+		if err != nil {
+			return 0, err
+		}
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", off, end))
 
-	resp, err := r.Client.Do(req)
-	if err != nil {
-		return 0, err
+		resp, err = r.Client.Do(req)
+		if err == nil {
+			break
+		}
+		if attempt == maxRequestAttempts || !isRetryableRequestError(err) {
+			return 0, err
+		}
+
+		delay := r.RetryDelay
+		if delay <= 0 {
+			delay = time.Second
+		}
+		delay *= time.Duration(attempt)
+		fmt.Printf(
+			"HTTP range request failed (attempt %d/%d): %v; retrying in %s\n",
+			attempt,
+			maxRequestAttempts,
+			err,
+			delay,
+		)
+		time.Sleep(delay)
 	}
 	defer resp.Body.Close()
 
@@ -106,6 +132,11 @@ func (r *HTTPReaderAt) ReadAt(p []byte, off int64) (int, error) {
 		return n, io.EOF
 	}
 	return n, err
+}
+
+func isRetryableRequestError(err error) bool {
+	var networkError net.Error
+	return errors.As(err, &networkError) && (networkError.Timeout() || networkError.Temporary())
 }
 
 type CachedReaderAt struct {
