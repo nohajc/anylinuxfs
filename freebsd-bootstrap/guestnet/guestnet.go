@@ -73,5 +73,6 @@ const InitNetworkScript = `#!/bin/sh
 
 ifconfig vtnet0 inet "${ALFS_VM_IP}/${ALFS_VM_PREFIX_LEN}"
 route add default "${ALFS_VM_GATEWAY_IP}"
+ifconfig lo0 up
 printf 'nameserver %s\n' "${ALFS_VM_GATEWAY_IP}" > /etc/resolv.conf
 `

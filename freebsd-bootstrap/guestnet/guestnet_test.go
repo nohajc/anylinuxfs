@@ -66,4 +66,7 @@ func TestInitNetworkScriptUsesEnvironment(t *testing.T) {
 	if regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}\b`).MatchString(InitNetworkScript) {
 		t.Error("InitNetworkScript contains a hardcoded IPv4 address")
 	}
+	if !strings.Contains(InitNetworkScript, "ifconfig lo0 up") {
+		t.Error("InitNetworkScript does not bring up the loopback interface")
+	}
 }

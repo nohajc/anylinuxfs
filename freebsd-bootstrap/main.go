@@ -525,6 +525,11 @@ func initNetwork(config guestnet.Config) error {
 		return fmt.Errorf("failed to add default route: %w", err)
 	}
 
+	err = run("/sbin/ifconfig", "lo0", "up")
+	if err != nil {
+		return fmt.Errorf("failed to bring up loopback interface: %w", err)
+	}
+
 	return nil
 }
 
