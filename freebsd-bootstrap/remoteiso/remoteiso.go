@@ -1,6 +1,7 @@
 package remoteiso
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -81,6 +82,57 @@ type HTTPReaderAt struct {
 }
 
 const maxRequestAttempts = 3
+
+const (
+	readinessProbeAttempts = 5
+	readinessProbeTimeout  = time.Second
+	readinessProbeDelay    = 100 * time.Millisecond
+)
+
+// WaitForReady warms up the DNS, TCP, and TLS path before the first range
+// request. vmnet-helper starts forwarding only after receiving traffic from
+// its client, so the first packet exchange can race with data-plane startup.
+func WaitForReady(client *http.Client, url string) error {
+	var lastErr error
+	for attempt := 1; attempt <= readinessProbeAttempts; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), readinessProbeTimeout)
+		req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
+		if err != nil {
+			cancel()
+			return err
+		}
+
+		resp, err := client.Do(req)
+		if err == nil {
+			resp.Body.Close()
+			cancel()
+			if attempt > 1 {
+				fmt.Printf(
+					"Network readiness probe succeeded on attempt %d/%d\n",
+					attempt,
+					readinessProbeAttempts,
+				)
+			}
+			return nil
+		}
+		cancel()
+		lastErr = err
+		if !isRetryableRequestError(err) {
+			return err
+		}
+		if attempt < readinessProbeAttempts {
+			fmt.Printf(
+				"Network readiness probe failed (attempt %d/%d): %v; retrying in %s\n",
+				attempt,
+				readinessProbeAttempts,
+				err,
+				readinessProbeDelay,
+			)
+			time.Sleep(readinessProbeDelay)
+		}
+	}
+	return lastErr
+}
 
 var TotalBytesRead int64 = 0
 
