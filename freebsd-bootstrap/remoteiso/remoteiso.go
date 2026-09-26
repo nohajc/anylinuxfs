@@ -99,6 +99,7 @@ func WaitForReady(client *http.Client, url string) error {
 		req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
 		if err != nil {
 			cancel()
+			fmt.Printf("Network readiness probe failed after %d attempt: %v\n", attempt, err)
 			return err
 		}
 
@@ -106,31 +107,24 @@ func WaitForReady(client *http.Client, url string) error {
 		if err == nil {
 			resp.Body.Close()
 			cancel()
-			if attempt > 1 {
-				fmt.Printf(
-					"Network readiness probe succeeded on attempt %d/%d\n",
-					attempt,
-					readinessProbeAttempts,
-				)
-			}
+			fmt.Printf("Network readiness probe succeeded after %d attempt(s)\n", attempt)
 			return nil
 		}
 		cancel()
 		lastErr = err
 		if !isRetryableRequestError(err) {
+			fmt.Printf("Network readiness probe failed after %d attempt(s): %v\n", attempt, err)
 			return err
 		}
 		if attempt < readinessProbeAttempts {
-			fmt.Printf(
-				"Network readiness probe failed (attempt %d/%d): %v; retrying in %s\n",
-				attempt,
-				readinessProbeAttempts,
-				err,
-				readinessProbeDelay,
-			)
 			time.Sleep(readinessProbeDelay)
 		}
 	}
+	fmt.Printf(
+		"Network readiness probe failed after %d attempts: %v\n",
+		readinessProbeAttempts,
+		lastErr,
+	)
 	return lastErr
 }
 

@@ -251,10 +251,7 @@ func main() {
 
 	httpClient := &http.Client{Timeout: 5 * time.Second}
 	if err := remoteiso.WaitForReady(httpClient, freebsdISO); err != nil {
-		fmt.Printf(
-			"Network readiness probe did not succeed: %v; continuing with ISO download\n",
-			err,
-		)
+		return
 	}
 
 	reader := &remoteiso.HTTPReaderAt{
