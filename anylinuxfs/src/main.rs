@@ -175,6 +175,9 @@ pub(crate) fn default_linux_image_source(prefs: &impl Preferences) -> ImageSourc
         .unwrap_or(ImageSource::default())
 }
 
+/// 2049=NFS, 32765=statd, 32767=mountd.
+const GVPROXY_FORWARDED_PORTS: &[u16] = &[2049, 32765, 32767];
+
 fn load_config(common_args: &CommonArgs, debug_args: &DebugArgs) -> anyhow::Result<Config> {
     let identity =
         privilege::resolve_invoker_identity().context("Could not determine invoking user")?;
@@ -229,6 +232,8 @@ fn load_config(common_args: &CommonArgs, debug_args: &DebugArgs) -> anyhow::Resu
     let gvproxy_net_sock_path = format!("/tmp/network-{}.sock", rand_string(8));
     let vsock_path = format!("/tmp/anylinuxfs-{}-vsock", rand_string(8));
     let unixgram_sock_path = format!("/tmp/vfkit-{}.sock", rand_string(8));
+
+    let gvproxy_forwards = GVPROXY_FORWARDED_PORTS.into();
 
     let global_prefix_dir = if prefix_dir.starts_with("/opt/homebrew") {
         PathBuf::from("/opt/homebrew")
@@ -293,6 +298,7 @@ fn load_config(common_args: &CommonArgs, debug_args: &DebugArgs) -> anyhow::Resu
         },
         network: NetworkConfig {
             gvproxy_net_sock_path,
+            gvproxy_forwards,
             vsock_path,
             unixgram_sock_path,
             preferred_net_helper,

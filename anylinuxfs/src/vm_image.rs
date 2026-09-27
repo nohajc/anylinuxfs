@@ -219,6 +219,15 @@ mod freebsd {
             anyhow::bail!("FreeBSD base directory not specified");
         }
 
+        // We don't forward any ports during VM bootstrap.
+        // This affects which loopback interface will be selected for gvproxy.
+        // Normally, when there's a NFS port conflict, we ask the OS to create
+        // a loopback alias which is a privileged operation. Without any ports,
+        // no additional alias is needed and a non-root user can always proceed.
+        let config = config.with_network_config(|net_conf| {
+            net_conf.gvproxy_forwards = vec![];
+        });
+
         let base_path = config.paths.profile_path.join(&src.base_dir);
         let mtimes_path = base_path.join("mtimes");
         let tmp_path = base_path.join("tmp");

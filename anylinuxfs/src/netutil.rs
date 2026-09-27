@@ -230,7 +230,7 @@ mod darwin {
             let Some(addr) = itf.address.ip_addr() else {
                 continue;
             };
-            let mut ip_candidate = None;
+            let mut ip_candidate = Some(addr);
             let ipv6_scope = if addr.is_ipv6() { itf.index } else { None };
             for port in required_ports.iter().cloned() {
                 if let Some(mut sock) = (addr, port).to_socket_addrs()?.next() {

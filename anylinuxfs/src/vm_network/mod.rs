@@ -73,10 +73,6 @@ pub fn vsock_cleanup(vsock_path: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Ports gvproxy needs to forward through the loopback IP we select.
-/// 2049=NFS, 32765=statd, 32767=mountd.
-const GVPROXY_FORWARDED_PORTS: &[u16] = &[2049, 32765, 32767];
-
 pub fn start_gvproxy(config: &Config) -> anyhow::Result<NetHelperService> {
     vfkit_sock_cleanup(&config.network.unixgram_sock_path)?;
 
@@ -126,7 +122,7 @@ pub fn start_gvproxy(config: &Config) -> anyhow::Result<NetHelperService> {
         .spawn()
         .context("Failed to start gvproxy process")?;
 
-    let loopback_ip = netutil::pick_usable_loopback_ip(GVPROXY_FORWARDED_PORTS)?;
+    let loopback_ip = netutil::pick_usable_loopback_ip(&config.network.gvproxy_forwards)?;
 
     Ok(NetHelperService {
         proc: gvproxy_process,

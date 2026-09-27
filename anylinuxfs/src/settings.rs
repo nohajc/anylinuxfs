@@ -58,6 +58,7 @@ pub struct LogPaths {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct NetworkConfig {
     pub gvproxy_net_sock_path: String,
+    pub gvproxy_forwards: Vec<u16>,
     pub vsock_path: String,
     pub unixgram_sock_path: String,
     pub preferred_net_helper: NetHelper,
@@ -136,6 +137,13 @@ impl Config {
             new_config.kernel.path = kernel_path;
         }
 
+        new_config
+    }
+
+    // returns copy of Config with modified NetworkConfig
+    pub fn with_network_config(&self, net_conf_fn: impl FnOnce(&mut NetworkConfig)) -> Self {
+        let mut new_config = self.clone();
+        net_conf_fn(&mut new_config.network);
         new_config
     }
 }
