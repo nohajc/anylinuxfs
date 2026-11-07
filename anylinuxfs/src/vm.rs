@@ -18,7 +18,7 @@ use std::ptr::null;
 use std::sync::Once;
 
 use crate::cmd_mount::NetworkEnv;
-use crate::devinfo::DevInfo;
+use crate::devinfo::{DevInfo, DiskFormat};
 use crate::privilege;
 use crate::settings::{Config, MountConfig, PassphrasePromptConfig, Preferences};
 use crate::utils::{HasPipeInFd, HasPipeOutFds};
@@ -83,6 +83,12 @@ impl Default for VMOpts {
 }
 
 static KRUN_LOG_LEVEL_INIT: Once = Once::new();
+
+// Preserve the sync policy used by krun_add_disk/krun_add_disk2.
+#[cfg(target_os = "macos")]
+const DISK_SYNC_MODE: u32 = 1; // KRUN_SYNC_MODE_RELAXED
+#[cfg(not(target_os = "macos"))]
+const DISK_SYNC_MODE: u32 = 2; // KRUN_SYNC_MODE_FULL
 
 #[derive(Debug, Clone)]
 pub(crate) struct VMContext {
@@ -186,12 +192,14 @@ pub(crate) fn setup_vm(
     for (i, di) in dev_info.iter().enumerate() {
         let read_only = opts.add_disks_ro || i < opts.read_only_disk_prefix_len;
         unsafe {
-            bindings::krun_add_disk2(
+            bindings::krun_add_disk3(
                 ctx_id,
                 CString::new(format!("data{}", i)).unwrap().as_ptr(),
                 CString::from_path(di.rdisk()).as_ptr(),
                 di.disk_format().as_krun_id(),
                 read_only,
+                true, // direct_io, including alignment handling for raw devices
+                DISK_SYNC_MODE,
             )
         }
         .context("Failed to add disk")?;
@@ -299,7 +307,7 @@ pub(crate) struct PreparedKeyFile {
     /// Extra CLI args to pass to vmproxy (e.g. ["--key-file", "/.alfs_keyfile"])
     args: Vec<BString>,
     /// For FreeBSD: the open ISO file whose fd is inherited by the child.
-    /// `krun_add_disk` is called in the child using `/dev/fd/{iso_fd}`.
+    /// `krun_add_disk3` is called in the child using `/dev/fd/{iso_fd}`.
     iso_file: Option<File>,
 }
 
@@ -550,11 +558,14 @@ pub(crate) fn start_vmproxy(
         let iso_fd = iso_file.as_raw_fd();
         let iso_fd_path = format!("/dev/fd/{}", iso_fd);
         unsafe {
-            bindings::krun_add_disk(
+            bindings::krun_add_disk3(
                 ctx.id,
                 CString::new("keyfile").unwrap().as_ptr(),
                 CString::new(iso_fd_path.as_str()).unwrap().as_ptr(),
+                DiskFormat::Raw.as_krun_id(),
                 true,
+                true, // direct_io
+                DISK_SYNC_MODE,
             )
         }
         .context("Failed to attach key file disk to VM")?;
@@ -648,11 +659,14 @@ pub(crate) fn set_vm_cmdline(
             let krun_config_iso_fd_path = format!("/dev/fd/{}", config_iso_fd);
 
             unsafe {
-                bindings::krun_add_disk(
+                bindings::krun_add_disk3(
                     ctx.id,
                     CString::new("config").unwrap().as_ptr(),
                     CString::from_path(&krun_config_iso_fd_path).as_ptr(),
+                    DiskFormat::Raw.as_krun_id(),
                     true,
+                    true, // direct_io
+                    DISK_SYNC_MODE,
                 )
             }
             .context("Failed to add disk")?;

@@ -17,7 +17,7 @@ pub enum DiskFormat {
 }
 
 impl DiskFormat {
-    /// Returns the `KRUN_DISK_FORMAT_*` constant expected by `krun_add_disk2`.
+    /// Returns the `KRUN_DISK_FORMAT_*` constant expected by `krun_add_disk3`.
     pub fn as_krun_id(self) -> u32 {
         match self {
             DiskFormat::Raw => 0,
@@ -49,7 +49,7 @@ pub struct DevInfo {
     fs_driver: Option<String>,  // will be auto-detected if not set
     da_info: diskutil::DiskInfo,
     size_bytes: Option<u64>, // partition size in bytes (for image probes)
-    disk_format: DiskFormat, // image format passed to krun_add_disk2
+    disk_format: DiskFormat, // image format passed to krun_add_disk3
     #[serde(default)]
     metadata_probed: bool, // true when fs metadata was probed on the host
 }
