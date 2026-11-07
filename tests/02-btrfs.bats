@@ -12,8 +12,7 @@ LABEL="alfs02btrfs"
 setup_file() {
   create_sparse_image "${BATS_FILE_TMPDIR}/btrfs.img" 512M
   vm_exec "${BATS_FILE_TMPDIR}/btrfs.img" \
-    "mkfs.btrfs -b \$(( \$(blockdev --getsize64 /dev/vda) - 65536 )) \
-     -L ${LABEL} /dev/vda && \
+    "mkfs.btrfs -L ${LABEL} /dev/vda && \
      mount /dev/vda /mnt && \
      chown $(id -u):$(id -g) /mnt && \
      umount /mnt"

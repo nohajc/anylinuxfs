@@ -76,16 +76,6 @@ remove_test_dir() {
 # ---------------------------------------------------------------------------
 # Disk image helpers
 # ---------------------------------------------------------------------------
-# NOTE: the anylinuxfs shell (mkfs) and mount paths present the virtio-blk
-# device at slightly different sizes: mount mode sees the device as 64 KiB
-# (16 × 4096-byte blocks) smaller than shell mode.  To avoid the ext4 kernel
-# check "block count N exceeds size of device (N-16 blocks)", pass the block
-# count explicitly to mkfs commands as:
-#   $(( $(blockdev --getsz /dev/vda) / 8 - 16 ))
-# This applies to all filesystems on a raw whole-disk device.  LVM logical
-# volumes and LUKS inners that are explicitly sized are not affected as long
-# as they don't extend to the very end of the underlying device.
-
 # create_sparse_image <path> <size>    e.g. create_sparse_image "$TEST_DIR/disk.img" 512M
 create_sparse_image() {
   local path="$1" size="$2"

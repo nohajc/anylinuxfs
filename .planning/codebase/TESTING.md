@@ -234,16 +234,6 @@ mod tests {
 | `common-utils/src/ipc.rs` | IPC message framing (size validation, roundtrip encode/decode) |
 | `anylinuxfs/src/pubsub.rs` | PubSub hub: subscribe, publish, drop cleanup, multi-thread, iterator |
 
-## Disk Size Quirk (All Tests)
-
-The microVM's mount mode exposes a virtio-blk device **64 KiB (16 × 4096-byte blocks) smaller** than the shell mode. All `mkfs` commands on raw whole-disk devices must subtract 16 blocks:
-
-```bash
-mkfs.ext4 ... /dev/vda $(( $(blockdev --getsz /dev/vda) / 8 - 16 ))
-```
-
-LVM logical volumes and LUKS inner volumes that are explicitly sized and don't reach the device boundary are not affected.
-
 ## Coverage Gaps
 
 - No unit tests for `anylinuxfs/src/cmd_mount.rs`, `diskutil.rs`, `fsutil.rs`, `vm_network.rs` — these are integration-tested end-to-end via BATS.

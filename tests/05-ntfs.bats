@@ -16,11 +16,9 @@ REMOUNT_LABEL="alfs05ntfsrm"
 setup_file() {
   # Raw whole-disk NTFS — used by the driver tests.
   create_sparse_image "${BATS_FILE_TMPDIR}/ntfs.img" 512M
-  # Subtract 64 KiB (128 sectors) so mkfs.ntfs sizes the filesystem to fit
-  # within the device that mount mode exposes.
   vm_exec "${BATS_FILE_TMPDIR}/ntfs.img" \
     "mkfs.ntfs -f -L ${LABEL} --sectors-per-track 63 \
-      /dev/vda \$(( \$(blockdev --getsz /dev/vda) - 128 ))"
+      /dev/vda"
 
   # GPT-partitioned NTFS — used by the --remount test.
   # macOS's diskarbitrationd only auto-mounts volumes that sit inside a
@@ -29,7 +27,7 @@ setup_file() {
   # on GPT, which is what macOS uses to identify and auto-mount NTFS volumes.
   create_sparse_image "${BATS_FILE_TMPDIR}/ntfs-remount.img" 512M
   vm_exec "${BATS_FILE_TMPDIR}/ntfs-remount.img" \
-    "parted -s /dev/vda mklabel gpt mkpart primary ntfs 1MiB 510MiB \
+    "parted -s /dev/vda mklabel gpt mkpart primary ntfs 1MiB 100% \
      && mkfs.ntfs -f -L ${REMOUNT_LABEL} --sectors-per-track 63 /dev/vda1"
 }
 

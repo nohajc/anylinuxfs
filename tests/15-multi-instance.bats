@@ -23,13 +23,13 @@ setup_file() {
   create_sparse_image "${BATS_FILE_TMPDIR}/dup2.img" 512M
 
   vm_exec "${BATS_FILE_TMPDIR}/multi1.img" \
-    "mkfs.ext4 -E root_owner=$(id -u):$(id -g) -L ${LABEL1} /dev/vda \$(( \$(blockdev --getsz /dev/vda) / 8 - 16 ))"
+    "mkfs.ext4 -E root_owner=$(id -u):$(id -g) -L ${LABEL1} /dev/vda"
   vm_exec "${BATS_FILE_TMPDIR}/multi2.img" \
-    "mkfs.ext4 -E root_owner=$(id -u):$(id -g) -L ${LABEL2} /dev/vda \$(( \$(blockdev --getsz /dev/vda) / 8 - 16 ))"
+    "mkfs.ext4 -E root_owner=$(id -u):$(id -g) -L ${LABEL2} /dev/vda"
   vm_exec "${BATS_FILE_TMPDIR}/dup1.img" \
-    "mkfs.ext4 -E root_owner=$(id -u):$(id -g) -L ${LABEL_DUP} /dev/vda \$(( \$(blockdev --getsz /dev/vda) / 8 - 16 ))"
+    "mkfs.ext4 -E root_owner=$(id -u):$(id -g) -L ${LABEL_DUP} /dev/vda"
   vm_exec "${BATS_FILE_TMPDIR}/dup2.img" \
-    "mkfs.ext4 -E root_owner=$(id -u):$(id -g) -L ${LABEL_DUP} /dev/vda \$(( \$(blockdev --getsz /dev/vda) / 8 - 16 ))"
+    "mkfs.ext4 -E root_owner=$(id -u):$(id -g) -L ${LABEL_DUP} /dev/vda"
 }
 
 teardown() {

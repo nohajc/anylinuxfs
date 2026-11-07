@@ -18,9 +18,9 @@ setup_file() {
   create_sparse_image "${BATS_FILE_TMPDIR}/vm2.img" 512M
 
   vm_exec "${BATS_FILE_TMPDIR}/vm1.img" \
-    "mkfs.ext4 -E root_owner=$(id -u):$(id -g) -L ${LABEL1} /dev/vda \$(( \$(blockdev --getsz /dev/vda) / 8 - 16 ))"
+    "mkfs.ext4 -E root_owner=$(id -u):$(id -g) -L ${LABEL1} /dev/vda"
   vm_exec "${BATS_FILE_TMPDIR}/vm2.img" \
-    "mkfs.ext4 -E root_owner=$(id -u):$(id -g) -L ${LABEL2} /dev/vda \$(( \$(blockdev --getsz /dev/vda) / 8 - 16 ))"
+    "mkfs.ext4 -E root_owner=$(id -u):$(id -g) -L ${LABEL2} /dev/vda"
 
   # UFS mounts run in the FreeBSD guest, so this fixture covers the second
   # telnet-session implementation as well as the Alpine Linux cases above.

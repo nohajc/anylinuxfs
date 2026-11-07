@@ -16,17 +16,15 @@ RAW_LABEL="alfs13raw"
 GPT_LABEL="alfs13gpt"
 
 setup_file() {
-  # Raw ext4 (no partition table) — subtract 16 blocks to match mount-mode
-  # device size.
+  # Raw ext4 (no partition table).
   create_sparse_image "${BATS_FILE_TMPDIR}/hdi-raw.img" 512M
   vm_exec "${BATS_FILE_TMPDIR}/hdi-raw.img" \
-    "mkfs.ext4 -E root_owner=$(id -u):$(id -g) -L ${RAW_LABEL} /dev/vda \$(( \$(blockdev --getsz /dev/vda) / 8 - 16 ))"
+    "mkfs.ext4 -E root_owner=$(id -u):$(id -g) -L ${RAW_LABEL} /dev/vda"
 
-  # GPT with single ext4 partition — end at 510MiB to keep the partition
-  # away from the 64 KiB that mount mode trims from the raw device.
+  # GPT with a single ext4 partition using all available space.
   create_sparse_image "${BATS_FILE_TMPDIR}/hdi-gpt.img" 512M
   vm_exec "${BATS_FILE_TMPDIR}/hdi-gpt.img" \
-    "parted -s /dev/vda mklabel gpt mkpart primary ext4 1MiB 510MiB \
+    "parted -s /dev/vda mklabel gpt mkpart primary ext4 1MiB 100% \
      && mkfs.ext4 -E root_owner=$(id -u):$(id -g) -L ${GPT_LABEL} /dev/vda1"
 }
 

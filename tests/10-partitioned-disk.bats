@@ -18,11 +18,9 @@ MBR2_LABEL="alfs10mbr2"
 
 setup_file() {
   # --- GPT image ---
-  # End partition at 510MiB rather than 100% so the last partition never
-  # reaches the 64 KiB that mount mode trims from the raw device.
   create_sparse_image "${BATS_FILE_TMPDIR}/gpt.img" 512M
   vm_exec "${BATS_FILE_TMPDIR}/gpt.img" \
-    "parted -s /dev/vda mklabel gpt mkpart primary ext4 1MiB 510MiB \
+    "parted -s /dev/vda mklabel gpt mkpart primary ext4 1MiB 100% \
      && mkfs.ext4 -E root_owner=$(id -u):$(id -g) -L ${GPT_LABEL} /dev/vda1"
 
   # --- MBR image ---
@@ -30,7 +28,7 @@ setup_file() {
   vm_exec "${BATS_FILE_TMPDIR}/mbr.img" \
     "parted -s /dev/vda mklabel msdos \
        mkpart primary ext4  1MiB 255MiB \
-       mkpart primary btrfs 256MiB 510MiB \
+       mkpart primary btrfs 256MiB 100% \
      && mkfs.ext4 -E root_owner=$(id -u):$(id -g) -L ${MBR1_LABEL} /dev/vda1 \
      && mkfs.btrfs -L ${MBR2_LABEL} /dev/vda2\
      && mount /dev/vda2 /mnt \

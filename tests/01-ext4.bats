@@ -15,16 +15,14 @@ LABEL_ROOTOWNED="alfs01ext4ro"
 
 setup_file() {
   create_sparse_image "${BATS_FILE_TMPDIR}/ext4.img" 512M
-  # Subtract 16 blocks (64 KiB) from the device-reported size so the
-  # superblock block count matches the smaller device mount mode exposes.
   vm_exec "${BATS_FILE_TMPDIR}/ext4.img" \
-    "mkfs.ext4 -E root_owner=$(id -u):$(id -g) -L ${LABEL} /dev/vda \$(( \$(blockdev --getsz /dev/vda) / 8 - 16 ))"
+    "mkfs.ext4 -E root_owner=$(id -u):$(id -g) -L ${LABEL} /dev/vda"
 
   # Root-owned image: no root_owner flag, so / is owned by root:root.
   # Used by the --ignore-permissions test.
   create_sparse_image "${BATS_FILE_TMPDIR}/ext4-rootowned.img" 512M
   vm_exec "${BATS_FILE_TMPDIR}/ext4-rootowned.img" \
-    "mkfs.ext4 -L ${LABEL_ROOTOWNED} /dev/vda \$(( \$(blockdev --getsz /dev/vda) / 8 - 16 ))"
+    "mkfs.ext4 -L ${LABEL_ROOTOWNED} /dev/vda"
 }
 
 teardown() {

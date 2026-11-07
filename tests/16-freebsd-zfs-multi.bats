@@ -27,9 +27,9 @@ setup_file() {
   create_sparse_image "${BATS_FILE_TMPDIR}/ext1.img" 512M
   create_sparse_image "${BATS_FILE_TMPDIR}/ext2.img" 512M
   vm_exec "${BATS_FILE_TMPDIR}/ext1.img" \
-    "mkfs.ext4 -E root_owner=$(id -u):$(id -g) -L ${EXT_LABEL1} /dev/vda \$(( \$(blockdev --getsz /dev/vda) / 8 - 16 ))"
+    "mkfs.ext4 -E root_owner=$(id -u):$(id -g) -L ${EXT_LABEL1} /dev/vda"
   vm_exec "${BATS_FILE_TMPDIR}/ext2.img" \
-    "mkfs.ext4 -E root_owner=$(id -u):$(id -g) -L ${EXT_LABEL2} /dev/vda \$(( \$(blockdev --getsz /dev/vda) / 8 - 16 ))"
+    "mkfs.ext4 -E root_owner=$(id -u):$(id -g) -L ${EXT_LABEL2} /dev/vda"
 
   # Two ZFS images created via the Linux microVM (modprobe zfs + zpool create)
   create_sparse_image "${BATS_FILE_TMPDIR}/zfs1.img" 1G

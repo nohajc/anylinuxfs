@@ -19,8 +19,6 @@ LVM_ON_LUKS_LABEL="alfs12lvm"
 
 setup_file() {
   # --- Plain LUKS + ext4 ---
-  # The LUKS container sits on /dev/vda, which mount mode exposes as 64 KiB
-  # smaller.  Shrink the inner ext4 by 16 blocks so mount can open it.
   create_sparse_image "${BATS_FILE_TMPDIR}/luks.img" 512M
   vm_exec "${BATS_FILE_TMPDIR}/luks.img" \
     "echo -n '${PASSPHRASE}' | cryptsetup luksFormat --batch-mode /dev/vda - \
@@ -30,8 +28,6 @@ setup_file() {
      && cryptsetup close alfsluks"
 
   # --- LVM-on-LUKS ---
-  # The LV is explicitly sized (-L 200M) and sits well within the container,
-  # so it is unaffected by the 64 KiB device size discrepancy.
   create_sparse_image "${BATS_FILE_TMPDIR}/lvm-luks.img" 512M
   vm_exec "${BATS_FILE_TMPDIR}/lvm-luks.img" \
     "echo -n '${PASSPHRASE}' | cryptsetup luksFormat --batch-mode /dev/vda - \

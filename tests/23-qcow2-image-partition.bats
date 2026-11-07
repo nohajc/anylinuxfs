@@ -17,11 +17,11 @@ setup_file() {
   qemu-img create -f qcow2 "${BATS_FILE_TMPDIR}/test-partitioned.qcow2" 512M
 
   vm_exec "${BATS_FILE_TMPDIR}/test-partitioned.qcow2" \
-    "parted -s /dev/vda mklabel gpt mkpart primary ext4 1MiB 256MiB mkpart primary ext4 256MiB 511MiB && mkfs.ext4 -E root_owner=$(id -u):$(id -g) -L ${QCOW_PART1_LABEL} /dev/vda1 && mkfs.ext4 -E root_owner=$(id -u):$(id -g) -L ${QCOW_PART2_LABEL} /dev/vda2"
+    "parted -s /dev/vda mklabel gpt mkpart primary ext4 1MiB 256MiB mkpart primary ext4 256MiB 100% && mkfs.ext4 -E root_owner=$(id -u):$(id -g) -L ${QCOW_PART1_LABEL} /dev/vda1 && mkfs.ext4 -E root_owner=$(id -u):$(id -g) -L ${QCOW_PART2_LABEL} /dev/vda2"
 
   qemu-img create -f qcow2 "${BATS_FILE_TMPDIR}/test-whole.qcow2" 256M
   vm_exec "${BATS_FILE_TMPDIR}/test-whole.qcow2" \
-    "mkfs.ext4 -E root_owner=$(id -u):$(id -g) -L ${QCOW_WHOLE_LABEL} /dev/vda \$(( \$(blockdev --getsz /dev/vda) / 8 - 16 ))"
+    "mkfs.ext4 -E root_owner=$(id -u):$(id -g) -L ${QCOW_WHOLE_LABEL} /dev/vda"
 
   qemu-img create -f qcow2 "${BATS_FILE_TMPDIR}/test-lvm.qcow2" 512M
   vm_exec "${BATS_FILE_TMPDIR}/test-lvm.qcow2" \
@@ -32,7 +32,7 @@ setup_file() {
 
   create_sparse_image "${BATS_FILE_TMPDIR}/fallback.img" 128M
   vm_exec "${BATS_FILE_TMPDIR}/fallback.img" \
-    "mkfs.ext4 -E root_owner=$(id -u):$(id -g) -L ${RAW_FALLBACK_LABEL} /dev/vda \$(( \$(blockdev --getsz /dev/vda) / 8 - 16 ))"
+    "mkfs.ext4 -E root_owner=$(id -u):$(id -g) -L ${RAW_FALLBACK_LABEL} /dev/vda"
 
   printf "not a qcow2 image" > "${BATS_FILE_TMPDIR}/invalid.qcow2"
 }

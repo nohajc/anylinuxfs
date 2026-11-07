@@ -26,7 +26,7 @@ setup_file() {
   # Prepare an ext4 image for the custom mount point test.
   create_sparse_image "${BATS_FILE_TMPDIR}/ext4.img" 256M
   vm_exec "${BATS_FILE_TMPDIR}/ext4.img" \
-    "mkfs.ext4 -E root_owner=$(id -u):$(id -g) -L ${LABEL} /dev/vda \$(( \$(blockdev --getsz /dev/vda) / 8 - 16 ))"
+    "mkfs.ext4 -E root_owner=$(id -u):$(id -g) -L ${LABEL} /dev/vda"
 
   # Persist the current user config so teardown_file can restore it exactly.
   # We use BATS_FILE_TMPDIR (survives the whole test-file run) rather than a

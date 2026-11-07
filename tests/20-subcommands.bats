@@ -15,12 +15,12 @@ LABEL2="alfs20list2"
 setup_file() {
   create_sparse_image "${BATS_FILE_TMPDIR}/list_test.img" 512M
   vm_exec "${BATS_FILE_TMPDIR}/list_test.img" \
-    "mkfs.ext4 -L ${LABEL} /dev/vda \$(( \$(blockdev --getsz /dev/vda) / 8 - 16 ))"
+    "mkfs.ext4 -L ${LABEL} /dev/vda"
 
   # Second image for identifier filter test.
   create_sparse_image "${BATS_FILE_TMPDIR}/list_test2.img" 256M
   vm_exec "${BATS_FILE_TMPDIR}/list_test2.img" \
-    "mkfs.ext4 -L ${LABEL2} /dev/vda \$(( \$(blockdev --getsz /dev/vda) / 8 - 16 ))"
+    "mkfs.ext4 -L ${LABEL2} /dev/vda"
 }
 
 teardown() {

@@ -25,14 +25,13 @@ setup_file() {
 
   # Partition it: GPT with two ext4 partitions
   # Partition 1: 1 MiB to 256 MiB
-  # Partition 2: 256 MiB to 511 MiB
-  # This keeps both partitions away from the 64 KiB that mount-mode trims
+  # Partition 2: 256 MiB to the end of the available space
   vm_exec "${BATS_FILE_TMPDIR}/test-partitioned.img" \
-    "parted -s /dev/vda mklabel gpt mkpart primary ext4 1MiB 256MiB mkpart primary ext4 256MiB 511MiB && mkfs.ext4 -E root_owner=$(id -u):$(id -g) -L ${PART1_LABEL} /dev/vda1 && mkfs.ext4 -E root_owner=$(id -u):$(id -g) -L ${PART2_LABEL} /dev/vda2"
+    "parted -s /dev/vda mklabel gpt mkpart primary ext4 1MiB 256MiB mkpart primary ext4 256MiB 100% && mkfs.ext4 -E root_owner=$(id -u):$(id -g) -L ${PART1_LABEL} /dev/vda1 && mkfs.ext4 -E root_owner=$(id -u):$(id -g) -L ${PART2_LABEL} /dev/vda2"
 
   create_sparse_image "${BATS_FILE_TMPDIR}/test-whole.img" 256M
   vm_exec "${BATS_FILE_TMPDIR}/test-whole.img" \
-    "mkfs.ext4 -E root_owner=$(id -u):$(id -g) -L ${WHOLE_LABEL} /dev/vda \$(( \$(blockdev --getsz /dev/vda) / 8 - 16 ))"
+    "mkfs.ext4 -E root_owner=$(id -u):$(id -g) -L ${WHOLE_LABEL} /dev/vda"
 }
 
 teardown() {

@@ -10,11 +10,8 @@ LABEL="alfs04f2fs"
 
 setup_file() {
   create_sparse_image "${BATS_FILE_TMPDIR}/f2fs.img" 512M
-  # Use the device's own reported size so mkfs sees what mount will see.
-  # f2fs does not take an explicit block count argument but does auto-detect
-  # device size; we pass the sector count manually to avoid the size skew.
   vm_exec "${BATS_FILE_TMPDIR}/f2fs.img" \
-    "mkfs.f2fs -R $(id -u):$(id -g) -l ${LABEL} /dev/vda \$(( \$(blockdev --getsz /dev/vda) / 8 - 16 ))"
+    "mkfs.f2fs -R $(id -u):$(id -g) -l ${LABEL} /dev/vda"
 }
 
 teardown() {
