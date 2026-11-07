@@ -2,7 +2,7 @@
 # run-tests.sh — Entry point for the anylinuxfs end-to-end test suite.
 #
 # Prerequisites:
-#   bats-core:                 macOS: brew install bats-core
+#   Bash >= 4.4 and bats-core: macOS: brew install bash bats-core
 #                              Debian/Ubuntu: apt install bats
 #   anylinuxfs built:          ./build-app.sh  (binary at bin/anylinuxfs)
 #   Alpine rootfs initialized: anylinuxfs init
@@ -29,6 +29,26 @@
 #   SKIP_APK_SETUP                 Set to 1 to skip the one-time Alpine package installation
 #                                  (useful when packages are already installed from a previous run)
 
+# Keep this bootstrap compatible with macOS /bin/bash (3.2). sudo may remove
+# Homebrew from PATH even when the invoking user's shell uses modern Bash.
+if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) )); then
+  if [[ "$(uname -s)" == Darwin ]]; then
+    for test_bash in /opt/homebrew/bin/bash /usr/local/bin/bash; do
+      if [[ -x "$test_bash" ]] && "$test_bash" -c \
+        '(( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4) ))'; then
+        export PATH="$(dirname "$test_bash"):$PATH"
+        exec "$test_bash" "${BASH_SOURCE[0]}" "$@"
+      fi
+    done
+  fi
+  echo "ERROR: The test suite requires Bash >= 4.4; running $BASH_VERSION." >&2
+  echo "       macOS: brew install bash bats-core" >&2
+  exit 1
+fi
+
+# Bats' internal scripts use /usr/bin/env bash; keep them on this interpreter.
+export PATH="$(dirname "$BASH"):$PATH"
+
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -46,7 +66,7 @@ fi
 
 if ! command -v bats &>/dev/null; then
   echo "ERROR: bats not found."
-  echo "       macOS:          brew install bats-core"
+  echo "       macOS:          brew install bash bats-core"
   echo "       Debian/Ubuntu:  apt install bats"
   exit 1
 fi

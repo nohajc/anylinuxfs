@@ -176,7 +176,7 @@ The script handles cross-compilation for vmproxy and places binaries in `bin/` a
 ./tests/run-tests.sh
 ```
 
-Prerequisites for integration tests: `brew install bats-core`, project built, Alpine rootfs initialized (`anylinuxfs init`). Alpine packages are installed automatically on first run.
+Prerequisites for integration tests: Bash >= 4.4 (`brew install bash bats-core` on macOS), project built, Alpine rootfs initialized (`anylinuxfs init`). Alpine packages are installed automatically on first run. `tests/run-tests.sh` automatically selects Homebrew Bash when started with macOS Bash 3.2, including under sudo. For direct `bats` runs, put Homebrew's `bin` directory first in `PATH` so Bats and its subprocesses use modern Bash.
 
 **ZFS test note**: ZFS always creates a partition table on the target device. Because of this, ZFS test images must be attached as a virtual disk via `hdiutil_attach` and mounted using the resulting partition device (`${HDIUTIL_DEV}s1`) rather than the raw image file. Remember to `hdiutil_detach` the device in `teardown`.
 

@@ -2,6 +2,12 @@
 # Shared helpers for anylinuxfs e2e tests.
 # Loaded via `load 'test_helper/common'` at the top of each .bats file.
 
+if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) )); then
+  echo "ERROR: The test suite requires Bash >= 4.4; use tests/run-tests.sh." >&2
+  echo "       macOS: brew install bash bats-core" >&2
+  exit 1
+fi
+
 # ---------------------------------------------------------------------------
 # Host OS detection
 # ---------------------------------------------------------------------------

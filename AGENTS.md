@@ -31,7 +31,7 @@ bats tests/<file>.bats
 ./tests/run-tests.sh
 ```
 
-**Integration test prerequisites**: `brew install bats-core`, project built, Alpine rootfs initialized (`anylinuxfs init`).
+**Integration test prerequisites**: Bash >= 4.4 (`brew install bash bats-core` on macOS), project built, Alpine rootfs initialized (`anylinuxfs init`). `tests/run-tests.sh` automatically selects Homebrew Bash when started with macOS Bash 3.2, including under sudo. For direct `bats` runs, put Homebrew's `bin` directory first in `PATH` so Bats and its subprocesses use modern Bash.
 
 ### Format before committing
 
