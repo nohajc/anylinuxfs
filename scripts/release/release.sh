@@ -141,7 +141,7 @@ ensure_vm_running() {
 
   if [[ "$state" != "running" ]]; then
     echo "Starting $vm_name"
-    nohup tart run --no-graphics "$vm_name" >"/tmp/tart-$vm_name-release.log" 2>&1 &
+    nohup tart run "$vm_name" >"/tmp/tart-$vm_name-release.log" 2>&1 &
   fi
 }
 
