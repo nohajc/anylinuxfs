@@ -1,0 +1,8 @@
+# Copy this file to ~/.config/anylinuxfs/release.conf and edit it locally.
+# This file is sourced by Bash.
+
+ALFS_RELEASE_VM_USER=vm-user
+ALFS_RELEASE_VM_NAMES=(macos-vm-newer macos-vm-older)
+
+# Override only if the tap is installed under a different name.
+# ALFS_HOMEBREW_TAP=owner/project
