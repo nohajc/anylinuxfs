@@ -344,7 +344,7 @@ do_unmount_all() {
 # ---------------------------------------------------------------------------
 # attach_image <image_path>
 #   Attaches a raw disk image as a virtual block device (no auto-mount).
-#   macOS: hdiutil attach -nomount  ->  /dev/diskN
+#   macOS: diskutil image attach --noMount  ->  /dev/diskN
 #   Linux: losetup -P -f --show     ->  /dev/loopN
 #          (-P forces the kernel to scan the partition table and create
 #          /dev/loopNpX nodes for any partitions; harmless on raw images.)
@@ -364,16 +364,53 @@ record_attached_dev() {
   export ATTACHED_DEVS
 }
 
+attach_image_macos() {
+  local image_path="$1"
+  shift
+  local out status diagnostics count i entry dev=""
+  diagnostics="$(mktemp)" || return 1
+  out="$(diskutil image attach --plist "$@" "$image_path" 2>"$diagnostics")" && status=0 || status=$?
+  cat "$diagnostics" >&2
+  rm -f "$diagnostics"
+
+  # diskutil's plist uses bare disk identifiers (e.g. disk5), unlike hdiutil.
+  # Some entities have no dev-entry; only select a whole-disk device.
+  if count="$(plutil -extract system-entities raw -expect array -o - - <<< "$out" 2>/dev/null)"; then
+    for ((i = 0; i < count; i++)); do
+      entry="$(plutil -extract "system-entities.${i}.dev-entry" raw -expect string -o - - <<< "$out" 2>/dev/null)" || continue
+      entry="/dev/${entry#/dev/}"
+      if [[ "$entry" =~ ^/dev/disk[0-9]+$ ]]; then
+        dev="$entry"
+        break
+      fi
+    done
+  fi
+
+  if [[ "$status" -ne 0 ]]; then
+    echo "ERROR: diskutil image attach failed for $image_path (exit $status)" >&2
+    [[ -n "$out" ]] && printf '%s\n' "$out" >&2
+    # A failed mount can still leave an attached device. Clean it up here,
+    # including when this helper is called through command substitution.
+    [[ -n "$dev" ]] && detach_image "$dev"
+    return "$status"
+  fi
+  if [[ -z "$dev" || ! -b "$dev" ]]; then
+    echo "ERROR: diskutil image attach returned no valid whole-disk device for $image_path" >&2
+    printf '%s\n' "$out" >&2
+    return 1
+  fi
+  ATTACH_DEV="$dev"
+  export ATTACH_DEV
+  record_attached_dev "$dev"
+  printf '%s\n' "$dev"
+}
+
 attach_image() {
   local image_path="$1"
   local dev out
   if [[ "$HOST_OS" == "Darwin" ]]; then
-    out="$(hdiutil attach \
-      -imagekey diskimage-class=CRawDiskImage \
-      -nomount \
-      "$image_path" 2>&1)"
-    # hdiutil prints one line per partition; the first is the whole disk.
-    dev="$(echo "$out" | awk 'NR==1{print $1}')"
+    attach_image_macos "$image_path" --noMount
+    return $?
   else
     out="$(losetup -P -f --show "$image_path" 2>&1)"
     dev="$out"
@@ -398,42 +435,30 @@ attach_image() {
 #   Like attach_image but lets the host auto-mount any recognised volumes.
 #   Used by --remount tests that need a disk to already be mounted natively
 #   before anylinuxfs takes over.
-#   macOS: hdiutil attach (no -nomount)  -> diskarbitrationd auto-mounts
+#   macOS: diskutil image attach --mountPolicy autoMount
 #   Linux: no built-in equivalent — losetup never auto-mounts. Callers that
 #   require an already-mounted volume must mount it manually after attach.
 attach_image_automount() {
   local image_path="$1"
-  local dev out
   if [[ "$HOST_OS" == "Darwin" ]]; then
-    out="$(hdiutil attach \
-      -imagekey diskimage-class=CRawDiskImage \
-      "$image_path" 2>&1)"
-    dev="$(echo "$out" | awk 'NR==1{print $1}')"
+    attach_image_macos "$image_path" --mountPolicy autoMount
+    return $?
   else
     # No auto-mount on Linux — fall back to plain attach. Tests that rely
     # on auto-mount semantics should skip on non-Darwin hosts.
     attach_image "$image_path"
     return $?
   fi
-  if [[ -z "$dev" || ! -b "$dev" ]]; then
-    echo "ERROR: attach_image_automount failed for $image_path" >&2
-    echo "$out" >&2
-    return 1
-  fi
-  ATTACH_DEV="$dev"
-  export ATTACH_DEV
-  record_attached_dev "$dev"
-  echo "$dev"
 }
 
 # detach_image <dev_node>
 #   Detaches a virtual disk.
-#   macOS: hdiutil detach (does not require sudo when the attacher matches).
+#   macOS: diskutil eject (does not require sudo when the attacher matches).
 #   Linux: losetup -d
 detach_image() {
   local dev="$1"
   if [[ "$HOST_OS" == "Darwin" ]]; then
-    hdiutil detach "$dev" 2>/dev/null || true
+    diskutil eject "$dev" 2>/dev/null || true
   else
     losetup -d "$dev" 2>/dev/null || true
   fi

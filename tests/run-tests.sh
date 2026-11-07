@@ -258,7 +258,7 @@ fi
 # files only; within-file tests stay serialized because many files share
 # setup_file() fixtures.
 # ---------------------------------------------------------------------------
-BATS_FILES=("${SCRIPT_DIR}"/*.bats)
+BATS_FILES=("${SCRIPT_DIR}"/helpers/*.bats "${SCRIPT_DIR}"/*.bats)
 
 if [[ ${#BATS_FILES[@]} -eq 0 || ! -f "${BATS_FILES[0]}" ]]; then
   echo "ERROR: No .bats files found in ${SCRIPT_DIR}"
